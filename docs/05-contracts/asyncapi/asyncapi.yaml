@@ -1,0 +1,2116 @@
+asyncapi: 2.6.0
+info:
+  title: AI Revenue & Operations Platform Domain Events
+  version: 1.0.0
+  description: Pre-implementation v1.0 event scaffold. The canonical event catalog under docs/15-implementation-baseline is authoritative. Events are persisted with an outbox before publication and critical consumers are idempotent.
+defaultContentType: application/json
+channels:
+  communication.opted_out.v1:
+    publish:
+      operationId: publishCommunicationOptedOut
+      message:
+        $ref: '#/components/messages/CommunicationOptedOut'
+  communication.preference_changed.v1:
+    publish:
+      operationId: publishCommunicationPreferenceChanged
+      message:
+        $ref: '#/components/messages/CommunicationPreferenceChanged'
+  communication.suppressed.v1:
+    publish:
+      operationId: publishCommunicationSuppressed
+      message:
+        $ref: '#/components/messages/CommunicationSuppressed'
+  conversation.human_takeover_started.v1:
+    publish:
+      operationId: publishConversationHumanTakeoverStarted
+      message:
+        $ref: '#/components/messages/ConversationHumanTakeoverStarted'
+  conversation.paused.v1:
+    publish:
+      operationId: publishConversationPaused
+      message:
+        $ref: '#/components/messages/ConversationPaused'
+  conversation.resumed_by_ai.v1:
+    publish:
+      operationId: publishConversationResumedByAi
+      message:
+        $ref: '#/components/messages/ConversationResumedByAi'
+  conversation.resumed_by_human.v1:
+    publish:
+      operationId: publishConversationResumedByHuman
+      message:
+        $ref: '#/components/messages/ConversationResumedByHuman'
+  conversation.returned_to_ai.v1:
+    publish:
+      operationId: publishConversationReturnedToAi
+      message:
+        $ref: '#/components/messages/ConversationReturnedToAi'
+  conversation.started.v1:
+    publish:
+      operationId: publishConversationStarted
+      message:
+        $ref: '#/components/messages/ConversationStarted'
+  gift_pass.expired.v1:
+    publish:
+      operationId: publishGiftPassExpired
+      message:
+        $ref: '#/components/messages/GiftPassExpired'
+  gift_pass.issued.v1:
+    publish:
+      operationId: publishGiftPassIssued
+      message:
+        $ref: '#/components/messages/GiftPassIssued'
+  gift_pass.redeemed.v1:
+    publish:
+      operationId: publishGiftPassRedeemed
+      message:
+        $ref: '#/components/messages/GiftPassRedeemed'
+  hitl.action_taken.v1:
+    publish:
+      operationId: publishHitlActionTaken
+      message:
+        $ref: '#/components/messages/HitlActionTaken'
+  hitl.guidance_provided.v1:
+    publish:
+      operationId: publishHitlGuidanceProvided
+      message:
+        $ref: '#/components/messages/HitlGuidanceProvided'
+  hitl.review_acknowledged.v1:
+    publish:
+      operationId: publishHitlReviewAcknowledged
+      message:
+        $ref: '#/components/messages/HitlReviewAcknowledged'
+  hitl.review_cancelled.v1:
+    publish:
+      operationId: publishHitlReviewCancelled
+      message:
+        $ref: '#/components/messages/HitlReviewCancelled'
+  hitl.review_expired.v1:
+    publish:
+      operationId: publishHitlReviewExpired
+      message:
+        $ref: '#/components/messages/HitlReviewExpired'
+  hitl.review_queued.v1:
+    publish:
+      operationId: publishHitlReviewQueued
+      message:
+        $ref: '#/components/messages/HitlReviewQueued'
+  hitl.review_requested.v1:
+    publish:
+      operationId: publishHitlReviewRequested
+      message:
+        $ref: '#/components/messages/HitlReviewRequested'
+  hitl.review_resolved.v1:
+    publish:
+      operationId: publishHitlReviewResolved
+      message:
+        $ref: '#/components/messages/HitlReviewResolved'
+  hitl.review_sla_breached.v1:
+    publish:
+      operationId: publishHitlReviewSlaBreached
+      message:
+        $ref: '#/components/messages/HitlReviewSlaBreached'
+  hitl.review_started.v1:
+    publish:
+      operationId: publishHitlReviewStarted
+      message:
+        $ref: '#/components/messages/HitlReviewStarted'
+  incident.confirmed.v1:
+    publish:
+      operationId: publishIncidentConfirmed
+      message:
+        $ref: '#/components/messages/IncidentConfirmed'
+  incident.detected.v1:
+    publish:
+      operationId: publishIncidentDetected
+      message:
+        $ref: '#/components/messages/IncidentDetected'
+  incident.resolved.v1:
+    publish:
+      operationId: publishIncidentResolved
+      message:
+        $ref: '#/components/messages/IncidentResolved'
+  incident.updated.v1:
+    publish:
+      operationId: publishIncidentUpdated
+      message:
+        $ref: '#/components/messages/IncidentUpdated'
+  inventory.provider_credit_consumed.v1:
+    publish:
+      operationId: publishProviderCreditConsumed
+      message:
+        $ref: '#/components/messages/ProviderCreditConsumed'
+  knowledge.candidate_created.v1:
+    publish:
+      operationId: publishKnowledgeCandidateCreated
+      message:
+        $ref: '#/components/messages/KnowledgeCandidateCreated'
+  knowledge.degraded.v1:
+    publish:
+      operationId: publishKnowledgeDegraded
+      message:
+        $ref: '#/components/messages/KnowledgeDegraded'
+  knowledge.deprecated.v1:
+    publish:
+      operationId: publishKnowledgeDeprecated
+      message:
+        $ref: '#/components/messages/KnowledgeDeprecated'
+  knowledge.rejected.v1:
+    publish:
+      operationId: publishKnowledgeRejected
+      message:
+        $ref: '#/components/messages/KnowledgeRejected'
+  knowledge.reverified.v1:
+    publish:
+      operationId: publishKnowledgeReverified
+      message:
+        $ref: '#/components/messages/KnowledgeReverified'
+  knowledge.solution_outcome_recorded.v1:
+    publish:
+      operationId: publishKnowledgeSolutionOutcomeRecorded
+      message:
+        $ref: '#/components/messages/KnowledgeSolutionOutcomeRecorded'
+  knowledge.source_discovered.v1:
+    publish:
+      operationId: publishKnowledgeSourceDiscovered
+      message:
+        $ref: '#/components/messages/KnowledgeSourceDiscovered'
+  knowledge.superseded.v1:
+    publish:
+      operationId: publishKnowledgeSuperseded
+      message:
+        $ref: '#/components/messages/KnowledgeSuperseded'
+  knowledge.validation_started.v1:
+    publish:
+      operationId: publishKnowledgeValidationStarted
+      message:
+        $ref: '#/components/messages/KnowledgeValidationStarted'
+  knowledge.verified.v1:
+    publish:
+      operationId: publishKnowledgeVerified
+      message:
+        $ref: '#/components/messages/KnowledgeVerified'
+  message.delivered.v1:
+    publish:
+      operationId: publishMessageDelivered
+      message:
+        $ref: '#/components/messages/MessageDelivered'
+  message.failed.v1:
+    publish:
+      operationId: publishMessageFailed
+      message:
+        $ref: '#/components/messages/MessageFailed'
+  message.queued.v1:
+    publish:
+      operationId: publishMessageQueued
+      message:
+        $ref: '#/components/messages/MessageQueued'
+  message.read.v1:
+    publish:
+      operationId: publishMessageRead
+      message:
+        $ref: '#/components/messages/MessageRead'
+  message.received.v1:
+    publish:
+      operationId: publishMessageReceived
+      message:
+        $ref: '#/components/messages/MessageReceived'
+  message.sent.v1:
+    publish:
+      operationId: publishMessageSent
+      message:
+        $ref: '#/components/messages/MessageSent'
+  order.settled.v1:
+    publish:
+      operationId: publishOrderSettled
+      message:
+        $ref: '#/components/messages/OrderSettled'
+  payment.paid.v1:
+    publish:
+      operationId: publishPaymentPaid
+      message:
+        $ref: '#/components/messages/PaymentPaid'
+  person.created.v1:
+    publish:
+      operationId: publishPersonCreated
+      message:
+        $ref: '#/components/messages/PersonCreated'
+  problem.created.v1:
+    publish:
+      operationId: publishProblemCreated
+      message:
+        $ref: '#/components/messages/ProblemCreated'
+  problem.resolved.v1:
+    publish:
+      operationId: publishProblemResolved
+      message:
+        $ref: '#/components/messages/ProblemResolved'
+  problem.root_cause_confirmed.v1:
+    publish:
+      operationId: publishProblemRootCauseConfirmed
+      message:
+        $ref: '#/components/messages/ProblemRootCauseConfirmed'
+  problem.workaround_added.v1:
+    publish:
+      operationId: publishProblemWorkaroundAdded
+      message:
+        $ref: '#/components/messages/ProblemWorkaroundAdded'
+  provider.operation_failed.v1:
+    publish:
+      operationId: publishProviderOperationFailed
+      message:
+        $ref: '#/components/messages/ProviderOperationFailed'
+  provider.operation_requested.v1:
+    publish:
+      operationId: publishProviderOperationRequested
+      message:
+        $ref: '#/components/messages/ProviderOperationRequested'
+  provider.operation_succeeded.v1:
+    publish:
+      operationId: publishProviderOperationSucceeded
+      message:
+        $ref: '#/components/messages/ProviderOperationSucceeded'
+  referral.attributed.v1:
+    publish:
+      operationId: publishReferralAttributed
+      message:
+        $ref: '#/components/messages/ReferralAttributed'
+  referral.confirmed.v1:
+    publish:
+      operationId: publishReferralConfirmed
+      message:
+        $ref: '#/components/messages/ReferralConfirmed'
+  referral.created.v1:
+    publish:
+      operationId: publishReferralCreated
+      message:
+        $ref: '#/components/messages/ReferralCreated'
+  referral.engaged.v1:
+    publish:
+      operationId: publishReferralEngaged
+      message:
+        $ref: '#/components/messages/ReferralEngaged'
+  referral.expired.v1:
+    publish:
+      operationId: publishReferralExpired
+      message:
+        $ref: '#/components/messages/ReferralExpired'
+  referral.qualification_started.v1:
+    publish:
+      operationId: publishReferralQualificationStarted
+      message:
+        $ref: '#/components/messages/ReferralQualificationStarted'
+  referral.rejected.v1:
+    publish:
+      operationId: publishReferralRejected
+      message:
+        $ref: '#/components/messages/ReferralRejected'
+  referral.reversed.v1:
+    publish:
+      operationId: publishReferralReversed
+      message:
+        $ref: '#/components/messages/ReferralReversed'
+  reward.approved.v1:
+    publish:
+      operationId: publishRewardApproved
+      message:
+        $ref: '#/components/messages/RewardApproved'
+  reward.available.v1:
+    publish:
+      operationId: publishRewardAvailable
+      message:
+        $ref: '#/components/messages/RewardAvailable'
+  reward.expired.v1:
+    publish:
+      operationId: publishRewardExpired
+      message:
+        $ref: '#/components/messages/RewardExpired'
+  reward.fulfillment_failed.v1:
+    publish:
+      operationId: publishRewardFulfillmentFailed
+      message:
+        $ref: '#/components/messages/RewardFulfillmentFailed'
+  reward.issued.v1:
+    publish:
+      operationId: publishRewardIssued
+      message:
+        $ref: '#/components/messages/RewardIssued'
+  reward.pending_created.v1:
+    publish:
+      operationId: publishRewardPendingCreated
+      message:
+        $ref: '#/components/messages/RewardPendingCreated'
+  reward.redeemed.v1:
+    publish:
+      operationId: publishRewardRedeemed
+      message:
+        $ref: '#/components/messages/RewardRedeemed'
+  reward.revoked.v1:
+    publish:
+      operationId: publishRewardRevoked
+      message:
+        $ref: '#/components/messages/RewardRevoked'
+  risk.assessment_completed.v1:
+    publish:
+      operationId: publishRiskAssessmentCompleted
+      message:
+        $ref: '#/components/messages/RiskAssessmentCompleted'
+  subscription.addon_activated.v1:
+    publish:
+      operationId: publishSubscriptionAddonActivated
+      message:
+        $ref: '#/components/messages/SubscriptionAddonActivated'
+  subscription.renewed.v1:
+    publish:
+      operationId: publishSubscriptionRenewed
+      message:
+        $ref: '#/components/messages/SubscriptionRenewed'
+  support.cancelled.v1:
+    publish:
+      operationId: publishSupportCancelled
+      message:
+        $ref: '#/components/messages/SupportCancelled'
+  support.closed.v1:
+    publish:
+      operationId: publishSupportClosed
+      message:
+        $ref: '#/components/messages/SupportClosed'
+  support.reopened.v1:
+    publish:
+      operationId: publishSupportReopened
+      message:
+        $ref: '#/components/messages/SupportReopened'
+  support.resolved.v1:
+    publish:
+      operationId: publishSupportResolved
+      message:
+        $ref: '#/components/messages/SupportResolved'
+  support.ticket_created.v1:
+    publish:
+      operationId: publishSupportTicketCreated
+      message:
+        $ref: '#/components/messages/SupportTicketCreated'
+  support.ticket_linked_to_incident.v1:
+    publish:
+      operationId: publishSupportTicketLinkedToIncident
+      message:
+        $ref: '#/components/messages/SupportTicketLinkedToIncident'
+  support.triage_started.v1:
+    publish:
+      operationId: publishSupportTriageStarted
+      message:
+        $ref: '#/components/messages/SupportTriageStarted'
+  support.waiting_customer.v1:
+    publish:
+      operationId: publishSupportWaitingCustomer
+      message:
+        $ref: '#/components/messages/SupportWaitingCustomer'
+  support.waiting_internal.v1:
+    publish:
+      operationId: publishSupportWaitingInternal
+      message:
+        $ref: '#/components/messages/SupportWaitingInternal'
+  support.waiting_provider.v1:
+    publish:
+      operationId: publishSupportWaitingProvider
+      message:
+        $ref: '#/components/messages/SupportWaitingProvider'
+  support.work_resumed.v1:
+    publish:
+      operationId: publishSupportWorkResumed
+      message:
+        $ref: '#/components/messages/SupportWorkResumed'
+  support.work_started.v1:
+    publish:
+      operationId: publishSupportWorkStarted
+      message:
+        $ref: '#/components/messages/SupportWorkStarted'
+  trial.activated.v1:
+    publish:
+      operationId: publishTrialActivated
+      message:
+        $ref: '#/components/messages/TrialActivated'
+  trial.requested.v1:
+    publish:
+      operationId: publishTrialRequested
+      message:
+        $ref: '#/components/messages/TrialRequested'
+  trial.technical_passed.v1:
+    publish:
+      operationId: publishTrialTechnicalPassed
+      message:
+        $ref: '#/components/messages/TrialTechnicalPassed'
+components:
+  schemas:
+    Actor:
+      type: object
+      required:
+      - type
+      properties:
+        type:
+          type: string
+          enum:
+          - system
+          - agent
+          - human
+          - external
+        id:
+          type:
+          - string
+          - 'null'
+    EventEnvelopeBase:
+      type: object
+      required:
+      - event_id
+      - event_type
+      - occurred_at
+      - recorded_at
+      - tenant_id
+      - aggregate_type
+      - aggregate_id
+      - aggregate_version
+      - correlation_id
+      - actor
+      - schema_version
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        recorded_at:
+          type: string
+          format: date-time
+        tenant_id:
+          type: string
+          format: uuid
+        aggregate_type:
+          type: string
+        aggregate_id:
+          type: string
+          format: uuid
+        aggregate_version:
+          type: integer
+          minimum: 1
+        correlation_id:
+          type: string
+          format: uuid
+        causation_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        actor:
+          $ref: '#/components/schemas/Actor'
+        schema_version:
+          type: integer
+          const: 1
+    PersonCreatedData:
+      type: object
+      required:
+      - person_id
+      properties:
+        person_id:
+          type: string
+          format: uuid
+    TrialRequestedData:
+      type: object
+      required:
+      - trial_id
+      - person_id
+      - trial_kind
+      - duration_minutes
+      properties:
+        trial_id:
+          type: string
+          format: uuid
+        person_id:
+          type: string
+          format: uuid
+        trial_kind:
+          type: string
+          enum:
+          - TRIAL
+          - RETRIAL
+        duration_minutes:
+          type: integer
+          enum:
+          - 60
+          - 180
+          - 360
+    TrialActivatedData:
+      type: object
+      required:
+      - trial_id
+      - activated_at
+      - expires_at
+      properties:
+        trial_id:
+          type: string
+          format: uuid
+        activated_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+    TrialTechnicalPassedData:
+      type: object
+      required:
+      - trial_id
+      - assessed_at
+      properties:
+        trial_id:
+          type: string
+          format: uuid
+        assessed_at:
+          type: string
+          format: date-time
+        compatibility_context_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+    OrderSettledData:
+      type: object
+      required:
+      - order_id
+      - net_amount_minor
+      - currency
+      - settlement_source
+      properties:
+        order_id:
+          type: string
+          format: uuid
+        net_amount_minor:
+          type: integer
+          format: int64
+          minimum: 0
+        currency:
+          type: string
+        settlement_source:
+          type: string
+          enum:
+          - PAYMENT
+          - REWARD_CREDIT
+          - MIXED
+          - ZERO_VALUE
+    PaymentPaidData:
+      type: object
+      required:
+      - payment_id
+      - order_id
+      - amount_minor
+      - currency
+      - paid_at
+      properties:
+        payment_id:
+          type: string
+          format: uuid
+        order_id:
+          type: string
+          format: uuid
+        amount_minor:
+          type: integer
+          format: int64
+          minimum: 0
+        currency:
+          type: string
+        paid_at:
+          type: string
+          format: date-time
+    SubscriptionRenewedData:
+      type: object
+      required:
+      - subscription_id
+      - cycle_id
+      - period_start
+      - period_end
+      properties:
+        subscription_id:
+          type: string
+          format: uuid
+        cycle_id:
+          type: string
+          format: uuid
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+    SubscriptionAddonActivatedData:
+      type: object
+      required:
+      - subscription_id
+      - subscription_addon_id
+      - addon_id
+      - quantity
+      - recurring
+      properties:
+        subscription_id:
+          type: string
+          format: uuid
+        subscription_addon_id:
+          type: string
+          format: uuid
+        addon_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+        recurring:
+          type: boolean
+          const: true
+    ProviderOperationRequestedData:
+      type: object
+      required:
+      - provider_operation_id
+      - provider_account_id
+      - action
+      - entity_type
+      - entity_id
+      properties:
+        provider_operation_id:
+          type: string
+          format: uuid
+        provider_account_id:
+          type: string
+          format: uuid
+        action:
+          type: string
+        entity_type:
+          type: string
+        entity_id:
+          type: string
+          format: uuid
+    ProviderOperationResultData:
+      type: object
+      required:
+      - provider_operation_id
+      - action
+      properties:
+        provider_operation_id:
+          type: string
+          format: uuid
+        action:
+          type: string
+        error_code:
+          type:
+          - string
+          - 'null'
+    SupportTicketCreatedData:
+      type: object
+      required:
+      - ticket_id
+      - person_id
+      properties:
+        ticket_id:
+          type: string
+          format: uuid
+        person_id:
+          type: string
+          format: uuid
+        customer_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        category:
+          type:
+          - string
+          - 'null'
+    HitlReviewRequestedData:
+      type: object
+      required:
+      - review_id
+      - review_type
+      - resource_type
+      - resource_id
+      - risk_class
+      properties:
+        review_id:
+          type: string
+          format: uuid
+        review_type:
+          type: string
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+          format: uuid
+        risk_class:
+          type: string
+          enum:
+          - R0
+          - R1
+          - R2
+          - R3
+          - R4
+    HitlReviewResolvedData:
+      type: object
+      required:
+      - review_id
+      - resolution
+      properties:
+        review_id:
+          type: string
+          format: uuid
+        resolution:
+          type: string
+    ReferralConfirmedData:
+      type: object
+      required:
+      - referral_id
+      - advocate_customer_id
+      - referred_person_id
+      properties:
+        referral_id:
+          type: string
+          format: uuid
+        advocate_customer_id:
+          type: string
+          format: uuid
+        referred_person_id:
+          type: string
+          format: uuid
+        qualified_order_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+    RewardIssuedData:
+      type: object
+      required:
+      - reward_id
+      - customer_id
+      - reward_definition_id
+      properties:
+        reward_id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        reward_definition_id:
+          type: string
+          format: uuid
+        estimated_cost_minor:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        currency:
+          type:
+          - string
+          - 'null'
+    ProviderCreditConsumedData:
+      type: object
+      required:
+      - entry_id
+      - provider_account_id
+      - quantity
+      properties:
+        entry_id:
+          type: string
+          format: uuid
+        provider_account_id:
+          type: string
+          format: uuid
+        quantity:
+          type: number
+          exclusiveMinimum: 0
+        subscription_cycle_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        subscription_addon_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        cost_minor:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        currency:
+          type:
+          - string
+          - 'null'
+    RiskAssessmentCompletedData:
+      type: object
+      required:
+      - assessment_id
+      - subject_type
+      - subject_id
+      - outcome
+      - policy_version
+      properties:
+        assessment_id:
+          type: string
+          format: uuid
+        subject_type:
+          type: string
+        subject_id:
+          type: string
+          format: uuid
+        outcome:
+          type: string
+          enum:
+          - ALLOW
+          - REVIEW
+          - DENY
+        score:
+          type:
+          - number
+          - 'null'
+          minimum: 0
+          maximum: 100
+        policy_version:
+          type: string
+    ConversationEventData:
+      type: object
+      required:
+      - conversation_id
+      properties:
+        conversation_id:
+          type: string
+          format: uuid
+        person_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        control_mode:
+          type:
+          - string
+          - 'null'
+          enum:
+          - AI_CONTROL
+          - HUMAN_CONTROL
+          - PAUSED
+          - null
+        reason:
+          type:
+          - string
+          - 'null'
+    MessageEventData:
+      type: object
+      required:
+      - message_id
+      - conversation_id
+      properties:
+        message_id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        direction:
+          type:
+          - string
+          - 'null'
+        channel:
+          type:
+          - string
+          - 'null'
+        delivery_status:
+          type:
+          - string
+          - 'null'
+        error_code:
+          type:
+          - string
+          - 'null'
+    SupportTicketEventData:
+      type: object
+      required:
+      - ticket_id
+      properties:
+        ticket_id:
+          type: string
+          format: uuid
+        person_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        customer_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        status:
+          type:
+          - string
+          - 'null'
+        incident_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        reason:
+          type:
+          - string
+          - 'null'
+    IncidentEventData:
+      type: object
+      required:
+      - incident_id
+      properties:
+        incident_id:
+          type: string
+          format: uuid
+        status:
+          type:
+          - string
+          - 'null'
+        severity:
+          type:
+          - string
+          - 'null'
+        provider_account_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        server_key:
+          type:
+          - string
+          - 'null'
+        service_key:
+          type:
+          - string
+          - 'null'
+    ProblemEventData:
+      type: object
+      required:
+      - problem_id
+      properties:
+        problem_id:
+          type: string
+          format: uuid
+        status:
+          type:
+          - string
+          - 'null'
+        support_ticket_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        summary:
+          type:
+          - string
+          - 'null'
+    KnowledgeEventData:
+      type: object
+      required:
+      - knowledge_item_id
+      properties:
+        knowledge_item_id:
+          type: string
+          format: uuid
+        status:
+          type:
+          - string
+          - 'null'
+        knowledge_type:
+          type:
+          - string
+          - 'null'
+        solution_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        support_ticket_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        outcome:
+          type:
+          - string
+          - 'null'
+    HumanReviewEventData:
+      type: object
+      required:
+      - review_id
+      properties:
+        review_id:
+          type: string
+          format: uuid
+        status:
+          type:
+          - string
+          - 'null'
+        review_type:
+          type:
+          - string
+          - 'null'
+        resource_type:
+          type:
+          - string
+          - 'null'
+        resource_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        resolution:
+          type:
+          - string
+          - 'null'
+    ReferralEventData:
+      type: object
+      required:
+      - referral_id
+      properties:
+        referral_id:
+          type: string
+          format: uuid
+        advocate_customer_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        referred_person_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        status:
+          type:
+          - string
+          - 'null'
+        qualified_order_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        reason_codes:
+          type: array
+          items:
+            type: string
+    RewardEventData:
+      type: object
+      required:
+      - reward_id
+      properties:
+        reward_id:
+          type: string
+          format: uuid
+        customer_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        reward_definition_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        status:
+          type:
+          - string
+          - 'null'
+        estimated_cost_minor:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        currency:
+          type:
+          - string
+          - 'null'
+        failure_code:
+          type:
+          - string
+          - 'null'
+    GiftPassEventData:
+      type: object
+      required:
+      - gift_pass_id
+      properties:
+        gift_pass_id:
+          type: string
+          format: uuid
+        issued_to_customer_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        redeemed_by_person_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        status:
+          type:
+          - string
+          - 'null'
+  messages:
+    CommunicationOptedOut:
+      name: communication.opted_out.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/MessageEventData'
+          required:
+          - data
+    CommunicationPreferenceChanged:
+      name: communication.preference_changed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/MessageEventData'
+          required:
+          - data
+    CommunicationSuppressed:
+      name: communication.suppressed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/MessageEventData'
+          required:
+          - data
+    ConversationHumanTakeoverStarted:
+      name: conversation.human_takeover_started.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ConversationEventData'
+          required:
+          - data
+    ConversationPaused:
+      name: conversation.paused.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ConversationEventData'
+          required:
+          - data
+    ConversationResumedByAi:
+      name: conversation.resumed_by_ai.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ConversationEventData'
+          required:
+          - data
+    ConversationResumedByHuman:
+      name: conversation.resumed_by_human.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ConversationEventData'
+          required:
+          - data
+    ConversationReturnedToAi:
+      name: conversation.returned_to_ai.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ConversationEventData'
+          required:
+          - data
+    ConversationStarted:
+      name: conversation.started.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ConversationEventData'
+          required:
+          - data
+    GiftPassExpired:
+      name: gift_pass.expired.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/GiftPassEventData'
+          required:
+          - data
+    GiftPassIssued:
+      name: gift_pass.issued.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/GiftPassEventData'
+          required:
+          - data
+    GiftPassRedeemed:
+      name: gift_pass.redeemed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/GiftPassEventData'
+          required:
+          - data
+    HitlActionTaken:
+      name: hitl.action_taken.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/HumanReviewEventData'
+          required:
+          - data
+    HitlGuidanceProvided:
+      name: hitl.guidance_provided.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/HumanReviewEventData'
+          required:
+          - data
+    HitlReviewAcknowledged:
+      name: hitl.review_acknowledged.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/HumanReviewEventData'
+          required:
+          - data
+    HitlReviewCancelled:
+      name: hitl.review_cancelled.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/HumanReviewEventData'
+          required:
+          - data
+    HitlReviewExpired:
+      name: hitl.review_expired.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/HumanReviewEventData'
+          required:
+          - data
+    HitlReviewQueued:
+      name: hitl.review_queued.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/HumanReviewEventData'
+          required:
+          - data
+    HitlReviewRequested:
+      name: hitl.review_requested.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/HumanReviewEventData'
+          required:
+          - data
+    HitlReviewResolved:
+      name: hitl.review_resolved.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/HumanReviewEventData'
+          required:
+          - data
+    HitlReviewSlaBreached:
+      name: hitl.review_sla_breached.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/HumanReviewEventData'
+          required:
+          - data
+    HitlReviewStarted:
+      name: hitl.review_started.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/HumanReviewEventData'
+          required:
+          - data
+    IncidentConfirmed:
+      name: incident.confirmed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/IncidentEventData'
+          required:
+          - data
+    IncidentDetected:
+      name: incident.detected.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/IncidentEventData'
+          required:
+          - data
+    IncidentResolved:
+      name: incident.resolved.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/IncidentEventData'
+          required:
+          - data
+    IncidentUpdated:
+      name: incident.updated.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/IncidentEventData'
+          required:
+          - data
+    KnowledgeCandidateCreated:
+      name: knowledge.candidate_created.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/KnowledgeEventData'
+          required:
+          - data
+    KnowledgeDegraded:
+      name: knowledge.degraded.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/KnowledgeEventData'
+          required:
+          - data
+    KnowledgeDeprecated:
+      name: knowledge.deprecated.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/KnowledgeEventData'
+          required:
+          - data
+    KnowledgeRejected:
+      name: knowledge.rejected.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/KnowledgeEventData'
+          required:
+          - data
+    KnowledgeReverified:
+      name: knowledge.reverified.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/KnowledgeEventData'
+          required:
+          - data
+    KnowledgeSolutionOutcomeRecorded:
+      name: knowledge.solution_outcome_recorded.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/KnowledgeEventData'
+          required:
+          - data
+    KnowledgeSourceDiscovered:
+      name: knowledge.source_discovered.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/KnowledgeEventData'
+          required:
+          - data
+    KnowledgeSuperseded:
+      name: knowledge.superseded.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/KnowledgeEventData'
+          required:
+          - data
+    KnowledgeValidationStarted:
+      name: knowledge.validation_started.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/KnowledgeEventData'
+          required:
+          - data
+    KnowledgeVerified:
+      name: knowledge.verified.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/KnowledgeEventData'
+          required:
+          - data
+    MessageDelivered:
+      name: message.delivered.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/MessageEventData'
+          required:
+          - data
+    MessageFailed:
+      name: message.failed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/MessageEventData'
+          required:
+          - data
+    MessageQueued:
+      name: message.queued.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/MessageEventData'
+          required:
+          - data
+    MessageRead:
+      name: message.read.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/MessageEventData'
+          required:
+          - data
+    MessageReceived:
+      name: message.received.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/MessageEventData'
+          required:
+          - data
+    MessageSent:
+      name: message.sent.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/MessageEventData'
+          required:
+          - data
+    OrderSettled:
+      name: order.settled.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/OrderSettledData'
+          required:
+          - data
+    PaymentPaid:
+      name: payment.paid.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PaymentPaidData'
+          required:
+          - data
+    PersonCreated:
+      name: person.created.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PersonCreatedData'
+          required:
+          - data
+    ProblemCreated:
+      name: problem.created.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ProblemEventData'
+          required:
+          - data
+    ProblemResolved:
+      name: problem.resolved.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ProblemEventData'
+          required:
+          - data
+    ProblemRootCauseConfirmed:
+      name: problem.root_cause_confirmed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ProblemEventData'
+          required:
+          - data
+    ProblemWorkaroundAdded:
+      name: problem.workaround_added.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ProblemEventData'
+          required:
+          - data
+    ProviderCreditConsumed:
+      name: inventory.provider_credit_consumed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ProviderCreditConsumedData'
+          required:
+          - data
+    ProviderOperationFailed:
+      name: provider.operation_failed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ProviderOperationResultData'
+          required:
+          - data
+    ProviderOperationRequested:
+      name: provider.operation_requested.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ProviderOperationRequestedData'
+          required:
+          - data
+    ProviderOperationSucceeded:
+      name: provider.operation_succeeded.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ProviderOperationResultData'
+          required:
+          - data
+    ReferralAttributed:
+      name: referral.attributed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ReferralEventData'
+          required:
+          - data
+    ReferralConfirmed:
+      name: referral.confirmed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ReferralEventData'
+          required:
+          - data
+    ReferralCreated:
+      name: referral.created.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ReferralEventData'
+          required:
+          - data
+    ReferralEngaged:
+      name: referral.engaged.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ReferralEventData'
+          required:
+          - data
+    ReferralExpired:
+      name: referral.expired.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ReferralEventData'
+          required:
+          - data
+    ReferralQualificationStarted:
+      name: referral.qualification_started.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ReferralEventData'
+          required:
+          - data
+    ReferralRejected:
+      name: referral.rejected.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ReferralEventData'
+          required:
+          - data
+    ReferralReversed:
+      name: referral.reversed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ReferralEventData'
+          required:
+          - data
+    RewardApproved:
+      name: reward.approved.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RewardEventData'
+          required:
+          - data
+    RewardAvailable:
+      name: reward.available.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RewardEventData'
+          required:
+          - data
+    RewardExpired:
+      name: reward.expired.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RewardEventData'
+          required:
+          - data
+    RewardFulfillmentFailed:
+      name: reward.fulfillment_failed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RewardEventData'
+          required:
+          - data
+    RewardIssued:
+      name: reward.issued.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RewardEventData'
+          required:
+          - data
+    RewardPendingCreated:
+      name: reward.pending_created.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RewardEventData'
+          required:
+          - data
+    RewardRedeemed:
+      name: reward.redeemed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RewardEventData'
+          required:
+          - data
+    RewardRevoked:
+      name: reward.revoked.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RewardEventData'
+          required:
+          - data
+    RiskAssessmentCompleted:
+      name: risk.assessment_completed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RiskAssessmentCompletedData'
+          required:
+          - data
+    SubscriptionAddonActivated:
+      name: subscription.addon_activated.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SubscriptionAddonActivatedData'
+          required:
+          - data
+    SubscriptionRenewed:
+      name: subscription.renewed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SubscriptionRenewedData'
+          required:
+          - data
+    SupportCancelled:
+      name: support.cancelled.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SupportTicketEventData'
+          required:
+          - data
+    SupportClosed:
+      name: support.closed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SupportTicketEventData'
+          required:
+          - data
+    SupportReopened:
+      name: support.reopened.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SupportTicketEventData'
+          required:
+          - data
+    SupportResolved:
+      name: support.resolved.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SupportTicketEventData'
+          required:
+          - data
+    SupportTicketCreated:
+      name: support.ticket_created.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SupportTicketEventData'
+          required:
+          - data
+    SupportTicketLinkedToIncident:
+      name: support.ticket_linked_to_incident.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SupportTicketEventData'
+          required:
+          - data
+    SupportTriageStarted:
+      name: support.triage_started.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SupportTicketEventData'
+          required:
+          - data
+    SupportWaitingCustomer:
+      name: support.waiting_customer.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SupportTicketEventData'
+          required:
+          - data
+    SupportWaitingInternal:
+      name: support.waiting_internal.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SupportTicketEventData'
+          required:
+          - data
+    SupportWaitingProvider:
+      name: support.waiting_provider.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SupportTicketEventData'
+          required:
+          - data
+    SupportWorkResumed:
+      name: support.work_resumed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SupportTicketEventData'
+          required:
+          - data
+    SupportWorkStarted:
+      name: support.work_started.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SupportTicketEventData'
+          required:
+          - data
+    TrialActivated:
+      name: trial.activated.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TrialActivatedData'
+          required:
+          - data
+    TrialRequested:
+      name: trial.requested.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TrialRequestedData'
+          required:
+          - data
+    TrialTechnicalPassed:
+      name: trial.technical_passed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TrialTechnicalPassedData'
+          required:
+          - data

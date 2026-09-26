@@ -1,0 +1,79 @@
+{
+  "$schema": "https://design-tokens.github.io/community-group/format/",
+  "meta": {
+    "version": "0.13",
+    "status": "proposed"
+  },
+  "color": {
+    "ink950": {
+      "value": "#0B1220"
+    },
+    "slate700": {
+      "value": "#334155"
+    },
+    "slate200": {
+      "value": "#E2E8F0"
+    },
+    "slate50": {
+      "value": "#F8FAFC"
+    },
+    "white": {
+      "value": "#FFFFFF"
+    },
+    "flowBlue600": {
+      "value": "#2563EB"
+    },
+    "flowCyan500": {
+      "value": "#06B6D4"
+    },
+    "aiViolet500": {
+      "value": "#8B5CF6"
+    },
+    "success600": {
+      "value": "#16A34A"
+    },
+    "warning600": {
+      "value": "#D97706"
+    },
+    "danger600": {
+      "value": "#DC2626"
+    }
+  },
+  "radius": {
+    "sm": {
+      "value": "6px"
+    },
+    "md": {
+      "value": "10px"
+    },
+    "lg": {
+      "value": "14px"
+    }
+  },
+  "space": {
+    "1": {
+      "value": "4px"
+    },
+    "2": {
+      "value": "8px"
+    },
+    "3": {
+      "value": "12px"
+    },
+    "4": {
+      "value": "16px"
+    },
+    "6": {
+      "value": "24px"
+    },
+    "8": {
+      "value": "32px"
+    },
+    "12": {
+      "value": "48px"
+    },
+    "16": {
+      "value": "64px"
+    }
+  }
+}

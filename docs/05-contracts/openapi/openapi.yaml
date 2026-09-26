@@ -1,0 +1,2787 @@
+openapi: 3.1.0
+info:
+  title: AI Revenue & Operations Platform API
+  version: 1.0.0
+  description: Pre-implementation v1.0 scaffold. The implementation baseline under docs/15-implementation-baseline is authoritative; each Wave must reconcile/generate paths with canonical domain/status/policy contracts. Tenant context is resolved from authenticated identity/session and is never trusted from request bodies.
+servers:
+- url: https://api.example.com
+  description: Production placeholder
+security:
+- bearerAuth: []
+tags:
+- name: Identity
+- name: Trial
+- name: Commerce
+- name: Billing
+- name: Subscription
+- name: Provider Operations
+- name: Support
+- name: HITL
+- name: Referral
+- name: Communications
+- name: Webhooks
+- name: Knowledge
+- name: Rewards
+- name: Incidents
+- name: Problems
+paths:
+  /v1/persons:
+    post:
+      tags:
+      - Identity
+      operationId: createPerson
+      summary: Create or resolve a Person
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePersonRequest'
+      responses:
+        '201':
+          description: Person created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Person'
+        '200':
+          description: Existing Person resolved idempotently
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Person'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/persons/{personId}:
+    get:
+      tags:
+      - Identity
+      operationId: getPerson
+      parameters:
+      - $ref: '#/components/parameters/PersonId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Person
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Person'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/trials/eligibility:
+    post:
+      tags:
+      - Trial
+      operationId: evaluateTrialEligibility
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrialEligibilityRequest'
+      responses:
+        '200':
+          description: Eligibility decision snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrialEligibilityDecision'
+  /v1/trials:
+    post:
+      tags:
+      - Trial
+      operationId: createTrial
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTrialRequest'
+      responses:
+        '202':
+          description: Trial accepted for provisioning
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Trial'
+        '409':
+          description: Trial not allowed under canonical eligibility rules
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/trials/{trialId}:
+    get:
+      tags:
+      - Trial
+      operationId: getTrial
+      parameters:
+      - $ref: '#/components/parameters/TrialId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Trial
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Trial'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/offers/resolve:
+    post:
+      tags:
+      - Commerce
+      operationId: resolveOffer
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveOfferRequest'
+      responses:
+        '200':
+          description: Policy-valid commercial offer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Offer'
+  /v1/orders:
+    post:
+      tags:
+      - Commerce
+      operationId: createOrder
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '201':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/orders/{orderId}:
+    get:
+      tags:
+      - Commerce
+      operationId: getOrder
+      parameters:
+      - $ref: '#/components/parameters/OrderId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/orders/{orderId}/payments:
+    post:
+      tags:
+      - Billing
+      operationId: createPayment
+      parameters:
+      - $ref: '#/components/parameters/OrderId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentRequest'
+      responses:
+        '201':
+          description: Payment created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/subscriptions/{subscriptionId}:
+    get:
+      tags:
+      - Subscription
+      operationId: getSubscription
+      parameters:
+      - $ref: '#/components/parameters/SubscriptionId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Subscription
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/subscriptions/{subscriptionId}/renewal-orders:
+    post:
+      tags:
+      - Subscription
+      - Commerce
+      operationId: createRenewalOrder
+      parameters:
+      - $ref: '#/components/parameters/SubscriptionId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRenewalOrderRequest'
+      responses:
+        '201':
+          description: Renewal order created, including recurring add-ons active for the next cycle
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+  /v1/provider-operations:
+    post:
+      tags:
+      - Provider Operations
+      operationId: requestProviderOperation
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProviderOperationRequest'
+      responses:
+        '202':
+          description: Provider operation queued or accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderOperation'
+  /v1/provider-operations/{providerOperationId}:
+    get:
+      tags:
+      - Provider Operations
+      operationId: getProviderOperation
+      parameters:
+      - $ref: '#/components/parameters/ProviderOperationId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Provider operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderOperation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/support/tickets:
+    post:
+      tags:
+      - Support
+      operationId: createSupportTicket
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSupportTicketRequest'
+      responses:
+        '201':
+          description: Support ticket
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+    get:
+      tags:
+      - Support
+      operationId: listSupportTickets
+      summary: List support tickets
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: List support tickets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListSupportTicketsResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/hitl/reviews/{reviewId}/guidance:
+    post:
+      tags:
+      - HITL
+      operationId: provideHumanGuidance
+      parameters:
+      - $ref: '#/components/parameters/ReviewId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HumanGuidanceRequest'
+      responses:
+        '200':
+          description: Guidance registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanReview'
+  /v1/customers/{customerId}/referrals:
+    post:
+      tags:
+      - Referral
+      operationId: createReferral
+      parameters:
+      - $ref: '#/components/parameters/CustomerId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReferralRequest'
+      responses:
+        '201':
+          description: Referral created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Referral'
+  /v1/conversations/{conversationId}/messages:
+    post:
+      tags:
+      - Communications
+      operationId: sendConversationMessage
+      parameters:
+      - $ref: '#/components/parameters/ConversationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '202':
+          description: Message accepted after communication policy checks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+  /v1/webhooks/asaas:
+    post:
+      tags:
+      - Webhooks
+      operationId: ingestAsaasWebhook
+      description: Platform bearer auth is not used; provider-adapter authentication/signature/token validation is still mandatory
+        before canonical processing.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '202':
+          description: Payload persisted to external inbox for dedupe/processing
+  /v1/webhooks/whatsapp:
+    post:
+      tags:
+      - Webhooks
+      operationId: ingestWhatsAppWebhook
+      description: Platform bearer auth is not used; integration-specific webhook authentication/secret validation is mandatory
+        when supported by the selected WhatsApp adapter.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '202':
+          description: Payload persisted to external inbox for normalization
+  /v1/support/tickets/{ticketId}:
+    get:
+      tags:
+      - Support
+      operationId: getSupportTicket
+      summary: Get support ticket
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get support ticket
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/support/tickets/{ticketId}/transition:
+    post:
+      tags:
+      - Support
+      operationId: transitionSupportTicket
+      summary: Transition support ticket
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionSupportTicketRequest'
+      responses:
+        '200':
+          description: Transition support ticket
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+  /v1/support/tickets/{ticketId}/solution-attempts:
+    post:
+      tags:
+      - Support
+      - Knowledge
+      operationId: recordSolutionAttempt
+      summary: Record support solution attempt
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSolutionAttemptRequest'
+      responses:
+        '201':
+          description: Record support solution attempt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolutionAttempt'
+  /v1/support/incidents:
+    get:
+      tags:
+      - Incidents
+      operationId: listIncidents
+      summary: List incidents
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: List incidents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListIncidentsResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags:
+      - Incidents
+      operationId: createIncident
+      summary: Create incident
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIncidentRequest'
+      responses:
+        '201':
+          description: Create incident
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+  /v1/support/incidents/{incidentId}:
+    get:
+      tags:
+      - Incidents
+      operationId: getIncident
+      summary: Get incident
+      parameters:
+      - $ref: '#/components/parameters/IncidentId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get incident
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/support/tickets/{ticketId}/incidents/{incidentId}:
+    post:
+      tags:
+      - Support
+      - Incidents
+      operationId: linkTicketToIncident
+      summary: Link ticket to incident
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/IncidentId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Link ticket to incident
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+  /v1/support/problems:
+    get:
+      tags:
+      - Problems
+      operationId: listProblems
+      summary: List problems
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: List problems
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListProblemsResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags:
+      - Problems
+      operationId: createProblem
+      summary: Create recurring problem
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProblemRequest'
+      responses:
+        '201':
+          description: Create recurring problem
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /v1/support/problems/{problemId}:
+    get:
+      tags:
+      - Problems
+      operationId: getProblem
+      summary: Get problem
+      parameters:
+      - $ref: '#/components/parameters/ProblemId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get problem
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/support/tickets/{ticketId}/problems/{problemId}:
+    post:
+      tags:
+      - Support
+      - Problems
+      operationId: linkTicketToProblem
+      summary: Link ticket to problem
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/ProblemId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Link ticket to problem
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+  /v1/hitl/reviews:
+    get:
+      tags:
+      - HITL
+      operationId: listHumanReviews
+      summary: List human reviews
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: List human reviews
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListHumanReviewsResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags:
+      - HITL
+      operationId: createHumanReview
+      summary: Request human review
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateHumanReviewRequest'
+      responses:
+        '201':
+          description: Request human review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanReview'
+  /v1/hitl/reviews/{reviewId}:
+    get:
+      tags:
+      - HITL
+      operationId: getHumanReview
+      summary: Get human review
+      parameters:
+      - $ref: '#/components/parameters/ReviewId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get human review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanReview'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/hitl/reviews/{reviewId}/actions:
+    post:
+      tags:
+      - HITL
+      operationId: recordHumanReviewAction
+      summary: Record review action
+      parameters:
+      - $ref: '#/components/parameters/ReviewId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HumanReviewActionRequest'
+      responses:
+        '200':
+          description: Record review action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanReview'
+  /v1/conversations/{conversationId}:
+    get:
+      tags:
+      - Communications
+      operationId: getConversation
+      summary: Get conversation
+      parameters:
+      - $ref: '#/components/parameters/ConversationId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get conversation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/conversations/{conversationId}/control:
+    post:
+      tags:
+      - Communications
+      - HITL
+      operationId: changeConversationControl
+      summary: Change conversation control mode
+      parameters:
+      - $ref: '#/components/parameters/ConversationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeConversationControlRequest'
+      responses:
+        '200':
+          description: Change conversation control mode
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+  /v1/knowledge/candidates:
+    post:
+      tags:
+      - Knowledge
+      operationId: createKnowledgeCandidate
+      summary: Create knowledge candidate
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateKnowledgeCandidateRequest'
+      responses:
+        '201':
+          description: Create knowledge candidate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeItem'
+  /v1/knowledge/items/{knowledgeItemId}:
+    get:
+      tags:
+      - Knowledge
+      operationId: getKnowledgeItem
+      summary: Get knowledge item
+      parameters:
+      - $ref: '#/components/parameters/KnowledgeItemId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get knowledge item
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeItem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/knowledge/items/{knowledgeItemId}/validation:
+    post:
+      tags:
+      - Knowledge
+      operationId: validateKnowledgeItem
+      summary: Record knowledge validation decision
+      parameters:
+      - $ref: '#/components/parameters/KnowledgeItemId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateKnowledgeItemRequest'
+      responses:
+        '200':
+          description: Record knowledge validation decision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeItem'
+  /v1/knowledge/solutions/{solutionId}/outcomes:
+    post:
+      tags:
+      - Knowledge
+      operationId: recordSolutionOutcome
+      summary: Record solution outcome
+      parameters:
+      - $ref: '#/components/parameters/SolutionId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordSolutionOutcomeRequest'
+      responses:
+        '201':
+          description: Record solution outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolutionOutcome'
+  /v1/knowledge/search:
+    post:
+      tags:
+      - Knowledge
+      operationId: searchKnowledge
+      summary: Search ranked knowledge
+      description: Read-only retrieval. Returned content is data, not authorization to execute tools.
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KnowledgeSearchRequest'
+      responses:
+        '200':
+          description: Search ranked knowledge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeSearchResponse'
+  /v1/referrals/{referralId}:
+    get:
+      tags:
+      - Referral
+      operationId: getReferral
+      summary: Get referral
+      parameters:
+      - $ref: '#/components/parameters/ReferralId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get referral
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Referral'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/referrals/{referralId}/qualification:
+    post:
+      tags:
+      - Referral
+      operationId: evaluateReferralQualification
+      summary: Evaluate referral qualification
+      parameters:
+      - $ref: '#/components/parameters/ReferralId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReferralQualificationRequest'
+      responses:
+        '200':
+          description: Evaluate referral qualification
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReferralQualification'
+  /v1/customers/{customerId}/rewards:
+    get:
+      tags:
+      - Rewards
+      operationId: listCustomerRewards
+      summary: List customer rewards
+      parameters:
+      - $ref: '#/components/parameters/CustomerId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: List customer rewards
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRewardsResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/rewards/{rewardId}:
+    get:
+      tags:
+      - Rewards
+      operationId: getReward
+      summary: Get reward
+      parameters:
+      - $ref: '#/components/parameters/RewardId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get reward
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reward'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/rewards/{rewardId}/redeem:
+    post:
+      tags:
+      - Rewards
+      operationId: redeemReward
+      summary: Redeem reward
+      parameters:
+      - $ref: '#/components/parameters/RewardId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedeemRewardRequest'
+      responses:
+        '200':
+          description: Redeem reward
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reward'
+  /v1/gift-passes/redeem:
+    post:
+      tags:
+      - Rewards
+      operationId: redeemGiftPass
+      summary: Redeem gift pass
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedeemGiftPassRequest'
+      responses:
+        '200':
+          description: Redeem gift pass
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GiftPass'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 200
+    PersonId:
+      name: personId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TrialId:
+      name: trialId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SubscriptionId:
+      name: subscriptionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ProviderOperationId:
+      name: providerOperationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ReviewId:
+      name: reviewId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CustomerId:
+      name: customerId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ConversationId:
+      name: conversationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TicketId:
+      name: ticketId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IncidentId:
+      name: incidentId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ProblemId:
+      name: problemId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    KnowledgeItemId:
+      name: knowledgeItemId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SolutionId:
+      name: solutionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ReferralId:
+      name: referralId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RewardId:
+      name: rewardId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    NotFound:
+      description: Resource not found in authorized tenant scope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Domain invariant or idempotency conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        correlationId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        details:
+          type: object
+          additionalProperties: true
+    IdentityInput:
+      type: object
+      required:
+      - type
+      - value
+      properties:
+        type:
+          type: string
+          enum:
+          - WHATSAPP
+          - PHONE
+          - EMAIL
+          - INSTAGRAM
+          - TIKTOK
+          - YOUTUBE
+          - WEBSITE
+        value:
+          type: string
+          minLength: 1
+        verified:
+          type: boolean
+          default: false
+    CreatePersonRequest:
+      type: object
+      required:
+      - identity
+      properties:
+        displayName:
+          type:
+          - string
+          - 'null'
+        identity:
+          $ref: '#/components/schemas/IdentityInput'
+        source:
+          type:
+          - string
+          - 'null'
+    Person:
+      type: object
+      required:
+      - id
+      - status
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        displayName:
+          type:
+          - string
+          - 'null'
+        createdAt:
+          type: string
+          format: date-time
+    TrialEligibilityRequest:
+      type: object
+      required:
+      - personId
+      properties:
+        personId:
+          type: string
+          format: uuid
+        requestedDurationMinutes:
+          type: integer
+          enum:
+          - 60
+          - 180
+          - 360
+        adultContentEnabled:
+          type: boolean
+          default: false
+        claimedExceptionReason:
+          type:
+          - string
+          - 'null'
+    TrialEligibilityDecision:
+      type: object
+      required:
+      - id
+      - personId
+      - outcome
+      - policyVersion
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        personId:
+          type: string
+          format: uuid
+        outcome:
+          type: string
+          enum:
+          - ALLOW
+          - ALLOW_RETRIAL
+          - REVIEW
+          - DENY
+        reasonCodes:
+          type: array
+          items:
+            type: string
+        policyVersion:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    CreateTrialRequest:
+      type: object
+      required:
+      - personId
+      - eligibilityDecisionId
+      - durationMinutes
+      properties:
+        personId:
+          type: string
+          format: uuid
+        eligibilityDecisionId:
+          type: string
+          format: uuid
+        durationMinutes:
+          type: integer
+          enum:
+          - 60
+          - 180
+          - 360
+        adultContentEnabled:
+          type: boolean
+          default: false
+        preferredDeviceProfileId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+    Trial:
+      type: object
+      required:
+      - id
+      - personId
+      - kind
+      - lifecycleStatus
+      - technicalOutcome
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        personId:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum:
+          - TRIAL
+          - RETRIAL
+        lifecycleStatus:
+          type: string
+          enum:
+          - REQUESTED
+          - PROVISIONING
+          - ACTIVE
+          - ENDED
+          - INVALIDATED
+          - CANCELLED
+        technicalOutcome:
+          type: string
+          enum:
+          - PENDING
+          - PASSED
+          - FAILED
+          - INCONCLUSIVE
+        activatedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        expiresAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    ResolveOfferRequest:
+      type: object
+      required:
+      - personId
+      properties:
+        personId:
+          type: string
+          format: uuid
+        planId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        context:
+          type: object
+          additionalProperties: true
+    Money:
+      type: object
+      required:
+      - amountMinor
+      - currency
+      properties:
+        amountMinor:
+          type: integer
+          format: int64
+          minimum: 0
+        currency:
+          type: string
+          pattern: ^[A-Z]{3}$
+    OfferItem:
+      type: object
+      required:
+      - sellableType
+      - sellableId
+      - quantity
+      - unitPrice
+      properties:
+        sellableType:
+          type: string
+          enum:
+          - PLAN
+          - ADDON
+          - APP_PRODUCT
+        sellableId:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+        unitPrice:
+          $ref: '#/components/schemas/Money'
+    Offer:
+      type: object
+      required:
+      - id
+      - status
+      - items
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - CREATED
+          - PRESENTED
+          - ACCEPTED
+          - EXPIRED
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfferItem'
+        expiresAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    CreateOrderRequest:
+      type: object
+      required:
+      - personId
+      - items
+      properties:
+        personId:
+          type: string
+          format: uuid
+        customerId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        offerId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        couponCode:
+          type:
+          - string
+          - 'null'
+        applyAvailableRewardCredits:
+          type: boolean
+          default: false
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required:
+            - sellableType
+            - sellableId
+            - quantity
+            properties:
+              sellableType:
+                type: string
+                enum:
+                - PLAN
+                - ADDON
+                - APP_PRODUCT
+              sellableId:
+                type: string
+                format: uuid
+              quantity:
+                type: integer
+                minimum: 1
+    Order:
+      type: object
+      required:
+      - id
+      - personId
+      - status
+      - gross
+      - discount
+      - reward
+      - net
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        personId:
+          type: string
+          format: uuid
+        customerId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        status:
+          type: string
+          enum:
+          - DRAFT
+          - PENDING_ACCEPTANCE
+          - PENDING_SETTLEMENT
+          - SETTLED
+          - FULFILLING
+          - COMPLETED
+          - CANCELLED
+          - EXPIRED
+        gross:
+          $ref: '#/components/schemas/Money'
+        discount:
+          $ref: '#/components/schemas/Money'
+        reward:
+          $ref: '#/components/schemas/Money'
+        net:
+          $ref: '#/components/schemas/Money'
+        createdAt:
+          type: string
+          format: date-time
+        settledAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    CreatePaymentRequest:
+      type: object
+      required:
+      - provider
+      - paymentMethod
+      properties:
+        provider:
+          type: string
+          enum:
+          - ASAAS
+        paymentMethod:
+          type: string
+          enum:
+          - PIX
+          - BOLETO
+          - CARD
+          - OTHER
+        dueAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    Payment:
+      type: object
+      required:
+      - id
+      - orderId
+      - status
+      - amount
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        orderId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - PENDING
+          - PROCESSING
+          - PAID
+          - FAILED
+          - CANCELLED
+          - EXPIRED
+          - PARTIALLY_REFUNDED
+          - REFUNDED
+          - CHARGEBACK
+        amount:
+          $ref: '#/components/schemas/Money'
+        providerPaymentUrl:
+          type:
+          - string
+          - 'null'
+          format: uri
+        createdAt:
+          type: string
+          format: date-time
+        paidAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    CreateRenewalOrderRequest:
+      type: object
+      properties:
+        couponCode:
+          type:
+          - string
+          - 'null'
+        applyAvailableRewardCredits:
+          type: boolean
+          default: false
+    SubscriptionAddon:
+      type: object
+      required:
+      - id
+      - addonId
+      - quantity
+      - billingType
+      - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        addonId:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+        billingType:
+          type: string
+          const: RECURRING
+        status:
+          type: string
+    Subscription:
+      type: object
+      required:
+      - id
+      - customerId
+      - planId
+      - status
+      - currentPeriodStart
+      - currentPeriodEnd
+      - addons
+      properties:
+        id:
+          type: string
+          format: uuid
+        customerId:
+          type: string
+          format: uuid
+        planId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - PENDING_ACTIVATION
+          - ACTIVE
+          - SUSPENDED
+          - ENDED
+        currentPeriodStart:
+          type: string
+          format: date-time
+        currentPeriodEnd:
+          type: string
+          format: date-time
+        addons:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubscriptionAddon'
+    CreateProviderOperationRequest:
+      type: object
+      required:
+      - providerAccountId
+      - action
+      - entityType
+      - entityId
+      properties:
+        providerAccountId:
+          type: string
+          format: uuid
+        action:
+          type: string
+          enum:
+          - CREATE_TRIAL
+          - CREATE_CUSTOMER
+          - RENEW_CUSTOMER
+          - TRUST_RENEWAL
+          - BLOCK_CUSTOMER
+          - UNBLOCK_CUSTOMER
+          - SYNC_CUSTOMER
+          - MIGRATE_SERVER
+          - CHANGE_CONNECTIONS
+          - GET_STATUS
+        entityType:
+          type: string
+        entityId:
+          type: string
+          format: uuid
+        input:
+          type: object
+          additionalProperties: true
+    ProviderOperation:
+      type: object
+      required:
+      - id
+      - action
+      - status
+      - requestedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        action:
+          type: string
+        status:
+          type: string
+          enum:
+          - REQUESTED
+          - QUEUED
+          - RUNNING
+          - VERIFYING
+          - RETRY_WAIT
+          - HUMAN_REQUIRED
+          - SUCCEEDED
+          - FAILED
+          - CANCELLED
+        requestedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        errorCode:
+          type:
+          - string
+          - 'null'
+    CreateSupportTicketRequest:
+      type: object
+      required:
+      - personId
+      - summary
+      properties:
+        personId:
+          type: string
+          format: uuid
+        customerId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        conversationId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        category:
+          type:
+          - string
+          - 'null'
+        summary:
+          type: string
+          minLength: 1
+    SupportTicket:
+      type: object
+      required:
+      - id
+      - personId
+      - status
+      - summary
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        personId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - NEW
+          - TRIAGING
+          - IN_PROGRESS
+          - WAITING_CUSTOMER
+          - WAITING_INTERNAL
+          - WAITING_PROVIDER
+          - RESOLVED
+          - CLOSED
+          - CANCELLED
+        priority:
+          type:
+          - string
+          - 'null'
+        summary:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        customerId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        conversationId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        category:
+          type:
+          - string
+          - 'null'
+        resolvedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        closedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    HumanGuidanceRequest:
+      type: object
+      required:
+      - guidance
+      properties:
+        guidance:
+          type: string
+          minLength: 1
+        approveProposedAction:
+          type: boolean
+          default: false
+    HumanReview:
+      type: object
+      required:
+      - id
+      - status
+      - reviewType
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - REQUESTED
+          - QUEUED
+          - ACKNOWLEDGED
+          - IN_REVIEW
+          - GUIDANCE_PROVIDED
+          - ACTION_TAKEN
+          - RESOLVED
+          - EXPIRED
+          - CANCELLED
+        reviewType:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        resolvedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        riskClass:
+          type: string
+          enum:
+          - R0
+          - R1
+          - R2
+          - R3
+          - R4
+        priority:
+          type: string
+          enum:
+          - LOW
+          - NORMAL
+          - HIGH
+          - URGENT
+        resourceType:
+          type:
+          - string
+          - 'null'
+        resourceId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        summary:
+          type:
+          - string
+          - 'null'
+    CreateReferralRequest:
+      type: object
+      required:
+      - referredIdentity
+      properties:
+        referredIdentity:
+          $ref: '#/components/schemas/IdentityInput'
+        programId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        sourceContext:
+          type:
+          - string
+          - 'null'
+    Referral:
+      type: object
+      required:
+      - id
+      - advocateCustomerId
+      - code
+      - status
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        advocateCustomerId:
+          type: string
+          format: uuid
+        code:
+          type: string
+        status:
+          type: string
+          enum:
+          - CREATED
+          - ATTRIBUTED
+          - ENGAGED
+          - QUALIFYING
+          - CONFIRMED
+          - REJECTED
+          - EXPIRED
+          - REVERSED
+        createdAt:
+          type: string
+          format: date-time
+        referredPersonId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        programId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        confirmedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    SendMessageRequest:
+      type: object
+      required:
+      - contentType
+      properties:
+        contentType:
+          type: string
+          enum:
+          - TEXT
+          - IMAGE
+          - VIDEO
+          - AUDIO
+          - DOCUMENT
+        text:
+          type:
+          - string
+          - 'null'
+        assetRef:
+          type:
+          - string
+          - 'null'
+        purposeKey:
+          type: string
+          default: service_delivery
+    Message:
+      type: object
+      required:
+      - id
+      - conversationId
+      - direction
+      - deliveryStatus
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversationId:
+          type: string
+          format: uuid
+        direction:
+          type: string
+          enum:
+          - INBOUND
+          - OUTBOUND
+        createdAt:
+          type: string
+          format: date-time
+        deliveryStatus:
+          type: string
+          enum:
+          - QUEUED
+          - SENT
+          - DELIVERED
+          - READ
+          - FAILED
+          - CANCELLED
+    ListSupportTicketsResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SupportTicket'
+    TransitionSupportTicketRequest:
+      type: object
+      required:
+      - targetStatus
+      properties:
+        targetStatus:
+          type: string
+          enum:
+          - NEW
+          - TRIAGING
+          - IN_PROGRESS
+          - WAITING_CUSTOMER
+          - WAITING_INTERNAL
+          - WAITING_PROVIDER
+          - RESOLVED
+          - CLOSED
+          - CANCELLED
+        reason:
+          type:
+          - string
+          - 'null'
+    CreateSolutionAttemptRequest:
+      type: object
+      required:
+      - attemptNo
+      properties:
+        solutionId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        procedureKey:
+          type:
+          - string
+          - 'null'
+        attemptNo:
+          type: integer
+          minimum: 1
+        context:
+          type: object
+          additionalProperties: true
+        evidence:
+          type: object
+          additionalProperties: true
+    SolutionAttempt:
+      type: object
+      required:
+      - id
+      - ticketId
+      - attemptNo
+      - startedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        ticketId:
+          type: string
+          format: uuid
+        solutionId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        attemptNo:
+          type: integer
+          minimum: 1
+        outcome:
+          type:
+          - string
+          - 'null'
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    CreateIncidentRequest:
+      type: object
+      required:
+      - title
+      properties:
+        title:
+          type: string
+          minLength: 1
+        summary:
+          type:
+          - string
+          - 'null'
+        severity:
+          type: string
+          enum:
+          - LOW
+          - MEDIUM
+          - HIGH
+          - CRITICAL
+          default: MEDIUM
+        providerAccountId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        serverKey:
+          type:
+          - string
+          - 'null'
+        serviceKey:
+          type:
+          - string
+          - 'null'
+    Incident:
+      type: object
+      required:
+      - id
+      - status
+      - severity
+      - title
+      - detectedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - DETECTED
+          - CONFIRMED
+          - MONITORING
+          - RESOLVED
+          - CANCELLED
+        severity:
+          type: string
+          enum:
+          - LOW
+          - MEDIUM
+          - HIGH
+          - CRITICAL
+        title:
+          type: string
+        summary:
+          type:
+          - string
+          - 'null'
+        providerAccountId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        serverKey:
+          type:
+          - string
+          - 'null'
+        serviceKey:
+          type:
+          - string
+          - 'null'
+        detectedAt:
+          type: string
+          format: date-time
+        resolvedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    ListIncidentsResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Incident'
+    CreateProblemRequest:
+      type: object
+      required:
+      - title
+      properties:
+        title:
+          type: string
+          minLength: 1
+        rootCause:
+          type:
+          - string
+          - 'null'
+        workaroundSummary:
+          type:
+          - string
+          - 'null'
+    Problem:
+      type: object
+      required:
+      - id
+      - status
+      - title
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - OPEN
+          - INVESTIGATING
+          - KNOWN_ERROR
+          - RESOLVED
+          - CLOSED
+        title:
+          type: string
+        rootCause:
+          type:
+          - string
+          - 'null'
+        workaroundSummary:
+          type:
+          - string
+          - 'null'
+        createdAt:
+          type: string
+          format: date-time
+        resolvedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    ListProblemsResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Problem'
+    CreateHumanReviewRequest:
+      type: object
+      required:
+      - reviewType
+      - riskClass
+      - resourceType
+      - resourceId
+      - summary
+      properties:
+        reviewType:
+          type: string
+          enum:
+          - GUIDANCE
+          - APPROVAL
+          - SECURITY_CHALLENGE
+          - PROVIDER_EXCEPTION
+          - RISK_REVIEW
+          - FINANCIAL_REVIEW
+          - CONTENT_COMPLIANCE
+          - OTHER
+        riskClass:
+          type: string
+          enum:
+          - R0
+          - R1
+          - R2
+          - R3
+          - R4
+        priority:
+          type: string
+          enum:
+          - LOW
+          - NORMAL
+          - HIGH
+          - URGENT
+          default: NORMAL
+        resourceType:
+          type: string
+        resourceId:
+          type: string
+          format: uuid
+        summary:
+          type: string
+          minLength: 1
+        context:
+          type: object
+          additionalProperties: true
+        slaDueAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    ListHumanReviewsResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/HumanReview'
+    HumanReviewActionRequest:
+      type: object
+      required:
+      - actionType
+      properties:
+        actionType:
+          type: string
+          enum:
+          - ACKNOWLEDGE
+          - START_REVIEW
+          - GUIDANCE
+          - APPROVE
+          - REJECT
+          - ACTION_TAKEN
+          - RESOLVE
+          - CANCEL
+        content:
+          type: object
+          additionalProperties: true
+    Conversation:
+      type: object
+      required:
+      - id
+      - personId
+      - channel
+      - status
+      - controlMode
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        personId:
+          type: string
+          format: uuid
+        channel:
+          type: string
+        status:
+          type: string
+          enum:
+          - OPEN
+          - CLOSED
+          - ARCHIVED
+        controlMode:
+          type: string
+          enum:
+          - AI_CONTROL
+          - HUMAN_CONTROL
+          - PAUSED
+        lastMessageAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    ChangeConversationControlRequest:
+      type: object
+      required:
+      - toMode
+      - reason
+      properties:
+        toMode:
+          type: string
+          enum:
+          - AI_CONTROL
+          - HUMAN_CONTROL
+          - PAUSED
+        reason:
+          type: string
+          minLength: 1
+    CreateKnowledgeCandidateRequest:
+      type: object
+      required:
+      - knowledgeType
+      - content
+      properties:
+        knowledgeType:
+          type: string
+          enum:
+          - PROCEDURE
+          - SOLUTION
+          - FACT
+          - POLICY_REFERENCE
+          - COMPATIBILITY_EVIDENCE
+          - INCIDENT_NOTE
+          - FAQ
+        canonicalKey:
+          type:
+          - string
+          - 'null'
+        content:
+          type:
+          - string
+          - 'null'
+        structuredContent:
+          type: object
+          additionalProperties: true
+        sourceIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        confidenceScore:
+          type:
+          - number
+          - 'null'
+          minimum: 0
+          maximum: 1
+    KnowledgeItem:
+      type: object
+      required:
+      - id
+      - status
+      - knowledgeType
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - DISCOVERED
+          - CANDIDATE
+          - VALIDATING
+          - VERIFIED
+          - DEGRADED
+          - SUPERSEDED
+          - DEPRECATED
+          - REJECTED
+        knowledgeType:
+          type: string
+          enum:
+          - PROCEDURE
+          - SOLUTION
+          - FACT
+          - POLICY_REFERENCE
+          - COMPATIBILITY_EVIDENCE
+          - INCIDENT_NOTE
+          - FAQ
+        canonicalKey:
+          type:
+          - string
+          - 'null'
+        confidenceScore:
+          type:
+          - number
+          - 'null'
+          minimum: 0
+          maximum: 1
+        freshnessScore:
+          type:
+          - number
+          - 'null'
+          minimum: 0
+          maximum: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ValidateKnowledgeItemRequest:
+      type: object
+      required:
+      - decision
+      properties:
+        decision:
+          type: string
+          enum:
+          - START_VALIDATION
+          - VERIFY
+          - REJECT
+          - DEGRADE
+          - REVERIFY
+          - SUPERSEDE
+          - DEPRECATE
+        evidence:
+          type: object
+          additionalProperties: true
+        reason:
+          type:
+          - string
+          - 'null'
+    RecordSolutionOutcomeRequest:
+      type: object
+      required:
+      - contextFingerprint
+      - outcome
+      properties:
+        supportTicketId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        trialId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        contextFingerprint:
+          type: string
+          minLength: 1
+        outcome:
+          type: string
+        evidence:
+          type: object
+          additionalProperties: true
+    SolutionOutcome:
+      type: object
+      required:
+      - id
+      - solutionId
+      - contextFingerprint
+      - outcome
+      - observedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        solutionId:
+          type: string
+          format: uuid
+        contextFingerprint:
+          type: string
+        outcome:
+          type: string
+        observedAt:
+          type: string
+          format: date-time
+    KnowledgeSearchRequest:
+      type: object
+      required:
+      - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+        context:
+          type: object
+          additionalProperties: true
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+        includeStatuses:
+          type: array
+          items:
+            type: string
+            enum:
+            - VERIFIED
+            - DEGRADED
+            - CANDIDATE
+    KnowledgeSearchResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required:
+            - item
+            - score
+            properties:
+              item:
+                $ref: '#/components/schemas/KnowledgeItem'
+              score:
+                type: number
+                minimum: 0
+              reason:
+                type:
+                - string
+                - 'null'
+    ReferralQualificationRequest:
+      type: object
+      required:
+      - policyVersion
+      properties:
+        qualifiedOrderId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        policyVersion:
+          type: string
+          minLength: 1
+        evidence:
+          type: object
+          additionalProperties: true
+    ReferralQualification:
+      type: object
+      required:
+      - id
+      - referralId
+      - status
+      - policyVersion
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        referralId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - PENDING
+          - ALLOW
+          - REVIEW
+          - DENY
+          - EXPIRED
+        reasonCodes:
+          type: array
+          items:
+            type: string
+        qualifiedOrderId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        policyVersion:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    Reward:
+      type: object
+      required:
+      - id
+      - customerId
+      - rewardDefinitionId
+      - status
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        customerId:
+          type: string
+          format: uuid
+        rewardDefinitionId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - PENDING
+          - APPROVED
+          - ISSUED
+          - AVAILABLE
+          - REDEEMED
+          - EXPIRED
+          - REVOKED
+          - FAILED
+        economicValueMinor:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        estimatedCostMinor:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        currency:
+          type:
+          - string
+          - 'null'
+        availableAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        redeemedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        expiresAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    ListRewardsResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reward'
+    RedeemRewardRequest:
+      type: object
+      properties:
+        orderId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        idempotencyContext:
+          type:
+          - string
+          - 'null'
+    GiftPass:
+      type: object
+      required:
+      - id
+      - code
+      - status
+      - issuedToCustomerId
+      - expiresAt
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        status:
+          type: string
+          enum:
+          - AVAILABLE
+          - REDEEMED
+          - EXPIRED
+          - REVOKED
+        issuedToCustomerId:
+          type: string
+          format: uuid
+        redeemedByPersonId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        benefit:
+          type: object
+          additionalProperties: true
+        expiresAt:
+          type: string
+          format: date-time
+        redeemedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    RedeemGiftPassRequest:
+      type: object
+      required:
+      - code
+      - personId
+      properties:
+        code:
+          type: string
+          minLength: 6
+          maxLength: 100
+        personId:
+          type: string
+          format: uuid

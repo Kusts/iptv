@@ -1,0 +1,41 @@
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_*
+
+# Application builds and dependencies
+node_modules/
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+pnpm-store/
+
+# Browser sessions and generated test artifacts
+playwright/.auth/
+.auth/
+playwright-report/
+test-results/
+blob-report/
+
+# Python and local databases
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.sqlite*
+*.db
+*.log
+
+# Editor and OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
