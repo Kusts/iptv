@@ -1,0 +1,22 @@
+# W1-01: postgres for local development.
+# Credentials below are LOCAL-DEV ONLY defaults (not production secrets).
+# Override with real values via environment / `.env`; never commit secrets.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-iptv}
+      POSTGRES_USER: ${POSTGRES_USER:-iptv}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iptv}
+    ports:
+      - "5432:5432"
+    volumes:
+      - iptv_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-iptv} -d $${POSTGRES_DB:-iptv}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  iptv_pgdata:

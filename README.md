@@ -56,3 +56,21 @@ Current static checks: `python scripts/validate_docs.py`, `python tests/contract
 - `13-product-design` — design system/screen specs;
 - `14-user-docs` — user/admin docs;
 - `15-implementation-baseline` — **canonical v1.0 implementation contract**.
+
+## Implementation status: W1-01/W1-02 bootstrapped
+
+TypeScript monorepo skeleton is in place (pnpm + Turborepo): `apps/web`
+(Next.js App Router), `apps/api` (NestJS + Fastify, `GET /v1/health`),
+`packages/domain` (pure primitives: UUIDv7 ids, exact money, UTC time),
+`packages/database` (Kysely bootstrap + SQL migration runner over the
+canonical `db/migrations/*.sql`), `packages/config` (Zod-validated env).
+
+How to run:
+
+1. `pnpm install`
+2. `docker compose up -d` (local PostgreSQL `iptv`/`iptv`, local-dev defaults only)
+3. Copy `.env.example` to `.env` and adjust locally (never commit secrets).
+   The API loads `.env` via `node --env-file-if-exists` (repo root or
+   `apps/api/.env`); no dotenv dependency required.
+4. `pnpm dev` (the API builds once, then watches `dist`; or `pnpm build`,
+   `pnpm test`, `pnpm lint`, `pnpm typecheck`)

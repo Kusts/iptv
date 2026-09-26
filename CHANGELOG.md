@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — Added
+
+- W1-01 repo bootstrap: pnpm + Turborepo monorepo (`apps/web` Next.js App Router, `apps/api` NestJS + Fastify with `GET /v1/health`, `packages/domain` pure primitives, `packages/config` Zod env, base TS/eslint/prettier config, local `docker-compose.yml`, CI workflow).
+- W1-02 database bootstrap: Kysely bootstrap (snake_case explicit mapping, no CamelCasePlugin) + idempotent SQL migration runner with sha256 bookkeeping in `platform.migration_history`; canonical `db/migrations/*.sql` untouched.
+
 ## v1.0.1 — 2026-09-26 — Canonical authority correction + implementation hardening
 
 ### Corrected

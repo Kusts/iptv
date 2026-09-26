@@ -73,7 +73,12 @@ def split_table_row(line: str) -> list[str]:
 
 
 def check_markdown_links() -> None:
+    # Dependency/build outputs ship their own markdown with relative links
+    # that are not part of this repository's documentation surface.
+    skip_dirs = {"node_modules", ".next", "dist", ".turbo", "coverage"}
     for file in ROOT.rglob("*.md"):
+        if any(part in skip_dirs for part in file.relative_to(ROOT).parts):
+            continue
         text = file.read_text(encoding="utf-8", errors="ignore")
         for match in re.finditer(r"\[[^\]]+\]\(([^)]+)\)", text):
             target = match.group(1)
