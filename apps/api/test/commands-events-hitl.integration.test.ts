@@ -116,7 +116,14 @@ describe.skipIf(!hasDb)("commands → events → outbox → inbox → audit + HI
     inbox = app.get(InboxProcessor);
     transport = app.get("TRANSPORT");
 
-    expect(bus.names()).toEqual(["human_review.request", "human_review.approve", "human_review.reject"]);
+    expect(bus.names()).toEqual([
+      "human_review.request",
+      "human_review.approve",
+      "human_review.reject",
+      "policy.publish",
+      "capability.register",
+      "capability.set_availability",
+    ]);
 
     const register = await inject({
       method: "POST",

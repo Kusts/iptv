@@ -96,3 +96,16 @@ HumanReview queue: `GET /v1/human-reviews?status=PENDING`; decisions
 revalidate under current state (stale approvals → `409 precondition_failed`,
 request stays open). Full chain (incl. idempotency replay, stale approval,
 parallel-drain safety) is covered by `TEST_DATABASE_URL` integration tests.
+
+Policy/capability (W1-09/10): generic versioned policy documents
+(`platform.policy_documents`, `PLATFORM_INVARIANT > PLATFORM_POLICY >
+TENANT_POLICY > PARTNER_POLICY`, published rows immutable, publish = new
+row version+1) resolved with higher-class-wins merge and provenance;
+downgrade-only autonomy (`AUTO|APPROVAL|MANUAL|DENY`, never silent upgrade).
+`POST /v1/policies/publish` (`policy.publish`, `settings.manage`; tenant
+admins publish TENANT, platform admins PLATFORM/PARTNER). Global capability
+catalog (`platform.capabilities` + append-only `platform.capability_events`)
+gated by `ActionGate` (available? → permitted? → policy? → preconditions? →
+autonomy clamped by the invariant max): `GET /v1/capabilities` (per-actor
+overview) and `GET /v1/capabilities/:key/resolve` (dry-run); platform-only
+`capability.register|set_availability`. Migration `014`.

@@ -8,9 +8,13 @@ import type {
   AppTx,
   DbPort,
   IdempotencyClaim,
+  NewCapability,
   NewDomainEvent,
   NewOutboxMessage,
+  NewPolicyDocument,
   NewReviewRequest,
+  StoredCapability,
+  StoredPolicyDocument,
   StoredReviewRequest,
 } from "./command-bus.js";
 import type { AuditEventInput } from "@iptv/auth";
@@ -51,6 +55,71 @@ function toStored(tenantId: string, row: {
     contextJson: row.context_json,
     createdAt: row.created_at,
     resolvedAt: row.resolved_at,
+  };
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((v): v is string => typeof v === "string");
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function toStoredPolicy(row: {
+  id: string;
+  tenant_id: string | null;
+  family: string;
+  scope: string;
+  class: string;
+  version: number;
+  status: string;
+  document: unknown;
+  published_at: Date | null;
+}): StoredPolicyDocument {
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    family: row.family,
+    scope: row.scope,
+    class: row.class,
+    // `version` is an integer; node-pg may still hand it back as a string.
+    version: Number(row.version),
+    status: row.status,
+    document: asRecord(row.document),
+    publishedAt: row.published_at,
+  };
+}
+
+function toStoredCapability(row: {
+  key: string;
+  owner_context: string;
+  availability: string;
+  certification_status: string;
+  risk_level: string;
+  mvp_phase: string;
+  manual_equivalent: string;
+  policy_family: string;
+  degradation: string;
+  permissions: unknown;
+}): StoredCapability {
+  return {
+    key: row.key,
+    ownerContext: row.owner_context,
+    availability: row.availability,
+    certificationStatus: row.certification_status,
+    riskLevel: row.risk_level,
+    mvpPhase: row.mvp_phase,
+    manualEquivalent: row.manual_equivalent,
+    policyFamily: row.policy_family,
+    degradation: row.degradation,
+    permissions: asStringArray(row.permissions),
   };
 }
 
@@ -266,6 +335,210 @@ export class KyselyAppTx implements AppTx {
         created_at: now(),
       })
       .execute();
+  }
+
+  async nextPolicyVersion(family: string, scope: string, tenantId: string | null): Promise<number> {
+    let query = this.trx
+      .selectFrom("platform.policy_documents")
+      .select("version")
+      .where("family", "=", family)
+      .where("scope", "=", scope)
+      .orderBy("version", "desc")
+      .limit(1);
+    query =
+      tenantId === null
+        ? query.where("tenant_id", "is", null)
+        : query.where("tenant_id", "=", tenantId);
+    const prev = await query.executeTakeFirst();
+    return Number(prev?.version ?? 0) + 1;
+  }
+
+  async createPolicyDocument(input: NewPolicyDocument): Promise<StoredPolicyDocument> {
+    const row = await this.trx
+      .insertInto("platform.policy_documents")
+      .values({
+        id: newId(),
+        tenant_id: input.tenantId,
+        family: input.family,
+        scope: input.scope,
+        class: input.class,
+        version: input.version,
+        status: input.status,
+        document: input.document,
+        published_at: input.publishedAt,
+        created_at: now(),
+        updated_at: now(),
+      })
+      .returning([
+        "id",
+        "tenant_id",
+        "family",
+        "scope",
+        "class",
+        "version",
+        "status",
+        "document",
+        "published_at",
+      ])
+      .executeTakeFirstOrThrow();
+    return toStoredPolicy(row);
+  }
+
+  async listPublishedPolicies(
+    family: string,
+    tenantId: string,
+    partnerId?: string,
+  ): Promise<StoredPolicyDocument[]> {
+    const partner = partnerId ?? tenantId;
+    const rows = await this.trx
+      .selectFrom("platform.policy_documents")
+      .select([
+        "id",
+        "tenant_id",
+        "family",
+        "scope",
+        "class",
+        "version",
+        "status",
+        "document",
+        "published_at",
+      ])
+      .where("family", "=", family)
+      .where("status", "=", "PUBLISHED")
+      .where((eb) =>
+        eb.or([
+          eb.and([eb("scope", "=", "PLATFORM"), eb("tenant_id", "is", null)]),
+          eb.and([eb("scope", "=", "TENANT"), eb("tenant_id", "=", tenantId)]),
+          eb.and([eb("scope", "=", "PARTNER"), eb("tenant_id", "=", partner)]),
+        ]),
+      )
+      .orderBy("version", "desc")
+      .execute();
+    return rows.map(toStoredPolicy);
+  }
+
+  async getCapability(key: string): Promise<StoredCapability | null> {
+    const row = await this.trx
+      .selectFrom("platform.capabilities")
+      .select([
+        "key",
+        "owner_context",
+        "availability",
+        "certification_status",
+        "risk_level",
+        "mvp_phase",
+        "manual_equivalent",
+        "policy_family",
+        "degradation",
+        "permissions",
+      ])
+      .where("key", "=", key)
+      .executeTakeFirst();
+    if (row === undefined) {
+      return null;
+    }
+    return toStoredCapability(row);
+  }
+
+  async listCapabilities(): Promise<StoredCapability[]> {
+    const rows = await this.trx
+      .selectFrom("platform.capabilities")
+      .select([
+        "key",
+        "owner_context",
+        "availability",
+        "certification_status",
+        "risk_level",
+        "mvp_phase",
+        "manual_equivalent",
+        "policy_family",
+        "degradation",
+        "permissions",
+      ])
+      .orderBy("key", "asc")
+      .execute();
+    return rows.map(toStoredCapability);
+  }
+
+  async createCapability(input: NewCapability): Promise<StoredCapability> {
+    const row = await this.trx
+      .insertInto("platform.capabilities")
+      .values({
+        id: newId(),
+        key: input.key,
+        owner_context: input.ownerContext,
+        availability: input.availability,
+        certification_status: input.certificationStatus,
+        risk_level: input.riskLevel,
+        mvp_phase: input.mvpPhase,
+        manual_equivalent: input.manualEquivalent,
+        policy_family: input.policyFamily,
+        degradation: input.degradation,
+        // node-pg serializes top-level arrays as Postgres arrays; a jsonb
+        // column needs the explicit JSON text instead.
+        permissions: JSON.stringify(input.permissions),
+        created_at: now(),
+        updated_at: now(),
+      })
+      .returning([
+        "key",
+        "owner_context",
+        "availability",
+        "certification_status",
+        "risk_level",
+        "mvp_phase",
+        "manual_equivalent",
+        "policy_family",
+        "degradation",
+        "permissions",
+      ])
+      .executeTakeFirstOrThrow();
+    return toStoredCapability(row);
+  }
+
+  async setCapabilityAvailability(
+    key: string,
+    availability: string,
+    reason: string,
+    actorId: string | null,
+  ): Promise<StoredCapability | null> {
+    const current = await this.getCapability(key);
+    if (current === null) {
+      return null;
+    }
+    const row = await this.trx
+      .updateTable("platform.capabilities")
+      .set({ availability, updated_at: now() })
+      .where("key", "=", key)
+      .returning([
+        "key",
+        "owner_context",
+        "availability",
+        "certification_status",
+        "risk_level",
+        "mvp_phase",
+        "manual_equivalent",
+        "policy_family",
+        "degradation",
+        "permissions",
+      ])
+      .executeTakeFirst();
+    if (row === undefined) {
+      return null;
+    }
+    await this.trx
+      .insertInto("platform.capability_events")
+      .values({
+        id: newId(),
+        capability_key: key,
+        from_availability: current.availability,
+        to_availability: availability,
+        reason,
+        actor_id: actorId,
+        occurred_at: now(),
+      })
+      .execute();
+    return toStoredCapability(row);
   }
 }
 

@@ -4,9 +4,13 @@ import type {
   AppTx,
   DbPort,
   IdempotencyClaim,
+  NewCapability,
   NewDomainEvent,
   NewOutboxMessage,
+  NewPolicyDocument,
   NewReviewRequest,
+  StoredCapability,
+  StoredPolicyDocument,
   StoredReviewRequest,
 } from "../../src/commands/command-bus.js";
 import type { CommandResult } from "@iptv/domain";
@@ -20,6 +24,15 @@ export class MemoryAppTx implements AppTx {
   readonly audits: AuditEventInput[] = [];
   readonly reviews = new Map<string, StoredReviewRequest>();
   readonly actions: Array<{ requestId: string; actionType: string; actorUserId: string; content: Record<string, unknown> }> = [];
+  readonly policies = new Map<string, StoredPolicyDocument>();
+  readonly capabilities = new Map<string, StoredCapability>();
+  readonly capabilityEvents: Array<{
+    capabilityKey: string;
+    from: string;
+    to: string;
+    reason: string;
+    actorId: string | null;
+  }> = [];
   private readonly versions = new Map<string, number>();
 
   constructor(readonly tenantId: string) {}
@@ -103,6 +116,90 @@ export class MemoryAppTx implements AppTx {
     this.actions.push({ requestId, actionType, actorUserId, content });
   }
 
+  async nextPolicyVersion(family: string, scope: string, tenantId: string | null): Promise<number> {
+    let max = 0;
+    for (const doc of this.policies.values()) {
+      if (doc.family === family && doc.scope === scope && doc.tenantId === tenantId) {
+        max = Math.max(max, doc.version);
+      }
+    }
+    return max + 1;
+  }
+
+  async createPolicyDocument(input: NewPolicyDocument): Promise<StoredPolicyDocument> {
+    const stored: StoredPolicyDocument = {
+      id: randomUUID(),
+      tenantId: input.tenantId,
+      family: input.family,
+      scope: input.scope,
+      class: input.class,
+      version: input.version,
+      status: input.status,
+      document: input.document,
+      publishedAt: input.publishedAt,
+    };
+    this.policies.set(stored.id, stored);
+    return stored;
+  }
+
+  async listPublishedPolicies(
+    family: string,
+    tenantId: string,
+    partnerId?: string,
+  ): Promise<StoredPolicyDocument[]> {
+    const partner = partnerId ?? tenantId;
+    return [...this.policies.values()]
+      .filter((doc) => {
+        if (doc.family !== family || doc.status !== "PUBLISHED") {
+          return false;
+        }
+        if (doc.scope === "PLATFORM" && doc.tenantId === null) {
+          return true;
+        }
+        if (doc.scope === "TENANT" && doc.tenantId === tenantId) {
+          return true;
+        }
+        return doc.scope === "PARTNER" && doc.tenantId === partner;
+      })
+      .sort((a, b) => b.version - a.version);
+  }
+
+  async getCapability(key: string): Promise<StoredCapability | null> {
+    return this.capabilities.get(key) ?? null;
+  }
+
+  async listCapabilities(): Promise<StoredCapability[]> {
+    return [...this.capabilities.values()].sort((a, b) => (a.key < b.key ? -1 : 1));
+  }
+
+  async createCapability(input: NewCapability): Promise<StoredCapability> {
+    const stored: StoredCapability = { ...input };
+    this.capabilities.set(stored.key, stored);
+    return stored;
+  }
+
+  async setCapabilityAvailability(
+    key: string,
+    availability: string,
+    reason: string,
+    actorId: string | null,
+  ): Promise<StoredCapability | null> {
+    const current = this.capabilities.get(key) ?? null;
+    if (current === null) {
+      return null;
+    }
+    const updated: StoredCapability = { ...current, availability };
+    this.capabilities.set(key, updated);
+    this.capabilityEvents.push({
+      capabilityKey: key,
+      from: current.availability,
+      to: availability,
+      reason,
+      actorId,
+    });
+    return updated;
+  }
+
   snapshot(): string {
     return JSON.stringify({
       events: this.events,
@@ -111,6 +208,9 @@ export class MemoryAppTx implements AppTx {
       reviews: [...this.reviews],
       actions: this.actions,
       versions: [...this.versions],
+      policies: [...this.policies],
+      capabilities: [...this.capabilities],
+      capabilityEvents: this.capabilityEvents,
     });
   }
 
@@ -122,6 +222,9 @@ export class MemoryAppTx implements AppTx {
       reviews: Array<[string, StoredReviewRequest]>;
       actions: MemoryAppTx["actions"];
       versions: Array<[string, number]>;
+      policies: Array<[string, StoredPolicyDocument]>;
+      capabilities: Array<[string, StoredCapability]>;
+      capabilityEvents: MemoryAppTx["capabilityEvents"];
     };
     this.events.length = 0;
     this.events.push(...s.events);
@@ -139,6 +242,16 @@ export class MemoryAppTx implements AppTx {
     for (const [k, v] of s.versions) {
       this.versions.set(k, v);
     }
+    this.policies.clear();
+    for (const [k, v] of s.policies) {
+      this.policies.set(k, v);
+    }
+    this.capabilities.clear();
+    for (const [k, v] of s.capabilities) {
+      this.capabilities.set(k, v);
+    }
+    this.capabilityEvents.length = 0;
+    this.capabilityEvents.push(...s.capabilityEvents);
   }
 }
 

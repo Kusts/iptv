@@ -3,11 +3,14 @@ import type { Database } from "@iptv/database";
 import { CommandBus, type DbPort } from "./command-bus.js";
 import { KyselyCommandDb } from "./kysely-command-db.js";
 import { registerHumanReviewCommands } from "../human-review/human-review.commands.js";
+import { registerPolicyCommands } from "../policy/policy.commands.js";
+import { registerCapabilityCommands } from "../capabilities/capability.commands.js";
 
 /**
  * CommandBus provider: builds the bus over the `COMMAND_DB` port and
- * registers the Wave 1 command catalog (HumanReview substrate). Explicit
- * tokens everywhere — esbuild/vitest emits no `design:paramtypes`.
+ * registers the Wave 1 command catalog (HumanReview substrate + Policy and
+ * Capability foundations). Explicit tokens everywhere — esbuild/vitest
+ * emits no `design:paramtypes`.
  */
 export const CommandsProvider = {
   provide: CommandBus,
@@ -15,6 +18,8 @@ export const CommandsProvider = {
     const bus = new CommandBus(commandDb);
     if (commandDb !== null) {
       registerHumanReviewCommands(bus);
+      registerPolicyCommands(bus);
+      registerCapabilityCommands(bus);
     }
     return bus;
   },

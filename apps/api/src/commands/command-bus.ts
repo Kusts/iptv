@@ -55,6 +55,57 @@ export interface NewReviewRequest {
   requestedById: string | null;
 }
 
+/** Stored policy document row shared by the Kysely and memory txs. */
+export interface StoredPolicyDocument {
+  id: string;
+  tenantId: string | null;
+  family: string;
+  scope: string;
+  class: string;
+  version: number;
+  status: string;
+  document: Record<string, unknown>;
+  publishedAt: Date | null;
+}
+
+export interface NewPolicyDocument {
+  tenantId: string | null;
+  family: string;
+  scope: string;
+  class: string;
+  version: number;
+  status: string;
+  document: Record<string, unknown>;
+  publishedAt: Date | null;
+}
+
+/** Stored capability row shared by the Kysely and memory txs. */
+export interface StoredCapability {
+  key: string;
+  ownerContext: string;
+  availability: string;
+  certificationStatus: string;
+  riskLevel: string;
+  mvpPhase: string;
+  manualEquivalent: string;
+  policyFamily: string;
+  degradation: string;
+  permissions: string[];
+}
+
+export interface NewCapability {
+  key: string;
+  ownerContext: string;
+  availability: string;
+  certificationStatus: string;
+  riskLevel: string;
+  mvpPhase: string;
+  manualEquivalent: string;
+  policyFamily: string;
+  degradation: string;
+  permissions: string[];
+}
+
 /**
  * Transactional port handlers program against. The Kysely implementation
  * runs every method in ONE transaction together with the state change;
@@ -69,6 +120,18 @@ export interface AppTx {
   getReviewRequest(id: string): Promise<StoredReviewRequest | null>;
   resolveReviewRequest(id: string): Promise<StoredReviewRequest | null>;
   createReviewAction(requestId: string, actionType: string, actorUserId: string, content: Record<string, unknown>): Promise<void>;
+  nextPolicyVersion(family: string, scope: string, tenantId: string | null): Promise<number>;
+  createPolicyDocument(input: NewPolicyDocument): Promise<StoredPolicyDocument>;
+  listPublishedPolicies(family: string, tenantId: string, partnerId?: string): Promise<StoredPolicyDocument[]>;
+  getCapability(key: string): Promise<StoredCapability | null>;
+  listCapabilities(): Promise<StoredCapability[]>;
+  createCapability(input: NewCapability): Promise<StoredCapability>;
+  setCapabilityAvailability(
+    key: string,
+    availability: string,
+    reason: string,
+    actorId: string | null,
+  ): Promise<StoredCapability | null>;
 }
 
 export type IdempotencyClaim =

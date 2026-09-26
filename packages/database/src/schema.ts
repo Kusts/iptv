@@ -205,6 +205,49 @@ export interface AgentHumanReviewActionsTable {
   created_at: Date;
 }
 
+/** Mirrors `platform.capabilities` (migration 014, global catalog). */
+export interface PlatformCapabilitiesTable {
+  id: string;
+  key: string;
+  owner_context: string;
+  availability: string;
+  certification_status: string;
+  risk_level: string;
+  mvp_phase: string;
+  manual_equivalent: string;
+  policy_family: string;
+  degradation: string;
+  permissions: unknown;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `platform.capability_events` (migration 014, append-only). */
+export interface PlatformCapabilityEventsTable {
+  id: string;
+  capability_key: string;
+  from_availability: string | null;
+  to_availability: string;
+  reason: string;
+  actor_id: string | null;
+  occurred_at: Date;
+}
+
+/** Mirrors `platform.policy_documents` (migration 014, versioned rows). */
+export interface PlatformPolicyDocumentsTable {
+  id: string;
+  tenant_id: string | null;
+  family: string;
+  scope: string;
+  class: string;
+  version: number;
+  status: string;
+  document: unknown;
+  published_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export interface Database {
   "control.tenants": ControlTenantsTable;
   "control.users": ControlUsersTable;
@@ -223,4 +266,7 @@ export interface Database {
   "platform.migration_history": PlatformMigrationHistoryTable;
   "agent.human_review_requests": AgentHumanReviewRequestsTable;
   "agent.human_review_actions": AgentHumanReviewActionsTable;
+  "platform.capabilities": PlatformCapabilitiesTable;
+  "platform.capability_events": PlatformCapabilityEventsTable;
+  "platform.policy_documents": PlatformPolicyDocumentsTable;
 }
