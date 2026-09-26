@@ -14,9 +14,16 @@ describe("loadConfig", () => {
       PORT: "8080",
       DATABASE_URL: "postgresql://iptv:iptv@localhost:5432/iptv",
       LOG_LEVEL: "warn",
+      BETTER_AUTH_SECRET: "real-production-secret-0123456789",
     });
     expect(cfg.PORT).toBe(8080);
     expect(cfg.NODE_ENV).toBe("production");
+  });
+
+  it("rejects the dev auth secret in production", () => {
+    expect(() =>
+      loadConfig({ NODE_ENV: "production", BETTER_AUTH_SECRET: "dev-only-better-auth-secret-0123456789" }),
+    ).toThrow(/BETTER_AUTH_SECRET must be overridden in production/);
   });
 
   it("throws descriptive errors on invalid env", () => {
