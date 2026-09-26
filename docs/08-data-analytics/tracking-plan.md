@@ -205,7 +205,7 @@ Importante: `order.settled.v1` pode ocorrer com `external_payment_amount = 0` qu
 
 ### Billing
 
-#### `payment.paid.v1`
+#### `payment.confirmed.v1`
 
 Obrigatório:
 

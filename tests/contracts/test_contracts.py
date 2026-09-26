@@ -88,7 +88,10 @@ class ContractConsistencyTests(unittest.TestCase):
         mappings = [
             ("Trial", "lifecycleStatus", "trials_lifecycle_check", "lifecycle_status"),
             ("Order", "status", "orders_status_check", "status"),
+            ("Charge", "status", "charges_status_check", "status"),
             ("Payment", "status", "payments_status_check", "status"),
+            ("RefundRequest", "status", "refund_requests_status_check", "status"),
+            ("Refund", "status", "refunds_status_check", "status"),
             ("Subscription", "status", "subscriptions_status_check", "status"),
             ("ProviderOperation", "status", "provider_operations_status_check", "status"),
             ("SupportTicket", "status", "support_tickets_status_check", "status"),
@@ -113,7 +116,10 @@ class ContractConsistencyTests(unittest.TestCase):
         mappings = [
             ("Conversation", "Conversation", "status", "conversations_status_check"),
             ("CustomerOrder", "Order", "status", "orders_status_check"),
+            ("Charge", "Charge", "status", "charges_status_check"),
             ("Payment", "Payment", "status", "payments_status_check"),
+            ("RefundRequest", "RefundRequest", "status", "refund_requests_status_check"),
+            ("Refund", "Refund", "status", "refunds_status_check"),
             ("CustomerSubscription", "Subscription", "status", "subscriptions_status_check"),
             ("ProviderOperation", "ProviderOperation", "status", "provider_operations_status_check"),
             ("Ticket", "SupportTicket", "status", "support_tickets_status_check"),
@@ -164,7 +170,7 @@ class ContractConsistencyTests(unittest.TestCase):
             "person.created.v1",
             "trial.requested.v1",
             "order.settled.v1",
-            "payment.paid.v1",
+            "payment.confirmed.v1",
             "support.resolved.v1",
             "referral.confirmed.v1",
             "reward.redeemed.v1",
@@ -225,6 +231,9 @@ class ContractConsistencyTests(unittest.TestCase):
             "/v1/customers/{customerId}/rewards",
             "/v1/rewards/{rewardId}/redeem",
             "/v1/gift-passes/redeem",
+            "/v1/payments/{paymentId}/refund-requests",
+            "/v1/refund-requests/{refundRequestId}",
+            "/v1/refund-requests/{refundRequestId}/execute",
         }
         self.assertFalse(required_paths - set(self.openapi["paths"]), f"missing paths: {sorted(required_paths - set(self.openapi['paths']))}")
 
@@ -263,6 +272,40 @@ class ContractConsistencyTests(unittest.TestCase):
         ]:
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, text)
+
+
+    def test_canonical_semantic_separations_are_enforced(self):
+        sql = all_sql()
+        catalog = (ROOT / "docs/15-implementation-baseline/03-state-machines.md").read_text(encoding="utf-8")
+        backlog = (ROOT / "docs/15-implementation-baseline/23-implementation-backlog.md").read_text(encoding="utf-8")
+
+        self.assertIn("CREATE TABLE billing.charges", sql)
+        self.assertIn("CREATE TABLE billing.payments", sql)
+        self.assertIn("CREATE TABLE billing.refund_requests", sql)
+        self.assertIn("payments_charge_order_fk", sql)
+        self.assertIn("charges_idempotency_unique", sql)
+        self.assertIn("refund_requests_human_review_fk", sql)
+        self.assertIn("CREATE TABLE billing.refunds", sql)
+        self.assertEqual(sql_enum("charges_status_check"), {"PENDING","PROCESSING","PAID","FAILED","CANCELLED","EXPIRED"})
+        self.assertEqual(sql_enum("payments_status_check"), {"CONFIRMED","PARTIALLY_REFUNDED","REFUNDED","CHARGEBACK"})
+        self.assertNotIn("FULFILLING", sql_enum("orders_status_check"))
+        self.assertNotIn("COMPLETED", sql_enum("orders_status_check"))
+        self.assertEqual(sql_enum("conversations_status_check"), {"OPEN","AWAITING_CUSTOMER","AWAITING_INTERNAL","RESOLVED","ARCHIVED"})
+        self.assertIn("review_mode IN ('APPROVAL','REVIEW','GUIDANCE','MANUAL_EXECUTION')", sql)
+        self.assertIn("reason IN ('SECURITY_CHALLENGE','PROVIDER_EXCEPTION','RISK_REVIEW','FINANCIAL_REVIEW','CONTENT_COMPLIANCE','OTHER')", sql)
+        self.assertIn("## Charge", catalog)
+        self.assertIn("## Payment", catalog)
+        self.assertIn("Tenant Copilot foundation", backlog.split("## Wave 4", 1)[0])
+
+    def test_refund_is_human_gated_and_separate_from_request(self):
+        sql = all_sql()
+        self.assertIn("refund_request_id uuid NOT NULL", sql)
+        self.assertIn("human_review_request_id uuid", sql)
+        self.assertIn("refunds_request_unique", sql)
+        self.assertIn("effect_certainty text NOT NULL DEFAULT 'UNKNOWN'", sql)
+        self.assertIn("refunds_effect_status_shape_check", sql)
+        self.assertIn("refund_requests_review_shape_check", sql)
+        self.assertIn("/v1/refund-requests/{refundRequestId}/execute", self.openapi["paths"])
 
 
 GOOD_BLOCK = """\

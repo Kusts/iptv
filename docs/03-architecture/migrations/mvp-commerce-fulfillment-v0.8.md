@@ -50,8 +50,10 @@ Invariantes relevantes:
 
 Cria:
 
+- `billing.charges`;
 - `billing.payments`;
 - provider bindings/attempts;
+- `billing.refund_requests`;
 - `billing.refunds`;
 - financial accounts;
 - financial transactions;

@@ -10,7 +10,7 @@ Mismatch between internal authoritative expectation and external provider/gatewa
 
 Examples:
 
-- Payment internal pending but Asaas reports paid;
+- Charge internal pending but Asaas reports paid; reconcile before creating/confirming Payment;
 - Subscription active but provider expired;
 - expected connections differ from provider;
 - provider operation marked uncertain.

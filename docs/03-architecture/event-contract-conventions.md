@@ -14,7 +14,7 @@ Naming:
 <domain>.<fact>.v<major>
 ```
 
-Example: `payment.paid.v1`, `trial.technical_passed.v1`.
+Example: `payment.confirmed.v1`, `trial.technical_passed.v1`.
 
 Public ID identity: the public ID decomposes deterministically into
 `event_type = <domain>.<fact>` (stable identity, no version) plus integer

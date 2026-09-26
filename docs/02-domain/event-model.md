@@ -39,8 +39,8 @@ These names are the stable domain vocabulary used in SPEC prose. They are NOT pu
 - `commerce.order.cancelled|expired`
 
 ### Billing
-- `billing.charge.created`
-- `billing.payment.confirmed|failed|refunded`
+- `billing.charge.created|processing|paid|failed|expired|cancelled`
+- `billing.payment.confirmed|partially_refunded|refunded|chargeback`
 - `billing.refund.requested|approved|rejected|executed`
 
 ### Subscriptions
@@ -154,23 +154,20 @@ Class `domain` = authoritative fact that may mutate an aggregate or drive a work
 | `offer.created.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | no legacy family; new offer lifecycle, no alias |
 | `offer.expired.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | no legacy family; new offer lifecycle, no alias |
 | `offer.presented.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | no legacy family; new offer lifecycle, no alias |
-| `order.accepted.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `commerce.order.*` family; new explicit acceptance transition, no alias |
 | `order.cancelled.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `commerce.order.cancelled\|expired` |
-| `order.completed.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `commerce.order.*` family; new explicit completion transition, no alias |
 | `order.created.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `commerce.order.created` |
 | `order.expired.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `commerce.order.cancelled\|expired` |
-| `order.fulfillment_started.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `commerce.order.*` family; new explicit fulfillment transition, no alias |
 | `order.settled.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing; SPEC 08-referral-core; AsyncAPI | `commerce.order.settled` |
-| `order.submitted.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `commerce.order.*` family; new explicit submission transition, no alias |
-| `payment.cancelled.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `billing.payment.*` family; new explicit cancellation transition, no alias |
+| `charge.cancelled.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `billing.charge.cancelled` |
 | `payment.chargeback.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing; SPEC 08-referral-core | distinct issuer dispute fact; not a RefundRequest or refund execution |
-| `payment.created.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `billing.charge.created` renamed to payment obligation; not an alias |
-| `payment.expired.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `billing.payment.*` family; new explicit expiry transition, no alias |
-| `payment.failed.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `billing.payment.confirmed\|failed\|refunded` |
-| `payment.paid.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing; SPEC 08-referral-core; AsyncAPI | `billing.payment.confirmed\|failed\|refunded`; confirmed renamed to paid, not an alias |
+| `charge.created.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `billing.charge.created` |
+| `charge.expired.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `billing.charge.expired` |
+| `charge.failed.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `billing.charge.failed` |
+| `payment.confirmed.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing; SPEC 08-referral-core; AsyncAPI | `billing.payment.confirmed` |
 | `payment.partially_refunded.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | result of a partial Refund, distinct from a RefundRequest and its human approval |
-| `payment.processing.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `billing.charge.created` family; new explicit processing transition, no alias |
-| `payment.refunded.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing; SPEC 08-referral-core | `billing.payment.confirmed\|failed\|refunded` and `billing.refund.*` |
+| `charge.processing.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `billing.charge.processing` |
+| `charge.paid.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `billing.charge.paid`; validated external evidence precedes canonical Payment confirmation |
+| `payment.refunded.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing; SPEC 08-referral-core | `billing.payment.refunded` and `billing.refund.*` |
 | `person.created.v1` | domain | planned/pre-implementation | SPEC 01-identity-crm; AsyncAPI | no legacy family; new canonical identity fact (`crm.*` does not cover person), no alias |
 | `problem.created.v1` | domain | planned/pre-implementation | AsyncAPI | no legacy family; new problem lifecycle, no alias |
 | `problem.resolved.v1` | domain | planned/pre-implementation | AsyncAPI | no legacy family; new problem lifecycle, no alias |
@@ -239,6 +236,6 @@ Class `domain` = authoritative fact that may mutate an aggregate or drive a work
 
 Example (illustrative only — NOT a registry entry):
 
-`Asaas PAYMENT_RECEIVED webhook → validated IntegrationInboxEvent → payment.paid.v1 (event_type=payment.paid, schema_version=1)`
+`Asaas PAYMENT_RECEIVED webhook → validated IntegrationInboxEvent → payment.confirmed.v1 (event_type=payment.paid, schema_version=1)`
 
 Provider enums and payloads must not become internal event contracts.

@@ -67,7 +67,7 @@ Sempre verificar explicitamente:
 
 1. uma Person tem um Trial primário; exceções são RETRIAL justificadas;
 2. `technical PASSED` não é lifecycle do Trial;
-3. `Order SETTLED` não significa necessariamente `Payment PAID`;
+3. `Order SETTLED` não significa necessariamente `Payment CONFIRMED`;
 4. tela/conexão adicional é recorrente e gera COGS recorrente;
 5. provider externo nunca substitui estado autoritativo local;
 6. `ProviderOperation` só termina `SUCCEEDED` após pós-condição;

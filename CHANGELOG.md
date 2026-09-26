@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.0.1 — 2026-09-26 — Canonical authority correction + implementation hardening
+
+### Corrected
+- Restored canonical-domain authority over pre-implementation SQL/OpenAPI scaffolds (ADR-0025); ADR-0024 is superseded where it promoted older physical states into business rules.
+- Restored Conversation lifecycle to `OPEN | AWAITING_CUSTOMER | AWAITING_INTERNAL | RESOLVED | ARCHIVED`, with `AI_CONTROL | HUMAN_CONTROL | PAUSED` kept orthogonal.
+- Restored CustomerOrder to economic lifecycle `DRAFT | AWAITING_PAYMENT | SETTLED | CANCELLED | EXPIRED`; fulfillment remains owned by Subscription/Entitlements/Provider Operations.
+- Split external `Charge` from confirmed `Payment`, including SQL/OpenAPI/event vocabulary and same-order/idempotency invariants.
+- Materialized `RefundRequest` separately from `Refund`, with human-review linkage, unknown-effect reconciliation and runtime-safe execution contract.
+- Split HumanReview classification into `review_mode` and `reason`, preserving `MANUAL_EXECUTION`.
+- Moved Tenant Copilot dogfooding to Wave 3 and made Wave 14 a maturation stage rather than first delivery.
+- Removed stale generic courtesy-extension/cooldown modeling; Trust Renewal remains the fixed CINEVISION +3-day capability for ACTIVE accounts with <=3 days remaining and is not a generic reward.
+
+### Hardened
+- Added semantic contract tests that protect Charge/Payment/Refund separation, Conversation/Order states, HumanReview dimensions, Copilot sequencing, same-order billing linkage and Trust Renewal reward boundaries.
+- Preserved the previous agent's valid hardening: explicit event registry, provider-operation VERIFYING/RETRY_WAIT/HUMAN_REQUIRED, Trial kind/outcome separation, F16/F17, implementation gates and integration certification improvements.
+
+### Validation
+- documentation/contracts/migration static validator: PASS;
+- contract tests: 21/21 PASS;
+- seed contract tests: 5/5 PASS;
+- `git diff --check`: PASS;
+- PostgreSQL runtime migration/fixture tests: NOT RUN in this environment (no `psql`, Docker or Podman); remain an explicit Wave 0 gate.
+- Full v1.0.1 semantic/cross-file review: `docs/00-meta/auto-review-v1.0.1.md`.
+
 ## v1.0 — 2026-09-26 — Implementation-ready planning baseline
 
 ### Major consolidation
@@ -13,8 +37,6 @@
 
 ### Review
 - Semantic/cross-file/mechanical auto-review completed in `docs/00-meta/auto-review-v1.0.md`.
-
-# Changelog
 
 ## v0.14 — 2026-09-22 — Refinamento funcional Módulos 1–9
 

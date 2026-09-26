@@ -10,7 +10,7 @@ Use integration health, SLO/alert, reconciliation drift and operator reports. Co
 
 ## Containment
 
-Pause risky provider actions with kill switch; keep internal Orders/Payments/Entitlements authoritative; queue safe pending fulfillment; notify operators/customers only as appropriate.
+Pause risky provider actions with kill switch; keep internal Orders/Charges/Payments/Entitlements authoritative; queue safe pending fulfillment; notify operators/customers only as appropriate.
 
 ## Customer/operator communication
 

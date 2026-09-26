@@ -480,8 +480,11 @@ def check_critical_schema_invariants() -> None:
     # matching SQL/OpenAPI alignment lands separately; until then this
     # check intentionally fails with a drift message.
     expected_state_sets = {
-        "orders_status_check": {'DRAFT','PENDING_ACCEPTANCE','PENDING_SETTLEMENT','SETTLED','FULFILLING','COMPLETED','CANCELLED','EXPIRED'},
-        "payments_status_check": {'PENDING','PROCESSING','PAID','FAILED','CANCELLED','EXPIRED','PARTIALLY_REFUNDED','REFUNDED','CHARGEBACK'},
+        "orders_status_check": {'DRAFT','AWAITING_PAYMENT','SETTLED','CANCELLED','EXPIRED'},
+        "charges_status_check": {'PENDING','PROCESSING','PAID','FAILED','CANCELLED','EXPIRED'},
+        "payments_status_check": {'CONFIRMED','PARTIALLY_REFUNDED','REFUNDED','CHARGEBACK'},
+        "refund_requests_status_check": {'REQUESTED','UNDER_REVIEW','APPROVED','REJECTED','EXPIRED','CANCELLED','EXECUTED'},
+        "refunds_status_check": {'PROCESSING','RECONCILING','SUCCEEDED','FAILED','CANCELLED'},
         "subscriptions_status_check": {'PENDING_ACTIVATION','ACTIVE','SUSPENDED','ENDED'},
         "entitlements_status_check": {'PENDING','ACTIVE','SUSPENDED','EXPIRED','REVOKED','CANCELLED'},
         "provider_operations_status_check": {'REQUESTED','QUEUED','RUNNING','VERIFYING','RETRY_WAIT','HUMAN_REQUIRED','SUCCEEDED','FAILED','CANCELLED'},

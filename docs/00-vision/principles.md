@@ -6,7 +6,7 @@
 2. **Frontend is a Control Center, not authority.** UI/Agent/workflow use the same application commands and policies.
 3. **Multi-tenant from the first commit.** Tenant isolation applies to DB, cache, search, files, knowledge, analytics, workflows and Agent context.
 4. **One owner per fact.** Projections may be many; canonical ownership is singular.
-5. **Commerce, money, rights and fulfillment are distinct.** Order != Payment != Subscription != Entitlement != Provider state.
+5. **Commerce, money, rights and fulfillment are distinct.** Order != Charge != Payment != Subscription != Entitlement != Provider state.
 6. **Long-lived relationship, short-lived model context.** Durable state/memory lives outside the model.
 7. **AI converses and reasons; backend governs.** LLMs do not invent prices, rights, policies or permissions.
 8. **Automation is the default operating model.** Human intervention is exception/HITL for uncertainty, sensitive decisions and true edge cases.

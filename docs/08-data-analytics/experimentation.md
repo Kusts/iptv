@@ -121,7 +121,7 @@ Atenção a network spillover: uma variante pode influenciar terceiros.
 
 ### Retention / Winback
 
-- courtesy extension;
+- Trust Renewal timing/context analysis (provider capability remains fixed; not an experimental duration);
 - discount;
 - referral challenge;
 - app reward;

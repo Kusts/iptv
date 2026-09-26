@@ -26,7 +26,7 @@ Represents rights such as service access, connection quantity, adult preference,
 
 ## Required invariants
 
-- Order != Payment != Subscription != ProviderOperation.
+- Order != Charge != Payment != Subscription != ProviderOperation.
 - financial delinquency remains in Billing; CRM/Analytics may project risk/delinquency.
 - additional connections purchased mid-cycle expire with the primary cycle.
 - reducing connection quantity is normally effective on next renewal; no fictitious provider proration/refund.

@@ -1,4 +1,4 @@
-# Implementation Baseline v1.0
+# Implementation Baseline v1.0.1
 
 > Status: **WAVE 0 READY — DEPENDENT WAVES REQUIRE CONTRACT/INTEGRATION GATES**  
 > Baseline date: 2026-09-26  
@@ -10,7 +10,7 @@
 This baseline converts the product planning into an implementation contract. It freezes the canonical domain vocabulary, architecture, agent harness, security posture, integration strategy, MVP scope, critical path, acceptance criteria and operational gates.
 
 The pilot tenant is the founder's own streaming/subscription operation. It is a normal tenant and must not receive architectural special cases.
-The first-value core-sales checkpoint is earlier than the complete MVP-PILOT gate. ADR-0024 records the deliberate reconciliation of state and event contracts. Pre-implementation migrations and OpenAPI/AsyncAPI are scaffolds, not proof of a running system.
+The first-value core-sales checkpoint is earlier than the complete MVP-PILOT gate. ADR-0025 records the final authority direction and canonical reconciliation; ADR-0024 is historical/superseded where it promoted old scaffolds into domain rules. Pre-implementation migrations and OpenAPI/AsyncAPI are scaffolds, not proof of a running system.
 
 ## Authority order
 

@@ -6,9 +6,9 @@ For aggregates with a physical schema, the sets below must match the SQL `CHECK`
 
 ## Conversation
 
-`OPEN | CLOSED | ARCHIVED`
+`OPEN | AWAITING_CUSTOMER | AWAITING_INTERNAL | RESOLVED | ARCHIVED`
 
-Waiting for a customer/internal response is a Conversation Focus/NextAction or Ticket projection, not another Conversation lifecycle state.
+These states describe the conversation lifecycle itself. `AWAITING_CUSTOMER` and `AWAITING_INTERNAL` suppress or reschedule incompatible proactive work through Conversation Focus/Communication Policy. `RESOLVED` preserves the resolved conversation before optional archival.
 
 Separate control plane:
 
@@ -16,18 +16,33 @@ Separate control plane:
 
 ## CustomerOrder
 
-`DRAFT | PENDING_ACCEPTANCE | PENDING_SETTLEMENT | SETTLED | FULFILLING | COMPLETED | CANCELLED | EXPIRED`
+`DRAFT | AWAITING_PAYMENT | SETTLED | CANCELLED | EXPIRED`
 
-Typical economic path: `DRAFT → PENDING_ACCEPTANCE → PENDING_SETTLEMENT → SETTLED`; fulfillment then progresses independently to `FULFILLING → COMPLETED`. Cancellation/expiry are alternatives subject to policy.
+Typical economic path: `DRAFT → AWAITING_PAYMENT → SETTLED`. Offer acceptance is owned by Offer/Commerce policy before or while the Order is prepared; provider fulfillment is owned by Subscription/Entitlements/Provider Operations and must not be duplicated in Order states.
 
-`SETTLED` means economic settlement, not provider fulfillment.
+`SETTLED` means the economic obligation of the Order is satisfied, not provider fulfillment.
+
+## Charge
+
+`PENDING | PROCESSING | PAID | FAILED | CANCELLED | EXPIRED`
+
+A Charge is the external collection obligation/attempt. Provider-specific Asaas states map to this lifecycle. `PAID` on a Charge is external evidence that causes canonical Payment confirmation after validation/idempotency.
 
 ## Payment
 
-Canonical: `PENDING | PROCESSING | PAID | FAILED | CANCELLED | EXPIRED | PARTIALLY_REFUNDED | REFUNDED | CHARGEBACK`.
-Provider-specific statuses remain in adapters.
+`CONFIRMED | PARTIALLY_REFUNDED | REFUNDED | CHARGEBACK`
 
-`PAID` means an external payment was confirmed; it does not by itself settle an Order. Refund/chargeback facts preserve the original payment and require append-only adjustments. A `RefundRequest` and a resulting `Refund` remain distinct; executing a refund requires a human decision.
+A Payment is a confirmed financial movement, never a pending/failed collection attempt. `Payment.CONFIRMED` does not by itself settle an Order; settlement also accounts for internal credits/rewards and policy. Refund/chargeback facts preserve the original Payment and require append-only adjustments. A `RefundRequest` and a resulting `Refund` remain distinct; executing a refund requires a human decision.
+
+## RefundRequest
+
+`REQUESTED | UNDER_REVIEW | APPROVED | REJECTED | EXPIRED | CANCELLED | EXECUTED`
+
+## Refund
+
+`PROCESSING | RECONCILING | SUCCEEDED | FAILED | CANCELLED`
+
+Refund execution has orthogonal effect certainty `KNOWN_APPLIED | KNOWN_NOT_APPLIED | UNKNOWN`; an unknown external effect reconciles before any retry.
 
 ## CustomerSubscription
 
@@ -66,6 +81,8 @@ Timeout/transport failure with uncertain effect must go to `VERIFYING`, not blin
 `REQUESTED | QUEUED | ACKNOWLEDGED | IN_REVIEW | GUIDANCE_PROVIDED | ACTION_TAKEN | RESOLVED | EXPIRED | CANCELLED`.
 
 `APPROVE`/`REJECT` are auditable human actions/decisions on the request, not lifecycle status values. Approval is authorization, not proof of execution success; execution rechecks policy, permissions and resource state.
+
+Classification is orthogonal to lifecycle: `review_mode = APPROVAL | REVIEW | GUIDANCE | MANUAL_EXECUTION`; `reason = SECURITY_CHALLENGE | PROVIDER_EXCEPTION | RISK_REVIEW | FINANCIAL_REVIEW | CONTENT_COMPLIANCE | OTHER`. The mode defines what the human must do; the reason defines why the exception exists.
 
 ## Referral
 

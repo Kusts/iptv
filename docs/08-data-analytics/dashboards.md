@@ -94,7 +94,7 @@ Tela adicional deve mostrar custo mensal acumulado, nunca apenas custo de ativa√
 - renewals due;
 - renewal rate;
 - overdue;
-- grace/courtesy extensions;
+- Trust Renewal grants (+3 days, capability-specific);
 - churn;
 - winback;
 - cohort retention;

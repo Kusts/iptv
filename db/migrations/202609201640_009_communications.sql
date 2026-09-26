@@ -16,14 +16,19 @@ CREATE TABLE communication.conversations (
     last_message_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    closed_at timestamptz,
+    resolved_at timestamptz,
+    archived_at timestamptz,
     CONSTRAINT conversations_person_fk FOREIGN KEY (tenant_id, person_id)
         REFERENCES identity.persons (tenant_id, id),
     CONSTRAINT conversations_tenant_fk FOREIGN KEY (tenant_id)
         REFERENCES control.tenants (id),
-    CONSTRAINT conversations_status_check CHECK (status IN ('OPEN','CLOSED','ARCHIVED')),
+    CONSTRAINT conversations_status_check CHECK (status IN ('OPEN','AWAITING_CUSTOMER','AWAITING_INTERNAL','RESOLVED','ARCHIVED')),
     CONSTRAINT conversations_control_mode_check CHECK (control_mode IN ('AI_CONTROL','HUMAN_CONTROL','PAUSED')),
-    CONSTRAINT conversations_close_shape_check CHECK ((status = 'OPEN' AND closed_at IS NULL) OR (status IN ('CLOSED','ARCHIVED') AND closed_at IS NOT NULL)),
+    CONSTRAINT conversations_resolution_shape_check CHECK (
+        (status IN ('OPEN','AWAITING_CUSTOMER','AWAITING_INTERNAL') AND resolved_at IS NULL AND archived_at IS NULL) OR
+        (status = 'RESOLVED' AND resolved_at IS NOT NULL AND archived_at IS NULL) OR
+        (status = 'ARCHIVED' AND resolved_at IS NOT NULL AND archived_at IS NOT NULL)
+    ),
     CONSTRAINT conversations_tenant_id_id_unique UNIQUE (tenant_id, id)
 );
 
@@ -32,9 +37,9 @@ CREATE UNIQUE INDEX conversations_external_thread_unique
     WHERE external_thread_id IS NOT NULL;
 CREATE INDEX conversations_person_idx
     ON communication.conversations (tenant_id, person_id, last_message_at DESC NULLS LAST);
-CREATE INDEX conversations_open_idx
+CREATE INDEX conversations_active_idx
     ON communication.conversations (tenant_id, channel, last_message_at DESC NULLS LAST)
-    WHERE status = 'OPEN';
+    WHERE status IN ('OPEN','AWAITING_CUSTOMER','AWAITING_INTERNAL');
 
 CREATE TABLE communication.messages (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

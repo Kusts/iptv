@@ -64,14 +64,14 @@ Never run long provider/business logic before acknowledging an external webhook 
 
 ## Refund/chargeback contract required before the first real charge
 
-The pre-implementation OpenAPI scaffold does **not** yet contain the refund request/decision/execution paths. Wave 5 must define and validate the public/internal contracts before M4 production canary promotion:
+The v1.0.1 pre-implementation OpenAPI/DDL scaffold now contains the minimum RefundRequest and human-gated execution paths. Wave 5 must implement, runtime-validate and certify these contracts before M4 production canary promotion:
 
 1. Authenticated customer/operator request creates a tenant-scoped `RefundRequest` linked to Payment, amount/currency/reason, immutable requester and idempotency key; it **never** executes the refund.
 2. An authorized human decision is recorded as an auditable HumanReview action, with amount/scope/expiry. A model/tool cannot self-approve or execute it.
 3. `ExecuteApprovedRefund` revalidates actor, decision, payment, currency, remaining refundable amount and current policy under transaction-level serialization for that payment. Reserve the amount before any external attempt; multiple requests, concurrent commands and provider webhook retries cannot exceed the original paid amount. Record provider operation/effect certainty; ambiguous effects reconcile before retry.
 4. Reconcile provider outcome with a `Refund` and append-only ledger adjustment; re-evaluate downstream entitlements separately. Reject stale/revoked approval or wrong customer/tenant linkage. Provider-initiated chargeback follows a distinct intake/reversal path and is not forged as a human-authorized refund.
 
-Contract tests must include duplicate command/webhook, two concurrent partial refunds, total over-refund, stale approval, cross-customer IDs within the same tenant, provider timeout and chargeback. OpenAPI/API surface, migration and integration fixtures must be updated together in Wave 5; a planning blueprint alone is not an executable refund API.
+Contract tests must include duplicate command/webhook, two concurrent partial refunds, total over-refund, stale approval, cross-customer IDs within the same tenant, provider timeout and chargeback. OpenAPI/API surface, migration and integration fixtures must remain synchronized in Wave 5; the present scaffold is a contract blueprint, not proof of runtime safety.
 
 ## Async contracts
 

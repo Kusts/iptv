@@ -102,5 +102,5 @@ Ao revisar uma SPEC, conferir:
 4. entidade citada existe no Logical Data Model ou está marcada como nova proposta;
 5. nenhuma regra contradiz Principles/PRD;
 6. telas adicionais continuam recorrentes em receita e COGS;
-7. `Order SETTLED` não é confundida com `Payment PAID`;
+7. `Order SETTLED` não é confundida com `Payment CONFIRMED`;
 8. `Trial PASSED` continua sendo assessment técnico, não lifecycle do acesso.

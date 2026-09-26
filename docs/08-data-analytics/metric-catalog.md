@@ -129,7 +129,7 @@ Somente Trials com ambos os eventos.
 Trials válidos, tecnicamente utilizáveis ou com regra de inclusão explícita.
 
 **Numerador**  
-Persons com primeiro `payment.paid.v1`/`order.settled.v1` de assinatura dentro da janela após Trial.
+Persons com primeiro `payment.confirmed.v1`/`order.settled.v1` de assinatura dentro da janela após Trial.
 
 **Denominador**  
 Persons da população de Trial considerada.
@@ -227,7 +227,7 @@ Segmentar coupon, promotion e reward credit.
 
 ## BILL-01 — Payment Confirmation Latency
 
-Tempo entre confirmação externa observada e `payment.paid.v1` reconciliado internamente.
+Tempo entre confirmação externa observada e `payment.confirmed.v1` reconciliado internamente.
 
 Usar mediana/P95.
 

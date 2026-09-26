@@ -219,9 +219,9 @@ Retention 30d / 60d / 90d / 180d / 365d quando aplicável.
 
 Customers churned reativados / elegíveis abordados.
 
-## RET-06 — Courtesy Extension Recovery
+## RET-06 — Trust Renewal Recovery
 
-Percentual de courtesy extensions associadas a renovação/continuidade bem-sucedida.
+Percentual de Trust Renewal Grants elegíveis (+3 dias fixos) associados a renovação/continuidade bem-sucedida, sem tratá-los como reward genérico.
 
 ---
 

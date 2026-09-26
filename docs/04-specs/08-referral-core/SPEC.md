@@ -267,7 +267,7 @@ Cross-domain relevantes:
 
 ```text
 order.settled.v1
-payment.paid.v1
+payment.confirmed.v1
 payment.refunded.v1
 payment.chargeback.v1
 subscription.renewed.v1

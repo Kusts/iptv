@@ -15,7 +15,7 @@ Exemplos:
 - connection quantity;
 - adult-content permission;
 - app license;
-- courtesy extension;
+- Trust Renewal Grant (provider capability-specific, fixed +3 days when eligible);
 - gift pass;
 - temporary upgrade.
 

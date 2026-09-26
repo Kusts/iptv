@@ -1,13 +1,17 @@
 # ADR-0024 — Reconcile state and event contracts before dependent Waves
 
-- Status: **ACCEPTED for the pre-implementation baseline**
+- Status: **SUPERSEDED by ADR-0025**
 - Date: 2026-09-26
 
 ## Context
 
 The v1.0 state catalog simplified several aggregates after draft SQL/OpenAPI and SPECs had already listed more detailed lifecycles. The event catalog listed semantic families while the SPECs/AsyncAPI and static validator used versioned public IDs. No application implementation or PostgreSQL runtime validation exists yet; contract files and SQL are pre-implementation scaffolds.
 
-## Decision
+## Supersession
+
+ADR-0025 restores canonical-domain authority over pre-implementation SQL/OpenAPI scaffolds and corrects Conversation, Order/Charge/Payment and HumanReview classification. The detailed-physical-state decision below is retained only as historical context.
+
+## Historical decision
 
 - Keep Order, Payment, Conversation, ProviderOperation, Ticket, HumanReviewRequest and KnowledgeItem aligned to the detailed physical/API sets, as documented in `../15-implementation-baseline/03-state-machines.md`. `PAID` is the Payment fact; `Order.SETTLED` remains distinct. Refund/chargeback facts preserve original entries and require adjustments.
 - Keep CustomerSubscription's four-state lifecycle (`PENDING_ACTIVATION | ACTIVE | SUSPENDED | ENDED`) as the Subscription domain rule. Delinquency/grace are Billing/policy projections; `cancel_at_period_end` is an instruction while the paid period remains active. Align the draft SQL CHECK, OpenAPI enum and validator to this rule.

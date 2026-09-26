@@ -17,7 +17,7 @@
 - LLM cannot receive raw secrets or override authorization;
 - manual UI and Agent use the same application commands;
 - a partner manages direct children only unless explicit delegated access exists;
-- Order, Payment and Subscription remain separate;
+- Order, Charge, Payment and Subscription remain separate;
 - provider capability cannot be invented by configuration.
 
 ## Configurable/versioned business objects

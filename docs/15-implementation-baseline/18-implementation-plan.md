@@ -41,7 +41,7 @@ Person/Identity/Lead/Customer, Conversation/Message/NextAction, WAHA Inbox/manua
 
 **Milestone M1:** first real WhatsApp conversation through platform.
 
-## Wave 3 — Customer Agent v1
+## Wave 3 — Customer Agent v1 + Tenant Copilot foundation
 
 Context Builder, Primary, Commercial/Technical specialists, AgentRelease, safe tools, MessageIntent, evals, shadow mode and a working human takeover/approval/resume path before first real AI-handled conversation.
 
@@ -90,7 +90,7 @@ Advanced cost attribution, contribution, CAC/payback/LTV/cohorts. The transactio
 
 ## Waves 11–16 — Growth loops
 
-11 Campaign/attribution mature UX; 12 Referral/Rewards; 13 Resellers/Academy/network; 14 Analytics/Control Center maturation **and Tenant Copilot v1**; 15 Knowledge/Learning Admin; 16 experiment instrumentation/basic experiment capability.
+11 Campaign/attribution mature UX; 12 Referral/Rewards; 13 Resellers/Academy/network; 14 Analytics/Control Center and **Tenant Copilot maturation**; 15 Knowledge/Learning Admin; 16 experiment instrumentation/basic experiment capability.
 
 **M9:** first reseller managed.
 

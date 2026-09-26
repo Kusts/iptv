@@ -125,7 +125,7 @@ CREATE TABLE loyalty.reward_definitions (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT reward_definitions_status_check CHECK (status IN ('ACTIVE','PAUSED','RETIRED')),
-    CONSTRAINT reward_definitions_type_check CHECK (reward_type IN ('REFERRAL_CREDIT','ORDER_CREDIT','DISCOUNT','COURTESY_EXTENSION','GIFT_PASS','APP_ENTITLEMENT','CONNECTION_ENTITLEMENT','POINTS','OTHER')),
+    CONSTRAINT reward_definitions_type_check CHECK (reward_type IN ('REFERRAL_CREDIT','ORDER_CREDIT','DISCOUNT','COUPON','GIFT_PASS','APP_ENTITLEMENT','CONNECTION_ENTITLEMENT','PROMOTIONAL_ENTITLEMENT','OTHER')),
     CONSTRAINT reward_definitions_values_check CHECK ((perceived_value_minor IS NULL OR perceived_value_minor >= 0) AND (estimated_cost_minor IS NULL OR estimated_cost_minor >= 0)),
     CONSTRAINT reward_definitions_key_unique UNIQUE (tenant_id, reward_key),
     CONSTRAINT reward_definitions_tenant_id_id_unique UNIQUE (tenant_id, id)

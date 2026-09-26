@@ -429,7 +429,7 @@ O sistema deve ser capaz de representar, entre outros:
 - connections;
 - adult content permission;
 - app license;
-- courtesy extension;
+- Trust Renewal Grant (provider capability-specific);
 - subscription/referral credits;
 - gift pass;
 - temporary upgrade.
@@ -581,14 +581,14 @@ Referral deve possuir CAC, LTV, margin e conversion próprias.
 
 Rewards podem incluir:
 
-- courtesy days;
-- internal credits;
+- internal/order credits;
 - app license;
-- free renewal;
 - gift pass;
 - temporary additional connection;
-- discount;
-- upgrade.
+- discount/coupon;
+- promotional entitlement somente quando houver capability materializável.
+
+`Trust Renewal` não é reward genérico: é uma capability CINEVISION fixa de +3 dias, restrita a conta ACTIVE com <=3 dias restantes.
 
 ### FR-LOY-002 — Recurring reward economics
 

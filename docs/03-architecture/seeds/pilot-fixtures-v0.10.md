@@ -36,7 +36,7 @@ Seeded as known:
 - provider credit packages captured during discovery;
 - CINEVISION servers include ONE and XTREAM as provider context;
 - additional connection is recurring and has recurring provider cost;
-- courtesy extension capability: 3 days with 30-day cooldown, provider-dependent.
+- Trust Renewal capability reference: exactly +3 days, only for ACTIVE accounts with remaining_days <= 3; not a generic reward and no invented cooldown.
 
 Not invented:
 

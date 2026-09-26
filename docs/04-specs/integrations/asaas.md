@@ -7,7 +7,7 @@
 
 ## Purpose
 
-Use Asaas as the initial external billing/payment provider while keeping Order, Payment, Ledger and Subscription states authoritative inside our platform.
+Use Asaas as the initial external billing/payment provider while keeping Order, Charge, Payment, Ledger and Subscription states authoritative inside our platform.
 
 ## Boundary
 
@@ -28,7 +28,7 @@ getCharge
 cancelCharge when allowed
 requestRefund when allowed
 receiveWebhook
-reconcilePayment
+reconcileChargeAndPayment
 ```
 
 Exact endpoint/version mapping must be pinned during implementation against the active Asaas API version.
@@ -52,7 +52,8 @@ POST webhook
 → persist inbox event with unique external event id
 → HTTP 200
 → async canonicalization
-→ Payment transition
+→ Charge transition
+→ create/reconcile canonical Payment when confirmed
 → Ledger/Settlement workflow
 ```
 
@@ -64,7 +65,7 @@ Charge creation must also use an internal idempotency/effect key. If request out
 
 ## Mapping rule
 
-Provider statuses/events map into canonical Payment states/events. Application code must not expose Asaas event names as internal domain states.
+Provider collection statuses/events map into canonical Charge states/events. A validated paid Charge creates or reconciles one canonical `Payment.CONFIRMED`. Application code must not expose Asaas event names as internal domain states.
 
 Mapping is versioned in adapter code and covered by contract tests.
 
@@ -73,7 +74,7 @@ Mapping is versioned in adapter code and covered by contract tests.
 Reconciliation compares:
 
 ```text
-Internal Payment
+Internal Charge + confirmed Payment
 ↕
 External Asaas charge/payment observation
 ```

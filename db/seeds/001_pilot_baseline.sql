@@ -142,7 +142,6 @@ ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO loyalty.reward_definitions (id, tenant_id, reward_key, reward_type, status, perceived_value_minor, estimated_cost_minor, currency, recurring_cost_policy, rules_json)
 VALUES
- ('00000000-0000-4000-8000-000000000721','00000000-0000-4000-8000-000000000001','courtesy-extension','COURTESY_EXTENSION','ACTIVE',NULL,NULL,'BRL','PROVIDER_CAPABILITY_COOLDOWN_APPLIES','{"duration_days":3,"cooldown_days":30,"availability":"provider-dependent","synthetic":true}'),
  ('00000000-0000-4000-8000-000000000722','00000000-0000-4000-8000-000000000001','gift-pass','GIFT_PASS','ACTIVE',NULL,NULL,'BRL',NULL,'{"economic_values":"TBD","synthetic":true}'),
  ('00000000-0000-4000-8000-000000000723','00000000-0000-4000-8000-000000000001','temporary-extra-connection','CONNECTION_ENTITLEMENT','ACTIVE',NULL,NULL,'BRL','REQUIRES_PROVIDER_COGS_PER_ACTIVE_CYCLE','{"permanent_reward":false,"synthetic":true}')
 ON CONFLICT (id) DO NOTHING;

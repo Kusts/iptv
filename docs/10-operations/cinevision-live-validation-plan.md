@@ -38,7 +38,7 @@ Capture:
 5. migrate server;
 6. change connections;
 7. block/unblock;
-8. courtesy extension;
+8. Trust Renewal eligibility and exact +3-day postcondition;
 9. playlist/credential reads;
 10. destructive actions last and only in controlled test account.
 

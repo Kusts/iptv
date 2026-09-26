@@ -24,6 +24,12 @@ class SeedContractTests(unittest.TestCase):
         price_section = re.findall(r"INSERT INTO catalog\.prices.*?ON CONFLICT \(id\) DO NOTHING;", SEED, re.S)[0]
         self.assertNotIn(addon_id, price_section)
 
+    def test_trust_renewal_is_not_seeded_as_generic_reward(self):
+        self.assertNotIn('courtesy-extension', SEED)
+        self.assertNotIn('trust-renewal-reference', SEED)
+        self.assertNotIn('cooldown_days', SEED)
+        self.assertNotIn('COURTESY_EXTENSION', SEED)
+
     def test_high_risk_outbound_flags_default_off(self):
         for key in ['ai.outbound.enabled','browser.provider.enabled','messaging.outbound.enabled']:
             pattern = rf"'{re.escape(key)}',false"

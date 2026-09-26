@@ -270,7 +270,8 @@ CREATE TABLE agent.human_review_requests (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id uuid NOT NULL REFERENCES control.tenants(id),
     status text NOT NULL DEFAULT 'REQUESTED',
-    review_type text NOT NULL,
+    review_mode text NOT NULL,
+    reason text NOT NULL,
     risk_class text NOT NULL,
     priority text NOT NULL DEFAULT 'NORMAL',
     resource_type text NOT NULL,
@@ -287,7 +288,8 @@ CREATE TABLE agent.human_review_requests (
     CONSTRAINT human_review_assignee_membership_fk FOREIGN KEY (tenant_id, assigned_to_user_id)
         REFERENCES control.tenant_memberships (tenant_id, user_id),
     CONSTRAINT human_review_status_check CHECK (status IN ('REQUESTED','QUEUED','ACKNOWLEDGED','IN_REVIEW','GUIDANCE_PROVIDED','ACTION_TAKEN','RESOLVED','EXPIRED','CANCELLED')),
-    CONSTRAINT human_review_type_check CHECK (review_type IN ('GUIDANCE','APPROVAL','SECURITY_CHALLENGE','PROVIDER_EXCEPTION','RISK_REVIEW','FINANCIAL_REVIEW','CONTENT_COMPLIANCE','OTHER')),
+    CONSTRAINT human_review_mode_check CHECK (review_mode IN ('APPROVAL','REVIEW','GUIDANCE','MANUAL_EXECUTION')),
+    CONSTRAINT human_review_reason_check CHECK (reason IN ('SECURITY_CHALLENGE','PROVIDER_EXCEPTION','RISK_REVIEW','FINANCIAL_REVIEW','CONTENT_COMPLIANCE','OTHER')),
     CONSTRAINT human_review_risk_check CHECK (risk_class IN ('R0','R1','R2','R3','R4')),
     CONSTRAINT human_review_priority_check CHECK (priority IN ('LOW','NORMAL','HIGH','URGENT')),
     CONSTRAINT human_review_requester_check CHECK (requested_by_type IN ('system','agent','human','external')),
@@ -298,6 +300,15 @@ CREATE TABLE agent.human_review_requests (
 CREATE INDEX human_review_queue_idx
     ON agent.human_review_requests (tenant_id, status, priority, sla_due_at)
     WHERE status IN ('REQUESTED','QUEUED','ACKNOWLEDGED','IN_REVIEW');
+
+ALTER TABLE billing.refund_requests
+    ADD CONSTRAINT refund_requests_human_review_fk
+    FOREIGN KEY (tenant_id, human_review_request_id)
+    REFERENCES agent.human_review_requests (tenant_id, id);
+
+CREATE UNIQUE INDEX refund_requests_human_review_unique
+    ON billing.refund_requests (tenant_id, human_review_request_id)
+    WHERE human_review_request_id IS NOT NULL;
 
 CREATE TABLE agent.human_review_actions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

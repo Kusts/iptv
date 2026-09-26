@@ -196,11 +196,11 @@ paths:
                 $ref: '#/components/schemas/Order'
         '404':
           $ref: '#/components/responses/NotFound'
-  /v1/orders/{orderId}/payments:
+  /v1/orders/{orderId}/charges:
     post:
       tags:
       - Billing
-      operationId: createPayment
+      operationId: createCharge
       parameters:
       - $ref: '#/components/parameters/OrderId'
       - $ref: '#/components/parameters/IdempotencyKey'
@@ -210,14 +210,72 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreatePaymentRequest'
+              $ref: '#/components/schemas/CreateChargeRequest'
       responses:
         '201':
-          description: Payment created
+          description: Charge created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Payment'
+                $ref: '#/components/schemas/Charge'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/payments/{paymentId}/refund-requests:
+    post:
+      tags:
+      - Billing
+      operationId: requestRefund
+      parameters:
+      - $ref: '#/components/parameters/PaymentId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRefundRequest'
+      responses:
+        '201':
+          description: Refund request created; execution still requires human review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefundRequest'
+  /v1/refund-requests/{refundRequestId}:
+    get:
+      tags:
+      - Billing
+      operationId: getRefundRequest
+      parameters:
+      - $ref: '#/components/parameters/RefundRequestId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Refund request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefundRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/refund-requests/{refundRequestId}/execute:
+    post:
+      tags:
+      - Billing
+      operationId: executeApprovedRefund
+      description: Human-authorized execution path. The command revalidates approval, policy, refundable amount and current payment state.
+      parameters:
+      - $ref: '#/components/parameters/RefundRequestId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '202':
+          description: Refund execution started or reconciliation required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Refund'
         '409':
           $ref: '#/components/responses/Conflict'
   /v1/subscriptions/{subscriptionId}:
@@ -1050,6 +1108,20 @@ components:
       schema:
         type: string
         format: uuid
+    PaymentId:
+      name: paymentId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RefundRequestId:
+      name: refundRequestId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     SubscriptionId:
       name: subscriptionId
       in: path
@@ -1507,11 +1579,8 @@ components:
           type: string
           enum:
           - DRAFT
-          - PENDING_ACCEPTANCE
-          - PENDING_SETTLEMENT
+          - AWAITING_PAYMENT
           - SETTLED
-          - FULFILLING
-          - COMPLETED
           - CANCELLED
           - EXPIRED
         gross:
@@ -1530,7 +1599,7 @@ components:
           - string
           - 'null'
           format: date-time
-    CreatePaymentRequest:
+    CreateChargeRequest:
       type: object
       required:
       - provider
@@ -1552,7 +1621,7 @@ components:
           - string
           - 'null'
           format: date-time
-    Payment:
+    Charge:
       type: object
       required:
       - id
@@ -1576,9 +1645,6 @@ components:
           - FAILED
           - CANCELLED
           - EXPIRED
-          - PARTIALLY_REFUNDED
-          - REFUNDED
-          - CHARGEBACK
         amount:
           $ref: '#/components/schemas/Money'
         providerPaymentUrl:
@@ -1590,6 +1656,140 @@ components:
           type: string
           format: date-time
         paidAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    Payment:
+      type: object
+      required:
+      - id
+      - orderId
+      - chargeId
+      - status
+      - amount
+      - confirmedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        orderId:
+          type: string
+          format: uuid
+        chargeId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - CONFIRMED
+          - PARTIALLY_REFUNDED
+          - REFUNDED
+          - CHARGEBACK
+        amount:
+          $ref: '#/components/schemas/Money'
+        confirmedAt:
+          type: string
+          format: date-time
+    CreateRefundRequest:
+      type: object
+      required:
+      - amount
+      - reason
+      properties:
+        amount:
+          $ref: '#/components/schemas/Money'
+        reason:
+          type: string
+          minLength: 1
+    RefundRequest:
+      type: object
+      required:
+      - id
+      - paymentId
+      - status
+      - amount
+      - reason
+      - requestedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        paymentId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - REQUESTED
+          - UNDER_REVIEW
+          - APPROVED
+          - REJECTED
+          - EXPIRED
+          - CANCELLED
+          - EXECUTED
+        amount:
+          $ref: '#/components/schemas/Money'
+        reason:
+          type: string
+        humanReviewRequestId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        requestedAt:
+          type: string
+          format: date-time
+        decidedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        executedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    Refund:
+      type: object
+      required:
+      - id
+      - refundRequestId
+      - paymentId
+      - status
+      - effectCertainty
+      - amount
+      - startedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        refundRequestId:
+          type: string
+          format: uuid
+        paymentId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - PROCESSING
+          - RECONCILING
+          - SUCCEEDED
+          - FAILED
+          - CANCELLED
+        effectCertainty:
+          type: string
+          enum:
+          - KNOWN_APPLIED
+          - KNOWN_NOT_APPLIED
+          - UNKNOWN
+        amount:
+          $ref: '#/components/schemas/Money'
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
           type:
           - string
           - 'null'
@@ -1835,7 +2035,8 @@ components:
       required:
       - id
       - status
-      - reviewType
+      - reviewMode
+      - reason
       - createdAt
       properties:
         id:
@@ -1853,8 +2054,22 @@ components:
           - RESOLVED
           - EXPIRED
           - CANCELLED
-        reviewType:
+        reviewMode:
           type: string
+          enum:
+          - APPROVAL
+          - REVIEW
+          - GUIDANCE
+          - MANUAL_EXECUTION
+        reason:
+          type: string
+          enum:
+          - SECURITY_CHALLENGE
+          - PROVIDER_EXCEPTION
+          - RISK_REVIEW
+          - FINANCIAL_REVIEW
+          - CONTENT_COMPLIANCE
+          - OTHER
         createdAt:
           type: string
           format: date-time
@@ -2257,17 +2472,23 @@ components:
     CreateHumanReviewRequest:
       type: object
       required:
-      - reviewType
+      - reviewMode
+      - reason
       - riskClass
       - resourceType
       - resourceId
       - summary
       properties:
-        reviewType:
+        reviewMode:
           type: string
           enum:
-          - GUIDANCE
           - APPROVAL
+          - REVIEW
+          - GUIDANCE
+          - MANUAL_EXECUTION
+        reason:
+          type: string
+          enum:
           - SECURITY_CHALLENGE
           - PROVIDER_EXCEPTION
           - RISK_REVIEW
@@ -2356,7 +2577,9 @@ components:
           type: string
           enum:
           - OPEN
-          - CLOSED
+          - AWAITING_CUSTOMER
+          - AWAITING_INTERNAL
+          - RESOLVED
           - ARCHIVED
         controlMode:
           type: string

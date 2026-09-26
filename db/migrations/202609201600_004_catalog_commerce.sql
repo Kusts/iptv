@@ -173,11 +173,8 @@ CREATE TABLE commerce.orders (
     net_amount_minor bigint NOT NULL DEFAULT 0,
     settled_amount_minor bigint NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT now(),
-    submitted_at timestamptz,
-    accepted_at timestamptz,
+    awaiting_payment_at timestamptz,
     settled_at timestamptz,
-    fulfillment_started_at timestamptz,
-    completed_at timestamptz,
     cancelled_at timestamptz,
     expires_at timestamptz,
     CONSTRAINT orders_person_fk FOREIGN KEY (tenant_id, person_id)
@@ -187,7 +184,7 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_offer_fk FOREIGN KEY (tenant_id, source_offer_id)
         REFERENCES catalog.offers (tenant_id, id),
     CONSTRAINT orders_type_check CHECK (order_type IN ('NEW_SUBSCRIPTION','RENEWAL','ADDON','APP','MIXED','ADJUSTMENT')),
-    CONSTRAINT orders_status_check CHECK (status IN ('DRAFT','PENDING_ACCEPTANCE','PENDING_SETTLEMENT','SETTLED','FULFILLING','COMPLETED','CANCELLED','EXPIRED')),
+    CONSTRAINT orders_status_check CHECK (status IN ('DRAFT','AWAITING_PAYMENT','SETTLED','CANCELLED','EXPIRED')),
     CONSTRAINT orders_amounts_nonnegative CHECK (
         gross_amount_minor >= 0 AND discount_amount_minor >= 0 AND reward_amount_minor >= 0 AND
         net_amount_minor >= 0 AND settled_amount_minor >= 0

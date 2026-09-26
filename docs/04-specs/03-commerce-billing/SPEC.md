@@ -14,7 +14,7 @@ Transformar uma oferta válida em `Order`, liquidar sua obrigação financeira c
 ```text
 Order SETTLED
 ≠
-Payment PAID
+Payment CONFIRMED
 ```
 
 Uma Order pode ser `SETTLED` por:
@@ -30,16 +30,15 @@ Nunca criar pagamento fictício para uma Order de valor zero.
 
 ```text
 DRAFT
-PENDING_ACCEPTANCE
-PENDING_SETTLEMENT
+AWAITING_PAYMENT
 SETTLED
-FULFILLING
-COMPLETED
 CANCELLED
 EXPIRED
 ```
 
-## 4. Payment Lifecycle
+Offer acceptance is represented by Offer/Commerce policy. Fulfillment is intentionally outside the Order lifecycle and belongs to Subscription/Entitlements/Provider Operations.
+
+## 4. Charge Lifecycle
 
 ```text
 PENDING
@@ -48,12 +47,22 @@ PAID
 FAILED
 CANCELLED
 EXPIRED
+```
+
+A Charge is an external collection obligation/attempt.
+
+## 5. Payment Lifecycle
+
+```text
+CONFIRMED
 PARTIALLY_REFUNDED
 REFUNDED
 CHARGEBACK
 ```
 
-## 5. Price snapshot
+A Payment exists only after confirmed money movement. Pending/failed/expired collection belongs to Charge, not Payment.
+
+## 6. Price snapshot
 
 Ao criar Order, congelar no mínimo:
 
@@ -68,30 +77,32 @@ Ao criar Order, congelar no mínimo:
 
 Mudança futura de catálogo não altera Order histórica.
 
-## 6. API
+## 7. API
 
 ```text
 POST /v1/offers/resolve
 POST /v1/orders
 GET  /v1/orders/{orderId}
-POST /v1/orders/{orderId}/payments
+POST /v1/orders/{orderId}/charges
 POST /v1/webhooks/asaas
 ```
 
-## 7. Fluxo de compra
+## 8. Fluxo de compra
 
 ```text
 resolve allowed offer
 ↓
 create Order + items + price snapshots
 ↓
-PENDING_SETTLEMENT
+AWAITING_PAYMENT
 ↓
-create payment obligation if net > 0
+create Charge if net > 0
 ↓
-external provider confirms payment
+external provider confirms Charge payment
 ↓
 validate + dedupe webhook
+↓
+create Payment CONFIRMED exactly once
 ↓
 ledger transaction
 ↓
@@ -112,7 +123,7 @@ Order SETTLED
 
 sem `Payment` falso.
 
-## 8. Webhook intake
+## 9. Webhook intake
 
 Entrada externa é apenas evidência até ser validada.
 
@@ -125,7 +136,7 @@ Obrigatório:
 - processar efeito de forma idempotente;
 - reconciliar periodicamente.
 
-## 9. Ledger
+## 10. Ledger
 
 Toda liquidação relevante gera lançamentos append-only.
 
@@ -178,7 +189,7 @@ Refund e chargeback não apagam fatos anteriores.
 Fluxo:
 
 ```text
-Payment PAID
+Payment CONFIRMED
 ↓
 refund/chargeback fact
 ↓
@@ -197,19 +208,16 @@ offer.expired.v1
 coupon.applied.v1
 coupon.rejected.v1
 order.created.v1
-order.submitted.v1
-order.accepted.v1
 order.settled.v1
-order.fulfillment_started.v1
-order.completed.v1
 order.cancelled.v1
 order.expired.v1
-payment.created.v1
-payment.processing.v1
-payment.paid.v1
-payment.failed.v1
-payment.expired.v1
-payment.cancelled.v1
+charge.created.v1
+charge.processing.v1
+charge.paid.v1
+charge.failed.v1
+charge.expired.v1
+charge.cancelled.v1
+payment.confirmed.v1
 payment.partially_refunded.v1
 payment.refunded.v1
 payment.chargeback.v1
@@ -219,8 +227,8 @@ payment.chargeback.v1
 
 - CA-01: alterações futuras de price não mudam histórico.
 - CA-02: webhook duplicado não duplica ledger/effects.
-- CA-03: Order zero-value pode ser SETTLED sem Payment PAID.
-- CA-04: Payment PAID sozinho não pula regras de settlement/reconciliation.
+- CA-03: Order zero-value pode ser SETTLED sem Payment CONFIRMED.
+- CA-04: Payment CONFIRMED sozinho não pula regras de settlement/reconciliation.
 - CA-05: reward/referral consumption é ledgered/auditável.
 - CA-06: additional connection recorrente reaparece em renewal order enquanto ativa.
 - CA-07: refund não apaga pagamento original.

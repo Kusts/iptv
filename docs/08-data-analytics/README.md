@@ -59,7 +59,7 @@ Fatos que representam mudança real de negócio.
 
 Exemplos:
 
-- `payment.paid.v1`;
+- `payment.confirmed.v1`;
 - `order.settled.v1`;
 - `subscription.renewed.v1`;
 - `referral.confirmed.v1`.

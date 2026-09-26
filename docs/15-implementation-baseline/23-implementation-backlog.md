@@ -67,7 +67,8 @@ This backlog is the executable decomposition of `18-implementation-plan.md`. A w
 - Shadow mode, AI/Human control, Agent Activity;
 - live-safe approval/resume and failed-agent manual fallback through the same command/policy/audit path;
 - critical injection/cross-tenant/tool-policy evals;
-- E2E G02 + F07/F09/F10.
+- **Tenant Copilot foundation** — global widget shell, current route/entity/selection/filter context, permission-scoped read/navigation, deep links and explain-current-screen using the same Context Builder/Capability Registry; no privileged bypass;
+- E2E G02 + F07/F09/F10 plus Copilot read/isolation smoke tests.
 
 ## Wave 4 — Trial + Compatibility
 
@@ -85,10 +86,11 @@ This backlog is the executable decomposition of `18-implementation-plan.md`. A w
 - CommercialPolicy/discount boundaries;
 - Asaas Charge/Payment adapter, authenticated webhook inbox, reconciliation;
 - operational balanced financial ledger: order settlement (including zero-value with valid credit), idempotent postings, reversal/chargeback adjustment; keep analytical allocation for Wave 10;
-- `RefundRequest`/human decision/`Refund` execution contract in migration, OpenAPI and commands, including serialized refundable-amount reservation, concurrent requests, stale approval and unknown-effect reconciliation (F08/F17); no real payment canary while this contract is only a blueprint;
+- `RefundRequest`/human decision/`Refund` execution implementation against the v1.0.1 migration/OpenAPI contract, including serialized refundable-amount reservation, concurrent requests, stale approval and unknown-effect reconciliation (F08/F17); no real payment canary until runtime evidence passes;
 - controlled production canary and applicable payment/data checks before the first real charge;
 - Billing specialist/tools;
-- PIX UI and Order/Payment timelines;
+- Tenant Copilot may prepare Order/Charge drafts and open filtered billing views; execution uses existing commands/policies;
+- PIX UI and Order/Charge/Payment timelines;
 - E2E G05 + F01.
 
 ## Wave 6 — Subscription + Fulfillment
@@ -98,6 +100,7 @@ This backlog is the executable decomposition of `18-implementation-plan.md`. A w
 - automatic fulfillment workflow + postcondition;
 - credentials delivery and completion-state UX;
 - manual equivalent commands;
+- Tenant Copilot may execute the first low-risk authorized domain commands (for example open/reconcile/prepare actions) only through the same command/policy/audit pipeline; sensitive actions still follow HITL;
 - E2E G06 + F02/F03/F04/F12/F16 (cross-customer Order/Cycle/Entitlement and add-on ownership).
 
 **First-value checkpoint after Wave 6:** G01–G06 and F01–F04/F10/F12/F16/F17 passing with controlled real/certified equivalents, manual exception path, baseline handling time and transaction cost captured. This checkpoint is not the full MVP-PILOT release gate.
@@ -130,9 +133,9 @@ Referral lifecycle, qualification, reward/wallet ledger, anti-abuse, context-awa
 
 PartnerAccount/direct relationships/network projection, reseller order/credit ledger, reseller CRM/360, Academy/progress, direct-child authorization, SaaS opportunity/link, G14/G15/G16.
 
-## Wave 14 — Analytics/Control Center + Tenant Copilot v1
+## Wave 14 — Analytics/Control Center + Tenant Copilot maturation
 
-Metric Catalog implementation, funnels/cohorts/revenue/provider/agent/reseller dashboards, data-quality indicators, Control Center aggregation. **W14-COPILOT:** scoped widget and workspace, current-view/selection/filter read through tenant permissions, draft/preview and one authorized command through the existing application command/policy/audit pipeline; human approval where risk requires it; denial, stale-resource and tenant-isolation cases; G18. Full reporting/research UX can be completed in Wave 17, but both required surfaces and G18 must pass before MVP-PILOT.
+Metric Catalog implementation, funnels/cohorts/revenue/provider/agent/reseller dashboards, data-quality indicators, Control Center aggregation. **W14-COPILOT:** mature the Copilot foundation already dogfooded since Wave 3: full workspace, business/metric analysis, richer structured responses, draft/preview flows, cross-domain navigation and the required authorized-command scenarios through the existing command/policy/audit pipeline; human approval where risk requires it; denial, stale-resource and tenant-isolation cases; G18. Full reporting/research polish can continue in Wave 17, but widget + workspace + G18 must pass before MVP-PILOT.
 
 ## Wave 15 — Knowledge/Learning maturation
 

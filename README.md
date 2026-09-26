@@ -1,9 +1,9 @@
-# AI Revenue & Operations Platform — Implementation Documentation v1.0
+# AI Revenue & Operations Platform — Implementation Documentation v1.0.1
 
 > Status: **PLANNING BASELINE — WAVE 0 READY; LATER WAVES CERTIFICATION-GATED**  
 > Date: 2026-09-26  
 > Scope: Modules 1–25 + planning closure + implementation gates  
-> Review: the original v1.0 self-review is historical; state/event reconciliation and implementation gates were updated in ADR-0024.
+> Review: v1.0.1 incorporates the agent hardening plus canonical-domain corrections in ADR-0025 and a fresh full auto-review.
 
 ## Start here
 
@@ -11,13 +11,14 @@
 2. [`docs/15-implementation-baseline/18-implementation-plan.md`](docs/15-implementation-baseline/18-implementation-plan.md) — Wave 0 → MVP-SAAS execution order.
 3. [`docs/15-implementation-baseline/15-definition-of-done.md`](docs/15-implementation-baseline/15-definition-of-done.md) — mandatory completion criteria.
 4. [`docs/00-meta/development-agent-handbook.md`](docs/00-meta/development-agent-handbook.md) — development-agent behavior.
-5. [`docs/06-decisions/ADR-0024-state-event-contract-reconciliation.md`](docs/06-decisions/ADR-0024-state-event-contract-reconciliation.md) — contract reconciliation decision.
+5. [`docs/06-decisions/ADR-0025-canonical-domain-authority.md`](docs/06-decisions/ADR-0025-canonical-domain-authority.md) — canonical authority/correction decision.
+6. [`docs/00-meta/auto-review-v1.0.1.md`](docs/00-meta/auto-review-v1.0.1.md) — full review of this revision.
 
 ## Authority hierarchy
 
 Vision/Principles → v1.0 Implementation Baseline → Domain → Architecture/Accepted ADRs → SPECs → Contracts → Roadmap/Tasks → Code/Tests/Evals → Runbooks/User Docs.
 
-The v1.0 implementation baseline supersedes conflicting pre-v1.0 planning text. Older detail files remain supporting material only where they do not conflict with the baseline.
+The v1.0.1 implementation baseline supersedes conflicting pre-v1.0 planning text. Older detail files remain supporting material only where they do not conflict with the baseline.
 This repository contains planning, draft migrations/contracts and static checks, not a running application. PostgreSQL runtime and live integration gates remain pending; a green static check is not runtime certification.
 
 Current static checks: `python scripts/validate_docs.py`, `python tests/contracts/test_contracts.py`, and `python tests/contracts/test_seed_contract.py`. `scripts/validate_doc_reviews.py` checks historical v0.14 review markers on a fixed file list; it is not the current v1.0 contract/readiness gate and must not be made green by adding review claims to files that were not reviewed in v0.14.

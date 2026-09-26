@@ -225,11 +225,11 @@ channels:
       operationId: publishOrderSettled
       message:
         $ref: '#/components/messages/OrderSettled'
-  payment.paid.v1:
+  payment.confirmed.v1:
     publish:
-      operationId: publishPaymentPaid
+      operationId: publishPaymentConfirmed
       message:
-        $ref: '#/components/messages/PaymentPaid'
+        $ref: '#/components/messages/PaymentConfirmed'
   person.created.v1:
     publish:
       operationId: publishPersonCreated
@@ -598,7 +598,7 @@ components:
           - REWARD_CREDIT
           - MIXED
           - ZERO_VALUE
-    PaymentPaidData:
+    PaymentConfirmedData:
       type: object
       required:
       - payment_id
@@ -728,7 +728,8 @@ components:
       type: object
       required:
       - review_id
-      - review_type
+      - review_mode
+      - reason
       - resource_type
       - resource_id
       - risk_class
@@ -736,8 +737,22 @@ components:
         review_id:
           type: string
           format: uuid
-        review_type:
+        review_mode:
           type: string
+          enum:
+          - APPROVAL
+          - REVIEW
+          - GUIDANCE
+          - MANUAL_EXECUTION
+        reason:
+          type: string
+          enum:
+          - SECURITY_CHALLENGE
+          - PROVIDER_EXCEPTION
+          - RISK_REVIEW
+          - FINANCIAL_REVIEW
+          - CONTENT_COMPLIANCE
+          - OTHER
         resource_type:
           type: string
         resource_id:
@@ -1051,7 +1066,11 @@ components:
           type:
           - string
           - 'null'
-        review_type:
+        review_mode:
+          type:
+          - string
+          - 'null'
+        reason:
           type:
           - string
           - 'null'
@@ -1630,15 +1649,15 @@ components:
               $ref: '#/components/schemas/OrderSettledData'
           required:
           - data
-    PaymentPaid:
-      name: payment.paid.v1
+    PaymentConfirmed:
+      name: payment.confirmed.v1
       payload:
         allOf:
         - $ref: '#/components/schemas/EventEnvelopeBase'
         - type: object
           properties:
             data:
-              $ref: '#/components/schemas/PaymentPaidData'
+              $ref: '#/components/schemas/PaymentConfirmedData'
           required:
           - data
     PersonCreated:

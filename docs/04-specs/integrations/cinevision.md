@@ -16,7 +16,7 @@ The collected panel documentation and operational notes indicate capabilities ar
 - quick/free trials;
 - customer creation/editing;
 - renewal;
-- temporary "renew on trust" / courtesy extension;
+- Trust Renewal: exactly +3 days, only ACTIVE accounts with <=3 days remaining;
 - server sync/migration;
 - connection/screen changes;
 - block/unblock;

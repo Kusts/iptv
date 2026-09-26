@@ -5,7 +5,7 @@
 > Data: 2026-09-20
 > Review: Auto-reviewed v0.14 — reconcile against implemented UI before launch.
 
-Treat Order, Payment, Subscription and Provider Fulfillment as distinct. A payment can be confirmed while fulfillment is still pending. An Order can be SETTLED with zero external payment when valid credits/rewards cover it. Recurring additional connections generate recurring customer charge/cost treatment every active cycle.
+Treat Order, Charge, Payment, Subscription and Provider Fulfillment as distinct. A payment can be confirmed while fulfillment is still pending. An Order can be SETTLED with zero external payment when valid credits/rewards cover it. Recurring additional connections generate recurring customer charge/cost treatment every active cycle.
 
 ## Escalation rule
 

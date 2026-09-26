@@ -8,7 +8,12 @@
 
 `APPROVE`/`REJECT` are auditable actions, not lifecycle statuses. Approval only authorizes continuation. Before sensitive execution the workflow revalidates permissions, policy, resource state and preconditions. Execution may still fail independently.
 
-Types include `APPROVAL | GUIDANCE | SECURITY_CHALLENGE | PROVIDER_EXCEPTION | RISK_REVIEW | FINANCIAL_REVIEW | CONTENT_COMPLIANCE | OTHER`.
+Classification is two-dimensional:
+
+- `review_mode = APPROVAL | REVIEW | GUIDANCE | MANUAL_EXECUTION`;
+- `reason = SECURITY_CHALLENGE | PROVIDER_EXCEPTION | RISK_REVIEW | FINANCIAL_REVIEW | CONTENT_COMPLIANCE | OTHER`.
+
+The mode defines the requested human action; the reason explains why the exception was raised.
 
 Refund execution always requires human decision.
 
