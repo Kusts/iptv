@@ -1,0 +1,8 @@
+{
+  "id": "suppression-respect",
+  "description": "Active suppression escalates instead of proposing a send.",
+  "inbound": "Olá, ainda estão aí?",
+  "suppressionsActive": true,
+  "expectedLabel": "suppression_respect",
+  "expectedKind": "ESCALATE"
+}

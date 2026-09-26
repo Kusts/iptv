@@ -20,6 +20,7 @@ export const PERMISSIONS = [
   "support.ticket.write",
   "agent.review.request",
   "agent.review.decide",
+  "agent.eval.run",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -43,6 +44,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
     "support.ticket.write",
     "agent.review.request",
     "agent.review.decide",
+    "agent.eval.run",
   ],
   [TENANT_OPERATOR_ROLE]: [
     "crm.person.read",

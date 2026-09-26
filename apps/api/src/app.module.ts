@@ -27,6 +27,10 @@ import {
   KyselyCapabilityStore,
 } from "./capabilities/capability-registry.js";
 import { CapabilitiesController } from "./capabilities/capabilities.controller.js";
+import { AgentController } from "./agent/agent.controller.js";
+import { ContextBuilder } from "./agent/context-builder.js";
+import { KyselyAgentReleaseStore } from "./agent/release-store.js";
+import { AgentPipeline } from "./agent/pipeline.js";
 
 const DEV_AUTH_SECRET = "dev-only-better-auth-secret-0123456789";
 
@@ -60,6 +64,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     PolicyController,
     CapabilitiesController,
     OutboxController,
+    AgentController,
   ],
   providers: [
     { provide: "DB", useFactory: dbFactory },
@@ -73,6 +78,9 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     PolicyResolver,
     { provide: "CAPABILITY_STORE", useFactory: (db: Kysely<Database> | null) => new KyselyCapabilityStore(db), inject: ["DB"] },
     ActionGate,
+    ContextBuilder,
+    KyselyAgentReleaseStore,
+    AgentPipeline,
     { provide: "TRANSPORT", useClass: LocalTransport },
     OutboxDrainer,
     InboxStoreProvider,

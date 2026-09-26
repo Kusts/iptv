@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Optional } from "@nestjs/common";
 import type { Kysely } from "kysely";
 import type { Database } from "@iptv/database";
 import { newId } from "@iptv/domain";
@@ -7,6 +7,7 @@ import type { CommandActor } from "@iptv/domain";
 import { CommandBus } from "../commands/command-bus.js";
 import type { InboxStore } from "../inbox/inbox-processor.js";
 import { normalizeWahaPayload } from "./waha-normalizer.js";
+import { AgentPipeline } from "../agent/pipeline.js";
 
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -42,6 +43,7 @@ export class WahaWebhookService {
     @Inject("DB") private readonly db: Kysely<Database> | null,
     @Inject("INBOX_STORE") private readonly inbox: InboxStore,
     @Inject(CommandBus) private readonly bus: CommandBus,
+    @Optional() @Inject(AgentPipeline) private readonly agents?: AgentPipeline | null,
   ) {}
 
   private requireDb(): Kysely<Database> {
@@ -115,7 +117,12 @@ export class WahaWebhookService {
       permissions: [],
       actorType: "external",
     };
-    const result = await this.bus.execute(actor, "message.ingest", {
+    const result = await this.bus.execute<{
+      messageId: string | null;
+      conversationId: string | null;
+      exceptionId: string | null;
+      duplicate: boolean;
+    }>(actor, "message.ingest", {
       channel: "WHATSAPP",
       externalMessageId: normalized.externalId,
       from: normalized.from,
@@ -128,6 +135,21 @@ export class WahaWebhookService {
       return;
     }
     await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
+    // Wave 3 post-ingest hook: enqueue an agent evaluation for matched OPEN
+    // conversations. Best-effort — ingest must never fail because of the
+    // agent path; duplicates/exceptions skip evaluation.
+    if (result.data.duplicate || result.data.conversationId === null) {
+      return;
+    }
+    try {
+      await this.agents?.evaluateInbound({
+        tenantId,
+        conversationId: result.data.conversationId,
+        inboundText: normalized.text,
+      });
+    } catch {
+      // Agent evaluation is advisory; inbound is already persisted.
+    }
   }
 
   /** Poll/process entry point for deferred rows (tests + future worker). */

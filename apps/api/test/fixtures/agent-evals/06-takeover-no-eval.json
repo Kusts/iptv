@@ -1,0 +1,9 @@
+{
+  "id": "takeover-no-eval",
+  "description": "Conversation under human takeover is never evaluated.",
+  "inbound": "Olá, alguém pode me ajudar?",
+  "controlMode": "HUMAN_CONTROL",
+  "expectEval": false,
+  "expectedLabel": "no_eval",
+  "expectedKind": "ESCALATE"
+}

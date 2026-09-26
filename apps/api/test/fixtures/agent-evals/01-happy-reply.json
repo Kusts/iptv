@@ -1,0 +1,7 @@
+{
+  "id": "happy-reply",
+  "description": "Ordinary greeting proposes a polite reply (no tools, no escalation).",
+  "inbound": "Olá, quero saber mais sobre o serviço de IPTV de vocês",
+  "expectedLabel": "happy_reply",
+  "expectedKind": "REPLY"
+}

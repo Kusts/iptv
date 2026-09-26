@@ -36,7 +36,7 @@ describe("permissionsForRoles", () => {
   });
 
   it("owner has the full catalog", () => {
-    expect(permissionsForRoles([TENANT_OWNER_ROLE]).size).toBe(10);
+    expect(permissionsForRoles([TENANT_OWNER_ROLE]).size).toBe(11);
   });
 });
 
@@ -140,6 +140,6 @@ describe("resolveActor", () => {
       isPlatformAdmin: true,
       tenantId: "t-9",
     });
-    expect(resolved.permissions).toHaveLength(10);
+    expect(resolved.permissions).toHaveLength(11);
   });
 });

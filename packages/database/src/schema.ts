@@ -425,6 +425,56 @@ export interface CommunicationExceptionsTable {
   resolved_at: Date | null;
 }
 
+/** Mirrors `agent.agent_releases` (migration 016, versioned rows). */
+export interface AgentReleasesTable {
+  id: string;
+  key: string;
+  version: number;
+  profile: string;
+  system_prompt: string;
+  developer_prompt: string;
+  model: string;
+  allowed_tools: unknown;
+  status: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `agent.agent_runs` (migration 016). */
+export interface AgentRunsTable {
+  id: string;
+  tenant_id: string;
+  conversation_id: string | null;
+  release_key: string;
+  release_version: number;
+  mode: string;
+  model: string;
+  status: string;
+  proposal_kind: string | null;
+  proposal_label: string | null;
+  proposal_text: string | null;
+  tool_calls_json: unknown;
+  usage_json: unknown;
+  trace_json: unknown;
+  human_review_request_id: string | null;
+  created_at: Date;
+  decided_at: Date | null;
+}
+
+/** Mirrors `agent.agent_tasks` (migration 016). */
+export interface AgentTasksTable {
+  id: string;
+  tenant_id: string;
+  run_id: string;
+  kind: string;
+  tool_name: string | null;
+  status: string;
+  input_json: unknown;
+  output_json: unknown;
+  created_at: Date;
+  completed_at: Date | null;
+}
+
 export interface Database {
   "control.tenants": ControlTenantsTable;
   "control.users": ControlUsersTable;
@@ -443,6 +493,9 @@ export interface Database {
   "platform.migration_history": PlatformMigrationHistoryTable;
   "agent.human_review_requests": AgentHumanReviewRequestsTable;
   "agent.human_review_actions": AgentHumanReviewActionsTable;
+  "agent.agent_releases": AgentReleasesTable;
+  "agent.agent_runs": AgentRunsTable;
+  "agent.agent_tasks": AgentTasksTable;
   "platform.capabilities": PlatformCapabilitiesTable;
   "platform.capability_events": PlatformCapabilityEventsTable;
   "platform.policy_documents": PlatformPolicyDocumentsTable;

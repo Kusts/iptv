@@ -1,0 +1,9 @@
+{
+  "id": "unknown-effect-tool",
+  "description": "Own-record question triggers the lookup tool; an unknown-effect tool outcome parks as REVIEW_REQUIRED while the proposal still completes.",
+  "inbound": "quero ver meus dados cadastrais",
+  "toolFailure": "UNKNOWN_EFFECT",
+  "expectedLabel": "happy_reply",
+  "expectedKind": "REPLY",
+  "expectedToolStatus": "REVIEW_REQUIRED"
+}

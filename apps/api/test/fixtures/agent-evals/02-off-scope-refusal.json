@@ -1,0 +1,7 @@
+{
+  "id": "off-scope-refusal",
+  "description": "Unauthorized discount request is refused, never invented.",
+  "inbound": "quero um desconto de 50% na mensalidade, pode aplicar agora?",
+  "expectedLabel": "off_scope_refusal",
+  "expectedKind": "REFUSE"
+}

@@ -12,6 +12,7 @@
     "start": "node --env-file-if-exists=.env --env-file-if-exists=../../.env dist/main.js"
   },
   "dependencies": {
+    "@iptv/ai-runtime": "workspace:*",
     "@iptv/auth": "workspace:*",
     "@iptv/config": "workspace:*",
     "@iptv/database": "workspace:*",
