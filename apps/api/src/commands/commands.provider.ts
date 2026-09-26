@@ -5,12 +5,14 @@ import { KyselyCommandDb } from "./kysely-command-db.js";
 import { registerHumanReviewCommands } from "../human-review/human-review.commands.js";
 import { registerPolicyCommands } from "../policy/policy.commands.js";
 import { registerCapabilityCommands } from "../capabilities/capability.commands.js";
+import { registerCrmCommands } from "../crm/crm.commands.js";
+import { registerCommunicationCommands } from "../communications/communications.commands.js";
 
 /**
  * CommandBus provider: builds the bus over the `COMMAND_DB` port and
  * registers the Wave 1 command catalog (HumanReview substrate + Policy and
- * Capability foundations). Explicit tokens everywhere — esbuild/vitest
- * emits no `design:paramtypes`.
+ * Capability foundations) plus the Wave 2 slice (CRM + Communications).
+ * Explicit tokens everywhere — esbuild/vitest emits no `design:paramtypes`.
  */
 export const CommandsProvider = {
   provide: CommandBus,
@@ -20,6 +22,8 @@ export const CommandsProvider = {
       registerHumanReviewCommands(bus);
       registerPolicyCommands(bus);
       registerCapabilityCommands(bus);
+      registerCrmCommands(bus);
+      registerCommunicationCommands(bus);
     }
     return bus;
   },

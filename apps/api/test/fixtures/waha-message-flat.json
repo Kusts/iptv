@@ -1,0 +1,10 @@
+{
+  "event": "message.any",
+  "session": "default",
+  "payload": {
+    "id": "wamsg-flat-002",
+    "author": "5511999990002@s.whatsapp.net",
+    "text": "Preço do plano mensal?",
+    "timestamp": "2026-09-26T10:00:00.000Z"
+  }
+}

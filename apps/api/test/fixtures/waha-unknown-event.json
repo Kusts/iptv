@@ -1,0 +1,7 @@
+{
+  "event": "session.status",
+  "session": "default",
+  "payload": {
+    "status": "CONNECTED"
+  }
+}

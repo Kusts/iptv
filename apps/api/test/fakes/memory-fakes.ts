@@ -37,6 +37,10 @@ export class MemoryAppTx implements AppTx {
 
   constructor(readonly tenantId: string) {}
 
+  innerDb(): unknown {
+    return this;
+  }
+
   async nextAggregateVersion(aggregateType: string, aggregateId: string): Promise<number> {
     const key = `${this.tenantId}:${aggregateType}:${aggregateId}`;
     const next = (this.versions.get(key) ?? 0) + 1;

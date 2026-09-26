@@ -35,8 +35,12 @@ describe.skipIf(!hasDb)("policy + capability foundations (requires TEST_DATABASE
   let gate: ActionGate;
   let store: KyselyCapabilityStore;
 
-  const FAMILY = "w1-demo-family";
-  const CAP_KEY = "w1.demo.action";
+  // Unique per run: the integration DB is shared across suite runs, so fixed
+  // keys would collide with rows from previous runs. Use the RANDOM tail of
+  // the uuidv7 (the leading hex chars are timestamp bits — constant for days).
+  const suffix = () => newId().replace(/-/g, "").slice(-12);
+  const FAMILY = `w1-demo-family-${suffix()}`;
+  const CAP_KEY = `w1.demo.${suffix()}.action`;
 
   function ownerActor(): CommandActor {
     return {

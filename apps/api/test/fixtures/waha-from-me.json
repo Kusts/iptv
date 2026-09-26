@@ -1,0 +1,11 @@
+{
+  "event": "message",
+  "session": "default",
+  "payload": {
+    "id": "wamsg-echo-003",
+    "from": "5511999990001@c.us",
+    "fromMe": true,
+    "body": "our own outbound echo",
+    "timestamp": 1758912100
+  }
+}

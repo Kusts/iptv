@@ -16,6 +16,10 @@ import { OutboxController } from "./outbox/outbox.controller.js";
 import { InboxProcessor } from "./inbox/inbox-processor.js";
 import { InboxStoreProvider } from "./inbox/inbox.provider.js";
 import { HumanReviewController } from "./human-review/human-review.controller.js";
+import { CrmController } from "./crm/crm.controller.js";
+import { CommunicationsController } from "./communications/communications.controller.js";
+import { WahaWebhookController } from "./communications/waha-webhook.controller.js";
+import { WahaWebhookService } from "./communications/waha-webhook.service.js";
 import { KyselyPolicyRepository, PolicyResolver } from "./policy/policy-resolver.js";
 import { PolicyController } from "./policy/policy.controller.js";
 import {
@@ -50,6 +54,9 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     AuthController,
     TenantsController,
     HumanReviewController,
+    CrmController,
+    CommunicationsController,
+    WahaWebhookController,
     PolicyController,
     CapabilitiesController,
     OutboxController,
@@ -70,6 +77,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     OutboxDrainer,
     InboxStoreProvider,
     InboxProcessor,
+    WahaWebhookService,
   ],
 })
 export class AppModule {}

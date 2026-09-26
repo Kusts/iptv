@@ -1,0 +1,8 @@
+{
+  "event": "message.ack",
+  "session": "default",
+  "payload": {
+    "id": "wamsg-001",
+    "ack": 2
+  }
+}

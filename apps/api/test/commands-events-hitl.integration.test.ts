@@ -123,6 +123,16 @@ describe.skipIf(!hasDb)("commands → events → outbox → inbox → audit + HI
       "policy.publish",
       "capability.register",
       "capability.set_availability",
+      "person.register",
+      "lead.capture",
+      "lead.transition",
+      "conversation.start_manual",
+      "message.send_manual",
+      "message.ingest",
+      "conversation.assign",
+      "conversation.release",
+      "conversation.close",
+      "exception.resolve",
     ]);
 
     const register = await inject({

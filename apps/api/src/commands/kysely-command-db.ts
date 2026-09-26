@@ -130,6 +130,10 @@ export class KyselyAppTx implements AppTx {
     private readonly tenantId: string,
   ) {}
 
+  innerDb(): Transaction<Database> {
+    return this.trx;
+  }
+
   async emitDomainEvent(input: NewDomainEvent): Promise<{ domainEventId: string }> {
     const e = input.envelope;
     const version = await this.nextAggregateVersion(e.aggregate_type, e.aggregate_id);

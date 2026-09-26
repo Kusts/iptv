@@ -1,0 +1,12 @@
+{
+  "event": "message",
+  "session": "default",
+  "payload": {
+    "id": "wamsg-001",
+    "from": "5511999990001@c.us",
+    "fromMe": false,
+    "body": "Olá, quero saber mais",
+    "timestamp": 1758912000,
+    "type": "chat"
+  }
+}

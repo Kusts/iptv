@@ -132,6 +132,14 @@ export interface AppTx {
     reason: string,
     actorId: string | null,
   ): Promise<StoredCapability | null>;
+  /**
+   * Escape hatch for domain writes that must land in the SAME transaction as
+   * the command's event/outbox/audit rows (Wave 2 CRM/Communications).
+   * The Kysely implementation returns its live `Transaction<Database>`;
+   * the memory implementation returns itself for WeakMap-keyed fake state.
+   * Command modules MUST narrow the value before use — never assume SQL.
+   */
+  innerDb(): unknown;
 }
 
 export type IdempotencyClaim =
