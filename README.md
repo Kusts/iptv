@@ -74,3 +74,11 @@ How to run:
    `apps/api/.env`); no dotenv dependency required.
 4. `pnpm dev` (the API builds once, then watches `dist`; or `pnpm build`,
    `pnpm test`, `pnpm lint`, `pnpm typecheck`)
+
+Auth flow (W1-03/04/05): `POST /v1/auth/register` (with `tenantName` to
+bootstrap a tenant as `tenant_owner`) → `POST /v1/auth/login` → Bearer token
+(`Authorization: Bearer` or `iptv_session` cookie) → `GET /v1/tenants` →
+`POST /v1/tenants/:id/switch` → `GET /v1/me` (active tenant + roles +
+permissions). Permissions are enforced server-side per route
+(`GET /v1/settings` requires `settings.manage`); auth mutations append to
+`platform.audit_log` with the request id as correlation id.

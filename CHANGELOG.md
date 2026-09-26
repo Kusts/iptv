@@ -2,6 +2,10 @@
 
 ## Unreleased — Added
 
+- W1-03 tenant/auth: `packages/auth` email+password sessions via a custom adapter mapped onto the existing `control.users` (`auth_subject = 'email:<…>'`, scrypt hashes in `control.auth_credentials`, sha256-bound opaque tokens in `control.auth_sessions`); API `AuthModule` (`POST /v1/auth/register|login|logout`, `GET /v1/auth/session`), request-scoped tenant from session membership with explicit `POST /v1/tenants/:id/switch`.
+- W1-04 authorization RBAC: migration `202609261200_012_identity_rbac.sql` (global role/permission catalog with platform-role separation via `users.is_platform_admin`, tenant-scoped `membership_roles` bindings, seeded `tenant_owner|tenant_admin|tenant_operator` + 8-permission catalog); `requirePermission(actor, tenantId, permission)` with platform-only bypass; per-route `PermissionsGuard` + `@RequirePermission` demo (`GET /v1/settings`).
+- W1-05 audit infrastructure: `AuditService` writing append-only `platform.audit_log` (actor, tenant, request id as correlation id, before/after summary metadata) on auth/tenant mutations; `GET /v1/me` proves the session→tenant→role→permission chain.
+
 - W1-01 repo bootstrap: pnpm + Turborepo monorepo (`apps/web` Next.js App Router, `apps/api` NestJS + Fastify with `GET /v1/health`, `packages/domain` pure primitives, `packages/config` Zod env, base TS/eslint/prettier config, local `docker-compose.yml`, CI workflow).
 - W1-02 database bootstrap: Kysely bootstrap (snake_case explicit mapping, no CamelCasePlugin) + idempotent SQL migration runner with sha256 bookkeeping in `platform.migration_history`; canonical `db/migrations/*.sql` untouched.
 
