@@ -27,6 +27,7 @@ describe("permissionsForRoles", () => {
   it("unions permissions across roles and ignores unknown keys", () => {
     const perms = permissionsForRoles([TENANT_OPERATOR_ROLE, "nope"]);
     expect([...perms].sort()).toEqual([
+      "agent.review.request",
       "conversation.reply",
       "crm.lead.write",
       "crm.person.read",
@@ -35,7 +36,7 @@ describe("permissionsForRoles", () => {
   });
 
   it("owner has the full catalog", () => {
-    expect(permissionsForRoles([TENANT_OWNER_ROLE]).size).toBe(8);
+    expect(permissionsForRoles([TENANT_OWNER_ROLE]).size).toBe(10);
   });
 });
 
@@ -54,6 +55,17 @@ describe("hasPermission / requirePermission", () => {
     ).not.toThrow();
   });
 
+  it("operator can request human review but cannot decide", () => {
+    const op = actor({
+      roleKeys: [TENANT_OPERATOR_ROLE],
+      permissions: [...(ROLE_PERMISSIONS[TENANT_OPERATOR_ROLE] ?? [])],
+    });
+    expect(hasPermission(op, "agent.review.request")).toBe(true);
+    expect(hasPermission(op, "agent.review.decide")).toBe(false);
+    expect(() =>
+      requirePermission(op, op.tenantId as string, "agent.review.decide"),
+    ).toThrow(ForbiddenError);
+  });
   it("operator is denied settings.manage", () => {
     const op = actor({
       roleKeys: [TENANT_OPERATOR_ROLE],
@@ -128,6 +140,6 @@ describe("resolveActor", () => {
       isPlatformAdmin: true,
       tenantId: "t-9",
     });
-    expect(resolved.permissions).toHaveLength(8);
+    expect(resolved.permissions).toHaveLength(10);
   });
 });

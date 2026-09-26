@@ -9,6 +9,13 @@ import { AuthGuard } from "./auth/auth.guard.js";
 import { PermissionsGuard } from "./auth/permissions.guard.js";
 import { AuditService } from "./audit/audit.service.js";
 import { TenantsController } from "./tenants/tenants.controller.js";
+import { CommandDbProvider, CommandsProvider } from "./commands/commands.provider.js";
+import { LocalTransport } from "./outbox/transport.js";
+import { OutboxDrainer } from "./outbox/outbox-drainer.js";
+import { OutboxController } from "./outbox/outbox.controller.js";
+import { InboxProcessor } from "./inbox/inbox-processor.js";
+import { InboxStoreProvider } from "./inbox/inbox.provider.js";
+import { HumanReviewController } from "./human-review/human-review.controller.js";
 
 const DEV_AUTH_SECRET = "dev-only-better-auth-secret-0123456789";
 
@@ -31,13 +38,19 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
 }
 
 @Module({
-  controllers: [HealthController, AuthController, TenantsController],
+  controllers: [HealthController, AuthController, TenantsController, HumanReviewController, OutboxController],
   providers: [
     { provide: "DB", useFactory: dbFactory },
     { provide: "AUTH", useFactory: authFactory, inject: ["DB"] },
     AuditService,
     AuthGuard,
     PermissionsGuard,
+    CommandDbProvider,
+    CommandsProvider,
+    { provide: "TRANSPORT", useClass: LocalTransport },
+    OutboxDrainer,
+    InboxStoreProvider,
+    InboxProcessor,
   ],
 })
 export class AppModule {}

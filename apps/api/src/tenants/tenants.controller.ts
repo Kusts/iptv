@@ -29,7 +29,8 @@ function slugify(name: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 48);
-  const suffix = newId().replace(/-/g, "").slice(0, 8);
+  // Random tail, not the UUIDv7 timestamp head (see packages/auth slugify).
+  const suffix = newId().replace(/-/g, "").slice(-8);
   return `${base.length > 0 ? base : "tenant"}-${suffix}`;
 }
 

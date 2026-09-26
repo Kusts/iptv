@@ -82,3 +82,17 @@ bootstrap a tenant as `tenant_owner`) → `POST /v1/auth/login` → Bearer token
 permissions). Permissions are enforced server-side per route
 (`GET /v1/settings` requires `settings.manage`); auth mutations append to
 `platform.audit_log` with the request id as correlation id.
+
+Commands/events/HITL (W1-06/07/07a): explicit tenant-scoped commands run
+through `CommandBus` (`human_review.request|approve|reject` first;
+`agent.review.request|decide` permissions, migration `013`), each executing
+authz → Zod input → idempotency claim → ONE transaction (state change +
+`platform.domain_events` + `platform.outbox_messages` + audit). Envelopes
+match AsyncAPI `EventEnvelopeBase` (`schema_version: 1`, public ids
+`<domain>.<noun>_<verb>.v1`). `POST /v1/admin/outbox/drain`
+(platform-admin-only) publishes via the `TransportPort` (`LocalTransport` in
+Wave 1); `InboxProcessor` dedupes by `(tenant, provider, external_event_id)`.
+HumanReview queue: `GET /v1/human-reviews?status=PENDING`; decisions
+revalidate under current state (stale approvals → `409 precondition_failed`,
+request stays open). Full chain (incl. idempotency replay, stale approval,
+parallel-drain safety) is covered by `TEST_DATABASE_URL` integration tests.
