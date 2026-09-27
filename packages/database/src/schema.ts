@@ -672,6 +672,280 @@ export interface ProviderOperationAttemptsTable {
   trace_ref: string | null;
 }
 
+/**
+ * Wave 5 money columns are typed `string`: node-pg returns Postgres
+ * `bigint`/`numeric` as text, and inserts accept exact decimal strings, so
+ * `string` keeps minor-unit values exact end-to-end (never float/number
+ * arithmetic). Convert with `BigInt(value)` at the boundary.
+ */
+
+/** Mirrors `catalog.products` (migration 004). */
+export interface CatalogProductsTable {
+  id: string;
+  tenant_id: string;
+  product_key: string;
+  name: string;
+  product_type: string;
+  status: string;
+  metadata_json: unknown;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `catalog.plans` (migration 004). */
+export interface CatalogPlansTable {
+  id: string;
+  tenant_id: string;
+  product_id: string;
+  plan_key: string;
+  name: string;
+  billing_interval_unit: string;
+  billing_interval_count: number;
+  status: string;
+  metadata_json: unknown;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `catalog.addons` (migration 004). */
+export interface CatalogAddonsTable {
+  id: string;
+  tenant_id: string;
+  addon_key: string;
+  name: string;
+  billing_type: string;
+  entitlement_feature_key: string | null;
+  status: string;
+  metadata_json: unknown;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `catalog.prices` (migration 004). */
+export interface CatalogPricesTable {
+  id: string;
+  tenant_id: string;
+  sellable_type: string;
+  sellable_id: string;
+  amount_minor: string;
+  currency: string;
+  starts_at: Date;
+  ends_at: Date | null;
+  segment_key: string | null;
+  status: string;
+  metadata_json: unknown;
+  created_at: Date;
+}
+
+/** Mirrors `commerce.orders` (migration 004). */
+export interface CommerceOrdersTable {
+  id: string;
+  tenant_id: string;
+  person_id: string;
+  customer_id: string | null;
+  source_offer_id: string | null;
+  order_type: string;
+  status: string;
+  currency: string;
+  gross_amount_minor: string;
+  discount_amount_minor: string;
+  reward_amount_minor: string;
+  net_amount_minor: string;
+  settled_amount_minor: string;
+  created_at: Date;
+  awaiting_payment_at: Date | null;
+  settled_at: Date | null;
+  cancelled_at: Date | null;
+  expires_at: Date | null;
+}
+
+/** Mirrors `commerce.order_items` (migration 004). */
+export interface CommerceOrderItemsTable {
+  id: string;
+  tenant_id: string;
+  order_id: string;
+  item_type: string;
+  sellable_type: string;
+  sellable_id: string;
+  quantity: string;
+  unit_price_minor: string;
+  gross_minor: string;
+  discount_minor: string;
+  reward_minor: string;
+  net_minor: string;
+  metadata_json: unknown;
+  created_at: Date;
+}
+
+/** Mirrors `commerce.price_snapshots` (migration 004, immutable). */
+export interface CommercePriceSnapshotsTable {
+  id: string;
+  tenant_id: string;
+  order_item_id: string;
+  sale_price_minor: string;
+  supplier_cost_minor: string | null;
+  currency: string;
+  price_source_ref: string | null;
+  captured_at: Date;
+  context_json: unknown;
+}
+
+/** Mirrors `billing.charges` (migration 005). */
+export interface BillingChargesTable {
+  id: string;
+  tenant_id: string;
+  order_id: string;
+  status: string;
+  amount_minor: string;
+  currency: string;
+  payment_method: string | null;
+  idempotency_key: string;
+  due_at: Date | null;
+  paid_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `billing.charge_provider_bindings` (migration 005). */
+export interface BillingChargeProviderBindingsTable {
+  id: string;
+  tenant_id: string;
+  charge_id: string;
+  provider: string;
+  external_customer_id: string | null;
+  external_charge_id: string;
+  status_raw: string | null;
+  last_synced_at: Date | null;
+  created_at: Date;
+}
+
+/** Mirrors `billing.charge_attempts` (migration 005, append-only). */
+export interface BillingChargeAttemptsTable {
+  id: string;
+  tenant_id: string;
+  charge_id: string;
+  attempt_no: number;
+  status: string;
+  provider_request_id: string | null;
+  error_code: string | null;
+  started_at: Date;
+  finished_at: Date | null;
+}
+
+/** Mirrors `billing.payments` (migration 005; CONFIRMED movement only). */
+export interface BillingPaymentsTable {
+  id: string;
+  tenant_id: string;
+  order_id: string;
+  charge_id: string;
+  status: string;
+  amount_minor: string;
+  currency: string;
+  payment_method: string | null;
+  confirmed_at: Date;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `billing.refund_requests` (migration 005; never executes). */
+export interface BillingRefundRequestsTable {
+  id: string;
+  tenant_id: string;
+  payment_id: string;
+  status: string;
+  amount_minor: string;
+  currency: string;
+  reason: string;
+  requested_by_type: string;
+  requested_by_id: string | null;
+  idempotency_key: string;
+  human_review_request_id: string | null;
+  requested_at: Date;
+  decided_at: Date | null;
+  executed_at: Date | null;
+}
+
+/** Mirrors `billing.refunds` (migration 005). */
+export interface BillingRefundsTable {
+  id: string;
+  tenant_id: string;
+  refund_request_id: string;
+  payment_id: string;
+  status: string;
+  effect_certainty: string;
+  amount_minor: string;
+  currency: string;
+  provider_external_id: string | null;
+  started_at: Date;
+  completed_at: Date | null;
+}
+
+/** Mirrors `billing.tenant_channels` (migration 018). */
+export interface BillingTenantChannelsTable {
+  id: string;
+  tenant_id: string;
+  channel: string;
+  tenant_key: string;
+  webhook_secret_hash: string | null;
+  status: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `billing.exceptions` (migration 018). */
+export interface BillingExceptionsTable {
+  id: string;
+  tenant_id: string;
+  kind: string;
+  status: string;
+  charge_id: string | null;
+  payment_id: string | null;
+  refund_id: string | null;
+  reason: string | null;
+  payload_json: unknown;
+  created_at: Date;
+  updated_at: Date;
+  resolved_at: Date | null;
+}
+
+/** Mirrors `finance.financial_accounts` (migration 005). */
+export interface FinanceFinancialAccountsTable {
+  id: string;
+  tenant_id: string;
+  account_code: string;
+  name: string;
+  account_type: string;
+  currency: string;
+  status: string;
+  created_at: Date;
+}
+
+/** Mirrors `finance.financial_transactions` (migration 005, append-only). */
+export interface FinanceFinancialTransactionsTable {
+  id: string;
+  tenant_id: string;
+  transaction_type: string;
+  reference_type: string;
+  reference_id: string | null;
+  idempotency_key: string;
+  occurred_at: Date;
+  recorded_at: Date;
+  reversal_of_transaction_id: string | null;
+  metadata_json: unknown;
+}
+
+/** Mirrors `finance.financial_ledger_entries` (migration 005, append-only). */
+export interface FinanceFinancialLedgerEntriesTable {
+  id: string;
+  tenant_id: string;
+  financial_transaction_id: string;
+  financial_account_id: string;
+  direction: string;
+  amount_minor: string;
+  currency: string;
+  created_at: Date;
+}
+
 export interface Database {
   "control.tenants": ControlTenantsTable;
   "control.users": ControlUsersTable;
@@ -721,4 +995,22 @@ export interface Database {
   "provider.provider_bindings": ProviderBindingsTable;
   "provider.provider_operations": ProviderOperationsTable;
   "provider.provider_operation_attempts": ProviderOperationAttemptsTable;
+  "catalog.products": CatalogProductsTable;
+  "catalog.plans": CatalogPlansTable;
+  "catalog.addons": CatalogAddonsTable;
+  "catalog.prices": CatalogPricesTable;
+  "commerce.orders": CommerceOrdersTable;
+  "commerce.order_items": CommerceOrderItemsTable;
+  "commerce.price_snapshots": CommercePriceSnapshotsTable;
+  "billing.charges": BillingChargesTable;
+  "billing.charge_provider_bindings": BillingChargeProviderBindingsTable;
+  "billing.charge_attempts": BillingChargeAttemptsTable;
+  "billing.payments": BillingPaymentsTable;
+  "billing.refund_requests": BillingRefundRequestsTable;
+  "billing.refunds": BillingRefundsTable;
+  "billing.tenant_channels": BillingTenantChannelsTable;
+  "billing.exceptions": BillingExceptionsTable;
+  "finance.financial_accounts": FinanceFinancialAccountsTable;
+  "finance.financial_transactions": FinanceFinancialTransactionsTable;
+  "finance.financial_ledger_entries": FinanceFinancialLedgerEntriesTable;
 }

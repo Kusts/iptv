@@ -25,6 +25,11 @@ export const PERMISSIONS = [
   "trial.write",
   "provider.operation.read",
   "provider.operation.write",
+  "commerce.order.write",
+  "billing.charge.write",
+  "billing.refund.request",
+  "billing.refund.execute",
+  "billing.exception.resolve",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -53,6 +58,11 @@ export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
     "trial.write",
     "provider.operation.read",
     "provider.operation.write",
+    "commerce.order.write",
+    "billing.charge.write",
+    "billing.refund.request",
+    "billing.refund.execute",
+    "billing.exception.resolve",
   ],
   [TENANT_OPERATOR_ROLE]: [
     "crm.person.read",
@@ -62,6 +72,9 @@ export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
     "agent.review.request",
     "trial.read",
     "trial.write",
+    "commerce.order.write",
+    "billing.charge.write",
+    "billing.refund.request",
   ],
 };
 

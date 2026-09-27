@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ForbiddenError,
+  PERMISSIONS,
   ROLE_PERMISSIONS,
   TENANT_OPERATOR_ROLE,
   TENANT_OWNER_ROLE,
@@ -28,6 +29,9 @@ describe("permissionsForRoles", () => {
     const perms = permissionsForRoles([TENANT_OPERATOR_ROLE, "nope"]);
     expect([...perms].sort()).toEqual([
       "agent.review.request",
+      "billing.charge.write",
+      "billing.refund.request",
+      "commerce.order.write",
       "conversation.reply",
       "crm.lead.write",
       "crm.person.read",
@@ -38,7 +42,7 @@ describe("permissionsForRoles", () => {
   });
 
   it("owner has the full catalog", () => {
-    expect(permissionsForRoles([TENANT_OWNER_ROLE]).size).toBe(15);
+    expect(permissionsForRoles([TENANT_OWNER_ROLE]).size).toBe(PERMISSIONS.length);
   });
 });
 
@@ -84,6 +88,18 @@ describe("hasPermission / requirePermission", () => {
     });
     expect(hasPermission(op, "settings.manage")).toBe(false);
     expect(() => requirePermission(op, op.tenantId as string, "settings.manage")).toThrow(ForbiddenError);
+  });
+  it("operator runs commerce/billing intake but cannot execute refunds or resolve exceptions", () => {
+    const op = actor({
+      roleKeys: [TENANT_OPERATOR_ROLE],
+      permissions: [...(ROLE_PERMISSIONS[TENANT_OPERATOR_ROLE] ?? [])],
+    });
+    expect(hasPermission(op, "commerce.order.write")).toBe(true);
+    expect(hasPermission(op, "billing.charge.write")).toBe(true);
+    expect(hasPermission(op, "billing.refund.request")).toBe(true);
+    expect(hasPermission(op, "billing.refund.execute")).toBe(false);
+    expect(hasPermission(op, "billing.exception.resolve")).toBe(false);
+    expect(() => requirePermission(op, op.tenantId as string, "billing.refund.execute")).toThrow(ForbiddenError);
   });
 
   it("denies cross-tenant access even with a valid role", () => {
@@ -151,6 +167,6 @@ describe("resolveActor", () => {
       isPlatformAdmin: true,
       tenantId: "t-9",
     });
-    expect(resolved.permissions).toHaveLength(15);
+    expect(resolved.permissions).toHaveLength(PERMISSIONS.length);
   });
 });

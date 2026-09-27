@@ -23,6 +23,10 @@ import { ProviderController } from "./provider/provider.controller.js";
 import { CommunicationsController } from "./communications/communications.controller.js";
 import { WahaWebhookController } from "./communications/waha-webhook.controller.js";
 import { WahaWebhookService } from "./communications/waha-webhook.service.js";
+import { CommerceController } from "./commerce/commerce.controller.js";
+import { BillingController } from "./billing/billing.controller.js";
+import { AsaasWebhookController } from "./billing/asaas-webhook.controller.js";
+import { AsaasWebhookService } from "./billing/asaas-webhook.service.js";
 import { KyselyPolicyRepository, PolicyResolver } from "./policy/policy-resolver.js";
 import { PolicyController } from "./policy/policy.controller.js";
 import {
@@ -67,6 +71,9 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     ProviderController,
     CommunicationsController,
     WahaWebhookController,
+    CommerceController,
+    BillingController,
+    AsaasWebhookController,
     PolicyController,
     CapabilitiesController,
     OutboxController,
@@ -92,6 +99,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     InboxStoreProvider,
     InboxProcessor,
     WahaWebhookService,
+    AsaasWebhookService,
   ],
 })
 export class AppModule {}

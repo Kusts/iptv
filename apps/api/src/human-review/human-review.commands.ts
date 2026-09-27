@@ -67,12 +67,27 @@ export type DecideReviewInput = z.infer<typeof decideReviewInput>;
  * Target revalidation hook: re-check the underlying action's preconditions
  * under current state at decision time. Return a failure message to reject
  * the decision as stale, or null to accept. The request stays open on
- * rejection so another reviewer can decide later.
+ * rejection so another reviewer can decide later. `decision` is the
+ * direction being recorded, so hooks can forbid self-approval while still
+ * allowing a requester to withdraw (reject) their own request.
  */
 export type TargetRevalidator = (
   ctx: CommandHandlerContext,
   request: StoredReviewRequest,
+  decision?: "APPROVED" | "REJECTED",
 ) => Promise<string | null>;
+
+/**
+ * Post-resolution hook: runs INSIDE the same transaction after the review
+ * action is recorded and the request resolved. Used by owning contexts
+ * (e.g. billing refunds) to propagate APPROVE/REJECT onto their own rows
+ * atomically. Throwing rolls the whole decision back.
+ */
+export type ReviewResolvedHook = (
+  ctx: CommandHandlerContext,
+  request: StoredReviewRequest,
+  decision: "APPROVED" | "REJECTED",
+) => Promise<void>;
 
 async function defaultRevalidator(): Promise<string | null> {
   return null;
@@ -139,7 +154,12 @@ async function handleRequest(
   return { ok: true, data: { id: stored.id } };
 }
 
-function decideHandler(resolution: "APPROVED" | "REJECTED", actionType: "APPROVE" | "REJECT", revalidate: TargetRevalidator) {
+function decideHandler(
+  resolution: "APPROVED" | "REJECTED",
+  actionType: "APPROVE" | "REJECT",
+  revalidate: TargetRevalidator,
+  onResolved?: ReviewResolvedHook,
+) {
   return async (
     ctx: CommandHandlerContext,
     input: DecideReviewInput,
@@ -162,7 +182,7 @@ function decideHandler(resolution: "APPROVED" | "REJECTED", actionType: "APPROVE
         message: `stale approval rejected: expected ${input.expectedStatus}, current ${request.status}`,
       };
     }
-    const targetFailure = await revalidate(ctx, request);
+    const targetFailure = await revalidate(ctx, request, resolution);
     if (targetFailure !== null) {
       return { ok: false, code: "precondition_failed", message: `stale approval rejected: ${targetFailure}` };
     }
@@ -175,6 +195,9 @@ function decideHandler(resolution: "APPROVED" | "REJECTED", actionType: "APPROVE
     if (resolved === null) {
       return { ok: false, code: "precondition_failed", message: "review was resolved concurrently" };
     }
+    if (onResolved !== undefined) {
+      await onResolved(ctx, request, resolution);
+    }
     await emitAndEnqueue(ctx, {
       eventType: "hitl.review_resolved.v1",
       aggregateId: request.id,
@@ -186,7 +209,7 @@ function decideHandler(resolution: "APPROVED" | "REJECTED", actionType: "APPROVE
 
 export function registerHumanReviewCommands(
   bus: CommandBus,
-  opts: { revalidate?: TargetRevalidator } = {},
+  opts: { revalidate?: TargetRevalidator; onResolved?: ReviewResolvedHook } = {},
 ): void {
   const revalidate = opts.revalidate ?? defaultRevalidator;
   bus.register<RequestReviewInput, { id: string }>({
@@ -203,7 +226,7 @@ export function registerHumanReviewCommands(
     auditAction: "human_review.approve",
     auditResource: "human_review_request",
     input: decideReviewInput,
-    handler: decideHandler("APPROVED", "APPROVE", revalidate),
+    handler: decideHandler("APPROVED", "APPROVE", revalidate, opts.onResolved),
   });
   bus.register<DecideReviewInput, { id: string; resolution: string }>({
     name: "human_review.reject",
@@ -211,7 +234,7 @@ export function registerHumanReviewCommands(
     auditAction: "human_review.reject",
     auditResource: "human_review_request",
     input: decideReviewInput,
-    handler: decideHandler("REJECTED", "REJECT", revalidate),
+    handler: decideHandler("REJECTED", "REJECT", revalidate, opts.onResolved),
   });
 }
 

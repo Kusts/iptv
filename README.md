@@ -111,3 +111,31 @@ gated by `ActionGate` (available? → permitted? → policy? → preconditions? 
 autonomy clamped by the invariant max): `GET /v1/capabilities` (per-actor
 overview) and `GET /v1/capabilities/:key/resolve` (dry-run); platform-only
 `capability.register|set_availability`. Migration `014`.
+
+Commerce/billing (Wave 5): catalog→order flow (`POST /v1/orders/quote`
+builds a DRAFT order from ACTIVE catalog prices with an immutable
+`price_snapshots` copy per line, integer quantities, exact minor-unit
+`bigint` money — never floats; `POST /v1/orders/:id/submit|cancel`,
+`POST /v1/orders/expire-due` worker seam; reads `GET /v1/orders[/:id]`).
+Charges via the Asaas port (`POST /v1/charges`: PENDING → provider
+`createPixCharge` → PROCESSING with binding + attempt; `EchoAsaasAdapter`
+default, env-gated `RealAsaasAdapter` stub behind
+`ASAAS_API_KEY`/`ASAAS_BASE_URL` mapping timeouts to UNKNOWN, never
+auto-retrying creates). Webhook `POST /v1/webhooks/asaas/:tenantKey`
+(tenant from `billing.tenant_channels`, timing-safe secret, inbox
+insert-once dedupe, 202 fast ack, `?defer=1` + `drainPending`): PAID
+deliveries validate amount+currency against the internal charge row
+(mismatch → `billing.exceptions`, never a confirmation) and confirm
+idempotently (charge PAID + CONFIRMED payment + balanced Dr-cash/Cr-receivable
+posting + all-or-nothing settlement → order SETTLED + idempotent
+`crm.customers` conversion + registry-listed events). Human-gated refunds:
+`POST /v1/refund-requests` (creates the request + HumanReview, never
+executes) → `human_review.approve|reject` (requester cannot approve; stale
+revalidation under per-payment advisory lock) → `POST
+/v1/refund-requests/:id/execute` (reserve-first; KNOWN_APPLIED posts the
+contra-revenue reversal + PARTIALLY_REFUNDED/REFUNDED, KNOWN_NOT_APPLIED
+releases, UNKNOWN parks in RECONCILING + exception for `POST
+/v1/refunds/:id/reconcile`). Chargebacks ingest on a distinct path
+(`payment.record_chargeback` → CHARGEBACK + loss posting + review
+exception). Migration `018` (`billing.tenant_channels`,
+`billing.exceptions`, Wave 5 permission seeds).
