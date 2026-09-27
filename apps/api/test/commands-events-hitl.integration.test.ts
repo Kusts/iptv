@@ -20,7 +20,7 @@ const connectionString = process.env["TEST_DATABASE_URL"];
 const hasDb = typeof connectionString === "string" && connectionString.length > 0;
 
 function email(prefix: string): string {
-  return `${prefix}-${newId().replace(/-/g, "").slice(0, 12)}@example.com`;
+  return `${prefix}-${newId().replace(/-/g, "").slice(-12)}@example.com`;
 }
 
 describe.skipIf(!hasDb)("commands → events → outbox → inbox → audit + HITL (requires TEST_DATABASE_URL)", () => {
@@ -95,13 +95,17 @@ describe.skipIf(!hasDb)("commands → events → outbox → inbox → audit + HI
     };
   }
 
-  async function outboxStates(): Promise<Record<string, number>> {
-    const rows = await db.selectFrom("platform.outbox_messages").select(["state"]).execute();
-    const counts: Record<string, number> = {};
-    for (const r of rows) {
-      counts[r.state] = (counts[r.state] ?? 0) + 1;
-    }
-    return counts;
+  async function ownOutboxRows(since: Date): Promise<Array<{ id: string; state: string }>> {
+    // Scope-safe: only rows THIS tenant created after the marker. Residue
+    // from earlier files shares the table but lives in other tenants (every
+    // file registers its own tenant) and predates the marker — so global
+    // PENDING==0 assertions are never made here.
+    return db
+      .selectFrom("platform.outbox_messages")
+      .select(["id", "state"])
+      .where("tenant_id", "=", tenantId)
+      .where("created_at", ">=", since)
+      .execute();
   }
 
   beforeAll(async () => {
@@ -205,45 +209,84 @@ describe.skipIf(!hasDb)("commands → events → outbox → inbox → audit + HI
   });
 
   it("parallel drains process disjoint rows (SKIP LOCKED)", async () => {
+    const marker = new Date();
     for (let i = 0; i < 4; i += 1) {
       const r = await bus.execute(actor(), "human_review.request", reviewInput(`parallel ${i}`));
       expect(r.ok).toBe(true);
     }
+    const own = await ownOutboxRows(marker);
+    expect(own.length).toBeGreaterThanOrEqual(4);
+    const ownIds = new Set(own.map((r) => r.id));
     const [a, b] = await Promise.all([drainer.drain(10), drainer.drain(10)]);
     const ids = [...a.eventIds, ...b.eventIds];
-    // 4 fresh rows + leftovers from earlier tests drain here too; every
-    // claimed row is published exactly once across both drains.
+    // Every claimed row is published exactly once across both drains —
+    // the SKIP LOCKED disjointness property, regardless of residue.
     expect(new Set(ids).size).toBe(ids.length);
     expect(a.published + b.published).toBe(ids.length);
     expect(a.published + b.published).toBeGreaterThanOrEqual(4);
-    const states = await outboxStates();
-    expect(states["PENDING"] ?? 0).toBe(0);
-    expect(states["PUBLISHING"] ?? 0).toBe(0);
+    // The two bounded drains claim oldest-first, so residue from earlier
+    // files may starve our rows. Keep draining until OUR captured rows land.
+    for (let i = 0; i < 20; i += 1) {
+      const rows = await ownOutboxRows(marker);
+      if (rows.length > 0 && rows.every((r) => r.state === "PUBLISHED")) {
+        break;
+      }
+      await drainer.drain(100);
+    }
+    const landed = await ownOutboxRows(marker);
+    expect(landed.length).toBe(own.length);
+    expect(landed.every((r) => ownIds.has(r.id))).toBe(true);
+    expect(landed.every((r) => r.state === "PUBLISHED")).toBe(true);
   });
 
   it("inbox accepts once: second accept is a dedupe no-op", async () => {
-    const delivered = transport.published.filter((e) => e.tenant_id === tenantId);
-    expect(delivered.length).toBeGreaterThan(0);
-    const envelope = delivered[0] as (typeof delivered)[number];
+    // Self-contained: mint a fresh event inside this test. Its uuidv7
+    // event_id is globally unique, so no residue from earlier files/runs
+    // can collide on the (tenant, provider, external_event_id) dedupe key —
+    // and the test never depends on which rows earlier drains published.
+    const created = await bus.execute<{ id: string }>(
+      actor(),
+      "human_review.request",
+      reviewInput("inbox scoped"),
+    );
+    expect(created.ok).toBe(true);
+    const aggregateId = (created as { ok: true; data: { id: string } }).data.id;
+    const domainRow = await db
+      .selectFrom("platform.domain_events")
+      .select(["event_id"])
+      .where("tenant_id", "=", tenantId)
+      .where("aggregate_id", "=", aggregateId)
+      .executeTakeFirstOrThrow();
+    for (let i = 0; i < 20; i += 1) {
+      if (transport.published.some((e) => e.event_id === domainRow.event_id)) {
+        break;
+      }
+      await drainer.drain(100);
+    }
+    const envelope = transport.published.find(
+      (e) => e.tenant_id === tenantId && e.event_id === domainRow.event_id,
+    );
+    expect(envelope).toBeDefined();
+    const target = envelope as (typeof transport.published)[number];
     let calls = 0;
-    inbox.on(envelope.event_type, async () => {
+    inbox.on(target.event_type, async () => {
       calls += 1;
     });
-    const payload = JSON.parse(JSON.stringify(envelope)) as unknown;
+    const payload = JSON.parse(JSON.stringify(target)) as unknown;
     const first = await inbox.accept({
       tenantId,
       provider: "local-outbox",
-      externalEventId: envelope.event_id,
+      externalEventId: target.event_id,
       payload,
-      correlationId: envelope.correlation_id,
+      correlationId: target.correlation_id,
     });
     expect(first.status).toBe("processed");
     const second = await inbox.accept({
       tenantId,
       provider: "local-outbox",
-      externalEventId: envelope.event_id,
+      externalEventId: target.event_id,
       payload,
-      correlationId: envelope.correlation_id,
+      correlationId: target.correlation_id,
     });
     expect(second.status).toBe("duplicate");
     expect(second.inboxId).toBe(first.inboxId);
@@ -253,7 +296,7 @@ describe.skipIf(!hasDb)("commands → events → outbox → inbox → audit + HI
       .select(["id", "state"])
       .where("tenant_id", "=", tenantId)
       .where("provider", "=", "local-outbox")
-      .where("external_event_id", "=", envelope.event_id)
+      .where("external_event_id", "=", target.event_id)
       .execute();
     expect(rows).toHaveLength(1);
     expect(rows[0]?.state).toBe("PROCESSED");

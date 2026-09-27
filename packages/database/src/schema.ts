@@ -1037,6 +1037,36 @@ export interface EntitlementGrantsTable {
   created_at: Date;
 }
 
+/** Mirrors `renewal.recovery_tasks` (migration 020, Wave 9 winback queue). */
+export interface RenewalRecoveryTasksTable {
+  id: string;
+  tenant_id: string;
+  subscription_id: string;
+  cycle_id: string | null;
+  renewal_order_id: string | null;
+  reason: string;
+  status: string;
+  outcome: string | null;
+  resolved_by: string | null;
+  created_at: Date;
+  updated_at: Date;
+  resolved_at: Date | null;
+}
+
+/** Mirrors `subscription.trust_renewal_grants` (migration 020, once per cycle). */
+export interface SubscriptionTrustRenewalGrantsTable {
+  id: string;
+  tenant_id: string;
+  subscription_id: string;
+  cycle_id: string;
+  extension_days: number;
+  previous_ends_at: Date;
+  new_ends_at: Date;
+  review_request_id: string | null;
+  granted_by: string | null;
+  created_at: Date;
+}
+
 export interface Database {
   "control.tenants": ControlTenantsTable;
   "control.users": ControlUsersTable;
@@ -1110,4 +1140,6 @@ export interface Database {
   "finance.financial_accounts": FinanceFinancialAccountsTable;
   "finance.financial_transactions": FinanceFinancialTransactionsTable;
   "finance.financial_ledger_entries": FinanceFinancialLedgerEntriesTable;
+  "renewal.recovery_tasks": RenewalRecoveryTasksTable;
+  "subscription.trust_renewal_grants": SubscriptionTrustRenewalGrantsTable;
 }

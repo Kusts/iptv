@@ -139,3 +139,24 @@ releases, UNKNOWN parks in RECONCILING + exception for `POST
 (`payment.record_chargeback` → CHARGEBACK + loss posting + review
 exception). Migration `018` (`billing.tenant_channels`,
 `billing.exceptions`, Wave 5 permission seeds).
+
+Renewal/retention (Wave 9): renewal windows on top of the Wave 6
+subscription engine (`POST /v1/renewals/quote` creates one OPEN
+subscription-shaped RENEWAL order per subscription inside
+`[cycle_end - window_days, cycle_end]` — early only when
+`subscription.renewal` allows it — priced from the CURRENT catalog price;
+`POST /v1/renewals/renew` runs only on the SETTLED order, closing the prior
+cycle at period end and opening the NEXT cycle of the SAME subscription +
+entitlement refresh with a RENEWAL grant; `POST /v1/renewals/reminders-due`
+writes one INTERNAL/SYSTEM reminder record per cycle, never outbound;
+`POST /v1/renewals/trust-renew` grants a bounded paymentless extension,
+policy-gated (`subscription.trust_renewal`, +3d/remaining≤3/reviewed by
+default) with requester≠approver and a single grant per cycle; `POST
+/v1/renewals/expire-overdue-due` ENDs past-grace subscriptions at cycle end
+(SUSPENDED only under an explicit suspension policy, `cancel_at_period_end`
+rows stay with the Wave 6 worker) and opens a human-worked recovery task
+(`GET /v1/recovery-tasks`, `POST /v1/recovery-tasks/:id/resolve` with
+WON_BACK/LOST/DISMISSED — no campaign automation). Events are
+registry-listed only (`order.created.v1`, `subscription.renewed.v1`);
+migration `020` (`renewal.recovery_tasks`,
+`subscription.trust_renewal_grants`).
