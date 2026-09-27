@@ -44,6 +44,8 @@ import { KnowledgeController } from "./knowledge/knowledge.controller.js";
 import { ContextBuilder } from "./agent/context-builder.js";
 import { KyselyAgentReleaseStore } from "./agent/release-store.js";
 import { AgentPipeline } from "./agent/pipeline.js";
+import { SchedulerService } from "./scheduler/scheduler.service.js";
+import { createWorkflowAdapter } from "@iptv/workflows";
 
 const DEV_AUTH_SECRET = "dev-only-better-auth-secret-0123456789";
 
@@ -112,6 +114,10 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     InboxProcessor,
     WahaWebhookService,
     AsaasWebhookService,
+    // W1-08 workflow substrate: local in-process default (non-durable);
+    // Hatchet only when HATCHET_API_TOKEN is set (Wave-0-gated).
+    { provide: "WORKFLOW", useFactory: () => createWorkflowAdapter(process.env).adapter },
+    SchedulerService,
   ],
 })
 export class AppModule {}

@@ -4,6 +4,7 @@ import type { Kysely } from "kysely";
 import type { Database } from "@iptv/database";
 import { newId } from "@iptv/domain";
 import type { CommandActor } from "@iptv/domain";
+import { withSpan } from "@iptv/observability";
 import { CommandBus } from "../commands/command-bus.js";
 import type { InboxStore } from "../inbox/inbox-processor.js";
 import { normalizeAsaasPayload } from "./asaas-normalizer.js";
@@ -92,6 +93,7 @@ export class AsaasWebhookService {
   }
 
   async processRow(tenantId: string, inboxId: string, payload: unknown): Promise<void> {
+    return withSpan("webhook.asaas.process", { provider: "asaas", tenant: tenantId }, async () => {
     const normalized = normalizeAsaasPayload(payload, payload);
     const actor: CommandActor = {
       userId: "asaas-webhook",
@@ -149,6 +151,7 @@ export class AsaasWebhookService {
       state: result.ok ? "PROCESSED" : "FAILED",
       errorCode: result.ok ? undefined : result.code,
     });
+    });
   }
 
   private async findPaymentForExternalCharge(tenantId: string, externalChargeId: string): Promise<string | null> {
@@ -174,6 +177,7 @@ export class AsaasWebhookService {
 
   /** Poll/process entry point for deferred rows (tests + future worker). */
   async drainPending(limit = 50): Promise<{ processed: number; failed: number }> {
+    return withSpan("webhook.asaas.drain", { provider: "asaas" }, async () => {
     const db = this.requireDb();
     const rows = await db
       .selectFrom("platform.inbox_messages")
@@ -196,6 +200,7 @@ export class AsaasWebhookService {
       }
     }
     return { processed, failed };
+    });
   }
 }
 

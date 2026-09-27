@@ -4,6 +4,7 @@ import type { Kysely } from "kysely";
 import type { Database } from "@iptv/database";
 import { newId } from "@iptv/domain";
 import type { CommandActor } from "@iptv/domain";
+import { withSpan } from "@iptv/observability";
 import { CommandBus } from "../commands/command-bus.js";
 import type { InboxStore } from "../inbox/inbox-processor.js";
 import { normalizeWahaPayload } from "./waha-normalizer.js";
@@ -104,6 +105,7 @@ export class WahaWebhookService {
    * domain state — fast ack is never blocked by an unknown shape.
    */
   async processRow(tenantId: string, inboxId: string, payload: unknown): Promise<void> {
+    return withSpan("webhook.waha.process", { provider: "waha", tenant: tenantId }, async () => {
     const normalized = normalizeWahaPayload(payload);
     if (normalized.kind === "unknown") {
       await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
@@ -150,10 +152,12 @@ export class WahaWebhookService {
     } catch {
       // Agent evaluation is advisory; inbound is already persisted.
     }
+    });
   }
 
   /** Poll/process entry point for deferred rows (tests + future worker). */
   async drainPending(limit = 50): Promise<{ processed: number; failed: number }> {
+    return withSpan("webhook.waha.drain", { provider: "waha" }, async () => {
     const db = this.requireDb();
     const rows = await db
       .selectFrom("platform.inbox_messages")
@@ -176,6 +180,7 @@ export class WahaWebhookService {
       }
     }
     return { processed, failed };
+    });
   }
 }
 

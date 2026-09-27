@@ -1,3 +1,46 @@
+# @iptv/api — W1-08 worker + W1-12 observability
+
+## What exists (Wave 1 remainder)
+
+- **Scheduler** (`src/scheduler/`): opt-in in-process loop (`SchedulerService`,
+  `API_SCHEDULER_ENABLED=1`, tick `API_SCHEDULER_TICK_SECONDS` default 60s).
+  Each tick runs the worker-eligible `*_due` commands per tenant found by a
+  platform-level due-scan (`trial.expire_due`, `order.expire_due`,
+  `charge.expire_due`, `renewal.reminders_due`, `renewal.expire_overdue_due`,
+  `subscription.expire_cycles_due` — commands stay tenant-scoped), drains
+  deferred webhook rows (`WahaWebhookService.drainPending`,
+  `AsaasWebhookService.drainPending`), then drains the outbox (limit 25 each)
+  so one tick converges. Per-task try/catch with structured error logs: one
+  failing task never kills the loop. `OnModuleDestroy` clears the interval
+  (graceful shutdown; scheduler failure never touches the API critical path).
+  `GET /v1/health` reports `{scheduler: enabled|disabled, tickSeconds}`.
+- **Workflow substrate** (`packages/workflows`, `WORKFLOW` provider):
+  `WorkflowPort` with `LocalWorkflowAdapter` default (in-memory, explicitly
+  **non-durable**) and `HatchetWorkflowAdapter` (env-gated via
+  `HATCHET_API_TOKEN`, optional SDK, Wave-0-gated — never default; missing
+  SDK/config falls back to local with a warning).
+- **Observability** (`packages/observability`, api-only default): `main.ts`
+  calls `initObservability()` first inside try/catch; Fastify `onRequest`
+  hook extracts/propagates W3C `traceparent` → `request.traceId` +
+  `x-trace-id` response header; spans wrap `CommandBus.execute` (command,
+  tenant, result code — no payloads/secrets), gateway sends, Asaas calls and
+  webhook ingress/processing; in-process counters
+  `commands_executed_total{command,code}` + `webhooks_received_total{provider,outcome}`.
+  OTLP export only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set with
+  `OTEL_SDK_DISABLED=false`. Langfuse is an interface boundary only
+  (`NoopLangfuseAdapter`, no dep, no network).
+
+## Ops env flags
+
+| Flag | Default | Effect |
+|---|---|---|
+| `API_SCHEDULER_ENABLED` | `0` | `1` arms the in-process scheduler loop (non-durable). |
+| `API_SCHEDULER_TICK_SECONDS` | `60` | Tick interval in seconds (clamped 5–3600). |
+| `HATCHET_API_TOKEN` / `HATCHET_SERVER_URL` | unset | Set to select the Hatchet adapter (Wave-0-gated; needs the optional SDK or falls back to local). |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Set (+ `OTEL_SDK_DISABLED=false`) to export OTLP-http telemetry. |
+| `OTEL_SDK_DISABLED` | `true` | `false` allows SDK construction when an endpoint is set. |
+| `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | unset | Future placeholders (boundary only, unused today). |
+
 # @iptv/api — Wave 8: Support + HITL center
 
 ## What exists (Wave 8)

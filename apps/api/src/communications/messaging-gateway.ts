@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { withSpan } from "@iptv/observability";
 
 /**
  * Wave 2 messaging gateway port. The external provider (WAHA today, GOWS
@@ -95,16 +96,30 @@ export function gatewayFromEnv(env: NodeJS.ProcessEnv = process.env): MessagingG
   return new LocalEchoGateway();
 }
 
-let activeGateway: MessagingGatewayPort = gatewayFromEnv();
+let activeGateway: MessagingGatewayPort = tracedGateway(gatewayFromEnv());
 
 export function currentGateway(): MessagingGatewayPort {
   return activeGateway;
 }
 
 export function setGatewayForTests(gateway: MessagingGatewayPort): void {
-  activeGateway = gateway;
+  activeGateway = tracedGateway(gateway);
 }
 
 export function resetGatewayForTests(): void {
-  activeGateway = gatewayFromEnv();
+  activeGateway = tracedGateway(gatewayFromEnv());
+}
+
+/**
+ * W1-12 span decorator for gateway sends. Attributes are gateway name +
+ * tenant only — destination and text are NEVER telemetry.
+ */
+export function tracedGateway(inner: MessagingGatewayPort): MessagingGatewayPort {
+  return {
+    name: inner.name,
+    sendText: (input) =>
+      withSpan("gateway.send_text", { gateway: inner.name, tenant: input.tenantId }, () =>
+        inner.sendText(input),
+      ),
+  };
 }

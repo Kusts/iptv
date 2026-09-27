@@ -22,6 +22,8 @@ declare module "fastify" {
   interface FastifyRequest {
     auth?: RequestAuth;
     tenant?: RequestTenant;
+    /** W1-12 correlation id from `traceparent` (see `observability-hook.ts`). */
+    traceId?: string;
   }
 }
 

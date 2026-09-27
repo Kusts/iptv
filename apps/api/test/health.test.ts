@@ -4,6 +4,7 @@ import { NestFactory } from "@nestjs/core";
 import type { NestFastifyApplication } from "@nestjs/platform-fastify";
 import { AppModule } from "../src/app.module.js";
 import { createFastifyAdapter, isValidRequestId, registerRequestIdHook } from "../src/request-id.js";
+import { registerObservabilityHook } from "../src/observability-hook.js";
 
 describe("GET /v1/health", () => {
   let app: NestFastifyApplication;
@@ -11,6 +12,7 @@ describe("GET /v1/health", () => {
   beforeAll(async () => {
     app = await NestFactory.create<NestFastifyApplication>(AppModule, createFastifyAdapter());
     registerRequestIdHook(app);
+    registerObservabilityHook(app);
     await app.init();
   });
 
@@ -24,11 +26,15 @@ describe("GET /v1/health", () => {
       url: "/v1/health",
     });
     expect(res.statusCode).toBe(200);
-    const body = res.json<{ status: string; version: string; requestId: string }>();
+    const body = res.json<{ status: string; version: string; requestId: string; scheduler: string; tickSeconds: number }>();
     expect(body.status).toBe("ok");
     expect(body.version).toBe("0.1.0");
     expect(isValidRequestId(body.requestId)).toBe(true);
     expect(res.headers["x-request-id"]).toBe(body.requestId);
+    // W1-08/W1-12: scheduler surface (disabled without env) + trace header.
+    expect(body.scheduler).toBe("disabled");
+    expect(body.tickSeconds).toBe(60);
+    expect(res.headers["x-trace-id"]).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it("reuses a valid inbound x-request-id", async () => {

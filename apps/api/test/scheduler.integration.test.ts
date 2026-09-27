@@ -1,0 +1,382 @@
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { NestFactory } from "@nestjs/core";
+import type { NestFastifyApplication } from "@nestjs/platform-fastify";
+import { createDb, applyMigrations } from "@iptv/database";
+import { newId } from "@iptv/domain";
+import type { CommandActor } from "@iptv/domain";
+import { AppModule } from "../src/app.module.js";
+import { createFastifyAdapter, registerRequestIdHook } from "../src/request-id.js";
+import { registerObservabilityHook } from "../src/observability-hook.js";
+import { CommandBus } from "../src/commands/command-bus.js";
+import { OutboxDrainer } from "../src/outbox/outbox-drainer.js";
+import { SchedulerService } from "../src/scheduler/scheduler.service.js";
+import { WahaWebhookService } from "../src/communications/waha-webhook.service.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const MIGRATIONS_DIR = join(here, "..", "..", "..", "db", "migrations");
+
+const connectionString = process.env["TEST_DATABASE_URL"];
+const hasDb = typeof connectionString === "string" && connectionString.length > 0;
+
+function email(prefix: string): string {
+  return `${prefix}-${newId().replace(/-/g, "").slice(-12)}@example.com`;
+}
+
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+const PERMISSIONS = [
+  "crm.person.read",
+  "crm.lead.write",
+  "trial.read",
+  "trial.write",
+  "provider.operation.read",
+  "provider.operation.write",
+  "commerce.order.write",
+  "billing.read",
+  "billing.charge.write",
+  "subscription.read",
+  "subscription.write",
+  "agent.review.request",
+  "agent.review.decide",
+];
+
+const ASAAS_SECRET = "sched-test-asaas-secret";
+
+describe.skipIf(!hasDb)("Scheduler tick end-to-end (requires TEST_DATABASE_URL)", () => {
+  let app: NestFastifyApplication;
+  const db = createDb({ connectionString: connectionString as string });
+
+  let token = "";
+  let tenantId = "";
+  let userId = "";
+  let bus: CommandBus;
+  let drainer: OutboxDrainer;
+  let scheduler: SchedulerService;
+
+  function actor(): CommandActor {
+    return {
+      userId,
+      isPlatformAdmin: false,
+      tenantId,
+      roleKeys: ["tenant_owner"],
+      permissions: PERMISSIONS,
+      actorType: "human",
+    };
+  }
+
+  function injectRaw(opts: {
+    method: "GET" | "POST";
+    url: string;
+    token?: string;
+    headers?: Record<string, string>;
+    payload?: Record<string, unknown>;
+  }) {
+    const headers: Record<string, string> = { ...(opts.headers ?? {}) };
+    if (opts.token !== undefined) {
+      headers["authorization"] = `Bearer ${opts.token}`;
+    }
+    const options: {
+      method: "GET" | "POST";
+      url: string;
+      headers: Record<string, string>;
+      payload?: Record<string, unknown>;
+    } = { method: opts.method, url: opts.url, headers };
+    if (opts.payload !== undefined) {
+      options.payload = opts.payload;
+    }
+    return app.getHttpAdapter().getInstance().inject(options);
+  }
+
+  /** ACTIVE trial whose expiry is forced into the past (SQL time travel). */
+  async function seedExpiredTrial(): Promise<string> {
+    const person = await bus.execute<{ id: string }>(actor(), "person.register", {
+      canonicalName: "Scheduler Person",
+    });
+    if (!person.ok) {
+      throw new Error(`person.register failed: ${person.message}`);
+    }
+    const requested = await bus.execute<{ id: string | null }>(actor(), "trial.request", {
+      personId: person.data.id,
+      durationMinutes: 60,
+    });
+    if (!requested.ok || requested.data.id === null) {
+      throw new Error(`trial.request failed: ${JSON.stringify(requested)}`);
+    }
+    const trialId = requested.data.id;
+    const provisioned = await bus.execute<{ status: string }>(actor(), "trial.begin_provisioning", {
+      trialId,
+      adapter: "echo",
+    });
+    if (!provisioned.ok || provisioned.data.status !== "ACTIVE") {
+      throw new Error(`begin_provisioning failed: ${JSON.stringify(provisioned)}`);
+    }
+    const activatedAt = new Date(Date.now() - 2 * 3_600_000);
+    await db
+      .updateTable("trial.trials")
+      .set({ activated_at: activatedAt, expires_at: new Date(Date.now() - 3_600_000) })
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", trialId)
+      .execute();
+    return trialId;
+  }
+
+  async function seedMonthlyPlan(): Promise<string> {
+    const suffix = newId().replace(/-/g, "").slice(-12);
+    const productId = newId();
+    await db
+      .insertInto("catalog.products")
+      .values({
+        id: productId,
+        tenant_id: tenantId,
+        product_key: `svc-${suffix}`,
+        name: "Scheduler Service",
+        product_type: "SERVICE",
+        status: "ACTIVE",
+        metadata_json: {},
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+    const planId = newId();
+    await db
+      .insertInto("catalog.plans")
+      .values({
+        id: planId,
+        tenant_id: tenantId,
+        product_id: productId,
+        plan_key: `monthly-${suffix}`,
+        name: "Scheduler Monthly",
+        billing_interval_unit: "MONTH",
+        billing_interval_count: 1,
+        status: "ACTIVE",
+        metadata_json: {},
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+    await db
+      .insertInto("catalog.prices")
+      .values({
+        id: newId(),
+        tenant_id: tenantId,
+        sellable_type: "PLAN",
+        sellable_id: planId,
+        amount_minor: "3000",
+        currency: "BRL",
+        starts_at: new Date(Date.now() - 60_000),
+        ends_at: null,
+        segment_key: null,
+        status: "ACTIVE",
+        metadata_json: {},
+        created_at: new Date(),
+      })
+      .execute();
+    return planId;
+  }
+
+  /** ACTIVE subscription whose open cycle is forced past grace (SQL time travel). */
+  async function seedOverdueSubscription(): Promise<string> {
+    const person = await bus.execute<{ id: string }>(actor(), "person.register", {
+      canonicalName: "Scheduler Subscriber",
+    });
+    if (!person.ok) {
+      throw new Error(`person.register failed: ${person.message}`);
+    }
+    const planId = await seedMonthlyPlan();
+    const quoted = await bus.execute<{ id: string }>(actor(), "offer.quote", {
+      personId: person.data.id,
+      items: [{ sellableType: "PLAN", sellableId: planId, quantity: 1 }],
+      orderType: "NEW_SUBSCRIPTION",
+    });
+    if (!quoted.ok) {
+      throw new Error(`offer.quote failed: ${JSON.stringify(quoted)}`);
+    }
+    const submitted = await bus.execute(actor(), "order.submit", { orderId: quoted.data.id });
+    if (!submitted.ok) {
+      throw new Error(`order.submit failed: ${JSON.stringify(submitted)}`);
+    }
+    const tenantKey = `asaas-${newId().replace(/-/g, "").slice(-12)}`;
+    await db
+      .insertInto("billing.tenant_channels")
+      .values({
+        id: newId(),
+        tenant_id: tenantId,
+        channel: "ASAAS",
+        tenant_key: tenantKey,
+        webhook_secret_hash: sha256Hex(ASAAS_SECRET),
+        status: "ACTIVE",
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+    const created = await bus.execute<{ id: string; providerChargeId: string | null }>(actor(), "charge.create", {
+      orderId: quoted.data.id,
+    });
+    if (!created.ok || created.data.providerChargeId === null) {
+      throw new Error(`charge.create failed: ${JSON.stringify(created)}`);
+    }
+    const delivered = await injectRaw({
+      method: "POST",
+      url: `/v1/webhooks/asaas/${tenantKey}`,
+      headers: { "x-asaas-secret": ASAAS_SECRET },
+      payload: {
+        event: "PAYMENT_RECEIVED",
+        id: `evt-sched-${newId().slice(-12)}`,
+        payment: { id: created.data.providerChargeId, value: 30.0, currency: "BRL" },
+      },
+    });
+    expect(delivered.statusCode).toBe(202);
+    const activated = await bus.execute<{ id: string }>(actor(), "subscription.activate_from_order", {
+      orderId: quoted.data.id,
+    });
+    if (!activated.ok) {
+      throw new Error(`activate_from_order failed: ${JSON.stringify(activated)}`);
+    }
+    const subscriptionId = activated.data.id;
+    const requested = await bus.execute(actor(), "fulfillment.request_for_subscription", {
+      subscriptionId,
+      adapter: "manual",
+    });
+    if (!requested.ok) {
+      throw new Error(`fulfillment request failed: ${JSON.stringify(requested)}`);
+    }
+    const operationId = (requested.data as { operationId: string }).operationId;
+    const resolved = await bus.execute(actor(), "provider.resolve_operation", {
+      operationId,
+      outcome: "SUCCEEDED",
+    });
+    if (!resolved.ok) {
+      throw new Error(`provider resolve failed: ${JSON.stringify(resolved)}`);
+    }
+    const startsAt = new Date(Date.now() - 50 * 86_400_000);
+    const endsAt = new Date(Date.now() - 40 * 86_400_000);
+    await db
+      .updateTable("subscription.subscription_cycles")
+      .set({ starts_at: startsAt, ends_at: endsAt })
+      .where("tenant_id", "=", tenantId)
+      .where("subscription_id", "=", subscriptionId)
+      .execute();
+    return subscriptionId;
+  }
+
+  beforeAll(async () => {
+    await applyMigrations(connectionString as string, { migrationsDir: MIGRATIONS_DIR });
+    process.env["DATABASE_URL"] = connectionString as string;
+    process.env["BETTER_AUTH_SECRET"] = "integration-test-secret-0123456789";
+    delete process.env["API_SCHEDULER_ENABLED"];
+    delete process.env["PROVIDER_OPS_ADAPTER"];
+    delete process.env["ASAAS_ECHO_CREATE"];
+    delete process.env["ASAAS_ECHO_RECONCILE"];
+    app = await NestFactory.create<NestFastifyApplication>(AppModule, createFastifyAdapter());
+    registerRequestIdHook(app);
+    registerObservabilityHook(app);
+    await app.init();
+    bus = app.get(CommandBus);
+    drainer = app.get(OutboxDrainer);
+    scheduler = app.get(SchedulerService);
+
+    const register = await injectRaw({
+      method: "POST",
+      url: "/v1/auth/register",
+      payload: { email: email("sched"), password: "correct-horse-8", tenantName: "Scheduler Tenant" },
+    });
+    expect(register.statusCode).toBe(201);
+    const body = register.json<{ token: string; activeTenantId: string; user: { id: string } }>();
+    token = body.token;
+    tenantId = body.activeTenantId;
+    userId = body.user.id;
+    void token;
+  });
+
+  afterAll(async () => {
+    if (hasDb && drainer !== undefined) {
+      // Leave no PENDING outbox rows behind for sibling suites.
+      await drainer.drain(1000).catch(() => undefined);
+    }
+    await app?.close().catch(() => undefined);
+    await db.destroy().catch(() => undefined);
+  });
+
+  it("scheduler is disabled by default (no env)", () => {
+    expect(scheduler.isEnabled()).toBe(false);
+  });
+
+  it("tick expires the trial + overdue subscription and drains the outbox once", async () => {    const trialId = await seedExpiredTrial();
+    const subscriptionId = await seedOverdueSubscription();
+
+    const first = await scheduler.tick();
+    expect(first.errors).toEqual([]);
+    expect(first.tenants).toBeGreaterThanOrEqual(1);
+
+    const trial = await db
+      .selectFrom("trial.trials")
+      .select(["lifecycle_status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", trialId)
+      .executeTakeFirstOrThrow();
+    expect(trial.lifecycle_status).toBe("ENDED");
+
+    const subscription = await db
+      .selectFrom("subscription.subscriptions")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", subscriptionId)
+      .executeTakeFirstOrThrow();
+    // Default service policy denies suspension → ENDED at cycle end.
+    expect(subscription.status).toBe("ENDED");
+
+    const recovery = await db
+      .selectFrom("renewal.recovery_tasks")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("subscription_id", "=", subscriptionId)
+      .execute();
+    expect(recovery.length).toBeGreaterThanOrEqual(1);
+
+    // Outbox drained by the same tick: nothing claimable left behind FOR THIS
+    // TENANT (the shared integration DB legitimately holds residue from other
+    // suites' tenants).
+    const leftover = await db
+      .selectFrom("platform.outbox_messages")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("state", "in", ["PENDING", "FAILED"])
+      .where("next_attempt_at", "<=", new Date())
+      .execute();
+    expect(leftover).toHaveLength(0);
+
+    // Idempotent second tick: no new transitions, nothing to drain.
+    const second = await scheduler.tick();
+    expect(second.errors).toEqual([]);
+    expect(second.outbox.claimed).toBe(0);
+    for (const counts of Object.values(second.commands)) {
+      expect(counts.failed).toBe(0);
+    }
+    // The tick scans every tenant with due rows on the shared integration DB —
+    // it can exceed the vitest default on accumulated data.
+  }, 180_000);
+
+  it("one failing task does not prevent the others in the same tick", async () => {
+    const trialId = await seedExpiredTrial();
+    const waha = app.get(WahaWebhookService);
+    const spy = vi.spyOn(waha, "drainPending").mockRejectedValueOnce(new Error("webhook drain boom"));
+    try {
+      const result = await scheduler.tick();
+      expect(result.errors.some((e) => e.includes("webhook.waha.drainPending"))).toBe(true);
+      const trial = await db
+        .selectFrom("trial.trials")
+        .select(["lifecycle_status"])
+        .where("tenant_id", "=", tenantId)
+        .where("id", "=", trialId)
+        .executeTakeFirstOrThrow();
+      expect(trial.lifecycle_status).toBe("ENDED");
+    } finally {
+      spy.mockRestore();
+    }
+  }, 180_000);
+});

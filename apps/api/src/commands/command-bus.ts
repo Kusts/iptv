@@ -3,9 +3,11 @@ import { createHash } from "node:crypto";
 import type { z } from "zod";
 import {
   idempotencyScopeOf,
+  resultCode,
   type CommandActor,
   type CommandResult,
 } from "@iptv/domain";
+import { recordCommandExecuted, withSpan } from "@iptv/observability";
 import type { EventEnvelope } from "@iptv/domain";
 import type { AuditEventInput } from "@iptv/auth";
 
@@ -255,6 +257,7 @@ export class CommandBus {
   ): Promise<CommandResult<TOutput>> {
     const def = this.registry.get(name) as CommandDefinition<unknown, TOutput> | undefined;
     if (def === undefined) {
+      recordCommandExecuted(name, "not_found");
       return { ok: false, code: "not_found", message: `unknown command: ${name}` };
     }
     if (this.db === null) {
@@ -263,18 +266,24 @@ export class CommandBus {
     const db = this.db;
     const tenantId = actor.tenantId;
     if (tenantId === null && !actor.isPlatformAdmin) {
+      recordCommandExecuted(name, "forbidden");
       return { ok: false, code: "forbidden", message: "no active tenant selected" };
     }
+    // W1-12 span: command name + tenant only — never payloads or secrets.
+    // The metric records the terminal result code (also on early outs).
+    return withSpan("command.execute", { command: name, tenant: tenantId ?? "platform" }, async () => {
     // Platform admins act within an explicit tenant context; commands are
     // always tenant-scoped (outbox drain stays the platform-only exception).
     const scopeTenant = tenantId as string;
     if (!actor.isPlatformAdmin) {
       if (!actor.permissions.includes(def.permission)) {
+        recordCommandExecuted(name, "forbidden");
         return { ok: false, code: "forbidden", message: `missing permission: ${def.permission}` };
       }
     }
     const parsed = (def.input as z.ZodType<unknown, z.ZodTypeDef, unknown>).safeParse(rawInput);
     if (!parsed.success) {
+      recordCommandExecuted(name, "validation_failed");
       return {
         ok: false,
         code: "validation_failed",
@@ -294,9 +303,11 @@ export class CommandBus {
       const requestHash = sha256Hex(JSON.stringify({ name, input }));
       const claim = await db.claimIdempotency({ tenantId: scopeTenant, scope, key, requestHash });
       if (claim.status === "replay") {
+        recordCommandExecuted(name, resultCode(claim.response as CommandResult<TOutput>));
         return claim.response as CommandResult<TOutput>;
       }
       if (claim.status === "conflict") {
+        recordCommandExecuted(name, "validation_failed");
         return {
           ok: false,
           code: "validation_failed",
@@ -304,6 +315,7 @@ export class CommandBus {
         };
       }
       if (claim.status === "in_progress") {
+        recordCommandExecuted(name, "precondition_failed");
         return {
           ok: false,
           code: "precondition_failed",
@@ -355,7 +367,9 @@ export class CommandBus {
         response: result,
       });
     }
+    recordCommandExecuted(name, resultCode(result));
     return result;
+    });
   }
 }
 

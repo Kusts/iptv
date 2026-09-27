@@ -1,6 +1,7 @@
 import { Body, Controller, HttpCode, HttpException, Inject, Param, Post, Query, Req } from "@nestjs/common";
 import type { FastifyRequest } from "fastify";
 import { createHash } from "node:crypto";
+import { recordWebhookReceived, withSpan } from "@iptv/observability";
 import { AsaasWebhookService } from "./asaas-webhook.service.js";
 import { normalizeAsaasPayload } from "./asaas-normalizer.js";
 
@@ -26,14 +27,17 @@ export class AsaasWebhookController {
     @Req() req: FastifyRequest,
     @Query("defer") defer?: string,
   ): Promise<{ accepted: boolean; deduped: boolean }> {
+    return withSpan("webhook.asaas.receive", { provider: "asaas" }, async () => {
     const channel = await this.webhooks.resolveChannel(tenantKey);
     if (channel === null) {
+      recordWebhookReceived("asaas", "unknown_tenant");
       throw new HttpException({ code: "NOT_FOUND", message: "unknown webhook endpoint" }, 404);
     }
     const header = req.headers["x-asaas-secret"];
     const presented = Array.isArray(header) ? header[0] : header;
     const auth = this.webhooks.verifySecret(channel, presented);
     if (!auth.ok) {
+      recordWebhookReceived("asaas", "unauthorized");
       const status = auth.code === "not_configured" ? 503 : 401;
       throw new HttpException({ code: "UNAUTHORIZED", message: "webhook authentication failed" }, status);
     }
@@ -48,11 +52,14 @@ export class AsaasWebhookController {
       payload: body,
     });
     if (!accepted.inserted) {
+      recordWebhookReceived("asaas", "duplicate");
       return { accepted: true, deduped: true };
     }
     if (defer !== "1") {
       await this.webhooks.processRow(channel.tenantId, accepted.inboxId, body);
     }
+    recordWebhookReceived("asaas", "accepted");
     return { accepted: true, deduped: false };
+    });
   }
 }

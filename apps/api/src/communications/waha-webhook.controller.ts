@@ -1,5 +1,6 @@
 import { Body, Controller, HttpCode, HttpException, Inject, Param, Post, Query, Req } from "@nestjs/common";
 import type { FastifyRequest } from "fastify";
+import { recordWebhookReceived, withSpan } from "@iptv/observability";
 import { WahaWebhookService } from "./waha-webhook.service.js";
 import { normalizeWahaPayload } from "./waha-normalizer.js";
 import { createHash } from "node:crypto";
@@ -27,8 +28,10 @@ export class WahaWebhookController {
     @Req() req: FastifyRequest,
     @Query("defer") defer?: string,
   ): Promise<{ accepted: boolean; deduped: boolean }> {
+    return withSpan("webhook.waha.receive", { provider: "waha" }, async () => {
     const channel = await this.webhooks.resolveChannel(tenantKey);
     if (channel === null) {
+      recordWebhookReceived("waha", "unknown_tenant");
       throw new HttpException({ code: "NOT_FOUND", message: "unknown webhook endpoint" }, 404);
     }
     const header = req.headers["x-waha-secret"];
@@ -37,6 +40,7 @@ export class WahaWebhookController {
     if (!auth.ok) {
       // Rejected and auditable upstream; never expose which check failed
       // beyond the status (secret value itself is never logged).
+      recordWebhookReceived("waha", "unauthorized");
       const status = auth.code === "not_configured" ? 503 : 401;
       throw new HttpException({ code: "UNAUTHORIZED", message: "webhook authentication failed" }, status);
     }
@@ -52,11 +56,14 @@ export class WahaWebhookController {
       payload: body,
     });
     if (!accepted.inserted) {
+      recordWebhookReceived("waha", "duplicate");
       return { accepted: true, deduped: true };
     }
     if (defer !== "1") {
       await this.webhooks.processRow(channel.tenantId, accepted.inboxId, body);
     }
+    recordWebhookReceived("waha", "accepted");
     return { accepted: true, deduped: false };
+    });
   }
 }

@@ -14,6 +14,8 @@
  * Selection: `ASAAS_ADAPTER=echo|real` (default `echo`).
  */
 
+import { withSpan } from "@iptv/observability";
+
 export type AsaasEffect = "KNOWN_APPLIED" | "KNOWN_NOT_APPLIED" | "UNKNOWN";
 
 export interface PixChargeRequest {
@@ -242,5 +244,28 @@ export function asaasAdapterNameFromEnv(): "echo" | "real" {
 }
 
 export function resolveAsaasPort(name: "echo" | "real"): AsaasPort {
-  return name === "real" ? new RealAsaasAdapter() : new EchoAsaasAdapter();
+  const inner: AsaasPort = name === "real" ? new RealAsaasAdapter() : new EchoAsaasAdapter();
+  return tracedAsaasPort(inner);
+}
+
+/**
+ * W1-12 span decorator for Asaas calls. Attributes are adapter name +
+ * operation only — amounts, ids and payloads are NEVER telemetry.
+ */
+export function tracedAsaasPort(inner: AsaasPort): AsaasPort {
+  return {
+    name: inner.name,
+    createPixCharge: (input) =>
+      withSpan("asaas.create_pix_charge", { adapter: inner.name, operation: "create_pix_charge" }, () =>
+        inner.createPixCharge(input),
+      ),
+    getCharge: (query) =>
+      withSpan("asaas.get_charge", { adapter: inner.name, operation: "get_charge" }, () => inner.getCharge(query)),
+    executeRefund: (input) =>
+      withSpan("asaas.execute_refund", { adapter: inner.name, operation: "execute_refund" }, () =>
+        inner.executeRefund(input),
+      ),
+    getRefund: (query) =>
+      withSpan("asaas.get_refund", { adapter: inner.name, operation: "get_refund" }, () => inner.getRefund(query)),
+  };
 }
