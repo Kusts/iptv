@@ -7,12 +7,24 @@ import { registerPolicyCommands } from "../policy/policy.commands.js";
 import { registerCapabilityCommands } from "../capabilities/capability.commands.js";
 import { registerCrmCommands } from "../crm/crm.commands.js";
 import { registerCommunicationCommands } from "../communications/communications.commands.js";
+import { registerTrialCommands } from "../trial/trial.commands.js";
+import { registerProviderCommands } from "../provider/provider.commands.js";
+import {
+  StubProviderReadback,
+  adapterNameFromEnv,
+  resolveOpsPort,
+} from "../provider/provider-port.js";
 
 /**
  * CommandBus provider: builds the bus over the `COMMAND_DB` port and
  * registers the Wave 1 command catalog (HumanReview substrate + Policy and
- * Capability foundations) plus the Wave 2 slice (CRM + Communications).
+ * Capability foundations), the Wave 2 slice (CRM + Communications) and the
+ * Wave 4 slice (Trials + Compatibility + Provider Operations).
  * Explicit tokens everywhere — esbuild/vitest emits no `design:paramtypes`.
+ *
+ * Provider adapters are explicit: `PROVIDER_OPS_ADAPTER=echo|manual`
+ * (default `manual`); the real CINEVISION integration stays Wave-0-gated
+ * and has no implementation here.
  */
 export const CommandsProvider = {
   provide: CommandBus,
@@ -24,6 +36,9 @@ export const CommandsProvider = {
       registerCapabilityCommands(bus);
       registerCrmCommands(bus);
       registerCommunicationCommands(bus);
+      const opsPort = resolveOpsPort(adapterNameFromEnv());
+      registerTrialCommands(bus, { opsPort });
+      registerProviderCommands(bus, { opsPort, readbackPort: new StubProviderReadback() });
     }
     return bus;
   },

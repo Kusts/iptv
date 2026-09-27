@@ -475,6 +475,203 @@ export interface AgentTasksTable {
   completed_at: Date | null;
 }
 
+/** Mirrors `trial.trial_eligibility_decisions` (migration 003). */
+export interface TrialEligibilityDecisionsTable {
+  id: string;
+  tenant_id: string;
+  person_id: string;
+  outcome: string;
+  policy_version: string;
+  risk_assessment_id: string | null;
+  previous_trial_id: string | null;
+  reason_codes: string[];
+  evidence_json: unknown;
+  actor_type: string;
+  actor_id: string | null;
+  created_at: Date;
+}
+
+/** Mirrors `trial.trials` (migration 003). */
+export interface TrialTrialsTable {
+  id: string;
+  tenant_id: string;
+  person_id: string;
+  lead_id: string | null;
+  previous_trial_id: string | null;
+  trial_kind: string;
+  retrial_reason: string | null;
+  lifecycle_status: string;
+  technical_outcome: string;
+  requested_duration_minutes: number;
+  adult_content_enabled: boolean;
+  provider_account_id: string | null;
+  provider_binding_id: string | null;
+  activated_at: Date | null;
+  expires_at: Date | null;
+  ended_at: Date | null;
+  invalidated_reason: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `trial.trial_attempts` (migration 003, append-only). */
+export interface TrialAttemptsTable {
+  id: string;
+  tenant_id: string;
+  trial_id: string;
+  attempt_type: string;
+  started_at: Date;
+  completed_at: Date | null;
+  outcome: string | null;
+  error_code: string | null;
+  context_json: unknown;
+}
+
+/** Mirrors `trial.trial_technical_results` (migration 003, one per trial). */
+export interface TrialTechnicalResultsTable {
+  id: string;
+  tenant_id: string;
+  trial_id: string;
+  installation_success: boolean | null;
+  authentication_success: boolean | null;
+  playback_success: boolean | null;
+  buffering_observed: boolean | null;
+  summary_outcome: string;
+  assessed_at: Date;
+  assessment_version: string;
+}
+
+/** Mirrors `trial.device_profiles` (migration 003). */
+export interface TrialDeviceProfilesTable {
+  id: string;
+  tenant_id: string;
+  person_id: string;
+  device_type: string;
+  manufacturer: string | null;
+  model: string | null;
+  os_name: string | null;
+  os_version: string | null;
+  first_seen_at: Date;
+  last_seen_at: Date;
+}
+
+/** Mirrors `trial.app_profiles` (migration 003). */
+export interface TrialAppProfilesTable {
+  id: string;
+  tenant_id: string | null;
+  name: string;
+  platform: string;
+  version: string | null;
+  license_type: string | null;
+  status: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `trial.network_observations` (migration 003, append-only). */
+export interface TrialNetworkObservationsTable {
+  id: string;
+  tenant_id: string;
+  person_id: string;
+  trial_id: string | null;
+  isp_name: string | null;
+  network_type: string | null;
+  ipv6_state: string | null;
+  dns_profile: string | null;
+  observed_at: Date;
+}
+
+/** Mirrors `trial.compatibility_observations` (migration 003, append-only). */
+export interface TrialCompatibilityObservationsTable {
+  id: string;
+  tenant_id: string;
+  person_id: string | null;
+  trial_id: string | null;
+  device_profile_id: string | null;
+  app_profile_id: string | null;
+  provider_server_key: string | null;
+  network_context_json: unknown;
+  procedure_key: string | null;
+  outcome: string;
+  metrics_json: unknown;
+  observed_at: Date;
+}
+
+/** Mirrors `provider.providers` (migration 007, global catalog). */
+export interface ProviderProvidersTable {
+  id: string;
+  provider_key: string;
+  name: string;
+  provider_type: string;
+  status: string;
+  created_at: Date;
+}
+
+/** Mirrors `provider.provider_accounts` (migration 007). */
+export interface ProviderAccountsTable {
+  id: string;
+  tenant_id: string;
+  provider_id: string;
+  name: string;
+  status: string;
+  secret_ref: string;
+  settings_json: unknown;
+  last_recharge_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `provider.provider_bindings` (migration 007). */
+export interface ProviderBindingsTable {
+  id: string;
+  tenant_id: string;
+  provider_account_id: string;
+  entity_type: string;
+  entity_id: string;
+  external_id: string;
+  external_secondary_id: string | null;
+  status: string;
+  metadata_json: unknown;
+  last_verified_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `provider.provider_operations` (migrations 007 + 017). */
+export interface ProviderOperationsTable {
+  id: string;
+  tenant_id: string;
+  provider_account_id: string;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  status: string;
+  idempotency_key: string;
+  execution_channel: string | null;
+  adapter_version: string | null;
+  requested_payload_json: unknown;
+  result_summary_json: unknown;
+  requested_at: Date;
+  started_at: Date | null;
+  completed_at: Date | null;
+  correlation_id: string;
+  effect_certainty: string;
+}
+
+/** Mirrors `provider.provider_operation_attempts` (migration 007, append-only). */
+export interface ProviderOperationAttemptsTable {
+  id: string;
+  tenant_id: string;
+  provider_operation_id: string;
+  attempt_no: number;
+  status: string;
+  started_at: Date;
+  completed_at: Date | null;
+  error_class: string | null;
+  error_code: string | null;
+  trace_ref: string | null;
+}
+
 export interface Database {
   "control.tenants": ControlTenantsTable;
   "control.users": ControlUsersTable;
@@ -511,4 +708,17 @@ export interface Database {
   "communication.conversation_control_events": CommunicationControlEventsTable;
   "communication.tenant_channels": CommunicationTenantChannelsTable;
   "communication.exceptions": CommunicationExceptionsTable;
+  "trial.trial_eligibility_decisions": TrialEligibilityDecisionsTable;
+  "trial.trials": TrialTrialsTable;
+  "trial.trial_attempts": TrialAttemptsTable;
+  "trial.trial_technical_results": TrialTechnicalResultsTable;
+  "trial.device_profiles": TrialDeviceProfilesTable;
+  "trial.app_profiles": TrialAppProfilesTable;
+  "trial.network_observations": TrialNetworkObservationsTable;
+  "trial.compatibility_observations": TrialCompatibilityObservationsTable;
+  "provider.providers": ProviderProvidersTable;
+  "provider.provider_accounts": ProviderAccountsTable;
+  "provider.provider_bindings": ProviderBindingsTable;
+  "provider.provider_operations": ProviderOperationsTable;
+  "provider.provider_operation_attempts": ProviderOperationAttemptsTable;
 }

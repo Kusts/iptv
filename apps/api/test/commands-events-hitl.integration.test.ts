@@ -133,6 +133,21 @@ describe.skipIf(!hasDb)("commands → events → outbox → inbox → audit + HI
       "conversation.release",
       "conversation.close",
       "exception.resolve",
+      "trial.request",
+      "trial.request_retrial",
+      "trial.begin_provisioning",
+      "trial.record_technical_result",
+      "trial.end",
+      "trial.cancel",
+      "trial.invalidate",
+      "trial.apply_trust_renewal",
+      "trial.expire_due",
+      "compatibility.record_device_profile",
+      "compatibility.record_app_profile",
+      "compatibility.record_observation",
+      "provider.request_operation",
+      "provider.resolve_operation",
+      "provider.reconcile",
     ]);
 
     const register = await inject({

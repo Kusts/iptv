@@ -23,7 +23,7 @@ This repository contains planning, draft migrations/contracts and static checks,
 
 Current static checks: `python scripts/validate_docs.py`, `python tests/contracts/test_contracts.py`, and `python tests/contracts/test_seed_contract.py`. `scripts/validate_doc_reviews.py` checks historical v0.14 review markers on a fixed file list; it is not the current v1.0 contract/readiness gate and must not be made green by adding review claims to files that were not reviewed in v0.14.
 
-Runtime checks (require `TEST_DATABASE_URL` on a disposable PostgreSQL): `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm build`. Wave 3 adds the agent offline eval set (`POST /v1/agent/evals/run`, always through the deterministic echo gateway — no credentials needed) and the shadow → approval → send chain covered by `apps/api/test/agent-shadow-approval.integration.test.ts`.
+Runtime checks (require `TEST_DATABASE_URL` on a disposable PostgreSQL): `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm build`. Wave 3 adds the agent offline eval set (`POST /v1/agent/evals/run`, always through the deterministic echo gateway — no credentials needed) and the shadow → approval → send chain covered by `apps/api/test/agent-shadow-approval.integration.test.ts`. Wave 4 adds Trials + Compatibility (`apps/api/src/trial/`, `apps/api/src/provider/`, commands `trial.*`, `compatibility.*`, `provider.*`) with provisioning behind echo/manual adapters only — no real CINEVISION calls — covered by `apps/api/test/trial-compat.unit.test.ts` and `apps/api/test/trial-compat.integration.test.ts`.
 
 ## Key final decisions
 

@@ -32,11 +32,13 @@ describe("permissionsForRoles", () => {
       "crm.lead.write",
       "crm.person.read",
       "support.ticket.write",
+      "trial.read",
+      "trial.write",
     ]);
   });
 
   it("owner has the full catalog", () => {
-    expect(permissionsForRoles([TENANT_OWNER_ROLE]).size).toBe(11);
+    expect(permissionsForRoles([TENANT_OWNER_ROLE]).size).toBe(15);
   });
 });
 
@@ -65,6 +67,15 @@ describe("hasPermission / requirePermission", () => {
     expect(() =>
       requirePermission(op, op.tenantId as string, "agent.review.decide"),
     ).toThrow(ForbiddenError);
+  });
+  it("operator runs trials but cannot resolve provider operations", () => {
+    const op = actor({
+      roleKeys: [TENANT_OPERATOR_ROLE],
+      permissions: [...(ROLE_PERMISSIONS[TENANT_OPERATOR_ROLE] ?? [])],
+    });
+    expect(hasPermission(op, "trial.write")).toBe(true);
+    expect(hasPermission(op, "provider.operation.write")).toBe(false);
+    expect(() => requirePermission(op, op.tenantId as string, "provider.operation.write")).toThrow(ForbiddenError);
   });
   it("operator is denied settings.manage", () => {
     const op = actor({
@@ -140,6 +151,6 @@ describe("resolveActor", () => {
       isPlatformAdmin: true,
       tenantId: "t-9",
     });
-    expect(resolved.permissions).toHaveLength(11);
+    expect(resolved.permissions).toHaveLength(15);
   });
 });

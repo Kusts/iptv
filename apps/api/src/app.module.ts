@@ -17,6 +17,9 @@ import { InboxProcessor } from "./inbox/inbox-processor.js";
 import { InboxStoreProvider } from "./inbox/inbox.provider.js";
 import { HumanReviewController } from "./human-review/human-review.controller.js";
 import { CrmController } from "./crm/crm.controller.js";
+import { TrialController } from "./trial/trial.controller.js";
+import { CompatibilityController } from "./trial/compatibility.controller.js";
+import { ProviderController } from "./provider/provider.controller.js";
 import { CommunicationsController } from "./communications/communications.controller.js";
 import { WahaWebhookController } from "./communications/waha-webhook.controller.js";
 import { WahaWebhookService } from "./communications/waha-webhook.service.js";
@@ -59,6 +62,9 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     TenantsController,
     HumanReviewController,
     CrmController,
+    TrialController,
+    CompatibilityController,
+    ProviderController,
     CommunicationsController,
     WahaWebhookController,
     PolicyController,
