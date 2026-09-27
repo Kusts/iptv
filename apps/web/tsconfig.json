@@ -25,9 +25,14 @@
   "include": [
     "app/**/*.ts",
     "app/**/*.tsx",
+    "components/**/*.ts",
+    "components/**/*.tsx",
+    "lib/**/*.ts",
+    "lib/**/*.tsx",
+    "test/**/*.ts",
+    "test/**/*.tsx",
     "next-env.d.ts",
     "next.config.mjs",
-    "test/**/*.ts",
     ".next/types/**/*.ts"
   ],
   "exclude": [

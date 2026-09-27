@@ -59,7 +59,12 @@ Runtime checks (require `TEST_DATABASE_URL` on a disposable PostgreSQL): `pnpm t
 - `14-user-docs` — user/admin docs;
 - `15-implementation-baseline` — **canonical v1.0 implementation contract**.
 
-## Implementation status: W1-01/W1-02 bootstrapped
+## Implementation status: W1-01/W1-02 bootstrapped + Control Center shell (W1-13/W1-14)
+
+Control Center (`apps/web`, ver seu README): shell autenticado do tenant (login, sidebar,
+tenant switcher, logout) + superfícies Conversas, Assinaturas, Pedidos, Suporte e Centro HITL
+consumindo somente HTTP `/v1` — sem imports servidor, sem Tailwind/TanStack (desvio MVP
+documentado com upgrade path).
 
 TypeScript monorepo skeleton is in place (pnpm + Turborepo): `apps/web`
 (Next.js App Router), `apps/api` (NestJS + Fastify, `GET /v1/health`),
