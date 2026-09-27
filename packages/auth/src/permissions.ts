@@ -30,6 +30,8 @@ export const PERMISSIONS = [
   "billing.refund.request",
   "billing.refund.execute",
   "billing.exception.resolve",
+  "subscription.read",
+  "subscription.write",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -63,6 +65,8 @@ export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
     "billing.refund.request",
     "billing.refund.execute",
     "billing.exception.resolve",
+    "subscription.read",
+    "subscription.write",
   ],
   [TENANT_OPERATOR_ROLE]: [
     "crm.person.read",
@@ -75,6 +79,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
     "commerce.order.write",
     "billing.charge.write",
     "billing.refund.request",
+    "subscription.read",
   ],
 };
 

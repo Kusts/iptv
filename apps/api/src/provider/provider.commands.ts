@@ -23,6 +23,7 @@ import {
   trialMemoryOf,
   updateProviderOperation,
 } from "../trial/trial-store.js";
+import { resumeLinkedSubscription } from "../subscription/subscription.commands.js";
 
 /**
  * Wave 4 Provider Operation commands (owning context for ProviderOperation).
@@ -39,6 +40,11 @@ import {
  * - When the operation is linked to a trial (`entity_type=trial`), terminal
  *   outcomes resume the trial flow (SUCCEEDED -> ACTIVE, FAILED known-not-
  *   applied -> REQUESTED) with the registry-listed trial events.
+ * - When the operation is linked to a subscription
+ *   (`entity_type=subscription`), terminal outcomes resume the Wave 6 flow
+ *   via `resumeLinkedSubscription` (SUCCEEDED -> ACTIVE + cycle open +
+ *   entitlement grants + credential notification; FAILED -> HumanReview and
+ *   the subscription stays PENDING_ACTIVATION).
  * - Emitted events are registry-listed only:
  *   `provider.operation_requested|succeeded|failed.v1`. There is no
  *   `verification_required` public event (known catalog gap) — VERIFYING
@@ -102,8 +108,11 @@ async function emitTrial(
 
 /**
  * Resume a linked trial after a terminal provider outcome. Only
- * `entity_type=trial` operations resume anything, and only a trial still
+ * `entity_type=trial` operations resume a trial, and only a trial still
  * in PROVISIONING moves (see `applyProviderTerminalOutcome`).
+ * `entity_type=subscription` operations resume the Wave 6 subscription flow
+ * (SUCCEEDED -> ACTIVE with postcondition readback, FAILED -> human review)
+ * via `resumeLinkedSubscription`.
  */
 async function resumeLinkedTrial(
   ctx: CommandHandlerContext,
@@ -112,6 +121,10 @@ async function resumeLinkedTrial(
   terminal: "SUCCEEDED" | "FAILED",
   operationId: string,
 ): Promise<{ resumedTrial: boolean }> {
+  if (entityType === "subscription") {
+    await resumeLinkedSubscription(ctx, entityId, terminal, operationId);
+    return { resumedTrial: false };
+  }
   if (entityType !== "trial") {
     return { resumedTrial: false };
   }

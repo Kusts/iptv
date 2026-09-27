@@ -1,3 +1,39 @@
+# @iptv/api — Wave 6: Subscriptions + Fulfillment
+
+## What exists (Wave 6)
+
+- **Subscriptions** (`src/subscription/`): `subscription.activate_from_order`
+  (SETTLED order with a PLAN line → PENDING_ACTIVATION + first PENDING
+  cycle + PENDING entitlements; a CONFIRMED payment alone never suffices),
+  `subscription.activate` (fulfillment postcondition SUCCEEDED →
+  ACTIVE + cycle OPEN + entitlement grants + `provider_evidence`
+  `ACTIVATION_POSTCONDITION` + credential notification; idempotent),
+  `subscription.cancel_at_period_end` (flag only — access continues through
+  the cycle; ENDED only via `subscription.expire_cycles_due` closing past-end
+  cycles, never a renewal — Wave 9), `subscription.resume`,
+  `subscription.suspend` (gated on the `subscription.suspension` policy
+  family, safe default DENY with explicit reason — never a late webhook),
+  `subscription.reinstate`. Reads `GET /v1/subscriptions[/:id]` carry the
+  computed projection (`RENEWAL_DUE`/`GRACE`/`OVERDUE`, never stored).
+  Lifecycle transitions emit nothing: `subscription.*` are known registry
+  gaps with no public v1 (audit-only by design).
+- **Fulfillment** (`src/fulfillment/`): `fulfillment.request_for_subscription`
+  creates a `subscription.provision` operation through the Wave 4
+  `ProviderOpsPort` (echo/manual + `provider.cinevision` capability gate);
+  UNKNOWN → VERIFYING → `provider.reconcile`, FAILED → MANUAL_EXECUTION
+  HumanReview with the subscription staying PENDING_ACTIVATION. Binding is
+  the existing `provider_bindings` row (`entity_type=subscription`), written
+  only with a real provider external ref — no new mapping table.
+  Resolution/reconcile stay on `POST /v1/provider/operations/:id/...`,
+  whose resume hooks continue the subscription flow.
+- **Notification**: on ACTIVE, a system-originated INTERNAL/SYSTEM message
+  (credential placeholder with fulfillment ref, never a secret) is appended
+  with delivery QUEUED behind the manual gateway — a human-visible record,
+  no automated outbound.
+- Migration `202609261900_019_subscription_cycle_guard.sql` (one OPEN cycle
+  per subscription via partial unique index + `subscription.read|write`
+  seeds, mirrored in `packages/auth`).
+
 # @iptv/api — Wave 2: CRM + Communications
 
 ## What exists

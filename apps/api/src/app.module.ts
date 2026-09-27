@@ -24,6 +24,8 @@ import { CommunicationsController } from "./communications/communications.contro
 import { WahaWebhookController } from "./communications/waha-webhook.controller.js";
 import { WahaWebhookService } from "./communications/waha-webhook.service.js";
 import { CommerceController } from "./commerce/commerce.controller.js";
+import { SubscriptionController } from "./subscription/subscription.controller.js";
+import { FulfillmentController } from "./fulfillment/fulfillment.controller.js";
 import { BillingController } from "./billing/billing.controller.js";
 import { AsaasWebhookController } from "./billing/asaas-webhook.controller.js";
 import { AsaasWebhookService } from "./billing/asaas-webhook.service.js";
@@ -72,6 +74,8 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     CommunicationsController,
     WahaWebhookController,
     CommerceController,
+    SubscriptionController,
+    FulfillmentController,
     BillingController,
     AsaasWebhookController,
     PolicyController,

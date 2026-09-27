@@ -672,6 +672,18 @@ export interface ProviderOperationAttemptsTable {
   trace_ref: string | null;
 }
 
+/** Mirrors `provider.provider_evidence` (migration 007, postcondition readbacks). */
+export interface ProviderEvidenceTable {
+  id: string;
+  tenant_id: string;
+  provider_operation_id: string;
+  evidence_type: string;
+  object_ref: string | null;
+  structured_json: unknown;
+  captured_at: Date;
+  classification: string;
+}
+
 /**
  * Wave 5 money columns are typed `string`: node-pg returns Postgres
  * `bigint`/`numeric` as text, and inserts accept exact decimal strings, so
@@ -946,6 +958,85 @@ export interface FinanceFinancialLedgerEntriesTable {
   created_at: Date;
 }
 
+/** Mirrors `subscription.subscriptions` (migration 006). */
+export interface SubscriptionSubscriptionsTable {
+  id: string;
+  tenant_id: string;
+  customer_id: string;
+  plan_id: string;
+  originating_order_id: string | null;
+  status: string;
+  started_at: Date | null;
+  current_period_start: Date | null;
+  current_period_end: Date | null;
+  cancel_at_period_end: boolean;
+  cancelled_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `subscription.subscription_cycles` (migration 006). */
+export interface SubscriptionCyclesTable {
+  id: string;
+  tenant_id: string;
+  subscription_id: string;
+  cycle_no: number;
+  starts_at: Date;
+  ends_at: Date;
+  renewal_order_id: string | null;
+  status: string;
+  base_revenue_minor: string;
+  base_provider_cost_minor: string | null;
+  currency: string;
+  created_at: Date;
+}
+
+/** Mirrors `subscription.subscription_addons` (migration 006). */
+export interface SubscriptionAddonsTable {
+  id: string;
+  tenant_id: string;
+  subscription_id: string;
+  addon_id: string;
+  quantity: string;
+  status: string;
+  effective_from: Date;
+  effective_until: Date | null;
+  price_policy_ref: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `entitlement.entitlements` (migration 006). */
+export interface EntitlementEntitlementsTable {
+  id: string;
+  tenant_id: string;
+  customer_id: string;
+  feature_key: string;
+  status: string;
+  quantity: string | null;
+  starts_at: Date;
+  ends_at: Date | null;
+  source_type: string;
+  source_id: string;
+  metadata_json: unknown;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `entitlement.entitlement_grants` (migration 006, append-only). */
+export interface EntitlementGrantsTable {
+  id: string;
+  tenant_id: string;
+  entitlement_id: string;
+  grant_type: string;
+  delta_quantity: string | null;
+  starts_at: Date;
+  ends_at: Date | null;
+  source_type: string;
+  source_id: string;
+  created_at: Date;
+}
+
 export interface Database {
   "control.tenants": ControlTenantsTable;
   "control.users": ControlUsersTable;
@@ -995,6 +1086,12 @@ export interface Database {
   "provider.provider_bindings": ProviderBindingsTable;
   "provider.provider_operations": ProviderOperationsTable;
   "provider.provider_operation_attempts": ProviderOperationAttemptsTable;
+  "provider.provider_evidence": ProviderEvidenceTable;
+  "subscription.subscriptions": SubscriptionSubscriptionsTable;
+  "subscription.subscription_cycles": SubscriptionCyclesTable;
+  "subscription.subscription_addons": SubscriptionAddonsTable;
+  "entitlement.entitlements": EntitlementEntitlementsTable;
+  "entitlement.entitlement_grants": EntitlementGrantsTable;
   "catalog.products": CatalogProductsTable;
   "catalog.plans": CatalogPlansTable;
   "catalog.addons": CatalogAddonsTable;

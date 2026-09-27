@@ -35,6 +35,7 @@ describe("permissionsForRoles", () => {
       "conversation.reply",
       "crm.lead.write",
       "crm.person.read",
+      "subscription.read",
       "support.ticket.write",
       "trial.read",
       "trial.write",

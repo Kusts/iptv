@@ -11,6 +11,8 @@ import { registerTrialCommands } from "../trial/trial.commands.js";
 import { registerProviderCommands } from "../provider/provider.commands.js";
 import { registerCommerceCommands } from "../commerce/commerce.commands.js";
 import { registerBillingCommands } from "../billing/billing.commands.js";
+import { registerSubscriptionCommands } from "../subscription/subscription.commands.js";
+import { registerFulfillmentCommands } from "../fulfillment/fulfillment.commands.js";
 import { refundReviewResolvedHook, refundTargetRevalidator } from "../billing/refund-review.js";
 import { asaasAdapterNameFromEnv, resolveAsaasPort } from "../billing/asaas-port.js";
 import {
@@ -24,7 +26,8 @@ import {
  * registers the Wave 1 command catalog (HumanReview substrate + Policy and
  * Capability foundations), the Wave 2 slice (CRM + Communications), the
  * Wave 4 slice (Trials + Compatibility + Provider Operations) and the
- * Wave 5 slice (Commerce + Billing over the Asaas port).
+ * Wave 5 slice (Commerce + Billing over the Asaas port) and the Wave 6
+ * slice (Subscriptions + Fulfillment over the ProviderOpsPort).
  * Explicit tokens everywhere — esbuild/vitest emits no `design:paramtypes`.
  *
  * Provider adapters are explicit: `PROVIDER_OPS_ADAPTER=echo|manual`
@@ -51,6 +54,8 @@ export const CommandsProvider = {
       registerProviderCommands(bus, { opsPort, readbackPort: new StubProviderReadback() });
       registerCommerceCommands(bus);
       registerBillingCommands(bus, { asaasPort: resolveAsaasPort(asaasAdapterNameFromEnv()) });
+      registerSubscriptionCommands(bus);
+      registerFulfillmentCommands(bus, { opsPort });
     }
     return bus;
   },
