@@ -1,3 +1,49 @@
+# @iptv/api — Wave 8: Support + HITL center
+
+## What exists (Wave 8)
+
+- **Support** (`src/support/`): owning context for Ticket/Incident/Problem.
+  `support.ticket.open` (person + optional conversation ref, `NEW`) →
+  `support.ticket.assign` (active same-tenant member; first assignment stamps
+  `first_response_at`) → `support.ticket.transition` over the explicit
+  canonical map (`NEW→TRIAGING→IN_PROGRESS→WAITING_*→RESOLVED→CLOSED`,
+  `CANCELLED` terminal, reopen `RESOLVED|CLOSED→IN_PROGRESS`) →
+  `support.ticket.add_solution_attempt` (`solution_id` XOR `procedure_key`
+  per the 010 shape CHECK, 010 outcome enum) →
+  `support.ticket.resolve` (requires a `SUCCEEDED`/`PARTIAL` attempt; with an
+  explicit `solutionId` also persists a `solution_outcomes` row) →
+  `support.ticket.close` / `support.ticket.reopen`. Incidents
+  (`support.incident.open|update_status|resolve` over
+  `DETECTED→CONFIRMED→MONITORING→RESOLVED`), problems
+  (`support.problem.open`, minimal) and `link_incident`/`link_problem`
+  (idempotent, `already` flag). Every entry transition emits its
+  registry-listed public v1; assignment/attempts/problem-links stay
+  audit-only (known gaps). Reads `GET /v1/tickets[/:id|/my-work]`,
+  `/v1/incidents`, `/v1/problems`; detail carries read-only diagnostics
+  joins (conversation context, links, attempts, observed outcomes).
+- **Knowledge** (`src/knowledge/`): tenant-scoped `knowledge.item.create`
+  (`CANDIDATE` + version 1, `solutions` row for `SOLUTION` types) /
+  `update` (append-only version insert + pointer move, optimistic
+  `expectedVersion`) / `archive` (→ `DEPRECATED`). Reads
+  `GET /v1/knowledge/items[/:id]` (type/status/tag), `/v1/knowledge/search`
+  (ILIKE over current versions — pg_trgm/FTS deferred) and
+  `/v1/knowledge/suggest-for-ticket/:ticketId` (labeled token-overlap
+  heuristic, never a verified answer).
+- **HITL center** (`src/human-review/` extensions): `GET
+  /v1/human-reviews/center` aggregates OPEN work from the four existing
+  queues (human reviews, comm exceptions, billing exceptions, recovery
+  tasks) into normalized `{source, id, kind, summary, ageMinutes, sla,
+  deepLink}` — read-model only, no table restructured.
+  `POST /v1/human-reviews/:id/claim` assigns + `ACKNOWLEDGE`s (same-user
+  idempotent, stealing rejected). Staleness follows the `hitl.sla` policy
+  family (defaults warn ≥4h, breach ≥24h; explicit `sla_due_at` breaches on
+  deadline).
+- Migration `202609262100_021_support_hitl_center.sql` (only the genuinely
+  missing pieces: `support_tickets.assignee_user_id` + membership FK and
+  `support.ticket.read` / `support.incident.write` / `knowledge.read|write`
+  seeds, mirrored in `packages/auth`; `support.ticket.write` predates from
+  012).
+
 # @iptv/api — Wave 6: Subscriptions + Fulfillment
 
 ## What exists (Wave 6)

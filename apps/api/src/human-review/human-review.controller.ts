@@ -19,6 +19,9 @@ import { RequirePermission, PermissionsGuard } from "../auth/permissions.guard.j
 import { CommandBus, commandActorFromRequestParts } from "../commands/command-bus.js";
 import type { CommandActor, CommandResult } from "@iptv/domain";
 import { OPEN_REVIEW_STATUSES } from "./human-review.commands.js";
+import { normalizeCenterItem, resolveSlaPolicy, type CenterItemInput } from "./center-policy.js";
+import { HITL_SLA_POLICY_FAMILY } from "../support/support-policy.js";
+import { PolicyResolver } from "../policy/policy-resolver.js";
 
 const ALL_STATUSES = [
   "REQUESTED",
@@ -66,6 +69,7 @@ export class HumanReviewController {
   constructor(
     @Inject("DB") private readonly db: Kysely<Database> | null,
     @Inject(CommandBus) private readonly bus: CommandBus,
+    @Inject(PolicyResolver) private readonly policies: PolicyResolver,
   ) {}
 
   private requireDb(): Kysely<Database> {
@@ -152,6 +156,163 @@ export class HumanReviewController {
     return send(result);
   }
 
+  @Post(":id/claim")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("agent.review.request")
+  async claim(
+    @Param("id") id: string,
+    @Req() req: FastifyRequest,
+  ): Promise<{ id: string; assigneeUserId: string; already: boolean }> {
+    const actor = actorFromRequest(req);
+    const result = await this.bus.execute<{ id: string; assigneeUserId: string; already: boolean }>(
+      actor,
+      "human_review.claim",
+      { requestId: id },
+      { correlationId: req.id, idempotencyKey: idempotencyKeyOf(req) },
+    );
+    return send(result);
+  }
+
+  /**
+   * HITL center: read-model aggregation of OPEN work across the four
+   * existing queues (human reviews, communications exceptions, billing
+   * exceptions, recovery tasks). No queue table is restructured — each
+   * row below is a tenant-scoped select normalized to
+   * `{source, id, kind, summary, ageMinutes, sla, deepLink}`. Staleness
+   * follows the `hitl.sla` policy family (safe defaults: warn ≥4h,
+   * breach ≥24h).
+   */
+  @Get("center")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("support.ticket.read")
+  async center(@Req() req: FastifyRequest, @Query("source") source?: string): Promise<{
+    items: Array<{
+      source: string;
+      id: string;
+      kind: string;
+      summary: string;
+      priority: string | null;
+      ageMinutes: number;
+      sla: string;
+      deepLink: string;
+      createdAt: string;
+    }>;
+    slaPolicy: { warnAfterHours: number; breachAfterHours: number; ref: string };
+  }> {
+    const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
+    const wanted = source === undefined ? null : source;
+    if (wanted !== null && !["human_review", "comm_exception", "billing_exception", "recovery_task"].includes(wanted)) {
+      throw new HttpException({ code: "INVALID_SOURCE", message: `unknown center source: ${wanted}` }, 400);
+    }
+    const db = this.requireDb();
+    const at = new Date();
+    const decision = await this.policies.resolve(HITL_SLA_POLICY_FAMILY, { tenantId: tenant.id });
+    const policy = resolveSlaPolicy(decision.configured ? (decision.value as Record<string, unknown>) : null);
+    const ref = decision.configured && decision.provenance.length > 0
+      ? decision.provenance.map((s) => s.ref).join("+")
+      : "default-v1";
+
+    const collected: CenterItemInput[] = [];
+    if (wanted === null || wanted === "human_review") {
+      const reviews = await db
+        .selectFrom("agent.human_review_requests")
+        .select(["id", "review_mode", "reason", "priority", "summary", "created_at", "sla_due_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("status", "in", [...OPEN_REVIEW_STATUSES])
+        .orderBy("created_at", "asc")
+        .execute();
+      for (const r of reviews) {
+        collected.push({
+          source: "human_review",
+          id: r.id,
+          kind: `${r.review_mode}/${r.reason}`,
+          summary: r.summary,
+          priority: r.priority,
+          createdAt: r.created_at,
+          slaDueAt: r.sla_due_at,
+          deepLink: `/v1/human-reviews/${r.id}`,
+        });
+      }
+    }
+    if (wanted === null || wanted === "comm_exception") {
+      const rows = await db
+        .selectFrom("communication.exceptions")
+        .select(["id", "kind", "reason", "from_address", "created_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("status", "=", "OPEN")
+        .orderBy("created_at", "asc")
+        .execute();
+      for (const r of rows) {
+        collected.push({
+          source: "comm_exception",
+          id: r.id,
+          kind: r.kind,
+          summary: r.reason ?? (r.from_address === null ? "unmatched inbound" : `unmatched inbound from ${r.from_address}`),
+          priority: null,
+          createdAt: r.created_at,
+          deepLink: `/v1/communications/exceptions/${r.id}`,
+        });
+      }
+    }
+    if (wanted === null || wanted === "billing_exception") {
+      const rows = await db
+        .selectFrom("billing.exceptions")
+        .select(["id", "kind", "reason", "created_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("status", "=", "OPEN")
+        .orderBy("created_at", "asc")
+        .execute();
+      for (const r of rows) {
+        collected.push({
+          source: "billing_exception",
+          id: r.id,
+          kind: r.kind,
+          summary: r.reason ?? r.kind,
+          priority: null,
+          createdAt: r.created_at,
+          deepLink: `/v1/billing/exceptions/${r.id}`,
+        });
+      }
+    }
+    if (wanted === null || wanted === "recovery_task") {
+      const rows = await db
+        .selectFrom("renewal.recovery_tasks")
+        .select(["id", "reason", "subscription_id", "created_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("status", "=", "OPEN")
+        .orderBy("created_at", "asc")
+        .execute();
+      for (const r of rows) {
+        collected.push({
+          source: "recovery_task",
+          id: r.id,
+          kind: `recovery/${r.reason}`,
+          summary: `recovery ${r.reason} for subscription ${r.subscription_id}`,
+          priority: null,
+          createdAt: r.created_at,
+          deepLink: `/v1/recovery-tasks/${r.id}`,
+        });
+      }
+    }
+    collected.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    return {
+      items: collected.map((item) => {
+        const normalized = normalizeCenterItem(policy, item, at);
+        return {
+          source: normalized.source,
+          id: normalized.id,
+          kind: normalized.kind,
+          summary: normalized.summary,
+          priority: normalized.priority ?? null,
+          ageMinutes: normalized.ageMinutes,
+          sla: normalized.sla,
+          deepLink: normalized.deepLink,
+          createdAt: normalized.createdAt.toISOString(),
+        };
+      }),
+      slaPolicy: { warnAfterHours: policy.warnAfterHours, breachAfterHours: policy.breachAfterHours, ref },
+    };
+  }
   @Post(":id/approve")
   @UseGuards(AuthGuard, PermissionsGuard)
   @RequirePermission("agent.review.decide")

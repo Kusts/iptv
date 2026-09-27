@@ -1067,6 +1067,148 @@ export interface SubscriptionTrustRenewalGrantsTable {
   created_at: Date;
 }
 
+/** Mirrors `support.incidents` (migration 010). */
+export interface SupportIncidentsTable {
+  id: string;
+  tenant_id: string;
+  status: string;
+  severity: string;
+  provider_account_id: string | null;
+  server_key: string | null;
+  service_key: string | null;
+  title: string;
+  summary: string | null;
+  detected_at: Date;
+  confirmed_at: Date | null;
+  resolved_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `support.problems` (migration 010). */
+export interface SupportProblemsTable {
+  id: string;
+  tenant_id: string;
+  status: string;
+  title: string;
+  root_cause: string | null;
+  workaround_summary: string | null;
+  created_at: Date;
+  updated_at: Date;
+  resolved_at: Date | null;
+}
+
+/** Mirrors `support.support_tickets` (migration 010 + 021 assignee). */
+export interface SupportTicketsTable {
+  id: string;
+  tenant_id: string;
+  person_id: string;
+  customer_id: string | null;
+  conversation_id: string | null;
+  status: string;
+  priority: string;
+  category: string | null;
+  summary: string;
+  assignee_user_id: string | null;
+  first_response_at: Date | null;
+  resolved_at: Date | null;
+  closed_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `support.ticket_incident_links` (migration 010). */
+export interface SupportTicketIncidentLinksTable {
+  id: string;
+  tenant_id: string;
+  support_ticket_id: string;
+  incident_id: string;
+  linked_at: Date;
+  linked_by_type: string;
+  linked_by_id: string | null;
+}
+
+/** Mirrors `support.ticket_problem_links` (migration 010). */
+export interface SupportTicketProblemLinksTable {
+  id: string;
+  tenant_id: string;
+  support_ticket_id: string;
+  problem_id: string;
+  linked_at: Date;
+  linked_by_type: string;
+  linked_by_id: string | null;
+}
+
+/** Mirrors `support.solution_attempts` (migration 010). */
+export interface SupportSolutionAttemptsTable {
+  id: string;
+  tenant_id: string;
+  support_ticket_id: string;
+  solution_id: string | null;
+  procedure_key: string | null;
+  attempt_no: number;
+  actor_type: string;
+  actor_id: string | null;
+  outcome: string | null;
+  context_json: unknown;
+  evidence_json: unknown;
+  started_at: Date;
+  completed_at: Date | null;
+}
+
+/** Mirrors `knowledge.knowledge_items` (migration 010). */
+export interface KnowledgeItemsTable {
+  id: string;
+  tenant_id: string;
+  status: string;
+  knowledge_type: string;
+  canonical_key: string | null;
+  current_version_id: string | null;
+  confidence_score: string | number | null;
+  freshness_score: string | number | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `knowledge.knowledge_versions` (migration 010, append-only). */
+export interface KnowledgeVersionsTable {
+  id: string;
+  tenant_id: string;
+  knowledge_item_id: string;
+  version_no: number;
+  content_text: string | null;
+  structured_content_json: unknown;
+  source_refs_json: unknown;
+  valid_from: Date;
+  valid_until: Date | null;
+  created_at: Date;
+}
+
+/** Mirrors `knowledge.solutions` (migration 010). */
+export interface KnowledgeSolutionsTable {
+  id: string;
+  tenant_id: string;
+  knowledge_item_id: string;
+  problem_signature_json: unknown;
+  procedure_json: unknown;
+  status: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `knowledge.solution_outcomes` (migration 010, append-only). */
+export interface KnowledgeSolutionOutcomesTable {
+  id: string;
+  tenant_id: string;
+  solution_id: string;
+  support_ticket_id: string | null;
+  trial_id: string | null;
+  context_fingerprint: string;
+  outcome: string;
+  evidence_json: unknown;
+  observed_at: Date;
+}
+
 export interface Database {
   "control.tenants": ControlTenantsTable;
   "control.users": ControlUsersTable;
@@ -1142,4 +1284,14 @@ export interface Database {
   "finance.financial_ledger_entries": FinanceFinancialLedgerEntriesTable;
   "renewal.recovery_tasks": RenewalRecoveryTasksTable;
   "subscription.trust_renewal_grants": SubscriptionTrustRenewalGrantsTable;
+  "support.incidents": SupportIncidentsTable;
+  "support.problems": SupportProblemsTable;
+  "support.support_tickets": SupportTicketsTable;
+  "support.ticket_incident_links": SupportTicketIncidentLinksTable;
+  "support.ticket_problem_links": SupportTicketProblemLinksTable;
+  "support.solution_attempts": SupportSolutionAttemptsTable;
+  "knowledge.knowledge_items": KnowledgeItemsTable;
+  "knowledge.knowledge_versions": KnowledgeVersionsTable;
+  "knowledge.solutions": KnowledgeSolutionsTable;
+  "knowledge.solution_outcomes": KnowledgeSolutionOutcomesTable;
 }

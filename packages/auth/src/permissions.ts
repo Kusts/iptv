@@ -17,7 +17,11 @@ export const PERMISSIONS = [
   "tenant.member.manage",
   "billing.read",
   "audit.read",
+  "support.ticket.read",
   "support.ticket.write",
+  "support.incident.write",
+  "knowledge.read",
+  "knowledge.write",
   "agent.review.request",
   "agent.review.decide",
   "agent.eval.run",
@@ -41,7 +45,7 @@ export const TENANT_OWNER_ROLE = "tenant_owner";
 export const TENANT_ADMIN_ROLE = "tenant_admin";
 export const TENANT_OPERATOR_ROLE = "tenant_operator";
 
-/** Role -> permissions mapping; must stay in sync with migration 012 seeds. */
+/** Role -> permissions mapping; must stay in sync with migration 012 + 021 seeds. */
 export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
   [PLATFORM_ADMIN_ROLE]: [...PERMISSIONS],
   [TENANT_OWNER_ROLE]: [...PERMISSIONS],
@@ -52,7 +56,11 @@ export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
     "settings.manage",
     "tenant.member.manage",
     "billing.read",
+    "support.ticket.read",
     "support.ticket.write",
+    "support.incident.write",
+    "knowledge.read",
+    "knowledge.write",
     "agent.review.request",
     "agent.review.decide",
     "agent.eval.run",
@@ -72,7 +80,9 @@ export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
     "crm.person.read",
     "crm.lead.write",
     "conversation.reply",
+    "support.ticket.read",
     "support.ticket.write",
+    "knowledge.read",
     "agent.review.request",
     "trial.read",
     "trial.write",
