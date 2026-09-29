@@ -524,6 +524,135 @@ export async function insertTicketProblemLink(
   return { duplicate: Number(result.numInsertedOrUpdatedRows ?? 0) === 0 };
 }
 
+export interface TechnicalAccessGrantRow {
+  id: string;
+  tenantId: string;
+  personId: string;
+  ticketId: string;
+  reason: string;
+  status: string;
+  grantedAt: Date;
+  expiresAt: Date;
+  revokedAt: Date | null;
+  revokedReason: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const TECHNICAL_ACCESS_COLS = [
+  "id",
+  "person_id",
+  "support_ticket_id",
+  "reason",
+  "status",
+  "granted_at",
+  "expires_at",
+  "revoked_at",
+  "revoked_reason",
+  "created_at",
+  "updated_at",
+] as const;
+
+function toTechnicalAccessGrant(tenantId: string, row: {
+  id: string;
+  person_id: string;
+  support_ticket_id: string;
+  reason: string;
+  status: string;
+  granted_at: Date;
+  expires_at: Date;
+  revoked_at: Date | null;
+  revoked_reason: string | null;
+  created_at: Date;
+  updated_at: Date;
+}): TechnicalAccessGrantRow {
+  return {
+    id: row.id,
+    tenantId,
+    personId: row.person_id,
+    ticketId: row.support_ticket_id,
+    reason: row.reason,
+    status: row.status,
+    grantedAt: row.granted_at,
+    expiresAt: row.expires_at,
+    revokedAt: row.revoked_at,
+    revokedReason: row.revoked_reason,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function getTechnicalAccessGrant(
+  ctx: CommandHandlerContext,
+  grantId: string,
+): Promise<TechnicalAccessGrantRow | null> {
+  const trx = requireTrx(ctx);
+  const row = await trx
+    .selectFrom("support.technical_access_grants")
+    .select(TECHNICAL_ACCESS_COLS)
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("id", "=", grantId)
+    .executeTakeFirst();
+  return row === undefined ? null : toTechnicalAccessGrant(ctx.tenantId, row);
+}
+
+export async function listTechnicalAccessGrantsForPerson(
+  ctx: CommandHandlerContext,
+  personId: string,
+): Promise<TechnicalAccessGrantRow[]> {
+  const trx = requireTrx(ctx);
+  const rows = await trx
+    .selectFrom("support.technical_access_grants")
+    .select(TECHNICAL_ACCESS_COLS)
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("person_id", "=", personId)
+    .orderBy("created_at", "desc")
+    .execute();
+  return rows.map((row) => toTechnicalAccessGrant(ctx.tenantId, row));
+}
+
+export async function listTechnicalAccessGrantsForTicket(
+  ctx: CommandHandlerContext,
+  ticketId: string,
+): Promise<TechnicalAccessGrantRow[]> {
+  const trx = requireTrx(ctx);
+  const rows = await trx
+    .selectFrom("support.technical_access_grants")
+    .select(TECHNICAL_ACCESS_COLS)
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("support_ticket_id", "=", ticketId)
+    .orderBy("created_at", "desc")
+    .execute();
+  return rows.map((row) => toTechnicalAccessGrant(ctx.tenantId, row));
+}
+
+export async function insertTechnicalAccessGrant(
+  ctx: CommandHandlerContext,
+  input: { personId: string; ticketId: string; reason: string; expiresAt: Date },
+): Promise<TechnicalAccessGrantRow> {
+  const trx = requireTrx(ctx);
+  const at = now();
+  const row = await trx
+    .insertInto("support.technical_access_grants")
+    .values({
+      id: newId(),
+      tenant_id: ctx.tenantId,
+      person_id: input.personId,
+      support_ticket_id: input.ticketId,
+      reason: input.reason,
+      status: "ACTIVE",
+      granted_at: at,
+      expires_at: input.expiresAt,
+      revoked_at: null,
+      revoked_reason: null,
+      created_at: at,
+      updated_at: at,
+    })
+    .returning(TECHNICAL_ACCESS_COLS)
+    .executeTakeFirstOrThrow();
+  return toTechnicalAccessGrant(ctx.tenantId, row);
+}
+
 export async function membershipIsActive(ctx: CommandHandlerContext, userId: string): Promise<boolean> {
   const trx = requireTrx(ctx);
   const row = await trx

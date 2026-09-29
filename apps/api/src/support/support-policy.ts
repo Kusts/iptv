@@ -171,6 +171,35 @@ export function parseHitlSlaPolicy(doc: Record<string, unknown> | null): HitlSla
   return { warnAfterHours: warn, breachAfterHours: Math.max(breach, warn) };
 }
 
+export const TECHNICAL_ACCESS_STATUSES = ["ACTIVE", "EXPIRED", "REVOKED"] as const;
+
+export type TechnicalAccessStatus = (typeof TECHNICAL_ACCESS_STATUSES)[number];
+
+export const TECHNICAL_ACCESS_DEFAULT_DURATION_MINUTES = 180;
+
+export const TECHNICAL_ACCESS_MIN_DURATION_MINUTES = 1;
+
+export const TECHNICAL_ACCESS_MAX_DURATION_MINUTES = 10080;
+
+export const TECHNICAL_ACCESS_MAX_REASON_LENGTH = 500;
+
+export function isTechnicalAccessStatus(value: string): value is TechnicalAccessStatus {
+  return (TECHNICAL_ACCESS_STATUSES as readonly string[]).includes(value);
+}
+
+export function isTechnicalAccessReasonValid(reason: string): boolean {
+  const trimmed = reason.trim();
+  return trimmed.length > 0 && trimmed.length <= TECHNICAL_ACCESS_MAX_REASON_LENGTH;
+}
+
+export function resolveTechnicalAccessExpiry(grantedAt: Date, durationMinutes: number): Date {
+  return new Date(grantedAt.getTime() + durationMinutes * 60_000);
+}
+
+export function isTechnicalAccessActive(input: { status: string; expiresAt: Date; at: Date }): boolean {
+  return input.status === "ACTIVE" && input.expiresAt.getTime() > input.at.getTime();
+}
+
 export type SlaBand = "OK" | "WARN" | "BREACH";
 
 /** Boundary-exact SLA band: `>= warn` warns, `>= breach` breaches. */

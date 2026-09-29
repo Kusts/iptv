@@ -6,6 +6,9 @@ import { emitAndEnqueue, kyselyTrxOf } from "../crm/wave2-store.js";
 import {
   INCIDENT_STATUSES,
   SOLUTION_ATTEMPT_OUTCOMES,
+  TECHNICAL_ACCESS_DEFAULT_DURATION_MINUTES,
+  TECHNICAL_ACCESS_MAX_DURATION_MINUTES,
+  TECHNICAL_ACCESS_MIN_DURATION_MINUTES,
   TICKET_STATUSES,
   incidentEntryEvent,
   isIncidentTransition,
@@ -24,6 +27,7 @@ import {
   insertIncident,
   insertProblem,
   insertSolutionOutcome,
+  insertTechnicalAccessGrant,
   insertTicket,
   insertTicketIncidentLink,
   insertTicketProblemLink,
@@ -129,6 +133,19 @@ export const ticketLinkProblemInput = z.object({
   problemId: z.string().uuid(),
 });
 export type TicketLinkProblemInput = z.infer<typeof ticketLinkProblemInput>;
+
+export const technicalAccessGrantInput = z.object({
+  personId: z.string().uuid(),
+  ticketId: z.string().uuid(),
+  reason: z.string().trim().min(1).max(500),
+  durationMinutes: z
+    .number()
+    .int()
+    .min(TECHNICAL_ACCESS_MIN_DURATION_MINUTES)
+    .max(TECHNICAL_ACCESS_MAX_DURATION_MINUTES)
+    .default(TECHNICAL_ACCESS_DEFAULT_DURATION_MINUTES),
+});
+export type TechnicalAccessGrantInput = z.infer<typeof technicalAccessGrantInput>;
 
 async function handleTicketOpen(
   ctx: CommandHandlerContext,
@@ -586,6 +603,46 @@ async function handleLinkProblem(
   return { ok: true, data: { ticketId: ticket.id, problemId: input.problemId, already: duplicate } };
 }
 
+async function handleTechnicalAccessGrant(
+  ctx: CommandHandlerContext,
+  input: TechnicalAccessGrantInput,
+): Promise<
+  CommandResult<{ id: string; status: string; personId: string; ticketId: string; expiresAt: string }>
+> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx === null) {
+    return { ok: false, code: "precondition_failed", message: "support commands require a database transaction" };
+  }
+  if (!(await personExists(ctx, input.personId))) {
+    return { ok: false, code: "not_found", message: "person not found in this tenant" };
+  }
+  const ticket = await getTicket(ctx, input.ticketId);
+  if (ticket === null) {
+    return { ok: false, code: "not_found", message: "ticket not found in this tenant" };
+  }
+  if (ticket.personId !== input.personId) {
+    return { ok: false, code: "precondition_failed", message: "ticket does not belong to this person" };
+  }
+  const grantedAt = now();
+  const expiresAt = new Date(grantedAt.getTime() + input.durationMinutes * 60_000);
+  const grant = await insertTechnicalAccessGrant(ctx, {
+    personId: input.personId,
+    ticketId: ticket.id,
+    reason: input.reason,
+    expiresAt,
+  });
+  return {
+    ok: true,
+    data: {
+      id: grant.id,
+      status: grant.status,
+      personId: grant.personId,
+      ticketId: grant.ticketId,
+      expiresAt: grant.expiresAt.toISOString(),
+    },
+  };
+}
+
 export function registerSupportCommands(bus: CommandBus): void {
   bus.register<TicketOpenInput, { id: string; status: string }>({
     name: "support.ticket.open",
@@ -690,6 +747,17 @@ export function registerSupportCommands(bus: CommandBus): void {
     auditResource: "support_ticket",
     input: ticketLinkProblemInput,
     handler: handleLinkProblem,
+  });
+  bus.register<
+    TechnicalAccessGrantInput,
+    { id: string; status: string; personId: string; ticketId: string; expiresAt: string }
+  >({
+    name: "support.technical_access.grant",
+    permission: "support.ticket.write",
+    auditAction: "support.technical_access.grant",
+    auditResource: "technical_access_grant",
+    input: technicalAccessGrantInput,
+    handler: handleTechnicalAccessGrant,
   });
 }
 

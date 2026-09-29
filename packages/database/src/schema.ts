@@ -1195,6 +1195,22 @@ export interface SupportSolutionAttemptsTable {
   completed_at: Date | null;
 }
 
+/** Mirrors `support.technical_access_grants` (migration 040). */
+export interface SupportTechnicalAccessGrantsTable {
+  id: string;
+  tenant_id: string;
+  person_id: string;
+  support_ticket_id: string;
+  reason: string;
+  status: string;
+  granted_at: Date;
+  expires_at: Date;
+  revoked_at: Date | null;
+  revoked_reason: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
 /** Mirrors `knowledge.knowledge_items` (migration 010). */
 export interface KnowledgeItemsTable {
   id: string;
@@ -2005,6 +2021,7 @@ export interface Database {
   "support.ticket_incident_links": SupportTicketIncidentLinksTable;
   "support.ticket_problem_links": SupportTicketProblemLinksTable;
   "support.solution_attempts": SupportSolutionAttemptsTable;
+  "support.technical_access_grants": SupportTechnicalAccessGrantsTable;
   "knowledge.knowledge_items": KnowledgeItemsTable;
   "knowledge.knowledge_versions": KnowledgeVersionsTable;
   "knowledge.solutions": KnowledgeSolutionsTable;

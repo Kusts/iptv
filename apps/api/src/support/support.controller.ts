@@ -159,6 +159,91 @@ export class SupportController {
     return this.run(req, "support.ticket.link_problem", { ...body, ticketId: id });
   }
 
+  @Post("tickets/:id/technical-access")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("support.ticket.write")
+  async grantTechnicalAccess(
+    @Param("id") id: string,
+    @Body() body: Record<string, unknown>,
+    @Req() req: FastifyRequest,
+  ) {
+    return this.run(req, "support.technical_access.grant", { ...body, ticketId: id });
+  }
+
+  @Get("technical-access/:id")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("support.ticket.read")
+  async getTechnicalAccess(@Param("id") id: string, @Req() req: FastifyRequest) {
+    const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
+    const row = await this.requireDb()
+      .selectFrom("support.technical_access_grants")
+      .select([
+        "id",
+        "person_id",
+        "support_ticket_id",
+        "reason",
+        "status",
+        "granted_at",
+        "expires_at",
+        "revoked_at",
+        "revoked_reason",
+        "created_at",
+      ])
+      .where("tenant_id", "=", tenant.id)
+      .where("id", "=", id)
+      .executeTakeFirst();
+    if (row === undefined) {
+      throw new HttpException({ code: "NOT_FOUND", message: "technical access grant not found" }, 404);
+    }
+    return {
+      id: row.id,
+      personId: row.person_id,
+      ticketId: row.support_ticket_id,
+      reason: row.reason,
+      status: row.status,
+      grantedAt: row.granted_at.toISOString(),
+      expiresAt: row.expires_at.toISOString(),
+      revokedAt: toIso(row.revoked_at),
+      revokedReason: row.revoked_reason,
+      createdAt: row.created_at.toISOString(),
+    };
+  }
+
+  @Get("technical-access")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("support.ticket.read")
+  async listTechnicalAccess(
+    @Query() query: { personId?: string; ticketId?: string; limit?: string },
+    @Req() req: FastifyRequest,
+  ) {
+    const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
+    const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
+    let select = this.requireDb()
+      .selectFrom("support.technical_access_grants")
+      .select(["id", "person_id", "support_ticket_id", "reason", "status", "granted_at", "expires_at"])
+      .where("tenant_id", "=", tenant.id)
+      .orderBy("created_at", "desc")
+      .limit(limit);
+    if (query.personId !== undefined) {
+      select = select.where("person_id", "=", query.personId);
+    }
+    if (query.ticketId !== undefined) {
+      select = select.where("support_ticket_id", "=", query.ticketId);
+    }
+    const rows = await select.execute();
+    return {
+      grants: rows.map((r) => ({
+        id: r.id,
+        personId: r.person_id,
+        ticketId: r.support_ticket_id,
+        reason: r.reason,
+        status: r.status,
+        grantedAt: r.granted_at.toISOString(),
+        expiresAt: r.expires_at.toISOString(),
+      })),
+    };
+  }
+
   @Get("tickets/my-work")
   @UseGuards(AuthGuard, PermissionsGuard)
   @RequirePermission("support.ticket.read")
