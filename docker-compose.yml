@@ -18,5 +18,23 @@ services:
       timeout: 5s
       retries: 5
 
+  # Local-dev PgBouncer for RLS transaction-pooling certification.
+  # Opt-in only: `docker compose --profile pooling up -d pgbouncer`.
+  # Never on the default path; migrations/owner traffic stay direct.
+  # Requires deploy/pgbouncer/userlist.txt (gitignored, LOCAL-DEV ONLY) —
+  # see docs/10-operations/runbooks/rls-role-split-cutover.md for generation.
+  # Digest pinned to the image validated for step 4 (2026-09-29).
+  pgbouncer:
+    image: edoburu/pgbouncer@sha256:4c1ca296ef525f108f5d3552cc337c0c09587cf8dae7f0067fd93349e47dc1cd
+    profiles: ["pooling"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "6432:6432"
+    volumes:
+      - ./deploy/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./deploy/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+
 volumes:
   iptv_pgdata:

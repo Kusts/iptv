@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Inject, Injectable, Optional } from "@nestjs/common";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { Database } from "@iptv/database";
 import { newId } from "@iptv/domain";
 import type { CommandActor } from "@iptv/domain";
@@ -55,12 +55,26 @@ export class WahaWebhookService {
     return this.db;
   }
 
+  /**
+   * Pre-context channel lookup via `communication.resolve_tenant_channel`
+   * (`SECURITY DEFINER`, migration 043). A direct `SELECT` on
+   * `communication.tenant_channels` runs under the caller's RLS context, so
+   * under `iptv_app` with no `app.tenant_id` set yet it fail-closes to 0
+   * rows and every webhook 404s. The definer function bypasses RLS for this
+   * single narrow lookup (tenant_key → channel row, ACTIVE only); the
+   * resolved `tenantId` then feeds `withTenantTransaction` for all
+   * subsequent tenant-scoped work.
+   */
   async resolveChannel(tenantKey: string): Promise<WahaChannel | null> {
-    const row = await this.requireDb()
-      .selectFrom("communication.tenant_channels")
-      .select(["tenant_id", "channel", "webhook_secret_hash", "status"])
-      .where("tenant_key", "=", tenantKey)
-      .executeTakeFirst();
+    const result = await sql<{
+      tenant_id: string;
+      channel: string;
+      webhook_secret_hash: string | null;
+      status: string;
+    }>`select * from communication.resolve_tenant_channel(${tenantKey})`.execute(
+      this.requireDb(),
+    );
+    const row = result.rows[0];
     if (row === undefined || row.status !== "ACTIVE") {
       return null;
     }

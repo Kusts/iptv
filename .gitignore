@@ -8,6 +8,9 @@
 *.pfx
 id_*
 
+# Local-dev PgBouncer auth (password hashes for disposable test roles only)
+deploy/pgbouncer/userlist.txt
+
 # Application builds and dependencies
 node_modules/
 .next/

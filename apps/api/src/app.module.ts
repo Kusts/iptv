@@ -57,9 +57,36 @@ import { createWorkflowAdapter } from "@iptv/workflows";
 
 const DEV_AUTH_SECRET = "dev-only-better-auth-secret-0123456789";
 
+/**
+ * Resolve the connection string for the API pool (RLS cutover path).
+ * Precedence: `APP_DATABASE_URL` (app role `iptv_app`) when set and
+ * non-empty, else `DATABASE_URL` (owner, pre-cutover), else
+ * `TEST_DATABASE_URL` (disposable test databases). Returns `null` when
+ * none is set. Migrations/DDL ALWAYS use the owner string (`DATABASE_URL`)
+ * directly — never this resolver — see
+ * `docs/10-operations/runbooks/rls-role-split-cutover.md`.
+ */
+export function resolveAppConnectionString(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const app = env["APP_DATABASE_URL"];
+  if (typeof app === "string" && app.length > 0) {
+    return app;
+  }
+  const owner = env["DATABASE_URL"];
+  if (typeof owner === "string" && owner.length > 0) {
+    return owner;
+  }
+  const test = env["TEST_DATABASE_URL"];
+  if (typeof test === "string" && test.length > 0) {
+    return test;
+  }
+  return null;
+}
+
 function dbFactory(): Kysely<Database> | null {
-  const connectionString = process.env["DATABASE_URL"] ?? process.env["TEST_DATABASE_URL"];
-  if (typeof connectionString !== "string" || connectionString.length === 0) {
+  const connectionString = resolveAppConnectionString();
+  if (connectionString === null) {
     return null;
   }
   return createDb({ connectionString });
