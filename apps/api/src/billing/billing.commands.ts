@@ -14,8 +14,12 @@ import {
 } from "../commerce/money-math.js";
 import {
   asaasAdapterNameFromEnv,
+  isEchoProviderReference,
+  isSyntheticProviderReference,
+  provenExternalChargeId,
   resolveAsaasPort,
   type AsaasPort,
+  type RefundResult,
 } from "./asaas-port.js";
 import {
   chargebackReversalEntries,
@@ -587,6 +591,34 @@ function handleChargeReconcileFactory(deps: BillingCommandDeps) {
       return { ok: false, code: "precondition_failed", message: "charge has no provider binding to reconcile" };
     }
     const port = deps.asaasPort ?? resolveAsaasPort(asaasAdapterNameFromEnv());
+    // Namespace guard (MVP-ASAAS-04): the adapter identity lives in the
+    // persisted reference, NOT in `port.name`. An echo-configured process
+    // must never confirm a real (or otherwise foreign) reference with a
+    // synthetic echo outcome — that would post ledger/confirmation without
+    // provider proof after a config swap. Echo resolves ONLY `echo-` refs;
+    // anything else under echo stays PROCESSING behind a human exception
+    // (no provider call, no ledger). Null/blank retains the UNKNOWN hold.
+    const chargeRefRaw = binding.external_charge_id;
+    const chargeRef = typeof chargeRefRaw === "string" ? chargeRefRaw.trim() : "";
+    const isEchoChargeRef = isEchoProviderReference(chargeRefRaw);
+    if (chargeRef.length === 0) {
+      await openException(trx, ctx.tenantId, {
+        kind: "PROVIDER_UNKNOWN_EFFECT",
+        chargeId: charge.id,
+        reason: `charge ${charge.id} has no provider reference to reconcile; awaiting binding`,
+        payload: { provider_charge_id: binding.external_charge_id, detail: "blank reference" },
+      });
+      return { ok: true, data: { id: charge.id, status: "PROCESSING", outcome: "unknown" } };
+    }
+    if (port.name === "echo" && !isEchoChargeRef) {
+      await openException(trx, ctx.tenantId, {
+        kind: "AMOUNT_MISMATCH",
+        chargeId: charge.id,
+        reason: `echo adapter cannot confirm non-echo reference for charge ${charge.id}; confirmation refused`,
+        payload: { provider_charge_id: binding.external_charge_id, adapter: port.name },
+      });
+      return { ok: true, data: { id: charge.id, status: "PROCESSING", outcome: "exception" } };
+    }
     // Readback observes; reconcile never re-executes the charge.
     const observed = await port.getCharge({ providerChargeId: binding.external_charge_id });
     await trx
@@ -598,6 +630,42 @@ function handleChargeReconcileFactory(deps: BillingCommandDeps) {
       .where("external_charge_id", "=", binding.external_charge_id)
       .execute();
     if (observed.status === "PAID") {
+      // Echo transport is synthetic-local by design: it carries no provider
+      // money evidence (value/currency are null by contract), so a configured
+      // PAID outcome confirms directly — but ONLY for echo-namespace refs
+      // (guarded above). EVERY non-echo reference must prove value+currency
+      // exactly (mirrors the webhook check), regardless of which adapter is
+      // configured; otherwise the charge stays PROCESSING behind a human
+      // exception — never a confirmation plus ledger posting on unproven data.
+      // `port.name` routes the echo path but is never the proof of identity.
+      if (!isEchoChargeRef) {
+        // NEVER trust readback amounts: the provider value/currency must equal
+        // the internal charge row exactly (mirrors the webhook check above), or
+        // the charge stays PROCESSING behind a human exception — never a
+        // confirmation plus ledger posting on unproven data.
+        const matches = webhookAmountMatchesCharge({
+          reportedAmountMinor: observed.valueMinor,
+          reportedCurrency: observed.currency,
+          chargeAmountMinor: charge.amountMinor,
+          chargeCurrency: charge.currency,
+        });
+        if (!matches) {
+          await openException(trx, ctx.tenantId, {
+            kind: "AMOUNT_MISMATCH",
+            chargeId: charge.id,
+            reason: `Asaas readback amount/currency does not match charge ${charge.id}; confirmation refused`,
+            payload: {
+              provider_charge_id: binding.external_charge_id,
+              reported_amount_minor: observed.valueMinor?.toString() ?? null,
+              reported_currency: observed.currency,
+              expected_amount_minor: charge.amountMinor.toString(),
+              expected_currency: charge.currency,
+              detail: observed.detail,
+            },
+          });
+          return { ok: true, data: { id: charge.id, status: "PROCESSING", outcome: "exception" } };
+        }
+      }
       const confirmed = await confirmChargePaid(ctx, trx, charge, {
         providerEventId: `reconcile:${binding.external_charge_id}`,
       });
@@ -1058,12 +1126,59 @@ function handleRefundExecuteFactory(deps: BillingCommandDeps) {
       return { ok: false, code: "precondition_failed", message: "refund already executed for this request" };
     }
     const port = deps.asaasPort ?? resolveAsaasPort(asaasAdapterNameFromEnv());
-    const result = await port.executeRefund({
-      paymentId: rr.payment_id,
-      refundId,
-      valueMinor: amountMinor,
-      currency: rr.currency,
-    });
+    // CRITICAL: the provider refund targets the EXTERNAL Asaas charge id
+    // (Payment → Charge → charge_provider_bindings), never the internal
+    // `billing.payments` UUID. Without a proven external id the effect is
+    // uncertain: hold the reservation (RECONCILING + exception) and NEVER
+    // call the provider with a local id.
+    const paymentCharge = await trx
+      .selectFrom("billing.payments")
+      .select(["charge_id"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("id", "=", rr.payment_id)
+      .executeTakeFirst();
+    const binding = paymentCharge === undefined
+      ? undefined
+      : await trx
+        .selectFrom("billing.charge_provider_bindings")
+        .select(["external_charge_id"])
+        .where("tenant_id", "=", ctx.tenantId)
+        .where("charge_id", "=", paymentCharge.charge_id)
+        .where("provider", "=", "ASAAS")
+        .orderBy("created_at", "desc")
+        .limit(1)
+        .executeTakeFirst();
+    const bindingRaw = binding?.external_charge_id ?? null;
+    const externalChargeId = provenExternalChargeId(port.name, bindingRaw);
+    // Namespace fast-path (MVP-ASAAS-05): never call the provider adapter
+    // for a foreign binding. Echo owns ONLY `echo-` refs; real owns ONLY
+    // proven external ids (`echo-` ⊂ synthetic → null → hold). A mismatch
+    // holds the reservation (RECONCILING + exception) with zero adapter I/O.
+    // The adapter chokepoint (UNKNOWN on foreign refs, never KNOWN_APPLIED)
+    // is the slow-path backstop if this guard is ever bypassed — UNKNOWN
+    // also retains via the branch below and can never reach
+    // finalizeAppliedRefund.
+    const isEchoPort = port.name === "echo";
+    const namespaceMismatch = isEchoPort
+      ? !isEchoProviderReference(bindingRaw)
+      : externalChargeId === null;
+    const shouldHoldWithoutCalling = externalChargeId === null || namespaceMismatch;
+    const result: RefundResult =
+      shouldHoldWithoutCalling
+        ? {
+          effect: "UNKNOWN",
+          providerRefundId: null,
+          detail: isEchoPort && namespaceMismatch
+            ? "echo adapter cannot execute refund for non-echo binding; reservation held (provider never called)"
+            : "no proven external Asaas charge for this payment; refund not attempted (reservation held)",
+        }
+        : await port.executeRefund({
+          paymentId: rr.payment_id,
+          refundId,
+          providerChargeId: externalChargeId,
+          valueMinor: amountMinor,
+          currency: rr.currency,
+        });
     if (result.effect === "KNOWN_APPLIED") {
       const { paymentStatus } = await finalizeAppliedRefund(ctx, trx, {
         refundId,
@@ -1108,6 +1223,30 @@ function handleRefundExecuteFactory(deps: BillingCommandDeps) {
   };
 }
 
+async function ensureRefundUnknownException(
+  trx: Transaction<Database>,
+  tenantId: string,
+  refund: { id: string; payment_id: string },
+  detail: string,
+): Promise<void> {
+  const open = await trx
+    .selectFrom("billing.exceptions")
+    .select(["id"])
+    .where("tenant_id", "=", tenantId)
+    .where("refund_id", "=", refund.id)
+    .where("status", "=", "OPEN")
+    .executeTakeFirst();
+  if (open === undefined) {
+    await openException(trx, tenantId, {
+      kind: "REFUND_UNKNOWN_EFFECT",
+      paymentId: refund.payment_id,
+      refundId: refund.id,
+      reason: `refund ${refund.id} still unknown after reconcile; reservation held`,
+      payload: { detail },
+    });
+  }
+}
+
 function handleRefundReconcileFactory(deps: BillingCommandDeps) {
   return async (
     ctx: CommandHandlerContext,
@@ -1133,7 +1272,35 @@ function handleRefundReconcileFactory(deps: BillingCommandDeps) {
     }
     await advisoryLockPayment(trx, refund.payment_id);
     const port = deps.asaasPort ?? resolveAsaasPort(asaasAdapterNameFromEnv());
-    const observed = await port.getRefund({ providerRefundId: refund.provider_external_id ?? refund.id });
+    // Namespace guard (MVP-ASAAS-04): reconcile safety comes from the
+    // persisted reference namespace, never from `port.name` alone.
+    // - REAL resolves ONLY proven external refs (synthetic/local → hold).
+    // - ECHO resolves ONLY `echo-` refs; a real (or otherwise foreign)
+    //   reference under echo stays RECONCILING behind a conservative
+    //   exception — it must never resolve with a synthetic echo outcome
+    //   after a config swap (no ledger, reservation retained).
+    // - Null/blank can never be proven on either adapter → always hold.
+    // No proven external refund id (execute timed out / 5xx / was never
+    // attempted, so `provider_external_id` is null or a local/synthetic
+    // reference): a 404 here could never prove non-execution. Hold the
+    // reservation as UNKNOWN — NEVER convert it into KNOWN_NOT_APPLIED.
+    const refundRef = refund.provider_external_id;
+    const isBlankRefundRef = typeof refundRef !== "string" || refundRef.trim().length === 0;
+    const isEchoRefundRef = isEchoProviderReference(refundRef);
+    if (
+      isBlankRefundRef ||
+      (port.name !== "echo" && isSyntheticProviderReference(refundRef)) ||
+      (port.name === "echo" && !isEchoRefundRef)
+    ) {
+      await ensureRefundUnknownException(
+        trx,
+        ctx.tenantId,
+        refund,
+        "no proven external refund id; reconcile cannot prove non-execution (reservation held)",
+      );
+      return { ok: true, data: { refundId: refund.id, status: "RECONCILING", effectCertainty: "UNKNOWN" } };
+    }
+    const observed = await port.getRefund({ providerRefundId: refundRef as string });
     if (observed.effect === "KNOWN_APPLIED") {
       const { paymentStatus } = await finalizeAppliedRefund(ctx, trx, {
         refundId: refund.id,
@@ -1162,22 +1329,7 @@ function handleRefundReconcileFactory(deps: BillingCommandDeps) {
       await resolveOpenExceptionForRefund(trx, ctx.tenantId, refund.id, `refund ${refund.id} reconciled as not applied; reservation released`);
       return { ok: true, data: { refundId: refund.id, status: "FAILED", effectCertainty: "KNOWN_NOT_APPLIED" } };
     }
-    const open = await trx
-      .selectFrom("billing.exceptions")
-      .select(["id"])
-      .where("tenant_id", "=", ctx.tenantId)
-      .where("refund_id", "=", refund.id)
-      .where("status", "=", "OPEN")
-      .executeTakeFirst();
-    if (open === undefined) {
-      await openException(trx, ctx.tenantId, {
-        kind: "REFUND_UNKNOWN_EFFECT",
-        paymentId: refund.payment_id,
-        refundId: refund.id,
-        reason: `refund ${refund.id} still unknown after reconcile; reservation held`,
-        payload: { detail: observed.detail },
-      });
-    }
+    await ensureRefundUnknownException(trx, ctx.tenantId, refund, observed.detail);
     return { ok: true, data: { refundId: refund.id, status: "RECONCILING", effectCertainty: "UNKNOWN" } };
   };
 }

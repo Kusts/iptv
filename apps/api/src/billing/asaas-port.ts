@@ -46,8 +46,16 @@ export interface ChargeStatusResult {
 }
 
 export interface RefundRequest {
+  /** Internal `billing.payments` id (lineage only — NEVER used as a provider id). */
   paymentId: string;
   refundId: string;
+  /**
+   * Proven external Asaas charge id (from `charge_provider_bindings`), or
+   * null when none exists. The real adapter NEVER calls the provider without
+   * one: a local/synthetic reference maps to UNKNOWN, not to a refund
+   * attempt against a payment the provider never issued.
+   */
+  providerChargeId: string | null;
   valueMinor: bigint;
   currency: string;
 }
@@ -76,6 +84,162 @@ function envMode(name: string, def: string): string {
     return def;
   }
   return raw.trim().toLowerCase();
+}
+
+function normalizeToken(value: unknown): string {
+  return typeof value === "string" ? value.trim().toUpperCase() : "";
+}
+
+/**
+ * The Asaas provider boundary is BRL-only (PIX cobranças and refunds settle
+ * in reais). Reject anything else with a clear error instead of formatting
+ * foreign currencies with the wrong fraction digits.
+ */
+function requireBrlCurrency(currency: string, operation: string): void {
+  if (currency.trim().toUpperCase() !== "BRL") {
+    throw new Error(`asaas: ${operation} supports only BRL (got ${JSON.stringify(currency)})`);
+  }
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SYNTHETIC_PREFIXES = ["unknown-", "rejected-", "asaas-", "echo-"];
+
+/** Namespace owned by the echo adapter (`echo-<charge>` / `echo-refund-<refund>`). */
+export const ECHO_PROVIDER_PREFIX = "echo-";
+
+/**
+ * True when a provider reference was minted by the echo adapter. The echo
+ * namespace is a subset of the synthetic namespace: every `echo-` ref is
+ * synthetic (never a proven external Asaas id), but not every synthetic ref
+ * is echo-owned (`unknown-` / `rejected-` / `asaas-` / UUIDs are not).
+ * Reconcile safety is decided by this namespace — never by `port.name`
+ * alone — so a config swap (real refs reconciled under echo, or vice-versa)
+ * can never confirm/resolve foreign work.
+ */
+export function isEchoProviderReference(id: string | null | undefined): boolean {
+  if (typeof id !== "string") {
+    return false;
+  }
+  const value = id.trim();
+  if (value.length === 0) {
+    return false;
+  }
+  return value.toLowerCase().startsWith(ECHO_PROVIDER_PREFIX);
+}
+
+/**
+ * True when a provider reference is NOT a proven external Asaas id and must
+ * never be used as one: local UUIDs, blanks, and synthetic `unknown-` /
+ * `rejected-` / `asaas-` / `echo-` references minted locally when a create
+ * effect was uncertain or rejected. A 404 (or any readback) against such a
+ * reference proves nothing about the provider — it only proves we asked
+ * about an id the provider never issued.
+ */
+export function isSyntheticProviderReference(id: string | null | undefined): boolean {
+  if (typeof id !== "string") {
+    return true;
+  }
+  const value = id.trim();
+  if (value.length === 0) {
+    return true;
+  }
+  if (UUID_RE.test(value)) {
+    return true;
+  }
+  const lower = value.toLowerCase();
+  return SYNTHETIC_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
+
+/**
+ * Resolve the charge id a refund may legally target at the provider.
+ * Returns the proven external id, or null when there is none (no binding,
+ * blank, synthetic/local, or a foreign namespace for the configured
+ * adapter). Each adapter owns exactly one namespace:
+ * - `echo` executes ONLY `echo-` bindings (synthetic-local by design; the
+ *   echo transport ignores the value but never touches foreign work);
+ * - `real` executes ONLY proven external ids (every synthetic/local ref —
+ *   including `echo-`, which is a subset of synthetic — maps to null).
+ * Namespace safety therefore holds even before any command-level fast-path.
+ */
+export function provenExternalChargeId(
+  adapterName: string,
+  bindingExternalId: string | null | undefined,
+): string | null {
+  if (typeof bindingExternalId !== "string" || bindingExternalId.trim().length === 0) {
+    return null;
+  }
+  const id = bindingExternalId.trim();
+  if (adapterName === "echo") {
+    return isEchoProviderReference(id) ? id : null;
+  }
+  return isSyntheticProviderReference(id) ? null : id;
+}
+
+function mapPaymentStatusToCharge(raw: string): ProviderChargeStatus {
+  if (raw === "RECEIVED" || raw === "CONFIRMED" || raw === "RECEIVED_IN_CASH" || raw === "REFUNDED") {
+    return "PAID";
+  }
+  if (
+    raw === "CANCELLED" ||
+    raw === "CANCELED" ||
+    raw === "DELETED" ||
+    raw === "FAILED" ||
+    raw === "REFUSED" ||
+    raw === "DENIED"
+  ) {
+    return "FAILED";
+  }
+  if (raw === "") {
+    return "UNKNOWN";
+  }
+  return "PENDING";
+}
+
+function mapPaymentStatusToRefund(raw: string): AsaasEffect {
+  if (raw === "REFUNDED") {
+    return "KNOWN_APPLIED";
+  }
+  if (
+    raw === "RECEIVED" ||
+    raw === "CONFIRMED" ||
+    raw === "RECEIVED_IN_CASH" ||
+    raw === "OVERDUE" ||
+    raw === "PENDING"
+  ) {
+    return "KNOWN_NOT_APPLIED";
+  }
+  return "UNKNOWN";
+}
+
+function minorFromDecimal(value: unknown): bigint | null {
+  const text =
+    typeof value === "number" ? String(value) : typeof value === "string" ? value.trim() : "";
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(text);
+  if (match === null) {
+    return null;
+  }
+  const units = BigInt(match[1] ?? "0");
+  const cents = BigInt((match[2] ?? "").padEnd(2, "0"));
+  return units * 100n + cents;
+}
+
+function currencyFromJson(record: Record<string, unknown> | null, hasValue: boolean): string | null {
+  const raw = record?.["currency"];
+  if (typeof raw === "string" && /^[A-Za-z]{3}$/.test(raw.trim())) {
+    return raw.trim().toUpperCase();
+  }
+  return hasValue ? "BRL" : null;
+}
+
+function asRecordOrNull(value: unknown): Record<string, unknown> | null {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function isTimeout(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
 }
 
 /** Deterministic synthetic adapter: no network, no credentials. */
@@ -112,6 +276,18 @@ export class EchoAsaasAdapter implements AsaasPort {
   }
 
   async getCharge(query: ChargeStatusQuery): Promise<ChargeStatusResult> {
+    // Chokepoint (MVP-ASAAS-05): the echo namespace is `echo-` ONLY. A real
+    // (or otherwise foreign) reference under echo must never resolve with a
+    // synthetic outcome — refuse as UNKNOWN before consulting any mode/env,
+    // with zero I/O. Callers retain PROCESSING + exception.
+    if (!isEchoProviderReference(query.providerChargeId)) {
+      return {
+        status: "UNKNOWN",
+        valueMinor: null,
+        currency: null,
+        detail: `echo: foreign reference ${query.providerChargeId}; confirmation refused (reservation held)`,
+      };
+    }
     const mode = envMode("ASAAS_ECHO_RECONCILE", "unknown");
     if (mode === "paid") {
       return { status: "PAID", valueMinor: null, currency: null, detail: `echo: synthetic paid for ${query.providerChargeId}` };
@@ -123,6 +299,21 @@ export class EchoAsaasAdapter implements AsaasPort {
   }
 
   async executeRefund(input: RefundRequest): Promise<RefundResult> {
+    // Chokepoint (MVP-ASAAS-05): echo executes ONLY `echo-` charge bindings.
+    // A foreign (real) or missing binding must never yield KNOWN_APPLIED —
+    // refuse as UNKNOWN with a null refund id (so no resolvable synthetic id
+    // is persisted) before consulting any mode/env, with zero I/O. Callers
+    // retain the reservation (RECONCILING + exception). KNOWN_NOT_APPLIED is
+    // deliberately NOT used here: it would release the reservation as FAILED
+    // on unproven data.
+    const target = typeof input.providerChargeId === "string" ? input.providerChargeId.trim() : "";
+    if (!isEchoProviderReference(target)) {
+      return {
+        effect: "UNKNOWN",
+        providerRefundId: null,
+        detail: "echo: foreign or missing charge reference; refund refused (reservation held, provider never called)",
+      };
+    }
     const mode = envMode("ASAAS_ECHO_REFUND", "applied");
     const providerRefundId = `echo-refund-${input.refundId}`;
     if (mode === "unknown") {
@@ -135,6 +326,17 @@ export class EchoAsaasAdapter implements AsaasPort {
   }
 
   async getRefund(query: RefundStatusQuery): Promise<RefundResult> {
+    // Chokepoint (MVP-ASAAS-05): echo resolves ONLY `echo-` refund refs. A
+    // foreign (real) reference must never resolve with a synthetic outcome —
+    // refuse as UNKNOWN before consulting any mode/env, with zero I/O.
+    // Callers retain RECONCILING + exception.
+    if (!isEchoProviderReference(query.providerRefundId)) {
+      return {
+        effect: "UNKNOWN",
+        providerRefundId: query.providerRefundId,
+        detail: `echo: foreign refund reference ${query.providerRefundId}; resolution refused (reservation held)`,
+      };
+    }
     const mode = envMode("ASAAS_ECHO_REFUND_RECONCILE", "applied");
     if (mode === "not_applied") {
       return { effect: "KNOWN_NOT_APPLIED", providerRefundId: null, detail: `echo: refund never applied ${query.providerRefundId}` };
@@ -147,7 +349,7 @@ export class EchoAsaasAdapter implements AsaasPort {
 }
 
 /**
- * Env-gated real adapter stub. Requires BOTH `ASAAS_API_KEY` and
+ * Env-gated real adapter. Requires BOTH `ASAAS_API_KEY` and
  * `ASAAS_BASE_URL`; without them it reports misconfiguration (the command
  * maps that to a failed attempt with the charge staying PENDING/PROCESSING —
  * never a blind retry). Timeouts and transport errors map to UNKNOWN.
@@ -187,9 +389,30 @@ export class RealAsaasAdapter implements AsaasPort {
     return { ok: res.ok, status: res.status, json };
   }
 
+  private async getJson(path: string): Promise<{ ok: boolean; status: number; json: unknown }> {
+    const cfg = this.config();
+    if (cfg === null) {
+      throw new Error("asaas is not configured (ASAAS_API_KEY/ASAAS_BASE_URL)");
+    }
+    const res = await fetch(`${cfg.baseUrl}${path}`, {
+      method: "GET",
+      headers: { "Content-Type": "application/json", access_token: cfg.apiKey },
+      signal: AbortSignal.timeout(8000),
+    });
+    let json: unknown = null;
+    try {
+      json = await res.json();
+    } catch {
+      json = null;
+    }
+    return { ok: res.ok, status: res.status, json };
+  }
+
   async createPixCharge(input: PixChargeRequest): Promise<PixChargeResult> {
     // Asaas PIX: value is decimal major units; format from minor units
-    // without float arithmetic (BRL has 2 fraction digits).
+    // without float arithmetic (BRL has 2 fraction digits — enforced above,
+    // so the /100n formatting below is exact for every accepted input).
+    requireBrlCurrency(input.currency, "pix charge");
     const major = `${input.valueMinor / 100n}.${(input.valueMinor % 100n).toString().padStart(2, "0")}`;
     let response: { ok: boolean; status: number; json: unknown };
     try {
@@ -216,26 +439,222 @@ export class RealAsaasAdapter implements AsaasPort {
       };
     }
     const json = response.json as { id?: unknown; pixQrCode?: unknown } | null;
-    const providerChargeId = typeof json?.id === "string" ? json.id : `asaas-${input.chargeId}`;
+    // A 2xx without a provider id proves nothing: the charge stays uncertain
+    // (UNKNOWN + synthetic reference) instead of looking applied.
+    const providerId = typeof json?.id === "string" && json.id.trim().length > 0 ? json.id.trim() : null;
+    if (providerId === null) {
+      return {
+        effect: "UNKNOWN",
+        providerChargeId: `unknown-${input.chargeId}`,
+        qrCode: null,
+        detail: "asaas: create response without provider id, effect unknown",
+      };
+    }
     return {
       effect: "KNOWN_APPLIED",
-      providerChargeId,
+      providerChargeId: providerId,
       qrCode: typeof json?.pixQrCode === "string" ? json.pixQrCode : null,
       detail: "asaas: pix charge accepted",
     };
   }
 
   async getCharge(query: ChargeStatusQuery): Promise<ChargeStatusResult> {
-    return { status: "UNKNOWN", valueMinor: null, currency: null, detail: `asaas stub: no readback for ${query.providerChargeId}` };
+    const cfg = this.config();
+    if (cfg === null) {
+      throw new Error("asaas is not configured (ASAAS_API_KEY/ASAAS_BASE_URL)");
+    }
+    // A 404 against a synthetic/local reference would only prove we asked
+    // about an id the provider never issued — never that creation failed.
+    if (isSyntheticProviderReference(query.providerChargeId)) {
+      return {
+        status: "UNKNOWN",
+        valueMinor: null,
+        currency: null,
+        detail: "asaas: charge reference is synthetic/local; creation effect still unknown",
+      };
+    }
+    let response: { ok: boolean; status: number; json: unknown };
+    try {
+      response = await this.getJson(`/payments/${encodeURIComponent(query.providerChargeId)}`);
+    } catch (err) {
+      return {
+        status: "UNKNOWN",
+        valueMinor: null,
+        currency: null,
+        detail: isTimeout(err)
+          ? "asaas: charge readback timed out, effect unknown"
+          : "asaas: charge readback transport error, effect unknown",
+      };
+    }
+    if (!response.ok) {
+      if (response.status === 404) {
+        return {
+          status: "FAILED",
+          valueMinor: null,
+          currency: null,
+          detail: "asaas: charge not found at provider",
+        };
+      }
+      return {
+        status: "UNKNOWN",
+        valueMinor: null,
+        currency: null,
+        detail: `asaas: charge readback status ${response.status}`,
+      };
+    }
+    const record = asRecordOrNull(response.json);
+    const raw = normalizeToken(record?.["status"]);
+    const valueMinor = minorFromDecimal(record?.["value"]);
+    return {
+      status: mapPaymentStatusToCharge(raw),
+      valueMinor,
+      currency: currencyFromJson(record, valueMinor !== null),
+      detail: `asaas: charge status ${raw === "" ? "unknown" : raw}`,
+    };
   }
 
   async executeRefund(input: RefundRequest): Promise<RefundResult> {
-    void input;
-    return { effect: "UNKNOWN", providerRefundId: null, detail: "asaas stub: refund effect unknown, reconcile required" };
+    if (this.config() === null) {
+      throw new Error("asaas is not configured (ASAAS_API_KEY/ASAAS_BASE_URL)");
+    }
+    requireBrlCurrency(input.currency, "refund");
+    // CRITICAL: never refund by internal/local id. Without a proven external
+    // charge id the effect is uncertain — report UNKNOWN and make NO call.
+    const target =
+      typeof input.providerChargeId === "string" ? input.providerChargeId.trim() : "";
+    if (isSyntheticProviderReference(target)) {
+      return {
+        effect: "UNKNOWN",
+        providerRefundId: null,
+        detail: "asaas: no proven external charge id for refund; effect unknown (provider never called)",
+      };
+    }
+    const major = `${input.valueMinor / 100n}.${(input.valueMinor % 100n).toString().padStart(2, "0")}`;
+    let response: { ok: boolean; status: number; json: unknown };
+    try {
+      response = await this.postJson(`/payments/${encodeURIComponent(target)}/refund`, {
+        value: major,
+      });
+    } catch (err) {
+      return {
+        effect: "UNKNOWN",
+        providerRefundId: null,
+        detail: isTimeout(err)
+          ? "asaas: refund timed out, effect unknown"
+          : "asaas: refund transport error, effect unknown",
+      };
+    }
+    if (!response.ok) {
+      if (response.status >= 500) {
+        return {
+          effect: "UNKNOWN",
+          providerRefundId: null,
+          detail: `asaas: refund status ${response.status}, effect unknown`,
+        };
+      }
+      return {
+        effect: "KNOWN_NOT_APPLIED",
+        providerRefundId: null,
+        detail: `asaas: refund rejected with status ${response.status}`,
+      };
+    }
+    // A 2xx only counts as applied with BOTH a provider id and a proven
+    // applied status. Malformed bodies (null, missing id) and non-terminal
+    // statuses (pending/requested/empty) stay UNKNOWN — never finalize a
+    // refund or post a ledger reversal on unproven data.
+    const record = asRecordOrNull(response.json);
+    const raw = normalizeToken(record?.["status"]);
+    const providerRefundId =
+      typeof record?.["id"] === "string" && (record["id"] as string).trim().length > 0
+        ? (record["id"] as string).trim()
+        : null;
+    if (raw === "REFUNDED") {
+      if (providerRefundId === null) {
+        return {
+          effect: "UNKNOWN",
+          providerRefundId: null,
+          detail: "asaas: refund reports applied status without a provider id; effect unknown",
+        };
+      }
+      return { effect: "KNOWN_APPLIED", providerRefundId, detail: "asaas: refund applied" };
+    }
+    if (raw === "REFUSED" || raw === "DENIED" || raw === "FAILED" || raw === "CANCELLED" || raw === "CANCELED") {
+      return {
+        effect: "KNOWN_NOT_APPLIED",
+        providerRefundId: null,
+        detail: `asaas: refund not applied (${raw})`,
+      };
+    }
+    return {
+      effect: "UNKNOWN",
+      providerRefundId,
+      detail: `asaas: refund status ${raw === "" ? "unknown" : raw}; effect unknown`,
+    };
   }
 
   async getRefund(query: RefundStatusQuery): Promise<RefundResult> {
-    return { effect: "UNKNOWN", providerRefundId: query.providerRefundId, detail: "asaas stub: refund reconcile pending" };
+    const cfg = this.config();
+    if (cfg === null) {
+      throw new Error("asaas is not configured (ASAAS_API_KEY/ASAAS_BASE_URL)");
+    }
+    // A 404 against a synthetic/local reference (including the internal
+    // refund UUID used when execute ended UNKNOWN) can never prove the
+    // provider did not execute — hold the reservation as UNKNOWN.
+    if (isSyntheticProviderReference(query.providerRefundId)) {
+      return {
+        effect: "UNKNOWN",
+        providerRefundId: query.providerRefundId,
+        detail: "asaas: refund reference is synthetic/local; execution still unknown",
+      };
+    }
+    let response: { ok: boolean; status: number; json: unknown };
+    try {
+      response = await this.getJson(`/payments/${encodeURIComponent(query.providerRefundId)}`);
+    } catch (err) {
+      return {
+        effect: "UNKNOWN",
+        providerRefundId: query.providerRefundId,
+        detail: isTimeout(err)
+          ? "asaas: refund readback timed out, effect unknown"
+          : "asaas: refund readback transport error, effect unknown",
+      };
+    }
+    if (!response.ok) {
+      if (response.status === 404) {
+        return {
+          effect: "KNOWN_NOT_APPLIED",
+          providerRefundId: null,
+          detail: "asaas: refund not found at provider",
+        };
+      }
+      return {
+        effect: "UNKNOWN",
+        providerRefundId: query.providerRefundId,
+        detail: `asaas: refund readback status ${response.status}`,
+      };
+    }
+    const record = asRecordOrNull(response.json);
+    const raw = normalizeToken(record?.["status"]);
+    const providerRefundId =
+      typeof record?.["id"] === "string" && (record["id"] as string).length > 0
+        ? (record["id"] as string)
+        : query.providerRefundId;
+    const effect = mapPaymentStatusToRefund(raw);
+    if (effect === "KNOWN_APPLIED") {
+      return { effect, providerRefundId, detail: "asaas: refund confirmed" };
+    }
+    if (effect === "KNOWN_NOT_APPLIED") {
+      return {
+        effect,
+        providerRefundId: null,
+        detail: `asaas: refund not applied (${raw === "" ? "unknown" : raw})`,
+      };
+    }
+    return {
+      effect,
+      providerRefundId,
+      detail: `asaas: refund status ${raw === "" ? "unknown" : raw}`,
+    };
   }
 }
 
