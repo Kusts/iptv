@@ -25,6 +25,14 @@ const envSchema = z.object({
   // otherwise the SDK stays unconstructed (zero-overhead noop path).
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().min(1).optional(),
   OTEL_SDK_DISABLED: z.enum(["true", "false"]).default("true"),
+  // MVP-INFISICAL-02 secrets adapter (ADR-0014): env-gated — absence means
+  // the Noop port (boot never crashes); all four connection vars must be
+  // present for the real adapter. ENVIRONMENT defaults to "development".
+  INFISICAL_SITE_URL: z.string().min(1).optional(),
+  INFISICAL_PROJECT_ID: z.string().min(1).optional(),
+  INFISICAL_CLIENT_ID: z.string().min(1).optional(),
+  INFISICAL_CLIENT_SECRET: z.string().min(1).optional(),
+  INFISICAL_ENVIRONMENT: z.string().min(1).default("development"),
   // Browser CORS allowlist (explicit origins only — never a wildcard).
   // Comma-separated `scheme://host[:port]` entries with no path/query/hash.
   // Unset means: local default (`http://localhost:3000`) outside
@@ -114,6 +122,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     HATCHET_SERVER_URL: emptyToUndefined(env.HATCHET_SERVER_URL),
     OTEL_EXPORTER_OTLP_ENDPOINT: env.OTEL_EXPORTER_OTLP_ENDPOINT,
     OTEL_SDK_DISABLED: env.OTEL_SDK_DISABLED,
+    INFISICAL_SITE_URL: emptyToUndefined(env.INFISICAL_SITE_URL),
+    INFISICAL_PROJECT_ID: emptyToUndefined(env.INFISICAL_PROJECT_ID),
+    INFISICAL_CLIENT_ID: emptyToUndefined(env.INFISICAL_CLIENT_ID),
+    INFISICAL_CLIENT_SECRET: emptyToUndefined(env.INFISICAL_CLIENT_SECRET),
+    INFISICAL_ENVIRONMENT: emptyToUndefined(env.INFISICAL_ENVIRONMENT),
     CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
   });
   if (!parsed.success) {

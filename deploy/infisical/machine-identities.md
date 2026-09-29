@@ -66,3 +66,31 @@ Hoje CINEVISION/MK ficam no cofre do operador (AGENTS.md) — migre nesta ordem:
   instancia funcional; valide login + 1 fetch por worker apos cada restore.
 - **Revogacao**: ao desativar um worker, delete/disable sua identity primeiro;
   tokens de Universal Auth sao revogaveis sem tocar nas demais identities.
+
+## 5. Uso via adapter (`@iptv/secrets` — MVP-INFISICAL-02)
+
+O runtime resolve secrets pelo pacote `packages/secrets` (porta `SecretsPort`):
+
+- **Env-gating**: o adapter Infisical só é construído quando
+  `INFISICAL_SITE_URL` + `INFISICAL_PROJECT_ID` + `INFISICAL_CLIENT_ID` +
+  `INFISICAL_CLIENT_SECRET` estão presentes; ausência → `NoopSecretsPort`
+  (boot nunca quebra; consumo falha com erro tipado `CONFIG`).
+  `INFISICAL_ENVIRONMENT` tem default `"development"`.
+- **Gramática do `secret_ref`**: `infisical://<environment>/<key>` com
+  segmentos intermediários opcionais como secret path, ex.:
+  `infisical://production/TEST_SECRET` (path `/`) ou
+  `infisical://production/browser-worker/CINEVISION_USER` (path
+  `/browser-worker`). O segmento de environment da ref é autoritativo
+  para a requisição. Refs malformadas → erro `MALFORMED_REF`.
+- **Transporte**: login Universal Auth
+  (`POST {site}/api/v1/auth/universal-auth/login`) com cache de token até
+  a expiração (refresh automático + 1 retry em 401); leitura
+  (`GET {site}/api/v3/secrets/raw/{key}?workspaceId&environment&secretPath`).
+  Nenhum log/erro/telemetria contém valores de segredo ou o access token
+  (apenas comprimentos/presença em debug).
+- **Smoke manual** (operador, com credenciais reais no ambiente — nunca no repo):
+
+```sh
+node packages/secrets/scripts/infisical-smoke.mjs TEST_SECRET production
+# esperado: ok: secret presente, len=N (o valor NUNCA é impresso)
+```
