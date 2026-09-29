@@ -39,6 +39,7 @@ tags:
 - name: Communications
 - name: Webhooks
 - name: Knowledge
+- name: Experiments
 - name: Rewards
 - name: Incidents
 - name: Problems
@@ -2594,6 +2595,232 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/KnowledgeSearchResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/experiments:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Experiments
+      operationId: createExperiment
+      summary: Create experiment (DRAFT)
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateExperimentRequest'
+      responses:
+        '201':
+          description: Create experiment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Experiment'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+    get:
+      tags:
+      - Experiments
+      operationId: listExperiments
+      summary: List experiments
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: List experiments
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExperimentListResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/experiments/{experimentId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Experiments
+      operationId: getExperiment
+      summary: Get experiment
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get experiment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExperimentDetailResponse'
+        '404':
+          description: Experiment not found in this tenant
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/experiments/{experimentId}/start:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Experiments
+      operationId: startExperiment
+      summary: Start experiment (DRAFT to RUNNING)
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Start experiment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Experiment'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/experiments/{experimentId}/stop:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Experiments
+      operationId: stopExperiment
+      summary: Stop experiment (RUNNING to STOPPED)
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StopExperimentRequest'
+      responses:
+        '200':
+          description: Stop experiment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Experiment'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/experiments/{experimentId}/complete:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Experiments
+      operationId: completeExperiment
+      summary: Complete experiment (RUNNING to COMPLETED)
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Complete experiment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Experiment'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/experiments/{experimentId}/assign:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Experiments
+      operationId: assignExperimentSubject
+      summary: Assign subject (deterministic hash while RUNNING, control fallback otherwise)
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignExperimentRequest'
+      responses:
+        '200':
+          description: Assign subject
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExperimentAssignment'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/experiments/{experimentId}/exposures:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Experiments
+      operationId: recordExperimentExposure
+      summary: Record exposure (append-only, idempotent by assignment and dedupe key)
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordExposureRequest'
+      responses:
+        '200':
+          description: Record exposure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExperimentExposure'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/experiments/{experimentId}/aggregate:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Experiments
+      operationId: getExperimentAggregate
+      summary: Experiment aggregate (counts only, never invented statistics)
+      description: Evidence surface, not permission. Below the minimum-evidence
+        rule it answers INSUFFICIENT_EVIDENCE. Per-variant metric comparison
+        is POST-MVP; comparisons stays null.
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Experiment aggregate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExperimentAggregate'
+        '404':
+          description: Experiment not found in this tenant
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/feature-flags/{flagKey}/evaluate:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Experiments
+      operationId: evaluateFeatureFlag
+      summary: Evaluate feature flag with experiment bridge (fail-open to flag default)
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Evaluate feature flag
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureFlagEvaluation'
+        '404':
+          description: Feature flag not found
         '409':
           $ref: '#/components/responses/TenantContextConflict'
   /v1/partners:
@@ -6367,6 +6594,288 @@ components:
           - 'null'
           minimum: 0
           maximum: 1
+    ExperimentVariant:
+      type: object
+      required:
+      - key
+      - weightBps
+      properties:
+        key:
+          type: string
+        weightBps:
+          type: integer
+          minimum: 1
+    CreateExperimentRequest:
+      type: object
+      required:
+      - key
+      - name
+      - variants
+      properties:
+        key:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_-]*$
+        name:
+          type: string
+        hypothesis:
+          type: string
+        variants:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/ExperimentVariant'
+        primaryMetricRef:
+          type: string
+        guardrailRefs:
+          type: array
+          items:
+            type: string
+        minimumEvidenceExposures:
+          type: integer
+          minimum: 1
+    Experiment:
+      type: object
+      required:
+      - id
+      - key
+      - name
+      - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        key:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum:
+          - DRAFT
+          - RUNNING
+          - COMPLETED
+          - STOPPED
+        variants:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExperimentVariant'
+        primaryMetricRef:
+          type:
+          - string
+          - 'null'
+        guardrailRefs:
+          type: array
+          items:
+            type: string
+        minimumEvidenceExposures:
+          type: integer
+        startedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        endedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    ExperimentListResponse:
+      type: object
+      required:
+      - experiments
+      properties:
+        experiments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Experiment'
+    ExperimentDetailResponse:
+      type: object
+      required:
+      - experiment
+      properties:
+        experiment:
+          $ref: '#/components/schemas/Experiment'
+    StopExperimentRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+    AssignExperimentRequest:
+      type: object
+      required:
+      - subjectType
+      - subjectId
+      properties:
+        subjectType:
+          type: string
+          enum:
+          - PERSON
+          - CUSTOMER
+          - CONVERSATION
+          - TENANT
+        subjectId:
+          type: string
+    ExperimentAssignment:
+      type: object
+      required:
+      - experimentId
+      - subjectType
+      - subjectId
+      - variant
+      - persisted
+      - fallback
+      properties:
+        experimentId:
+          type: string
+          format: uuid
+        subjectType:
+          type: string
+        subjectId:
+          type: string
+        variant:
+          type: string
+        persisted:
+          type: boolean
+        fallback:
+          type: boolean
+        assignmentId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+    RecordExposureRequest:
+      type: object
+      required:
+      - subjectType
+      - subjectId
+      - exposurePoint
+      properties:
+        subjectType:
+          type: string
+          enum:
+          - PERSON
+          - CUSTOMER
+          - CONVERSATION
+          - TENANT
+        subjectId:
+          type: string
+        exposurePoint:
+          type: string
+        dedupeKey:
+          type: string
+        context:
+          type: object
+    ExperimentExposure:
+      type: object
+      required:
+      - experimentId
+      - assignmentId
+      - variant
+      - exposureId
+      - already
+      properties:
+        experimentId:
+          type: string
+          format: uuid
+        assignmentId:
+          type: string
+          format: uuid
+        variant:
+          type: string
+        exposureId:
+          type: string
+          format: uuid
+        already:
+          type: boolean
+    ExperimentVariantCounts:
+      type: object
+      required:
+      - variant
+      - assignments
+      - exposures
+      properties:
+        variant:
+          type: string
+        assignments:
+          type: integer
+        exposures:
+          type: integer
+    ExperimentAggregate:
+      type: object
+      required:
+      - experimentId
+      - experimentKey
+      - status
+      - evidence
+      - minimumEvidenceExposures
+      - totalAssignments
+      - totalExposures
+      - byVariant
+      - comparisons
+      properties:
+        experimentId:
+          type: string
+          format: uuid
+        experimentKey:
+          type: string
+        status:
+          type: string
+        evidence:
+          type: string
+          enum:
+          - INSUFFICIENT_EVIDENCE
+          - READY_FOR_REVIEW
+        minimumEvidenceExposures:
+          type: integer
+        totalAssignments:
+          type: integer
+        totalExposures:
+          type: integer
+        byVariant:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExperimentVariantCounts'
+        primaryMetric:
+          type:
+          - string
+          - 'null'
+        guardrails:
+          type: array
+          items:
+            type: string
+        comparisons:
+          type:
+          - object
+          - 'null'
+        degradedMetrics:
+          type: array
+          items:
+            type: string
+    FeatureFlagEvaluation:
+      type: object
+      required:
+      - key
+      - enabled
+      - source
+      - fallback
+      properties:
+        key:
+          type: string
+        enabled:
+          type: boolean
+        source:
+          type: string
+          enum:
+          - flag
+          - experiment
+          - flag-default
+        variant:
+          type:
+          - string
+          - 'null'
+        fallback:
+          type: boolean
     KnowledgeItem:
       type: object
       required:

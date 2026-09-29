@@ -19,6 +19,7 @@ import { registerGrowthCommands } from "../growth/growth.commands.js";
 import { registerFulfillmentCommands } from "../fulfillment/fulfillment.commands.js";
 import { registerSupportCommands } from "../support/support.commands.js";
 import { registerKnowledgeCommands } from "../knowledge/knowledge.commands.js";
+import { registerExperimentCommands } from "../experiments/experiments.commands.js";
 import { registerClaimCommands } from "../human-review/claim.commands.js";
 import { registerAppTrialCommands } from "../inventory/app-trial.commands.js";
 import { registerSupplierCreditCommands } from "../inventory/supplier-credit.commands.js";
@@ -109,6 +110,7 @@ export const CommandsProvider = {
       registerFulfillmentCommands(bus, { opsPort });
       registerSupportCommands(bus);
       registerKnowledgeCommands(bus);
+      registerExperimentCommands(bus);
       registerClaimCommands(bus);
       registerAppTrialCommands(bus);
       registerSupplierCreditCommands(bus, {

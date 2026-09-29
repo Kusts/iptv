@@ -50,6 +50,36 @@ channels:
       operationId: publishConversationStarted
       message:
         $ref: '#/components/messages/ConversationStarted'
+  experiment.assigned.v1:
+    publish:
+      operationId: publishExperimentAssigned
+      message:
+        $ref: '#/components/messages/ExperimentAssigned'
+  experiment.completed.v1:
+    publish:
+      operationId: publishExperimentCompleted
+      message:
+        $ref: '#/components/messages/ExperimentCompleted'
+  experiment.created.v1:
+    publish:
+      operationId: publishExperimentCreated
+      message:
+        $ref: '#/components/messages/ExperimentCreated'
+  experiment.exposed.v1:
+    publish:
+      operationId: publishExperimentExposed
+      message:
+        $ref: '#/components/messages/ExperimentExposed'
+  experiment.started.v1:
+    publish:
+      operationId: publishExperimentStarted
+      message:
+        $ref: '#/components/messages/ExperimentStarted'
+  experiment.stopped.v1:
+    publish:
+      operationId: publishExperimentStopped
+      message:
+        $ref: '#/components/messages/ExperimentStopped'
   gift_pass.expired.v1:
     publish:
       operationId: publishGiftPassExpired
@@ -1114,6 +1144,46 @@ components:
           type:
           - string
           - 'null'
+    ExperimentEventData:
+      type: object
+      required:
+      - experiment_id
+      properties:
+        experiment_id:
+          type: string
+          format: uuid
+        experiment_key:
+          type:
+          - string
+          - 'null'
+        status:
+          type:
+          - string
+          - 'null'
+        subject_type:
+          type:
+          - string
+          - 'null'
+        subject_id:
+          type:
+          - string
+          - 'null'
+        variant:
+          type:
+          - string
+          - 'null'
+        assignment_version:
+          type:
+          - integer
+          - 'null'
+        exposure_point:
+          type:
+          - string
+          - 'null'
+        reason:
+          type:
+          - string
+          - 'null'
     HumanReviewEventData:
       type: object
       required:
@@ -1425,6 +1495,72 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/ConversationEventData'
+          required:
+          - data
+    ExperimentAssigned:
+      name: experiment.assigned.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ExperimentEventData'
+          required:
+          - data
+    ExperimentCompleted:
+      name: experiment.completed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ExperimentEventData'
+          required:
+          - data
+    ExperimentCreated:
+      name: experiment.created.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ExperimentEventData'
+          required:
+          - data
+    ExperimentExposed:
+      name: experiment.exposed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ExperimentEventData'
+          required:
+          - data
+    ExperimentStarted:
+      name: experiment.started.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ExperimentEventData'
+          required:
+          - data
+    ExperimentStopped:
+      name: experiment.stopped.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ExperimentEventData'
           required:
           - data
     GiftPassExpired:

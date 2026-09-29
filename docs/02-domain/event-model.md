@@ -110,6 +110,12 @@ Class `domain` = authoritative fact that may mutate an aggregate or drive a work
 | `coupon.rejected.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | no legacy family; new commerce policy fact, no alias |
 | `customer.created.v1` | domain | planned/pre-implementation | SPEC 01-identity-crm | `crm.customer.created` (prefix dropped in public ID) |
 | `customer.reactivated.v1` | domain | planned/pre-implementation | SPEC 08-referral-core | `crm.customer.created` family; new explicit reactivation transition, no alias |
+| `experiment.assigned.v1` | domain | implemented/active | AsyncAPI | Wave 16 deterministic assignment fact; stable hash replay, no alias |
+| `experiment.completed.v1` | domain | implemented/active | AsyncAPI | Wave 16 lifecycle transition RUNNING to COMPLETED, no alias |
+| `experiment.created.v1` | domain | implemented/active | AsyncAPI | Wave 16 lifecycle fact; experiment defined as DRAFT, no alias |
+| `experiment.exposed.v1` | domain | implemented/active | AsyncAPI | Wave 16 exposure fact, distinct from assignment (intent-to-treat kept separate), no alias |
+| `experiment.started.v1` | domain | implemented/active | AsyncAPI | Wave 16 lifecycle transition DRAFT to RUNNING, no alias |
+| `experiment.stopped.v1` | domain | implemented/active | AsyncAPI | Wave 16 early-stop transition RUNNING to STOPPED (guardrail/technical/compliance only), no alias |
 | `gift_pass.expired.v1` | domain | planned/pre-implementation | AsyncAPI | no legacy family; gift extension of referral/reward baseline, no alias |
 | `gift_pass.issued.v1` | domain | planned/pre-implementation | AsyncAPI | no legacy family; gift extension of referral/reward baseline, no alias |
 | `gift_pass.redeemed.v1` | domain | planned/pre-implementation | AsyncAPI | no legacy family; gift extension of referral/reward baseline, no alias |

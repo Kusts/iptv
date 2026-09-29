@@ -1847,9 +1847,84 @@ export interface AnalyticsMetricSnapshotsTable {
   data_quality: string;
 }
 
+/**
+ * Mirrors `control.feature_flags` (migration 001; Wave 16 flag bridge).
+ * Global-or-tenant scoped flags; `config_json` may carry an
+ * `{experimentKey, experimentVariant}` bridge reference evaluated
+ * read-only by the experiments controller (fail-open to the flag default).
+ */
+export interface ControlFeatureFlagsTable {
+  id: string;
+  tenant_id: string | null;
+  flag_key: string;
+  enabled: boolean;
+  config_json: unknown;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * Mirrors `experiments.experiments` (migration 039, Wave 16 MVP).
+ * Definition + lifecycle (DRAFT/RUNNING/COMPLETED/STOPPED); the arm spec
+ * is an opaque jsonb `[{key, weightBps}]` parsed by the API hash helper.
+ * Metric refs point at the W14-A analytics read-model (never written here).
+ */
+export interface ExperimentsExperimentsTable {
+  id: string;
+  tenant_id: string;
+  experiment_key: string;
+  name: string;
+  hypothesis: string;
+  status: string;
+  arm_variant_spec_json: unknown;
+  assignment_version: number;
+  primary_metric_ref: string | null;
+  guardrail_refs: string[];
+  minimum_evidence_exposures: number;
+  started_at: Date | null;
+  ended_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * Mirrors `experiments.experiment_assignments` (migration 039).
+ * Deterministic assignment facts, unique per (tenant, experiment,
+ * subject). Rows exist only for RUNNING-time assignments; the
+ * fallback-to-control answer is never persisted.
+ */
+export interface ExperimentAssignmentsTable {
+  id: string;
+  tenant_id: string;
+  experiment_id: string;
+  subject_type: string;
+  subject_id: string;
+  variant: string;
+  assignment_version: number;
+  assigned_at: Date;
+}
+
+/**
+ * Mirrors `experiments.experiment_exposures` (migration 039).
+ * Append-only exposure facts, idempotent by (tenant, assignment,
+ * dedupe_key) so replays never double-count.
+ */
+export interface ExperimentExposuresTable {
+  id: string;
+  tenant_id: string;
+  experiment_assignment_id: string;
+  exposure_point: string;
+  dedupe_key: string;
+  context_json: unknown;
+  exposed_at: Date;
+  created_at: Date;
+}
+
 export interface Database {
   "control.tenants": ControlTenantsTable;
   "control.users": ControlUsersTable;
+  "control.feature_flags": ControlFeatureFlagsTable;
   "control.tenant_memberships": ControlTenantMembershipsTable;
   "control.roles": ControlRolesTable;
   "control.permissions": ControlPermissionsTable;
@@ -1976,4 +2051,7 @@ export interface Database {
   "partners.learning_progress": PartnersLearningProgressTable;
   "analytics.metric_definitions": AnalyticsMetricDefinitionsTable;
   "analytics.metric_snapshots": AnalyticsMetricSnapshotsTable;
+  "experiments.experiments": ExperimentsExperimentsTable;
+  "experiments.experiment_assignments": ExperimentAssignmentsTable;
+  "experiments.experiment_exposures": ExperimentExposuresTable;
 }

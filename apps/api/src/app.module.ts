@@ -47,6 +47,7 @@ import { SupportController } from "./support/support.controller.js";
 import { InventoryController } from "./inventory/inventory.controller.js";
 import { PartnersController } from "./partners/partners.controller.js";
 import { KnowledgeController } from "./knowledge/knowledge.controller.js";
+import { ExperimentsController } from "./experiments/experiments.controller.js";
 import { ContextBuilder } from "./agent/context-builder.js";
 import { KyselyAgentReleaseStore } from "./agent/release-store.js";
 import { AgentPipeline } from "./agent/pipeline.js";
@@ -101,6 +102,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     InventoryController,
     PartnersController,
     KnowledgeController,
+    ExperimentsController,
     PolicyController,
     CapabilitiesController,
     OutboxController,

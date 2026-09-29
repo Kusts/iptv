@@ -36,6 +36,8 @@ export const PERMISSIONS = [
   "billing.exception.resolve",
   "subscription.read",
   "subscription.write",
+  "experiments.read",
+  "experiments.write",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -45,7 +47,7 @@ export const TENANT_OWNER_ROLE = "tenant_owner";
 export const TENANT_ADMIN_ROLE = "tenant_admin";
 export const TENANT_OPERATOR_ROLE = "tenant_operator";
 
-/** Role -> permissions mapping; must stay in sync with migration 012 + 021 seeds. */
+/** Role -> permissions mapping; must stay in sync with migration 012 + 021 seeds (plus 039 for experiments.*). */
 export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
   [PLATFORM_ADMIN_ROLE]: [...PERMISSIONS],
   [TENANT_OWNER_ROLE]: [...PERMISSIONS],
@@ -75,6 +77,8 @@ export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
     "billing.exception.resolve",
     "subscription.read",
     "subscription.write",
+    "experiments.read",
+    "experiments.write",
   ],
   [TENANT_OPERATOR_ROLE]: [
     "crm.person.read",
@@ -90,6 +94,8 @@ export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
     "billing.charge.write",
     "billing.refund.request",
     "subscription.read",
+    "experiments.read",
+    "experiments.write",
   ],
 };
 
