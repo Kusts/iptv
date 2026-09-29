@@ -26,3 +26,4 @@ Each runbook follows: detect → contain → preserve state → communicate → 
 - [browser-drift-challenge.md](browser-drift-challenge.md)
 - [migration-failure.md](migration-failure.md)
 - [hitl-backlog.md](hitl-backlog.md)
+- [rls-role-split-cutover.md](rls-role-split-cutover.md)

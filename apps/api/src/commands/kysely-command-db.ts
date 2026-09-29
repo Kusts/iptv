@@ -2,6 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import type { Kysely, Transaction } from "kysely";
 import { buildAuditRow } from "@iptv/auth";
 import type { Database } from "@iptv/database";
+import { withTenantTransaction } from "@iptv/database";
 import { newId, now } from "@iptv/domain";
 import type { CommandResult } from "@iptv/domain";
 import type {
@@ -559,9 +560,9 @@ export class KyselyCommandDb implements DbPort {
   }
 
   async withTransaction<T>(tenantId: string, fn: (tx: AppTx) => Promise<T>): Promise<T> {
-    return this.requireDb()
-      .transaction()
-      .execute(async (trx) => fn(new KyselyAppTx(trx, tenantId)));
+    return withTenantTransaction(this.requireDb(), tenantId, async (trx) =>
+      fn(new KyselyAppTx(trx, tenantId)),
+    );
   }
 
   async claimIdempotency(input: {
