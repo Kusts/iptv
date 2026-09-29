@@ -2,7 +2,22 @@ openapi: 3.1.0
 info:
   title: AI Revenue & Operations Platform API
   version: 1.0.0
-  description: Pre-implementation v1.0 scaffold. The implementation baseline under docs/15-implementation-baseline is authoritative; each Wave must reconcile/generate paths with canonical domain/status/policy contracts. Tenant context is resolved from authenticated identity/session and is never trusted from request bodies.
+  description: >-
+    Pre-implementation v1.0 scaffold. The implementation baseline under
+    docs/15-implementation-baseline is authoritative; each Wave must
+    reconcile/generate paths with canonical domain/status/policy contracts.
+    Tenant context is resolved from the authenticated server-side session and
+    is never selected from request bodies or client headers. Every
+    AuthGuard-protected operation requires the `X-Tenant-Context-Revision`
+    header matching the session revision, except `GET /v1/auth/session` (the
+    bootstrap endpoint that returns the current revision) and
+    `POST /v1/auth/logout`. A missing, malformed, or stale revision returns
+    `409 TENANT_CONTEXT_CONFLICT` before the protected operation runs.
+    The check runs at request admission: a request admitted under a matching
+    revision may still complete under the previous tenant snapshot after a
+    concurrent switch. Switching increments the revision but does not cancel
+    already admitted in-flight work and is not linearized through handler
+    completion.
 servers:
 - url: https://api.example.com
   description: Production placeholder
@@ -25,7 +40,156 @@ tags:
 - name: Incidents
 - name: Problems
 paths:
+  /v1/auth/session:
+    get:
+      tags:
+      - Identity
+      operationId: getAuthSession
+      summary: Read the current authenticated session snapshot
+      description: Bootstrap endpoint; does not require X-Tenant-Context-Revision. Returns the authoritative tenant-context revision (decimal string) used as a precondition on subsequent protected requests.
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Authenticated session snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionResponse'
+        '401':
+          description: Session is missing, invalid, or expired (UNAUTHENTICATED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/auth/register:
+    post:
+      tags:
+      - Identity
+      operationId: registerUser
+      summary: Register a user and bootstrap the session
+      description: >-
+        Public bootstrap endpoint; does not use bearer auth and does not
+        require X-Tenant-Context-Revision. Creates the user (and an owned
+        tenant when tenantName is supplied), then returns the opaque session
+        token plus the authoritative tenant-context revision (decimal string)
+        used as a precondition on subsequent protected requests.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthRegisterRequest'
+      responses:
+        '201':
+          description: User registered; session bootstrapped
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Missing or non-string fields (INVALID_BODY), invalid email (INVALID_EMAIL), or blank tenant name (INVALID_TENANT_NAME)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Email is already registered (EMAIL_TAKEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Database is not configured (UNAVAILABLE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/auth/login:
+    post:
+      tags:
+      - Identity
+      operationId: loginUser
+      summary: Authenticate with email and password
+      description: >-
+        Public bootstrap endpoint; does not use bearer auth and does not
+        require X-Tenant-Context-Revision. Returns the opaque session token
+        plus the authoritative tenant-context revision (decimal string) used
+        as a precondition on subsequent protected requests.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthLoginRequest'
+      responses:
+        '200':
+          description: Authenticated session bootstrapped
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Missing email or password (INVALID_BODY)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid email or password (INVALID_CREDENTIALS)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: User is not active (USER_SUSPENDED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Database is not configured (UNAVAILABLE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/auth/logout:
+    post:
+      tags:
+      - Identity
+      operationId: logoutUser
+      summary: Invalidate the current session token
+      description: Bearer-protected but intentionally exempt from X-Tenant-Context-Revision; logout must succeed even on a stale revision.
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Session invalidated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+        '401':
+          description: Session is missing, invalid, or expired (UNAUTHENTICATED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Database is not configured (UNAVAILABLE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/persons:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Identity
@@ -56,6 +220,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
   /v1/persons/{personId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Identity
@@ -72,7 +238,159 @@ paths:
                 $ref: '#/components/schemas/Person'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/tenants:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Identity
+      operationId: listTenants
+      summary: List caller tenant memberships
+      description: AuthGuard-only read of the server-side session snapshot; returns memberships plus the nullable active tenant id. Requires X-Tenant-Context-Revision at admission like every protected operation.
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Caller memberships and active tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTenantsResponse'
+        '401':
+          description: Invalid or expired session (UNAUTHENTICATED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+    post:
+      tags:
+      - Identity
+      operationId: createTenant
+      summary: Create a tenant and grant the caller tenant_owner membership
+      description: >-
+        Creates a tenant with the given name and optional slug (server-generated
+        when omitted) and grants the caller an ACTIVE tenant_owner membership. A
+        taken slug fails with `409 SLUG_TAKEN`; a missing, malformed, or stale
+        revision fails with `409 TENANT_CONTEXT_CONFLICT` at admission. Both
+        share the ErrorResponse shape.
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTenantRequest'
+      responses:
+        '201':
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateTenantResponse'
+        '400':
+          description: Missing name or invalid slug (INVALID_BODY / INVALID_SLUG)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid or expired session (UNAUTHENTICATED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/tenants/{id}/switch:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Identity
+      operationId: switchActiveTenant
+      summary: Switch the session active tenant
+      description: >-
+        Sets the caller session active tenant to the path tenant and returns
+        the updated tenant-context snapshot. The supplied revision is an
+        optimistic concurrency precondition, not a tenant selector. The server
+        atomically compares and increments it; a missing, malformed, or stale
+        revision fails with `409 TENANT_CONTEXT_CONFLICT` without applying the
+        switch. On 409, re-read the current session state and decide; do not
+        blindly retry the same request. No request body. The response carries
+        the incremented revision as a decimal string for subsequent protected
+        requests. The switch applies to subsequently admitted requests only;
+        already admitted in-flight operations are not cancelled and may
+        complete under the previous tenant snapshot.
+      parameters:
+      - $ref: '#/components/parameters/TenantId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Active tenant switched
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SwitchActiveTenantResponse'
+        '401':
+          description: Invalid or expired session (UNAUTHENTICATED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: No active membership in this tenant (TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Tenant not found (TENANT_NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/me:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Identity
+      operationId: getMe
+      summary: Read the tenant-scoped caller identity proof
+      description: Proves the full server-side chain session to active tenant to membership to roles to permissions. Requires an active tenant with an ACTIVE membership; otherwise 403.
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Caller identity with tenant roles and permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          description: Invalid or expired session (UNAUTHENTICATED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: No active tenant or membership (NO_ACTIVE_TENANT / TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/trials/eligibility:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Trial
@@ -92,7 +410,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TrialEligibilityDecision'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/trials:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Trial
@@ -114,12 +436,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/Trial'
         '409':
-          description: Trial not allowed under canonical eligibility rules
+          description: Trial not allowed under canonical eligibility rules, or tenant-context revision precondition failed (TENANT_CONTEXT_CONFLICT)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   /v1/trials/{trialId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Trial
@@ -136,7 +460,11 @@ paths:
                 $ref: '#/components/schemas/Trial'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/offers/resolve:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Commerce
@@ -156,7 +484,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Offer'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/orders:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Commerce
@@ -180,6 +512,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
   /v1/orders/{orderId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Commerce
@@ -196,7 +530,11 @@ paths:
                 $ref: '#/components/schemas/Order'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/orders/{orderId}/charges:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Billing
@@ -221,6 +559,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
   /v1/payments/{paymentId}/refund-requests:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Billing
@@ -242,7 +582,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RefundRequest'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/refund-requests/{refundRequestId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Billing
@@ -259,7 +603,11 @@ paths:
                 $ref: '#/components/schemas/RefundRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/refund-requests/{refundRequestId}/execute:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Billing
@@ -279,6 +627,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
   /v1/subscriptions/{subscriptionId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Subscription
@@ -295,7 +645,11 @@ paths:
                 $ref: '#/components/schemas/Subscription'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/subscriptions/{subscriptionId}/renewal-orders:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Subscription
@@ -318,7 +672,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Order'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/provider-operations:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Provider Operations
@@ -339,7 +697,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProviderOperation'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/provider-operations/{providerOperationId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Provider Operations
@@ -356,7 +718,11 @@ paths:
                 $ref: '#/components/schemas/ProviderOperation'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/support/tickets:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Support
@@ -377,6 +743,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SupportTicket'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
     get:
       tags:
       - Support
@@ -393,7 +761,11 @@ paths:
                 $ref: '#/components/schemas/ListSupportTicketsResponse'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/hitl/reviews/{reviewId}/guidance:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - HITL
@@ -415,7 +787,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanReview'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/customers/{customerId}/referrals:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Referral
@@ -437,7 +813,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Referral'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/conversations/{conversationId}/messages:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Communications
@@ -459,15 +839,88 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Message'
-  /v1/webhooks/asaas:
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/communications/conversations/{id}/messages:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Communications
+      operationId: listConversationMessages
+      summary: List conversation messages with latest delivery status
+      description: Authenticated tenant-scoped read of the append-only conversation
+        messages ordered by occurredAt ascending. deliveryStatus is the latest
+        message_deliveries row by attempt_no DESC, or null when no delivery attempt
+        exists. A CANCELLED delivery status marks a stale internal reminder via an
+        appended delivery attempt; it does not mutate the immutable message itself.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Conversation messages with latest delivery status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListConversationMessagesResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/webhooks/asaas/{tenantKey}:
     post:
       tags:
       - Webhooks
       operationId: ingestAsaasWebhook
-      description: Platform bearer auth is not used; provider-adapter authentication/signature/token validation is still mandatory
-        before canonical processing.
+      description: >-
+        Public Asaas webhook ingress. No session auth and no
+        X-Tenant-Context-Revision: Asaas sends the configured authToken as
+        the `asaas-access-token` shared-secret header, which authenticates
+        the provider, and the tenantKey path segment maps to the tenant via
+        billing.tenant_channels (never from payload content). The presented
+        value is validated channel-scoped against that channel's
+        `webhook_secret_hash` only; there is no shared/global fallback. The legacy
+        `X-Asaas-Secret` header remains accepted as a backward-compatible
+        alias; when both are present, `asaas-access-token` takes precedence.
+        When the resolved channel has no configured hash, the request fails
+        with 503 before inbox/domain effects. Pipeline: verify, durable inbox
+        insert-once on the provider event id,
+        202 fast ack, then async normalize. `?defer=1` skips inline processing
+        so a worker/test can drain the inbox.
       security: []
       parameters:
+      - $ref: '#/components/parameters/WebhookTenantKey'
+      - $ref: '#/components/parameters/AsaasWebhookAccessToken'
+      - $ref: '#/components/parameters/AsaasWebhookSecret'
+      - name: defer
+        in: query
+        required: false
+        description: When '1', skips inline processing so a worker/test can drain the pending inbox.
+        schema:
+          type: string
+          enum:
+          - '1'
       - $ref: '#/components/parameters/CorrelationId'
       requestBody:
         required: true
@@ -478,16 +931,58 @@ paths:
               additionalProperties: true
       responses:
         '202':
-          description: Payload persisted to external inbox for dedupe/processing
-  /v1/webhooks/whatsapp:
+          description: Payload accepted into the durable inbox (deduped when already seen)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookAcceptResponse'
+        '401':
+          description: Webhook authentication failed (UNAUTHORIZED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown webhook endpoint (NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Webhook secret not configured for this channel (UNAUTHORIZED) or database not configured (UNAVAILABLE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/webhooks/waha/{tenantKey}:
     post:
       tags:
       - Webhooks
-      operationId: ingestWhatsAppWebhook
-      description: Platform bearer auth is not used; integration-specific webhook authentication/secret validation is mandatory
-        when supported by the selected WhatsApp adapter.
+      operationId: ingestWahaWebhook
+      description: >-
+        Public WAHA webhook ingress. No session auth and no
+        X-Tenant-Context-Revision: the X-Waha-Secret shared-secret header
+        authenticates the provider and the tenantKey path segment maps to the
+        tenant via communication.tenant_channels (never from payload content).
+        The presented value is validated channel-scoped against that
+        channel's `webhook_secret_hash` only; there is no shared/global
+        fallback. When the resolved channel has no configured hash, the
+        request fails with 503 before inbox/domain effects.
+        Pipeline: verify, durable inbox insert-once, 202 fast ack, then async
+        normalize. `?defer=1` skips inline processing so a worker/test can
+        drain the inbox.
       security: []
       parameters:
+      - $ref: '#/components/parameters/WebhookTenantKey'
+      - $ref: '#/components/parameters/WahaWebhookSecret'
+      - name: defer
+        in: query
+        required: false
+        description: When '1', skips inline processing so a worker/test can drain the pending inbox.
+        schema:
+          type: string
+          enum:
+          - '1'
       - $ref: '#/components/parameters/CorrelationId'
       requestBody:
         required: true
@@ -498,8 +993,32 @@ paths:
               additionalProperties: true
       responses:
         '202':
-          description: Payload persisted to external inbox for normalization
+          description: Payload accepted into the durable inbox (deduped when already seen)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookAcceptResponse'
+        '401':
+          description: Webhook authentication failed (UNAUTHORIZED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown webhook endpoint (NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Webhook secret not configured for this channel (UNAUTHORIZED) or database not configured (UNAVAILABLE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/support/tickets/{ticketId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Support
@@ -517,7 +1036,11 @@ paths:
                 $ref: '#/components/schemas/SupportTicket'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/support/tickets/{ticketId}/transition:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Support
@@ -540,7 +1063,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SupportTicket'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/support/tickets/{ticketId}/solution-attempts:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Support
@@ -564,7 +1091,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SolutionAttempt'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/support/incidents:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Incidents
@@ -581,6 +1112,8 @@ paths:
                 $ref: '#/components/schemas/ListIncidentsResponse'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
     post:
       tags:
       - Incidents
@@ -602,7 +1135,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Incident'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/support/incidents/{incidentId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Incidents
@@ -620,7 +1157,11 @@ paths:
                 $ref: '#/components/schemas/Incident'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/support/tickets/{ticketId}/incidents/{incidentId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Support
@@ -639,7 +1180,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SupportTicket'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/support/problems:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Problems
@@ -656,6 +1201,8 @@ paths:
                 $ref: '#/components/schemas/ListProblemsResponse'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
     post:
       tags:
       - Problems
@@ -677,7 +1224,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/support/problems/{problemId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Problems
@@ -695,7 +1246,11 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/support/tickets/{ticketId}/problems/{problemId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Support
@@ -714,7 +1269,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SupportTicket'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/hitl/reviews:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - HITL
@@ -731,6 +1290,8 @@ paths:
                 $ref: '#/components/schemas/ListHumanReviewsResponse'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
     post:
       tags:
       - HITL
@@ -752,7 +1313,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanReview'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/hitl/reviews/{reviewId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - HITL
@@ -770,7 +1335,11 @@ paths:
                 $ref: '#/components/schemas/HumanReview'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/hitl/reviews/{reviewId}/actions:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - HITL
@@ -793,7 +1362,347 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HumanReview'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/human-reviews:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - HITL
+      operationId: listHumanReviewQueue
+      summary: List the tenant human-review queue
+      description: >-
+        Tenant-scoped queue read. `status` accepts any lifecycle state; the
+        `PENDING` alias (and omission) selects the open queue
+        (REQUESTED|QUEUED|ACKNOWLEDGED|IN_REVIEW). Requires the
+        `agent.review.request` permission. Requires X-Tenant-Context-Revision
+        at admission like every protected operation.
+      parameters:
+      - name: status
+        in: query
+        required: false
+        description: Lifecycle state filter, or PENDING for the open queue (default).
+        schema:
+          type: string
+          enum:
+          - PENDING
+          - REQUESTED
+          - QUEUED
+          - ACKNOWLEDGED
+          - IN_REVIEW
+          - GUIDANCE_PROVIDED
+          - ACTION_TAKEN
+          - RESOLVED
+          - EXPIRED
+          - CANCELLED
+          default: PENDING
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Queue items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListHumanReviewQueueResponse'
+        '400':
+          description: Unknown status filter (INVALID_STATUS)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid or expired session (UNAUTHENTICATED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Missing agent.review.request permission or no active membership (FORBIDDEN / NO_ACTIVE_TENANT / TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+    post:
+      tags:
+      - HITL
+      operationId: requestHumanReview
+      summary: Request human review
+      description: >-
+        CommandBus `human_review.request` (permission `agent.review.request`).
+        An Idempotency-Key header is forwarded when present but is not
+        required. Requires X-Tenant-Context-Revision at admission like every
+        protected operation.
+      parameters:
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateHumanReviewRequest'
+      responses:
+        '201':
+          description: Review requested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanReviewRequestIdResponse'
+        '400':
+          description: Command input failed validation (VALIDATION_FAILED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid or expired session (UNAUTHENTICATED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Missing agent.review.request permission or no active membership (FORBIDDEN / NO_ACTIVE_TENANT / TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/human-reviews/{id}/claim:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - HITL
+      operationId: claimHumanReview
+      summary: Claim an open human review
+      description: >-
+        CommandBus `human_review.claim` (permission `agent.review.request`).
+        No request body. An Idempotency-Key header is forwarded when present
+        but is not required. Requires X-Tenant-Context-Revision at admission.
+      parameters:
+      - $ref: '#/components/parameters/HumanReviewId'
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201':
+          description: Review claimed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimHumanReviewResponse'
+        '400':
+          description: Command input failed validation (VALIDATION_FAILED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid or expired session (UNAUTHENTICATED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Missing agent.review.request permission or no active membership (FORBIDDEN / NO_ACTIVE_TENANT / TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Human review request not found (NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Review is not open or changed concurrently (PRECONDITION_FAILED), or tenant-context revision precondition failed (TENANT_CONTEXT_CONFLICT)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/human-reviews/{id}/approve:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - HITL
+      operationId: approveHumanReview
+      summary: Approve an open human review
+      description: >-
+        CommandBus `human_review.approve` (permission `agent.review.decide`)
+        with optimistic-concurrency `expectedStatus` and an optional decision
+        `note`. An Idempotency-Key header is forwarded when present but is not
+        required. Requires X-Tenant-Context-Revision at admission.
+      parameters:
+      - $ref: '#/components/parameters/HumanReviewId'
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HumanReviewDecisionRequest'
+      responses:
+        '201':
+          description: Review approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanReviewDecisionResponse'
+        '400':
+          description: Command input failed validation (VALIDATION_FAILED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid or expired session (UNAUTHENTICATED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Missing agent.review.decide permission or no active membership (FORBIDDEN / NO_ACTIVE_TENANT / TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Human review request not found (NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Stale decision rejected or concurrent resolution (PRECONDITION_FAILED), or tenant-context revision precondition failed (TENANT_CONTEXT_CONFLICT)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/human-reviews/{id}/reject:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - HITL
+      operationId: rejectHumanReview
+      summary: Reject an open human review
+      description: >-
+        CommandBus `human_review.reject` (permission `agent.review.decide`)
+        with optimistic-concurrency `expectedStatus` and an optional decision
+        `note`. An Idempotency-Key header is forwarded when present but is not
+        required. Requires X-Tenant-Context-Revision at admission.
+      parameters:
+      - $ref: '#/components/parameters/HumanReviewId'
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HumanReviewDecisionRequest'
+      responses:
+        '201':
+          description: Review rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanReviewDecisionResponse'
+        '400':
+          description: Command input failed validation (VALIDATION_FAILED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid or expired session (UNAUTHENTICATED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Missing agent.review.decide permission or no active membership (FORBIDDEN / NO_ACTIVE_TENANT / TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Human review request not found (NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Stale decision rejected or concurrent resolution (PRECONDITION_FAILED), or tenant-context revision precondition failed (TENANT_CONTEXT_CONFLICT)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/human-reviews/center:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - HITL
+      operationId: getHumanReviewCenter
+      summary: Aggregated HITL center of open work
+      description: >-
+        Tenant-scoped read-model aggregation of OPEN work across the four
+        existing queues (human reviews, communications exceptions, billing
+        exceptions, recovery tasks). Requires the `support.ticket.read`
+        permission. Items are normalized to `{source, id, kind, summary,
+        priority, ageMinutes, sla, deepLink, createdAt}` ordered by creation
+        ascending; staleness follows the `hitl.sla` policy family (safe
+        defaults warn 4h, breach 24h).
+      parameters:
+      - name: source
+        in: query
+        required: false
+        description: Restrict the aggregation to one queue; omitted aggregates all four.
+        schema:
+          type: string
+          enum:
+          - human_review
+          - comm_exception
+          - billing_exception
+          - recovery_task
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Aggregated center items plus the resolved SLA policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanReviewCenterResponse'
+        '400':
+          description: Unknown center source (INVALID_SOURCE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid or expired session (UNAUTHENTICATED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Missing support.ticket.read permission or no active membership (FORBIDDEN / TENANT_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/conversations/{conversationId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Communications
@@ -811,7 +1720,11 @@ paths:
                 $ref: '#/components/schemas/Conversation'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/conversations/{conversationId}/control:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Communications
@@ -835,7 +1748,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Conversation'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/knowledge/candidates:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Knowledge
@@ -857,7 +1774,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/KnowledgeItem'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/knowledge/items/{knowledgeItemId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Knowledge
@@ -875,7 +1796,11 @@ paths:
                 $ref: '#/components/schemas/KnowledgeItem'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/knowledge/items/{knowledgeItemId}/validation:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Knowledge
@@ -898,7 +1823,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/KnowledgeItem'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/knowledge/solutions/{solutionId}/outcomes:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Knowledge
@@ -921,7 +1850,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SolutionOutcome'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/knowledge/search:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Knowledge
@@ -943,7 +1876,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/KnowledgeSearchResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/referrals/{referralId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Referral
@@ -961,7 +1898,11 @@ paths:
                 $ref: '#/components/schemas/Referral'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/referrals/{referralId}/qualification:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Referral
@@ -984,7 +1925,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReferralQualification'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/customers/{customerId}/rewards:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Rewards
@@ -1002,7 +1947,11 @@ paths:
                 $ref: '#/components/schemas/ListRewardsResponse'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/rewards/{rewardId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     get:
       tags:
       - Rewards
@@ -1020,7 +1969,11 @@ paths:
                 $ref: '#/components/schemas/Reward'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/rewards/{rewardId}/redeem:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Rewards
@@ -1043,7 +1996,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Reward'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/gift-passes/redeem:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Rewards
@@ -1065,12 +2022,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GiftPass'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
+      bearerFormat: Opaque session token
   parameters:
     CorrelationId:
       name: X-Correlation-Id
@@ -1079,6 +2038,14 @@ components:
       schema:
         type: string
         format: uuid
+    TenantContextRevision:
+      name: X-Tenant-Context-Revision
+      in: header
+      required: true
+      description: Canonical decimal-string revision returned by GET /v1/auth/session; an admission precondition only, never a tenant selector. Missing, malformed, or stale values fail with 409 TENANT_CONTEXT_CONFLICT before the protected operation runs.
+      schema:
+        type: string
+        pattern: '^(0|[1-9][0-9]*)$'
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -1087,6 +2054,51 @@ components:
         type: string
         minLength: 8
         maxLength: 200
+    OptionalIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Forwarded to the CommandBus when present; never required by the human-review endpoints.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 200
+    WebhookTenantKey:
+      name: tenantKey
+      in: path
+      required: true
+      description: Provider-facing channel key mapped server-side to the tenant via the provider tenant_channels table; never taken from payload content.
+      schema:
+        type: string
+        minLength: 1
+    AsaasWebhookAccessToken:
+      name: asaas-access-token
+      in: header
+      required: true
+      description: Canonical shared-secret header authenticating the Asaas provider call (Asaas sends the configured authToken in this header), validated channel-scoped against that channel's `webhook_secret_hash` in billing.tenant_channels with no shared/global fallback; a missing or wrong value fails with 401 (or 503 when that channel has no secret configured), never 400. Takes precedence over X-Asaas-Secret when both are present.
+      schema:
+        type: string
+    AsaasWebhookSecret:
+      name: X-Asaas-Secret
+      in: header
+      required: false
+      description: Legacy alias for the Asaas shared-secret header, kept for backward compatibility; prefer asaas-access-token. Only evaluated when asaas-access-token is absent; validated channel-scoped against that channel's `webhook_secret_hash` with no shared/global fallback. A missing or wrong value fails with 401 (or 503 when that channel has no secret configured), never 400.
+      schema:
+        type: string
+    WahaWebhookSecret:
+      name: X-Waha-Secret
+      in: header
+      required: false
+      description: Shared-secret header authenticating the WAHA provider call, validated channel-scoped against that channel's `webhook_secret_hash` in communication.tenant_channels with no shared/global fallback; a missing or wrong value fails with 401 (or 503 when that channel has no secret configured), never 400.
+      schema:
+        type: string
+    HumanReviewId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     PersonId:
       name: personId
       in: path
@@ -1206,6 +2218,13 @@ components:
       schema:
         type: string
         format: uuid
+    TenantId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
   responses:
     NotFound:
       description: Resource not found in authorized tenant scope
@@ -1214,12 +2233,81 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     Conflict:
-      description: Domain invariant or idempotency conflict
+      description: Domain invariant, idempotency, or tenant-context conflict; protected operations also return this 409 shape as TENANT_CONTEXT_CONFLICT when the X-Tenant-Context-Revision admission precondition is missing, malformed, or stale
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TenantContextConflict:
+      description: >-
+        Tenant-context revision precondition failed
+        (TENANT_CONTEXT_CONFLICT). Returned at request admission when
+        X-Tenant-Context-Revision is missing, malformed, or stale relative to
+        the session revision. Re-read GET /v1/auth/session and retry with the
+        fresh revision; do not blindly retry. Admission is point-in-time only:
+        an already admitted request may still complete under the previous
+        tenant snapshot after a concurrent switch.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
   schemas:
+    AuthSessionResponse:
+      type: object
+      required:
+      - user
+      - activeTenantId
+      - tenantContextRevision
+      - memberships
+      properties:
+        user:
+          type: object
+          required:
+          - id
+          - email
+          - displayName
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+              format: email
+            displayName:
+              type:
+              - string
+              - 'null'
+        activeTenantId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        tenantContextRevision:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+          description: Monotonic per-session revision; represented as a string to preserve PostgreSQL BIGINT precision.
+        memberships:
+          type: array
+          items:
+            type: object
+            required:
+            - tenantId
+            - tenantSlug
+            - tenantName
+            - roleKey
+            - status
+            properties:
+              tenantId:
+                type: string
+                format: uuid
+              tenantSlug:
+                type: string
+              tenantName:
+                type: string
+              roleKey:
+                type: string
+              status:
+                type: string
     ErrorResponse:
       type: object
       required:
@@ -2224,6 +3312,62 @@ components:
           - READ
           - FAILED
           - CANCELLED
+    ConversationMessage:
+      type: object
+      description: Append-only conversation message with the latest delivery attempt
+        status (attempt_no DESC), or null when no delivery attempt exists.
+      required:
+      - id
+      - direction
+      - senderType
+      - contentType
+      - occurredAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        direction:
+          type: string
+          enum:
+          - INBOUND
+          - OUTBOUND
+          - INTERNAL
+        senderType:
+          type: string
+        contentType:
+          type: string
+        bodyText:
+          type:
+          - string
+          - 'null'
+        externalMessageId:
+          type:
+          - string
+          - 'null'
+        occurredAt:
+          type: string
+          format: date-time
+        deliveryStatus:
+          type:
+          - string
+          - 'null'
+          enum:
+          - QUEUED
+          - SENT
+          - DELIVERED
+          - READ
+          - FAILED
+          - CANCELLED
+          - null
+    ListConversationMessagesResponse:
+      type: object
+      required:
+      - messages
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationMessage'
     ListSupportTicketsResponse:
       type: object
       required:
@@ -3008,3 +4152,366 @@ components:
         personId:
           type: string
           format: uuid
+    SwitchActiveTenantResponse:
+      type: object
+      required:
+      - activeTenantId
+      - tenantContextRevision
+      properties:
+        activeTenantId:
+          type: string
+          format: uuid
+        tenantContextRevision:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+          description: Incremented canonical decimal-string revision; send it as X-Tenant-Context-Revision on subsequent protected requests.
+    TenantMembership:
+      type: object
+      required:
+      - tenantId
+      - tenantSlug
+      - tenantName
+      - roleKey
+      - status
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+        tenantSlug:
+          type: string
+        tenantName:
+          type: string
+        roleKey:
+          type: string
+        status:
+          type: string
+    ListTenantsResponse:
+      type: object
+      required:
+      - memberships
+      - activeTenantId
+      properties:
+        memberships:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantMembership'
+        activeTenantId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+    CreateTenantRequest:
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+        slug:
+          type: string
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$'
+    CreateTenantResponse:
+      type: object
+      required:
+      - tenant
+      properties:
+        tenant:
+          type: object
+          required:
+          - id
+          - slug
+          - name
+          properties:
+            id:
+              type: string
+              format: uuid
+            slug:
+              type: string
+            name:
+              type: string
+    MeResponse:
+      type: object
+      required:
+      - user
+      - activeTenant
+      - roleKeys
+      - permissions
+      properties:
+        user:
+          type: object
+          required:
+          - id
+          - email
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+              format: email
+        activeTenant:
+          type: object
+          required:
+          - id
+          properties:
+            id:
+              type: string
+              format: uuid
+        roleKeys:
+          type: array
+          items:
+            type: string
+        permissions:
+          type: array
+          items:
+            type: string
+    HumanReviewCenterItem:
+      type: object
+      required:
+      - source
+      - id
+      - kind
+      - summary
+      - ageMinutes
+      - sla
+      - deepLink
+      - createdAt
+      properties:
+        source:
+          type: string
+          enum:
+          - human_review
+          - comm_exception
+          - billing_exception
+          - recovery_task
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+        summary:
+          type: string
+        priority:
+          type:
+          - string
+          - 'null'
+        ageMinutes:
+          type: integer
+          minimum: 0
+        sla:
+          type: string
+          enum:
+          - OK
+          - WARN
+          - BREACH
+        deepLink:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    HumanReviewCenterSlaPolicy:
+      type: object
+      required:
+      - warnAfterHours
+      - breachAfterHours
+      - ref
+      properties:
+        warnAfterHours:
+          type: number
+        breachAfterHours:
+          type: number
+        ref:
+          type: string
+    HumanReviewCenterResponse:
+      type: object
+      required:
+      - items
+      - slaPolicy
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/HumanReviewCenterItem'
+        slaPolicy:
+          $ref: '#/components/schemas/HumanReviewCenterSlaPolicy'
+    AuthRegisterRequest:
+      type: object
+      required:
+      - email
+      - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+        displayName:
+          type:
+          - string
+          - 'null'
+        tenantName:
+          type:
+          - string
+          - 'null'
+    AuthLoginRequest:
+      type: object
+      required:
+      - email
+      - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+    AuthResponse:
+      type: object
+      required:
+      - token
+      - user
+      - activeTenantId
+      - tenantContextRevision
+      properties:
+        token:
+          type: string
+        user:
+          type: object
+          required:
+          - id
+          - email
+          - displayName
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+              format: email
+            displayName:
+              type:
+              - string
+              - 'null'
+        activeTenantId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        tenantContextRevision:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+          description: Monotonic per-session revision; represented as a string to preserve PostgreSQL BIGINT precision.
+    LogoutResponse:
+      type: object
+      required:
+      - ok
+      properties:
+        ok:
+          type: boolean
+          const: true
+    HumanReviewQueueItem:
+      type: object
+      required:
+      - id
+      - status
+      - reviewMode
+      - reason
+      - priority
+      - resourceType
+      - resourceId
+      - summary
+      - createdAt
+      - resolvedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        reviewMode:
+          type: string
+        reason:
+          type: string
+        priority:
+          type: string
+        resourceType:
+          type: string
+        resourceId:
+          type: string
+        summary:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        resolvedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    ListHumanReviewQueueResponse:
+      type: object
+      required:
+      - reviews
+      properties:
+        reviews:
+          type: array
+          items:
+            $ref: '#/components/schemas/HumanReviewQueueItem'
+    HumanReviewRequestIdResponse:
+      type: object
+      required:
+      - id
+      properties:
+        id:
+          type: string
+          format: uuid
+    ClaimHumanReviewResponse:
+      type: object
+      required:
+      - id
+      - assigneeUserId
+      - already
+      properties:
+        id:
+          type: string
+          format: uuid
+        assigneeUserId:
+          type: string
+          format: uuid
+        already:
+          type: boolean
+    HumanReviewDecisionRequest:
+      type: object
+      properties:
+        expectedStatus:
+          type:
+          - string
+          - 'null'
+          description: Optimistic-concurrency guard; the status the reviewer saw when opening the review.
+        note:
+          type:
+          - string
+          - 'null'
+    HumanReviewDecisionResponse:
+      type: object
+      required:
+      - id
+      - resolution
+      properties:
+        id:
+          type: string
+          format: uuid
+        resolution:
+          type: string
+    WebhookAcceptResponse:
+      type: object
+      required:
+      - accepted
+      - deduped
+      properties:
+        accepted:
+          type: boolean
+        deduped:
+          type: boolean

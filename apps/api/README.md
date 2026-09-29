@@ -40,6 +40,32 @@
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Set (+ `OTEL_SDK_DISABLED=false`) to export OTLP-http telemetry. |
 | `OTEL_SDK_DISABLED` | `true` | `false` allows SDK construction when an endpoint is set. |
 | `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | unset | Future placeholders (boundary only, unused today). |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` in development/test, deny-all (`[]`) in production when unset | Explicit browser CORS allowlist: comma-separated exact `http(s)://host[:port]` origins, no wildcard/path/query/hash. Production must set the public web origin(s); missing config denies cross-origin. |
+
+Browser CORS is an explicit-origin allowlist only (never `*`, never reflected).
+The API serves `GET, HEAD, POST, OPTIONS` with no credentialed CORS
+(`credentials: false`) and allows `authorization`, `content-type`,
+`x-request-id`, `traceparent`, `x-tenant-context-revision`,
+`idempotency-key`, and `asaas-access-token` request headers. CORS only
+controls browser response visibility — it does not replace Bearer/session
+auth, webhook shared-secret checks, or tenant
+membership/revision guards, and no allowed header by itself grants tenant
+access.
+
+## Billing webhooks (Asaas)
+
+- **Webhook** (`POST /v1/webhooks/asaas/:tenantKey`, public): Asaas sends
+  the configured authToken as the `asaas-access-token` header; the legacy
+  `X-Asaas-Secret` header remains accepted as a backward-compatible alias,
+  with `asaas-access-token` taking precedence when both are present. The
+  presented value is checked timing-safe against that channel's secret hash
+  in `billing.tenant_channels` only — there is no global fallback. A
+  channel without a configured hash rejects with `503` before inbox/domain
+  effects. Tenant comes
+  from the `:tenantKey` path segment via `billing.tenant_channels`, never
+  from payload content. Same pipeline shape as WAHA: durable inbox
+  insert-once dedupe, `202` fast ack, then async normalize
+  (`?defer=1` leaves rows `RECEIVED` for `AsaasWebhookService.drainPending()`).
 
 # @iptv/api — Wave 8: Support + HITL center
 
@@ -142,8 +168,10 @@
   preference → `forbidden`. Gateway unknown effect → delivery `QUEUED` +
   conversation `PAUSED`/`RECONCILE_REQUIRED`, never retried blindly.
 - **Webhook** (`POST /v1/webhooks/waha/:tenantKey`, public): tenant from
-  `communication.tenant_channels`, timing-safe `X-Waha-Secret` check,
-  inbox insert-once dedupe (`provider=waha`), `202` fast ack, then
+  `communication.tenant_channels`, timing-safe `X-Waha-Secret` check
+  against that channel's secret hash only (no global fallback; a channel
+  without a configured hash rejects with `503` before inbox/domain
+  effects), inbox insert-once dedupe (`provider=waha`), `202` fast ack, then
   normalize via `WAHANormalizer` → `message.ingest`. `?defer=1` leaves
   rows `RECEIVED` for `WahaWebhookService.drainPending()` (future
   Hatchet worker handoff). Unknown events → 202, no domain mutation.
