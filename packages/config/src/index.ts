@@ -92,6 +92,13 @@ export function parseCorsAllowedOrigins(raw: string | undefined, nodeEnv: string
   return normalized;
 }
 
+/** Treat empty-string env values as absent so `.min(1).optional()` fields accept shipped placeholders. */
+function emptyToUndefined(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 /** Validate env (defaults to `process.env`) and return typed config. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = envSchema.safeParse({
@@ -103,8 +110,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     BETTER_AUTH_URL: env.BETTER_AUTH_URL,
     API_SCHEDULER_ENABLED: env.API_SCHEDULER_ENABLED,
     API_SCHEDULER_TICK_SECONDS: env.API_SCHEDULER_TICK_SECONDS,
-    HATCHET_API_TOKEN: env.HATCHET_API_TOKEN,
-    HATCHET_SERVER_URL: env.HATCHET_SERVER_URL,
+    HATCHET_API_TOKEN: emptyToUndefined(env.HATCHET_API_TOKEN),
+    HATCHET_SERVER_URL: emptyToUndefined(env.HATCHET_SERVER_URL),
     OTEL_EXPORTER_OTLP_ENDPOINT: env.OTEL_EXPORTER_OTLP_ENDPOINT,
     OTEL_SDK_DISABLED: env.OTEL_SDK_DISABLED,
     CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
