@@ -443,7 +443,6 @@ export interface CenterItem {
   deepLink: string;
   createdAt: string;
 }
-
 export interface CenterResponse {
   items: CenterItem[];
   slaPolicy: { warnAfterHours: number; breachAfterHours: number; ref: string };
@@ -455,6 +454,44 @@ export interface HealthResponse {
   requestId: string;
   scheduler: string;
   tickSeconds: number;
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge maturation (Wave 15) — tipos espelhados das respostas /v1.
+// ---------------------------------------------------------------------------
+
+export interface KnowledgeQueueItem {
+  id: string;
+  status: string;
+  knowledgeType?: string;
+  contentText?: string;
+  freshnessScore?: number | null;
+}
+
+export interface KnowledgeCorrectionRow {
+  id: string;
+  itemId: string;
+  proposedText: string;
+  status: string;
+}
+
+export interface KnowledgeGapRow {
+  id: string;
+  question: string;
+  supportTicketId: string | null;
+  status: string;
+}
+
+export interface KnowledgeItemsResponse {
+  items: KnowledgeQueueItem[];
+}
+
+export interface KnowledgeCorrectionsResponse {
+  corrections: KnowledgeCorrectionRow[];
+}
+
+export interface KnowledgeGapsResponse {
+  gaps: KnowledgeGapRow[];
 }
 
 // ---------------------------------------------------------------------------

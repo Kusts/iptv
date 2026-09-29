@@ -2251,6 +2251,298 @@ paths:
                 $ref: '#/components/schemas/KnowledgeItem'
         '409':
           $ref: '#/components/responses/TenantContextConflict'
+  /v1/knowledge/items/{knowledgeItemId}/verify:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Knowledge
+      operationId: verifyKnowledgeItem
+      summary: Verify a knowledge item (Wave 15)
+      parameters:
+      - $ref: '#/components/parameters/KnowledgeItemId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyKnowledgeItemRequest'
+      responses:
+        '200':
+          description: Verify a knowledge item
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeItem'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/knowledge/items/{knowledgeItemId}/supersede:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Knowledge
+      operationId: supersedeKnowledgeItem
+      summary: Supersede a knowledge item (Wave 15)
+      parameters:
+      - $ref: '#/components/parameters/KnowledgeItemId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupersedeKnowledgeItemRequest'
+      responses:
+        '200':
+          description: Supersede a knowledge item
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeItem'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/knowledge/corrections:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Knowledge
+      operationId: proposeKnowledgeCorrection
+      summary: Propose a knowledge correction (Wave 15)
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProposeCorrectionRequest'
+      responses:
+        '201':
+          description: Propose a knowledge correction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeCorrection'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+    get:
+      tags:
+      - Knowledge
+      operationId: listKnowledgeCorrections
+      summary: List knowledge corrections (Wave 15)
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: List knowledge corrections
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeCorrectionList'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/knowledge/corrections/{correctionId}/apply:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Knowledge
+      operationId: applyKnowledgeCorrection
+      summary: Apply a knowledge correction as a new version (Wave 15)
+      parameters:
+      - $ref: '#/components/parameters/CorrectionId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Apply a knowledge correction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeCorrection'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/knowledge/corrections/{correctionId}/reject:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Knowledge
+      operationId: rejectKnowledgeCorrection
+      summary: Reject a knowledge correction (Wave 15)
+      parameters:
+      - $ref: '#/components/parameters/CorrectionId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Reject a knowledge correction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeCorrection'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/knowledge/gaps:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Knowledge
+      operationId: recordKnowledgeGap
+      summary: Record a knowledge gap (Wave 15)
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordGapRequest'
+      responses:
+        '201':
+          description: Record a knowledge gap
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeGap'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+    get:
+      tags:
+      - Knowledge
+      operationId: listKnowledgeGaps
+      summary: List knowledge gaps (Wave 15)
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: List knowledge gaps
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeGapList'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/knowledge/gaps/{gapId}/close:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Knowledge
+      operationId: closeKnowledgeGap
+      summary: Close a knowledge gap (Wave 15)
+      parameters:
+      - $ref: '#/components/parameters/GapId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Close a knowledge gap
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeGap'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/knowledge/gaps/{gapId}/candidates:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Knowledge
+      operationId: proposeCandidateFromGap
+      summary: Propose a research candidate from a gap (Wave 15)
+      parameters:
+      - $ref: '#/components/parameters/GapId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProposeCandidateFromGapRequest'
+      responses:
+        '201':
+          description: Propose a research candidate from a gap
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResearchCandidate'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+    get:
+      tags:
+      - Knowledge
+      operationId: listGapCandidates
+      summary: List research candidates of a gap (Wave 15)
+      parameters:
+      - $ref: '#/components/parameters/GapId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: List research candidates of a gap
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResearchCandidateList'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/knowledge/candidates/{candidateId}/decision:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Knowledge
+      operationId: decideResearchCandidate
+      summary: Accept, reject or publish a research candidate (Wave 15)
+      parameters:
+      - $ref: '#/components/parameters/CandidateId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecideCandidateRequest'
+      responses:
+        '200':
+          description: Decide a research candidate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResearchCandidate'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/knowledge/freshness/refresh:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Knowledge
+      operationId: refreshKnowledgeFreshness
+      summary: Recompute knowledge freshness scores (Wave 15, manual)
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Recompute knowledge freshness scores
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FreshnessRefreshResult'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/knowledge/solutions/{solutionId}/outcomes:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -3658,6 +3950,27 @@ components:
         format: uuid
     KnowledgeItemId:
       name: knowledgeItemId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CorrectionId:
+      name: correctionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    GapId:
+      name: gapId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CandidateId:
+      name: candidateId
       in: path
       required: true
       schema:
@@ -6130,12 +6443,182 @@ components:
           type:
           - string
           - 'null'
+    VerifyKnowledgeItemRequest:
+      type: object
+      properties:
+        evidence:
+          type:
+          - string
+          - 'null'
+    SupersedeKnowledgeItemRequest:
+      type: object
+      properties:
+        contentText:
+          type:
+          - string
+          - 'null'
+        supersededByItemId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        evidence:
+          type:
+          - string
+          - 'null'
+    ProposeCorrectionRequest:
+      type: object
+      required:
+      - itemId
+      - proposedText
+      properties:
+        itemId:
+          type: string
+          format: uuid
+        targetVersionId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        proposedText:
+          type: string
+          minLength: 1
+    KnowledgeCorrection:
+      type: object
+      required:
+      - id
+      - itemId
+      - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        itemId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - OPEN
+          - APPLIED
+          - REJECTED
+    KnowledgeCorrectionList:
+      type: object
+      required:
+      - corrections
+      properties:
+        corrections:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnowledgeCorrection'
+    RecordGapRequest:
+      type: object
+      required:
+      - question
+      properties:
+        question:
+          type: string
+          minLength: 3
+        supportTicketId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+    KnowledgeGap:
+      type: object
+      required:
+      - id
+      - question
+      - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        question:
+          type: string
+        status:
+          type: string
+          enum:
+          - OPEN
+          - RESEARCHING
+          - CLOSED
+    KnowledgeGapList:
+      type: object
+      required:
+      - gaps
+      properties:
+        gaps:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnowledgeGap'
+    ProposeCandidateFromGapRequest:
+      type: object
+      required:
+      - knowledgeType
+      - contentText
+      properties:
+        knowledgeType:
+          type: string
+        contentText:
+          type: string
+          minLength: 1
+    ResearchCandidate:
+      type: object
+      required:
+      - candidateId
+      - status
+      properties:
+        candidateId:
+          type: string
+          format: uuid
+        itemId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - PROPOSED
+          - ACCEPTED
+          - REJECTED
+          - PUBLISHED
+    ResearchCandidateList:
+      type: object
+      required:
+      - candidates
+      properties:
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResearchCandidate'
+    DecideCandidateRequest:
+      type: object
+      required:
+      - decision
+      properties:
+        decision:
+          type: string
+          enum:
+          - ACCEPTED
+          - REJECTED
+          - PUBLISHED
+    FreshnessRefreshResult:
+      type: object
+      required:
+      - refreshed
+      - degraded
+      properties:
+        refreshed:
+          type: integer
+        degraded:
+          type: array
+          items:
+            type: string
+            format: uuid
     RecordSolutionOutcomeRequest:
       type: object
       required:
       - contextFingerprint
-      - outcome
-      properties:
+      - outcome      properties:
         supportTicketId:
           type:
           - string

@@ -261,3 +261,271 @@ export async function findSolutionForItem(
     .executeTakeFirst();
   return row === undefined ? null : { id: row.id };
 }
+
+// ---------------------------------------------------------------------------
+// Wave 15 maturation: corrections / gaps / research candidates.
+// ---------------------------------------------------------------------------
+
+export interface CorrectionRow {
+  id: string;
+  itemId: string;
+  targetVersionId: string | null;
+  proposedText: string;
+  proposedStructured: unknown;
+  status: string;
+  appliedInVersionId: string | null;
+}
+
+export interface GapRow {
+  id: string;
+  question: string;
+  supportTicketId: string | null;
+  status: string;
+}
+
+export interface ResearchCandidateRow {
+  id: string;
+  gapId: string;
+  itemId: string;
+  status: string;
+}
+
+export async function getCorrection(ctx: CommandHandlerContext, correctionId: string): Promise<CorrectionRow | null> {
+  const trx = requireTrx(ctx);
+  const row = await trx
+    .selectFrom("knowledge.knowledge_corrections")
+    .select([
+      "id",
+      "knowledge_item_id",
+      "target_version_id",
+      "proposed_text",
+      "proposed_structured_json",
+      "status",
+      "applied_in_version_id",
+    ])
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("id", "=", correctionId)
+    .executeTakeFirst();
+  if (row === undefined) {
+    return null;
+  }
+  return {
+    id: row.id,
+    itemId: row.knowledge_item_id,
+    targetVersionId: row.target_version_id,
+    proposedText: row.proposed_text,
+    proposedStructured: row.proposed_structured_json,
+    status: row.status,
+    appliedInVersionId: row.applied_in_version_id,
+  };
+}
+
+export async function insertCorrection(
+  ctx: CommandHandlerContext,
+  input: { itemId: string; targetVersionId?: string | null; proposedText: string; proposedStructured?: unknown },
+): Promise<CorrectionRow> {
+  const trx = requireTrx(ctx);
+  const at = now();
+  const id = newId();
+  await trx
+    .insertInto("knowledge.knowledge_corrections")
+    .values({
+      id,
+      tenant_id: ctx.tenantId,
+      knowledge_item_id: input.itemId,
+      target_version_id: input.targetVersionId ?? null,
+      proposed_text: input.proposedText,
+      proposed_structured_json: input.proposedStructured ?? {},
+      status: "OPEN",
+      applied_in_version_id: null,
+      decided_at: null,
+      created_at: at,
+      updated_at: at,
+    })
+    .execute();
+  const created = await getCorrection(ctx, id);
+  if (created === null) {
+    throw new Error("knowledge correction vanished after insert");
+  }
+  return created;
+}
+
+export async function setCorrectionStatus(
+  ctx: CommandHandlerContext,
+  correctionId: string,
+  status: "APPLIED" | "REJECTED",
+  expectedStatus: string,
+  appliedInVersionId?: string | null,
+): Promise<CorrectionRow | null> {
+  const trx = requireTrx(ctx);
+  const affected = await trx
+    .updateTable("knowledge.knowledge_corrections")
+    .set({
+      status,
+      applied_in_version_id: appliedInVersionId ?? null,
+      decided_at: now(),
+      updated_at: now(),
+    })
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("id", "=", correctionId)
+    .where("status", "=", expectedStatus)
+    .returning("id")
+    .executeTakeFirst();
+  if (affected === undefined) {
+    return null;
+  }
+  return getCorrection(ctx, correctionId);
+}
+
+export async function getGap(ctx: CommandHandlerContext, gapId: string): Promise<GapRow | null> {
+  const trx = requireTrx(ctx);
+  const row = await trx
+    .selectFrom("knowledge.knowledge_gaps")
+    .select(["id", "question", "support_ticket_id", "status"])
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("id", "=", gapId)
+    .executeTakeFirst();
+  if (row === undefined) {
+    return null;
+  }
+  return { id: row.id, question: row.question, supportTicketId: row.support_ticket_id, status: row.status };
+}
+
+export async function insertGap(
+  ctx: CommandHandlerContext,
+  input: { question: string; supportTicketId?: string | null },
+): Promise<GapRow> {
+  const trx = requireTrx(ctx);
+  const at = now();
+  const id = newId();
+  await trx
+    .insertInto("knowledge.knowledge_gaps")
+    .values({
+      id,
+      tenant_id: ctx.tenantId,
+      question: input.question,
+      support_ticket_id: input.supportTicketId ?? null,
+      status: "OPEN",
+      closed_at: null,
+      created_at: at,
+      updated_at: at,
+    })
+    .execute();
+  const created = await getGap(ctx, id);
+  if (created === null) {
+    throw new Error("knowledge gap vanished after insert");
+  }
+  return created;
+}
+
+export async function setGapStatus(
+  ctx: CommandHandlerContext,
+  gapId: string,
+  status: "RESEARCHING" | "CLOSED",
+  expectedStatuses: string[],
+): Promise<GapRow | null> {
+  const trx = requireTrx(ctx);
+  const affected = await trx
+    .updateTable("knowledge.knowledge_gaps")
+    .set({
+      status,
+      closed_at: status === "CLOSED" ? now() : null,
+      updated_at: now(),
+    })
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("id", "=", gapId)
+    .where("status", "in", expectedStatuses)
+    .returning("id")
+    .executeTakeFirst();
+  if (affected === undefined) {
+    return null;
+  }
+  return getGap(ctx, gapId);
+}
+
+export async function getResearchCandidate(
+  ctx: CommandHandlerContext,
+  candidateId: string,
+): Promise<ResearchCandidateRow | null> {
+  const trx = requireTrx(ctx);
+  const row = await trx
+    .selectFrom("knowledge.knowledge_research_candidates")
+    .select(["id", "knowledge_gap_id", "knowledge_item_id", "status"])
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("id", "=", candidateId)
+    .executeTakeFirst();
+  if (row === undefined) {
+    return null;
+  }
+  return { id: row.id, gapId: row.knowledge_gap_id, itemId: row.knowledge_item_id, status: row.status };
+}
+
+export async function insertResearchCandidate(
+  ctx: CommandHandlerContext,
+  input: { gapId: string; itemId: string },
+): Promise<ResearchCandidateRow> {
+  const trx = requireTrx(ctx);
+  const at = now();
+  const id = newId();
+  await trx
+    .insertInto("knowledge.knowledge_research_candidates")
+    .values({
+      id,
+      tenant_id: ctx.tenantId,
+      knowledge_gap_id: input.gapId,
+      knowledge_item_id: input.itemId,
+      status: "PROPOSED",
+      decided_at: null,
+      created_at: at,
+      updated_at: at,
+    })
+    .execute();
+  const created = await getResearchCandidate(ctx, id);
+  if (created === null) {
+    throw new Error("research candidate vanished after insert");
+  }
+  return created;
+}
+
+export async function setResearchCandidateStatus(
+  ctx: CommandHandlerContext,
+  candidateId: string,
+  status: "ACCEPTED" | "REJECTED" | "PUBLISHED",
+): Promise<ResearchCandidateRow | null> {
+  const trx = requireTrx(ctx);
+  const affected = await trx
+    .updateTable("knowledge.knowledge_research_candidates")
+    .set({ status, decided_at: now(), updated_at: now() })
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("id", "=", candidateId)
+    .where("status", "=", "PROPOSED")
+    .returning("id")
+    .executeTakeFirst();
+  if (affected === undefined) {
+    return null;
+  }
+  return getResearchCandidate(ctx, candidateId);
+}
+
+/** Tickets whose attempts never reached a usable outcome feed gap recording. */
+export async function ticketHasUsableSolution(ctx: CommandHandlerContext, ticketId: string): Promise<boolean | null> {
+  const trx = requireTrx(ctx);
+  const ticket = await trx
+    .selectFrom("support.support_tickets")
+    .select("id")
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("id", "=", ticketId)
+    .executeTakeFirst();
+  if (ticket === undefined) {
+    return null;
+  }
+  const hit = await trx
+    .selectFrom("support.solution_attempts")
+    .select("id")
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("support_ticket_id", "=", ticketId)
+    .where("outcome", "in", ["SUCCEEDED", "PARTIAL"])
+    .limit(1)
+    .executeTakeFirst();
+  return hit !== undefined;
+}

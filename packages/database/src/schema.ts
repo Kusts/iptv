@@ -1248,6 +1248,45 @@ export interface KnowledgeSolutionOutcomesTable {
   observed_at: Date;
 }
 
+/** Mirrors `knowledge.knowledge_corrections` (migration 038, mutable workflow). */
+export interface KnowledgeCorrectionsTable {
+  id: string;
+  tenant_id: string;
+  knowledge_item_id: string;
+  target_version_id: string | null;
+  proposed_text: string;
+  proposed_structured_json: unknown;
+  status: string;
+  applied_in_version_id: string | null;
+  decided_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `knowledge.knowledge_gaps` (migration 038, mutable workflow). */
+export interface KnowledgeGapsTable {
+  id: string;
+  tenant_id: string;
+  question: string;
+  support_ticket_id: string | null;
+  status: string;
+  closed_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `knowledge.knowledge_research_candidates` (migration 038, mutable workflow). */
+export interface KnowledgeResearchCandidatesTable {
+  id: string;
+  tenant_id: string;
+  knowledge_gap_id: string;
+  knowledge_item_id: string;
+  status: string;
+  decided_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
 /** Mirrors `inventory.suppliers` (migration 008, tenant-scoped). */
 export interface InventorySuppliersTable {
   id: string;
@@ -1895,6 +1934,9 @@ export interface Database {
   "knowledge.knowledge_versions": KnowledgeVersionsTable;
   "knowledge.solutions": KnowledgeSolutionsTable;
   "knowledge.solution_outcomes": KnowledgeSolutionOutcomesTable;
+  "knowledge.knowledge_corrections": KnowledgeCorrectionsTable;
+  "knowledge.knowledge_gaps": KnowledgeGapsTable;
+  "knowledge.knowledge_research_candidates": KnowledgeResearchCandidatesTable;
   "inventory.suppliers": InventorySuppliersTable;
   "inventory.supplier_app_snapshots": InventorySupplierAppSnapshotsTable;
   "inventory.supplier_app_items": InventorySupplierAppItemsTable;

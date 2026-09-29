@@ -50,3 +50,37 @@ export function rankSuggestions(
     .sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : 1))
     .slice(0, Math.max(limit, 0));
 }
+
+/**
+ * Wave 15 freshness (pure, unit-tested).
+ *
+ * `freshness_score` decays exponentially with the age of the item's last
+ * update and recovers slightly with recent successful use: an item nobody
+ * touched or used for a long time sinks toward 0, a freshly verified or
+ * recently used item stays near 1. The refresh command recomputes this
+ * for every item (manual POST — no scheduler); items at or below the
+ * threshold flip VERIFIED → DEGRADED so the list can surface them.
+ */
+
+export const FRESHNESS_HALF_LIFE_DAYS = 180;
+export const FRESHNESS_DEGRADED_THRESHOLD = 0.3;
+export const FRESHNESS_USE_BOOST_CAP = 0.2;
+export const FRESHNESS_USE_BOOST_PER_HIT = 0.02;
+
+export function computeFreshnessScore(args: {
+  ageDays: number;
+  halfLifeDays?: number;
+  recentUseCount?: number;
+}): number {
+  const halfLife = args.halfLifeDays ?? FRESHNESS_HALF_LIFE_DAYS;
+  const uses = Math.max(args.recentUseCount ?? 0, 0);
+  const age = Math.max(args.ageDays, 0);
+  const decay = Math.exp((-age * Math.LN2) / Math.max(halfLife, 1));
+  const boost = Math.min(FRESHNESS_USE_BOOST_CAP, uses * FRESHNESS_USE_BOOST_PER_HIT);
+  const score = Math.min(1, decay + boost);
+  return Math.round(score * 10000) / 10000;
+}
+
+export function isDegradedScore(score: number): boolean {
+  return score <= FRESHNESS_DEGRADED_THRESHOLD;
+}

@@ -14,6 +14,7 @@ const NAV = [
   { href: "/subscriptions", label: "Assinaturas" },
   { href: "/orders", label: "Pedidos" },
   { href: "/support", label: "Suporte" },
+  { href: "/conhecimento", label: "Conhecimento" },
   { href: "/hitl", label: "Centro HITL" },
   { href: "/copilot", label: "Copilot" },
 ];

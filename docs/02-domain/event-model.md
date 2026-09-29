@@ -137,14 +137,16 @@ Class `domain` = authoritative fact that may mutate an aggregate or drive a work
 | `incident.resolved.v1` | domain | planned/pre-implementation | AsyncAPI | `support.incident.opened\|resolved` renamed to `incident.*` |
 | `incident.updated.v1` | domain | planned/pre-implementation | AsyncAPI | `support.incident.opened\|resolved` family; new explicit update transition, no alias |
 | `inventory.provider_credit_consumed.v1` | domain | planned/pre-implementation | AsyncAPI | `inventory.credit.reserved\|consumed\|released` partial; provider-credit scoped, no alias |
-| `knowledge.candidate_created.v1` | domain | planned/pre-implementation | SPEC 07-support-hitl-knowledge; AsyncAPI | no legacy family; new knowledge lifecycle, no alias |
-| `knowledge.degraded.v1` | domain | planned/pre-implementation | SPEC 07-support-hitl-knowledge; AsyncAPI | no legacy family; new knowledge lifecycle, no alias |
+| `knowledge.candidate_created.v1` | domain | implemented/active | SPEC 07-support-hitl-knowledge; AsyncAPI | no legacy family; new knowledge lifecycle, no alias |
+| `knowledge.correction.applied.v1` | domain | implemented/active | AsyncAPI | Wave 15 correction workflow; applied correction appends a new version, no alias |
+| `knowledge.degraded.v1` | domain | implemented/active | SPEC 07-support-hitl-knowledge; AsyncAPI | no legacy family; new knowledge lifecycle, no alias |
 | `knowledge.deprecated.v1` | domain | planned/pre-implementation | SPEC 07-support-hitl-knowledge; AsyncAPI | no legacy family; new knowledge lifecycle, no alias |
+| `knowledge.item.verified.v1` | domain | implemented/active | AsyncAPI | Wave 15 lifecycle maturation; explicit verify transition, no alias |
 | `knowledge.rejected.v1` | domain | planned/pre-implementation | SPEC 07-support-hitl-knowledge; AsyncAPI | no legacy family; new knowledge lifecycle, no alias |
 | `knowledge.reverified.v1` | domain | planned/pre-implementation | SPEC 07-support-hitl-knowledge; AsyncAPI | no legacy family; new knowledge lifecycle, no alias |
 | `knowledge.solution_outcome_recorded.v1` | domain | planned/pre-implementation | SPEC 07-support-hitl-knowledge; AsyncAPI | relates to `support.solution_attempt.recorded` as observed outcome; moved to knowledge domain, not an alias |
 | `knowledge.source_discovered.v1` | domain | planned/pre-implementation | SPEC 07-support-hitl-knowledge; AsyncAPI | no legacy family; new knowledge lifecycle, no alias |
-| `knowledge.superseded.v1` | domain | planned/pre-implementation | SPEC 07-support-hitl-knowledge; AsyncAPI | no legacy family; new knowledge lifecycle, no alias |
+| `knowledge.superseded.v1` | domain | implemented/active | SPEC 07-support-hitl-knowledge; AsyncAPI | no legacy family; new knowledge lifecycle, no alias |
 | `knowledge.validation_started.v1` | domain | planned/pre-implementation | SPEC 07-support-hitl-knowledge; AsyncAPI | no legacy family; new knowledge lifecycle, no alias |
 | `knowledge.verified.v1` | domain | planned/pre-implementation | SPEC 07-support-hitl-knowledge; AsyncAPI | no legacy family; new knowledge lifecycle, no alias |
 | `lead.created.v1` | domain | planned/pre-implementation | SPEC 01-identity-crm | `crm.lead.created` (prefix dropped in public ID) |

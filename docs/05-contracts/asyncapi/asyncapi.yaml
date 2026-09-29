@@ -165,6 +165,11 @@ channels:
       operationId: publishKnowledgeCandidateCreated
       message:
         $ref: '#/components/messages/KnowledgeCandidateCreated'
+  knowledge.correction.applied.v1:
+    publish:
+      operationId: publishKnowledgeCorrectionApplied
+      message:
+        $ref: '#/components/messages/KnowledgeCorrectionApplied'
   knowledge.degraded.v1:
     publish:
       operationId: publishKnowledgeDegraded
@@ -175,6 +180,11 @@ channels:
       operationId: publishKnowledgeDeprecated
       message:
         $ref: '#/components/messages/KnowledgeDeprecated'
+  knowledge.item.verified.v1:
+    publish:
+      operationId: publishKnowledgeItemVerified
+      message:
+        $ref: '#/components/messages/KnowledgeItemVerified'
   knowledge.rejected.v1:
     publish:
       operationId: publishKnowledgeRejected
@@ -1659,6 +1669,17 @@ components:
               $ref: '#/components/schemas/KnowledgeEventData'
           required:
           - data
+    KnowledgeCorrectionApplied:
+      name: knowledge.correction.applied.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/KnowledgeEventData'
+          required:
+          - data
     KnowledgeDegraded:
       name: knowledge.degraded.v1
       payload:
@@ -1672,6 +1693,17 @@ components:
           - data
     KnowledgeDeprecated:
       name: knowledge.deprecated.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/KnowledgeEventData'
+          required:
+          - data
+    KnowledgeItemVerified:
+      name: knowledge.item.verified.v1
       payload:
         allOf:
         - $ref: '#/components/schemas/EventEnvelopeBase'

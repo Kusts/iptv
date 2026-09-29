@@ -105,6 +105,176 @@ export class KnowledgeController {
     return this.run(req, "knowledge.item.archive", { itemId: id });
   }
 
+  @Post("items/:id/verify")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("knowledge.write")
+  async verify(@Param("id") id: string, @Body() body: Record<string, unknown>, @Req() req: FastifyRequest) {
+    return this.run(req, "knowledge.item.verify", { ...body, itemId: id });
+  }
+
+  @Post("items/:id/supersede")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("knowledge.write")
+  async supersede(@Param("id") id: string, @Body() body: Record<string, unknown>, @Req() req: FastifyRequest) {
+    return this.run(req, "knowledge.item.supersede", { ...body, itemId: id });
+  }
+
+  @Post("corrections")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("knowledge.write")
+  async proposeCorrection(@Body() body: unknown, @Req() req: FastifyRequest) {
+    return this.run(req, "knowledge.correction.propose", body);
+  }
+
+  @Get("corrections")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("knowledge.read")
+  async listCorrections(
+    @Query() query: { status?: string; itemId?: string; limit?: string },
+    @Req() req: FastifyRequest,
+  ) {
+    const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
+    const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
+    let select = this.requireDb()
+      .selectFrom("knowledge.knowledge_corrections")
+      .select([
+        "id",
+        "knowledge_item_id",
+        "target_version_id",
+        "proposed_text",
+        "status",
+        "applied_in_version_id",
+        "created_at",
+        "updated_at",
+      ])
+      .where("tenant_id", "=", tenant.id)
+      .orderBy("created_at", "desc")
+      .limit(limit);
+    if (query.status !== undefined) {
+      select = select.where("status", "=", query.status);
+    }
+    if (query.itemId !== undefined) {
+      select = select.where("knowledge_item_id", "=", query.itemId);
+    }
+    const rows = await select.execute();
+    return {
+      corrections: rows.map((r) => ({
+        id: r.id,
+        itemId: r.knowledge_item_id,
+        targetVersionId: r.target_version_id,
+        proposedText: r.proposed_text,
+        status: r.status,
+        appliedInVersionId: r.applied_in_version_id,
+        createdAt: r.created_at.toISOString(),
+        updatedAt: r.updated_at.toISOString(),
+      })),
+    };
+  }
+
+  @Post("corrections/:id/apply")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("knowledge.write")
+  async applyCorrection(@Param("id") id: string, @Req() req: FastifyRequest) {
+    return this.run(req, "knowledge.correction.apply", { correctionId: id });
+  }
+
+  @Post("corrections/:id/reject")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("knowledge.write")
+  async rejectCorrection(@Param("id") id: string, @Body() body: Record<string, unknown>, @Req() req: FastifyRequest) {
+    return this.run(req, "knowledge.correction.reject", { ...body, correctionId: id });
+  }
+
+  @Post("gaps")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("knowledge.write")
+  async recordGap(@Body() body: unknown, @Req() req: FastifyRequest) {
+    return this.run(req, "knowledge.gap.record", body);
+  }
+
+  @Get("gaps")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("knowledge.read")
+  async listGaps(@Query() query: { status?: string; limit?: string }, @Req() req: FastifyRequest) {
+    const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
+    const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
+    let select = this.requireDb()
+      .selectFrom("knowledge.knowledge_gaps")
+      .select(["id", "question", "support_ticket_id", "status", "created_at", "updated_at"])
+      .where("tenant_id", "=", tenant.id)
+      .orderBy("created_at", "desc")
+      .limit(limit);
+    if (query.status !== undefined) {
+      select = select.where("status", "=", query.status);
+    }
+    const rows = await select.execute();
+    return {
+      gaps: rows.map((r) => ({
+        id: r.id,
+        question: r.question,
+        supportTicketId: r.support_ticket_id,
+        status: r.status,
+        createdAt: r.created_at.toISOString(),
+        updatedAt: r.updated_at.toISOString(),
+      })),
+    };
+  }
+
+  @Post("gaps/:id/close")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("knowledge.write")
+  async closeGap(@Param("id") id: string, @Req() req: FastifyRequest) {
+    return this.run(req, "knowledge.gap.close", { gapId: id });
+  }
+
+  @Post("gaps/:id/candidates")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("knowledge.write")
+  async proposeCandidateFromGap(
+    @Param("id") id: string,
+    @Body() body: Record<string, unknown>,
+    @Req() req: FastifyRequest,
+  ) {
+    return this.run(req, "knowledge.candidate.propose_from_gap", { ...body, gapId: id });
+  }
+
+  @Get("gaps/:id/candidates")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("knowledge.read")
+  async listGapCandidates(@Param("id") id: string, @Req() req: FastifyRequest) {
+    const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
+    const rows = await this.requireDb()
+      .selectFrom("knowledge.knowledge_research_candidates")
+      .select(["id", "knowledge_gap_id", "knowledge_item_id", "status", "created_at"])
+      .where("tenant_id", "=", tenant.id)
+      .where("knowledge_gap_id", "=", id)
+      .orderBy("created_at", "desc")
+      .execute();
+    return {
+      candidates: rows.map((r) => ({
+        id: r.id,
+        gapId: r.knowledge_gap_id,
+        itemId: r.knowledge_item_id,
+        status: r.status,
+        createdAt: r.created_at.toISOString(),
+      })),
+    };
+  }
+
+  @Post("candidates/:id/decision")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("knowledge.write")
+  async decideCandidate(@Param("id") id: string, @Body() body: Record<string, unknown>, @Req() req: FastifyRequest) {
+    return this.run(req, "knowledge.candidate.decide", { ...body, candidateId: id });
+  }
+
+  @Post("freshness/refresh")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("knowledge.write")
+  async refreshFreshness(@Req() req: FastifyRequest) {
+    return this.run(req, "knowledge.freshness.refresh", {});
+  }
+
   @Get("items")
   @UseGuards(AuthGuard, PermissionsGuard)
   @RequirePermission("knowledge.read")
@@ -132,6 +302,7 @@ export class KnowledgeController {
         "knowledge.knowledge_versions.version_no",
         "knowledge.knowledge_versions.content_text",
         "knowledge.knowledge_versions.structured_content_json",
+        "knowledge.knowledge_items.freshness_score",
         "knowledge.knowledge_items.updated_at",
       ])
       .where("knowledge.knowledge_items.tenant_id", "=", tenant.id)
@@ -166,6 +337,7 @@ export class KnowledgeController {
         canonicalKey: r.canonical_key,
         version: Number(r.version_no),
         contentText: r.content_text,
+        freshnessScore: r.freshness_score === null ? null : Number(r.freshness_score),
         updatedAt: r.updated_at.toISOString(),
       })),
     };
@@ -191,6 +363,7 @@ export class KnowledgeController {
         "knowledge.knowledge_versions.version_no",
         "knowledge.knowledge_versions.content_text",
         "knowledge.knowledge_versions.structured_content_json",
+        "knowledge.knowledge_items.freshness_score",
         "knowledge.knowledge_items.created_at",
         "knowledge.knowledge_items.updated_at",
       ])
@@ -209,6 +382,7 @@ export class KnowledgeController {
         version: Number(row.version_no),
         contentText: row.content_text,
         structuredContent: row.structured_content_json,
+        freshnessScore: row.freshness_score === null ? null : Number(row.freshness_score),
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
       },
