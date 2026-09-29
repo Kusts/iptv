@@ -67,7 +67,7 @@ export class WahaWebhookService {
   }
 
   verifySecret(channel: WahaChannel, presented: string | undefined): WebhookAuthResult {
-    const expected = channel.secretHash ?? globalWebhookSecretHash();
+    const expected = channel.secretHash;
     if (expected === null) {
       return { ok: false, code: "not_configured" };
     }
@@ -182,12 +182,4 @@ export class WahaWebhookService {
     return { processed, failed };
     });
   }
-}
-
-function globalWebhookSecretHash(): string | null {
-  const secret = process.env["WAHA_WEBHOOK_SECRET"];
-  if (typeof secret !== "string" || secret.length === 0) {
-    return null;
-  }
-  return sha256Hex(secret);
 }

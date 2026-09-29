@@ -66,12 +66,17 @@ describe.skipIf(!hasDb)("Wave 2 CRM + Communications (requires TEST_DATABASE_URL
     method: "GET" | "POST";
     url: string;
     token?: string;
+    /** Tenant-context precondition; defaults to "0" with a token, `null` omits it. */
+    revision?: string | null;
     secret?: string;
     payload?: Record<string, unknown>;
   }) {
     const headers: Record<string, string> = {};
     if (opts.token !== undefined) {
       headers["authorization"] = `Bearer ${opts.token}`;
+      if (opts.revision !== null) {
+        headers["x-tenant-context-revision"] = opts.revision ?? "0";
+      }
     }
     if (opts.secret !== undefined) {
       headers["x-waha-secret"] = opts.secret;
@@ -347,6 +352,54 @@ describe.skipIf(!hasDb)("Wave 2 CRM + Communications (requires TEST_DATABASE_URL
       payload: fixture("waha-message.json") as Record<string, unknown>,
     });
     expect(unknownKey.statusCode).toBe(404);
+  });
+
+  it("webhook: shared WAHA_WEBHOOK_SECRET fallback no longer authenticates a channel without a secret (503)", async () => {
+    const fallbackKey = `w2-nofallback-${randomUUID().slice(0, 8)}`;
+    await db
+      .insertInto("communication.tenant_channels")
+      .values({
+        id: newId(),
+        tenant_id: tenantId,
+        channel: "WHATSAPP",
+        tenant_key: fallbackKey,
+        webhook_secret_hash: null,
+        status: "ACTIVE",
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+    const messageId = `wamsg-nofallback-${randomUUID().slice(0, 8)}`;
+    const prior = process.env["WAHA_WEBHOOK_SECRET"];
+    const fallbackSecret = `fallback-${randomUUID().slice(0, 8)}`;
+    process.env["WAHA_WEBHOOK_SECRET"] = fallbackSecret;
+    try {
+      const res = await inject({
+        method: "POST",
+        url: `/v1/webhooks/waha/${fallbackKey}`,
+        secret: fallbackSecret,
+        payload: {
+          event: "message",
+          session: "default",
+          payload: { id: messageId, from: "5511999990001@c.us", fromMe: false, body: "fallback?", timestamp: 1758912000 },
+        },
+      });
+      expect(res.statusCode).toBe(503);
+      const inbox = await db
+        .selectFrom("platform.inbox_messages")
+        .select(["id"])
+        .where("tenant_id", "=", tenantId)
+        .where("provider", "=", "waha")
+        .where("external_event_id", "=", `waha:${messageId}`)
+        .execute();
+      expect(inbox).toHaveLength(0);
+    } finally {
+      if (prior === undefined) {
+        delete process.env["WAHA_WEBHOOK_SECRET"];
+      } else {
+        process.env["WAHA_WEBHOOK_SECRET"] = prior;
+      }
+    }
   });
 
   it("send_manual: happy path (echo), suppressed recipient, and unknown-effect reconcile", async () => {

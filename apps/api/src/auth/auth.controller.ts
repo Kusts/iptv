@@ -66,6 +66,7 @@ export class AuthController {
     token: string;
     user: { id: string; email: string; displayName: string | null };
     activeTenantId: string | null;
+    tenantContextRevision: string;
   }> {
     const auth = this.requireAuth();
     try {
@@ -91,6 +92,7 @@ export class AuthController {
         token: result.token,
         user: { id: result.user.id, email: result.user.email, displayName: result.user.displayName },
         activeTenantId: result.activeTenantId,
+        tenantContextRevision: result.tenantContextRevision,
       };
     } catch (err) {
       throwHttp(err);
@@ -103,6 +105,7 @@ export class AuthController {
     token: string;
     user: { id: string; email: string; displayName: string | null };
     activeTenantId: string | null;
+    tenantContextRevision: string;
   }> {
     const auth = this.requireAuth();
     try {
@@ -126,6 +129,7 @@ export class AuthController {
         token: result.token,
         user: { id: result.user.id, email: result.user.email, displayName: result.user.displayName },
         activeTenantId: result.activeTenantId,
+        tenantContextRevision: result.tenantContextRevision,
       };
     } catch (err) {
       throwHttp(err);
@@ -163,6 +167,7 @@ export class AuthController {
   async session(@Req() req: FastifyRequest): Promise<{
     user: { id: string; email: string; displayName: string | null };
     activeTenantId: string | null;
+    tenantContextRevision: string;
     memberships: { tenantId: string; tenantSlug: string; tenantName: string; roleKey: string; status: string }[];
   }> {
     const auth = this.requireAuth();
@@ -174,6 +179,7 @@ export class AuthController {
     return {
       user: { id: info.user.id, email: info.user.email, displayName: info.user.displayName },
       activeTenantId: info.activeTenantId,
+      tenantContextRevision: info.tenantContextRevision,
       memberships: info.memberships,
     };
   }

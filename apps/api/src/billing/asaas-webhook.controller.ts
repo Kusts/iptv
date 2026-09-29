@@ -33,8 +33,14 @@ export class AsaasWebhookController {
       recordWebhookReceived("asaas", "unknown_tenant");
       throw new HttpException({ code: "NOT_FOUND", message: "unknown webhook endpoint" }, 404);
     }
-    const header = req.headers["x-asaas-secret"];
-    const presented = Array.isArray(header) ? header[0] : header;
+    const canonicalHeader = req.headers["asaas-access-token"];
+    const legacyHeader = req.headers["x-asaas-secret"];
+    const first = (value: string | string[] | undefined): string | undefined =>
+      Array.isArray(value) ? value[0] : value;
+    // Canonical `asaas-access-token` (official Asaas authToken header) wins;
+    // `x-asaas-secret` remains as a backward-compatible alias only.
+    const canonical = first(canonicalHeader);
+    const presented = canonical !== undefined ? canonical : first(legacyHeader);
     const auth = this.webhooks.verifySecret(channel, presented);
     if (!auth.ok) {
       recordWebhookReceived("asaas", "unauthorized");

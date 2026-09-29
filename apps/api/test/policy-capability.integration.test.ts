@@ -81,12 +81,17 @@ describe.skipIf(!hasDb)("policy + capability foundations (requires TEST_DATABASE
     method: "GET" | "POST";
     url: string;
     token?: string;
+    /** Tenant-context precondition; defaults to "0" with a token, `null` omits it. */
+    revision?: string | null;
     payload?: Record<string, unknown>;
     idempotencyKey?: string;
   }) {
     const headers: Record<string, string> = {};
     if (opts.token !== undefined) {
       headers["authorization"] = `Bearer ${opts.token}`;
+      if (opts.revision !== null) {
+        headers["x-tenant-context-revision"] = opts.revision ?? "0";
+      }
     }
     if (opts.idempotencyKey !== undefined) {
       headers["idempotency-key"] = opts.idempotencyKey;

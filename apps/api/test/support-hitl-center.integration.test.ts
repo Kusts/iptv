@@ -66,12 +66,17 @@ describe.skipIf(!hasDb)("Wave 8 Support + HITL center (requires TEST_DATABASE_UR
     method: "GET" | "POST";
     url: string;
     token?: string;
+    /** Tenant-context precondition; defaults to "0" with a token, `null` omits it. */
+    revision?: string | null;
     headers?: Record<string, string>;
     payload?: Record<string, unknown>;
   }) {
     const headers: Record<string, string> = { ...(opts.headers ?? {}) };
     if (opts.token !== undefined) {
       headers["authorization"] = `Bearer ${opts.token}`;
+      if (opts.revision !== null && headers["x-tenant-context-revision"] === undefined) {
+        headers["x-tenant-context-revision"] = opts.revision ?? "0";
+      }
     }
     const options: {
       method: "GET" | "POST";

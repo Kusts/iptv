@@ -78,12 +78,17 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
     method: "GET" | "POST";
     url: string;
     token?: string;
+    /** Tenant-context precondition; defaults to "0" with a token, `null` omits it. */
+    revision?: string | null;
     headers?: Record<string, string>;
     payload?: Record<string, unknown>;
   }) {
     const headers: Record<string, string> = { ...(opts.headers ?? {}) };
     if (opts.token !== undefined) {
       headers["authorization"] = `Bearer ${opts.token}`;
+      if (opts.revision !== null && headers["x-tenant-context-revision"] === undefined) {
+        headers["x-tenant-context-revision"] = opts.revision ?? "0";
+      }
     }
     const options: {
       method: "GET" | "POST";
@@ -220,7 +225,7 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
     return injectRaw({
       method: "POST",
       url: `/v1/webhooks/asaas/${tenantKey}`,
-      headers: { "x-asaas-secret": secret },
+      headers: { "asaas-access-token": secret },
       payload,
     });
   }
@@ -524,6 +529,72 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
     expect(badSecret.statusCode).toBe(401);
     const unknown = await postAsaas("no-such-endpoint", paidPayload("pay_x", "evt-x", 1.0));
     expect(unknown.statusCode).toBe(404);
+  });
+
+  it("legacy x-asaas-secret alias still authenticates", async () => {
+    const tenantKey = await setupAsaasChannel();
+    const delivered = await injectRaw({
+      method: "POST",
+      url: `/v1/webhooks/asaas/${tenantKey}`,
+      headers: { "x-asaas-secret": ASAAS_SECRET },
+      payload: paidPayload("pay_legacy_xyz", `evt-legacy-${newId().slice(-12)}`, 5.0),
+    });
+    expect(delivered.statusCode).toBe(202);
+  });
+
+  it("canonical asaas-access-token takes precedence over the legacy alias", async () => {
+    const tenantKey = await setupAsaasChannel();
+    const rejected = await injectRaw({
+      method: "POST",
+      url: `/v1/webhooks/asaas/${tenantKey}`,
+      headers: { "asaas-access-token": "wrong-secret", "x-asaas-secret": ASAAS_SECRET },
+      payload: paidPayload("pay_x", "evt-x", 1.0),
+    });
+    expect(rejected.statusCode).toBe(401);
+  });
+
+  it("shared ASAAS_WEBHOOK_SECRET fallback no longer authenticates a channel without a secret (503)", async () => {
+    const tenantKey = `asaas-${newId().replace(/-/g, "").slice(-12)}`;
+    await db
+      .insertInto("billing.tenant_channels")
+      .values({
+        id: newId(),
+        tenant_id: tenantId,
+        channel: "ASAAS",
+        tenant_key: tenantKey,
+        webhook_secret_hash: null,
+        status: "ACTIVE",
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+    const eventId = `evt-nofallback-${newId().replace(/-/g, "").slice(-12)}`;
+    const prior = process.env["ASAAS_WEBHOOK_SECRET"];
+    const fallbackSecret = `fallback-${newId().replace(/-/g, "").slice(-12)}`;
+    process.env["ASAAS_WEBHOOK_SECRET"] = fallbackSecret;
+    try {
+      const res = await injectRaw({
+        method: "POST",
+        url: `/v1/webhooks/asaas/${tenantKey}`,
+        headers: { "asaas-access-token": fallbackSecret },
+        payload: paidPayload("pay_nofallback_xyz", eventId, 5.0),
+      });
+      expect(res.statusCode).toBe(503);
+      const inbox = await db
+        .selectFrom("platform.inbox_messages")
+        .select(["id"])
+        .where("tenant_id", "=", tenantId)
+        .where("provider", "=", "asaas")
+        .where("external_event_id", "=", eventId)
+        .execute();
+      expect(inbox).toHaveLength(0);
+    } finally {
+      if (prior === undefined) {
+        delete process.env["ASAAS_WEBHOOK_SECRET"];
+      } else {
+        process.env["ASAAS_WEBHOOK_SECRET"] = prior;
+      }
+    }
   });
 
   it("two concurrent partial refunds both succeed; a third over-refund is rejected", async () => {

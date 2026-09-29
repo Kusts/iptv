@@ -71,12 +71,17 @@ describe.skipIf(!hasDb)("Wave 6 Subscriptions + Fulfillment (requires TEST_DATAB
     method: "GET" | "POST";
     url: string;
     token?: string;
+    /** Tenant-context precondition; defaults to "0" with a token, `null` omits it. */
+    revision?: string | null;
     headers?: Record<string, string>;
     payload?: Record<string, unknown>;
   }) {
     const headers: Record<string, string> = { ...(opts.headers ?? {}) };
     if (opts.token !== undefined) {
       headers["authorization"] = `Bearer ${opts.token}`;
+      if (opts.revision !== null && headers["x-tenant-context-revision"] === undefined) {
+        headers["x-tenant-context-revision"] = opts.revision ?? "0";
+      }
     }
     const options: {
       method: "GET" | "POST";

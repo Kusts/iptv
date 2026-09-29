@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/index.js";
+import { DEFAULT_LOCAL_CORS_ORIGIN, loadConfig } from "../src/index.js";
 
 describe("loadConfig", () => {
   it("returns defaults for an empty env", () => {
@@ -30,5 +30,49 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ PORT: "not-a-port" })).toThrow(/invalid environment configuration/);
     expect(() => loadConfig({ NODE_ENV: "staging" })).toThrow(/invalid environment configuration/);
     expect(() => loadConfig({ LOG_LEVEL: "verbose" })).toThrow(/invalid environment configuration/);
+  });
+
+  it("defaults CORS to the local web origin outside production", () => {
+    expect(loadConfig({}).CORS_ALLOWED_ORIGINS).toEqual([DEFAULT_LOCAL_CORS_ORIGIN]);
+    expect(DEFAULT_LOCAL_CORS_ORIGIN).toBe("http://localhost:3000");
+    expect(loadConfig({ NODE_ENV: "development" }).CORS_ALLOWED_ORIGINS).toEqual([
+      "http://localhost:3000",
+    ]);
+    expect(loadConfig({ NODE_ENV: "test" }).CORS_ALLOWED_ORIGINS).toEqual([
+      "http://localhost:3000",
+    ]);
+  });
+
+  it("denies all cross-origin requests in production with no configured origin", () => {
+    const cfg = loadConfig({
+      NODE_ENV: "production",
+      BETTER_AUTH_SECRET: "real-production-secret-0123456789",
+    });
+    expect(cfg.CORS_ALLOWED_ORIGINS).toEqual([]);
+  });
+
+  it("parses comma-separated exact origins, trimming and deduping", () => {
+    const cfg = loadConfig({
+      CORS_ALLOWED_ORIGINS: " http://localhost:3000, https://app.example.com ,http://localhost:3000",
+    });
+    expect(cfg.CORS_ALLOWED_ORIGINS).toEqual(["http://localhost:3000", "https://app.example.com"]);
+  });
+
+  it("rejects wildcard and invalid CORS origins", () => {
+    for (const bad of [
+      "*",
+      "https://*.example.com",
+      "https://app.example.com/*",
+      "app.example.com",
+      "https://app.example.com/app",
+      "https://app.example.com?x=1",
+      "https://app.example.com#frag",
+      "ftp://app.example.com",
+      "not-a-url",
+    ]) {
+      expect(() => loadConfig({ CORS_ALLOWED_ORIGINS: bad })).toThrow(
+        /CORS_ALLOWED_ORIGINS contains invalid origin/,
+      );
+    }
   });
 });

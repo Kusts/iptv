@@ -152,11 +152,19 @@ export class TenantsController {
   async switch(
     @Param("id") id: string,
     @Req() req: FastifyRequest,
-  ): Promise<{ activeTenantId: string }> {
+  ): Promise<{ activeTenantId: string; tenantContextRevision: string }> {
     const auth = this.requireAuth();
     const session = req.auth as NonNullable<FastifyRequest["auth"]>;
     try {
-      const result = await auth.setActiveTenant({ token: session.token, tenantId: id });
+      // The expected revision is the request precondition already validated
+      // by AuthGuard against the session snapshot — never a fresh server
+      // read. The CAS below fails a request that started from a stale
+      // revision, including A -> B -> A cycles.
+      const result = await auth.setActiveTenant({
+        token: session.token,
+        tenantId: id,
+        expectedTenantContextRevision: session.tenantContextRevision,
+      });
       await this.audit.write({
         tenantId: result.activeTenantId,
         actorType: "human",

@@ -5,6 +5,7 @@ import { loadConfig } from "@iptv/config";
 import { initObservability } from "@iptv/observability";
 import { AppModule } from "./app.module.js";
 import { createFastifyAdapter, registerRequestIdHook } from "./request-id.js";
+import { registerApiCors } from "./api-cors.js";
 import { registerObservabilityHook } from "./observability-hook.js";
 import { SchedulerService } from "./scheduler/scheduler.service.js";
 
@@ -22,6 +23,8 @@ async function bootstrap(): Promise<void> {
   );
   registerRequestIdHook(app);
   registerObservabilityHook(app);
+  // Explicit browser CORS allowlist (no wildcard, no credentials) before listen.
+  registerApiCors(app, config.CORS_ALLOWED_ORIGINS);
   app.enableShutdownHooks();
   await app.listen(config.PORT, "0.0.0.0");
   // W1-08 in-process scheduler: opt-in via API_SCHEDULER_ENABLED=1

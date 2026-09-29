@@ -50,11 +50,16 @@ describe.skipIf(!hasDb)("Wave 3 agent shadow → approval → send (requires TES
     method: "GET" | "POST";
     url: string;
     token?: string;
+    /** Tenant-context precondition; defaults to "0" with a token, `null` omits it. */
+    revision?: string | null;
     payload?: Record<string, unknown>;
   }) {
     const headers: Record<string, string> = {};
     if (opts.token !== undefined) {
       headers["authorization"] = `Bearer ${opts.token}`;
+      if (opts.revision !== null) {
+        headers["x-tenant-context-revision"] = opts.revision ?? "0";
+      }
     }
     const options: {
       method: "GET" | "POST";

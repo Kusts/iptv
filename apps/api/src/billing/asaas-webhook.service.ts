@@ -65,7 +65,7 @@ export class AsaasWebhookService {
   }
 
   verifySecret(channel: AsaasChannel, presented: string | undefined): AsaasWebhookAuthResult {
-    const expected = channel.secretHash ?? globalAsaasWebhookSecretHash();
+    const expected = channel.secretHash;
     if (expected === null) {
       return { ok: false, code: "not_configured" };
     }
@@ -202,12 +202,4 @@ export class AsaasWebhookService {
     return { processed, failed };
     });
   }
-}
-
-function globalAsaasWebhookSecretHash(): string | null {
-  const secret = process.env["ASAAS_WEBHOOK_SECRET"];
-  if (typeof secret !== "string" || secret.length === 0) {
-    return null;
-  }
-  return sha256Hex(secret);
 }

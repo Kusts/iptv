@@ -25,9 +25,72 @@ const envSchema = z.object({
   // otherwise the SDK stays unconstructed (zero-overhead noop path).
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().min(1).optional(),
   OTEL_SDK_DISABLED: z.enum(["true", "false"]).default("true"),
+  // Browser CORS allowlist (explicit origins only — never a wildcard).
+  // Comma-separated `scheme://host[:port]` entries with no path/query/hash.
+  // Unset means: local default (`http://localhost:3000`) outside
+  // production, empty allowlist (deny all cross-origin) in production.
+  CORS_ALLOWED_ORIGINS: z.string().optional(),
 });
 
-export type AppConfig = z.infer<typeof envSchema>;
+export type AppConfig = Omit<z.infer<typeof envSchema>, "CORS_ALLOWED_ORIGINS"> & {
+  /** Explicit browser CORS allowlist (origin strings, never a wildcard). */
+  CORS_ALLOWED_ORIGINS: string[];
+};
+
+/** Local web default so `localhost:3000` → API works out of the box. */
+export const DEFAULT_LOCAL_CORS_ORIGIN = "http://localhost:3000";
+
+/** True when `entry` is a bare `scheme://host[:port]` origin (no path/query/hash/wildcard). */
+export function isValidCorsOrigin(entry: string): boolean {
+  if (entry.includes("*")) return false;
+  if (!/^https?:\/\//i.test(entry)) return false;
+  let url: URL;
+  try {
+    url = new URL(entry);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (url.username !== "" || url.password !== "") return false;
+  if (url.hash !== "" || url.search !== "") return false;
+  if (url.pathname !== "/" && url.pathname !== "") return false;
+  if (url.host === "") return false;
+  // Reject any path beyond the bare root (a trailing "/" normalizes to the origin).
+  return entry === url.origin || entry === `${url.origin}/`;
+}
+
+/**
+ * Parse the comma-separated `CORS_ALLOWED_ORIGINS` env value into an exact
+ * origin allowlist. Trims entries, drops empties, dedupes, and normalizes a
+ * trailing root "/" to the bare origin. Unset/empty means the local default
+ * outside production and deny-all (`[]`) in production. Throws on any
+ * wildcard or invalid origin.
+ */
+export function parseCorsAllowedOrigins(raw: string | undefined, nodeEnv: string): string[] {
+  if (raw === undefined || raw.trim() === "") {
+    return nodeEnv === "production" ? [] : [DEFAULT_LOCAL_CORS_ORIGIN];
+  }
+  const entries = raw
+    .split(",")
+    .map((e) => e.trim())
+    .filter((e) => e.length > 0);
+  if (entries.length === 0) {
+    return nodeEnv === "production" ? [] : [DEFAULT_LOCAL_CORS_ORIGIN];
+  }
+  const normalized: string[] = [];
+  for (const entry of entries) {
+    if (!isValidCorsOrigin(entry)) {
+      throw new Error(
+        `invalid environment configuration: CORS_ALLOWED_ORIGINS contains invalid origin ${JSON.stringify(entry)} (expected comma-separated scheme+host origins like "https://app.example.com", no path/query/hash, no wildcards)`,
+      );
+    }
+    const canonical = new URL(entry).origin;
+    if (!normalized.includes(canonical)) {
+      normalized.push(canonical);
+    }
+  }
+  return normalized;
+}
 
 /** Validate env (defaults to `process.env`) and return typed config. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -44,12 +107,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     HATCHET_SERVER_URL: env.HATCHET_SERVER_URL,
     OTEL_EXPORTER_OTLP_ENDPOINT: env.OTEL_EXPORTER_OTLP_ENDPOINT,
     OTEL_SDK_DISABLED: env.OTEL_SDK_DISABLED,
+    CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
   });
   if (!parsed.success) {
     const details = parsed.error.issues
       .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
       .join("; ");
     throw new Error(`invalid environment configuration: ${details}`);
+  }
+  let corsAllowedOrigins: string[];
+  try {
+    corsAllowedOrigins = parseCorsAllowedOrigins(
+      parsed.data.CORS_ALLOWED_ORIGINS,
+      parsed.data.NODE_ENV,
+    );
+  } catch (err) {
+    throw new Error(err instanceof Error ? err.message : String(err));
   }
   if (
     parsed.data.NODE_ENV === "production" &&
@@ -59,5 +132,5 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       "invalid environment configuration: BETTER_AUTH_SECRET must be overridden in production",
     );
   }
-  return parsed.data;
+  return { ...parsed.data, CORS_ALLOWED_ORIGINS: corsAllowedOrigins };
 }
