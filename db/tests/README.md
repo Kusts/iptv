@@ -33,6 +33,7 @@ This runner:
 - `003_communications_support.sql` — Message append-only behavior and Support Ticket lifecycle persistence.
 - `004_referral_reward_invariants.sql` — active referral attribution cannot be duplicated for the same Person/program.
 - `005_pilot_seed.sql` — pilot fixture integrity, confirmed monthly price, recurring additional connection and non-self referral.
+- `006_rls_spike.sql` — Wave 0 RLS spike (rolled back, no persistent change): app role without `BYPASSRLS` isolated per tenant on `crm.customers` + `communication.conversations`, cross-tenant read returns 0 rows, cross-tenant write blocked, owner bypasses. See `docs/spikes/rls-pooling-spike.md`.
 
 ## Gate
 

@@ -1,6 +1,6 @@
 # ADR-0011 — Kysely / SQL-first Data Access
 
-- Status: Proposed
+- Status: Accepted
 > Review: Auto-reviewed v0.13 — rechecked against stack baseline and current research.
 - Data: 2026-09-20
 
@@ -36,3 +36,7 @@ SQL direto continua permitido para queries especiais.
 - testar transaction boundaries;
 - testar migrations expand/contract;
 - avaliar codegen/schema workflow.
+
+## Aceitação (2026-09-29)
+
+Aceito pelo operador em 2026-09-29 após dossiê de decisão (explorer MVP-ADR-01).

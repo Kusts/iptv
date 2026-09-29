@@ -1,6 +1,6 @@
 # ADR-0009 — Modular Monolith first
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Data:** 2026-09-20
 
 ## Context
@@ -34,3 +34,8 @@ Extrair novos serviços apenas com necessidade mensurável.
 
 - disciplina necessária para evitar “big ball of mud”;
 - módulos precisam de ownership/contracts claros.
+
+## Aceitação (2026-09-29)
+
+Aceito pelo operador em 2026-09-29 após dossiê de decisão (explorer MVP-ADR-01).
+Condição de validação: revisão periódica das fronteiras já documentada em `docs/15-implementation-baseline/22-repository-and-module-boundaries.md` (este ADR não tem seção de validação própria).

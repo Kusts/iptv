@@ -1,6 +1,6 @@
 # ADR-0014 — Infisical for Production Secrets
 
-- Status: Proposed
+- Status: Accepted
 > Review: Auto-reviewed v0.13 — rechecked against stack baseline and current research.
 - Data: 2026-09-20
 
@@ -32,3 +32,8 @@ HashiCorp Vault continua alternativa forte se requisitos futuros justificarem ma
 - rotation test;
 - tenant/provider scope;
 - restore/disaster path.
+
+## Aceitação (2026-09-29)
+
+Aceito pelo operador em 2026-09-29 após dossiê de decisão (explorer MVP-ADR-01).
+Aceitar NÃO implanta: faltam projeto Infisical, identities por worker, migração para `secret_ref` e runbook de rotation; até a integração existir, as credenciais CINEVISION/MK permanecem no cofre do operador conforme `AGENTS.md`.

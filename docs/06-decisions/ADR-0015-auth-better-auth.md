@@ -1,6 +1,6 @@
 # ADR-0015 — Better Auth for Application Authentication
 
-> Status: Proposed
+> Status: Accepted
 > Data: 2026-09-20
 > Review: Auto-reviewed v0.13 — checked against provider-agnostic auth and RBAC boundaries.
 
@@ -27,3 +27,8 @@ Use Better Auth for authentication/session primitives. Product authorization/RBA
 - tenant membership mapping;
 - RBAC guard integration;
 - cross-tenant authorization tests.
+
+## Aceitação (2026-09-29)
+
+Aceito pelo operador em 2026-09-29 após dossiê de decisão (explorer MVP-ADR-01).
+Condição: executar o spike de validação citado no próprio ADR (membership, revogação de sessão, auditoria).

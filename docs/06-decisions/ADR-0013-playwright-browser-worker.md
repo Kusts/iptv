@@ -1,6 +1,6 @@
 # ADR-0013 — Playwright for Provider Browser Worker
 
-- Status: Proposed
+- Status: Accepted
 > Review: Auto-reviewed v0.13 — rechecked against stack baseline and current research.
 - Data: 2026-09-20
 
@@ -31,3 +31,8 @@ Preferir browser/context controlado pelo próprio Playwright. `connectOverCDP` f
 - trace capture;
 - UI drift simulation;
 - worker restart/session recovery.
+
+## Aceitação (2026-09-29)
+
+Aceito pelo operador em 2026-09-29 após dossiê de decisão (explorer MVP-ADR-01).
+Complementa o ADR-0008 (Accepted) para o Browser Worker; os secrets do worker seguem via ADR-0014.

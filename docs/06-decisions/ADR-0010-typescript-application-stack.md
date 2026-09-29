@@ -1,6 +1,6 @@
 # ADR-0010 — TypeScript-first Application Stack
 
-- Status: Proposed
+- Status: Accepted
 > Review: Auto-reviewed v0.13 — rechecked against stack baseline and current research.
 - Data: 2026-09-20
 
@@ -40,3 +40,7 @@ Python permanece permitido em workloads especializados quando houver vantagem co
 - OpenAPI generated/validated;
 - worker compartilhando domain package;
 - medir ergonomia para Planner/Coder/Reviewer.
+
+## Aceitação (2026-09-29)
+
+Aceito pelo operador em 2026-09-29 após dossiê de decisão (explorer MVP-ADR-01).
