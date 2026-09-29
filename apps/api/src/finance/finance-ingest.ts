@@ -16,9 +16,13 @@ type Exec = Kysely<Database> | Transaction<Database>;
  *   transaction (migration 031 source-linked dedupe).
  * - `PROVIDER_COGS` — `subscription_cycles.base_provider_cost_minor`
  *   (recurs per cycle while the subscription is active, per ADDON-03 rule).
- * - `MESSAGING_COST` — `scheduled_contacts` with status SENT (realized
- *   spend only; SCHEDULED/DEFERRED/BLOCKED never allocate) at the
- *   authoritative `estimated_cost_minor` (campaign version unit cost).
+ * - `MESSAGING_COST` — successful OUTBOUND sends: `message_deliveries`
+ *   with status SENT/DELIVERED/READ joined to OUTBOUND `messages` (the only
+ *   real send fact — no runtime ever transitions `scheduled_contacts` to
+ *   SENT). Money authority stays with the campaign cost fact: the latest
+ *   `scheduled_contacts` row for the same person+channel (scheduled at or
+ *   before the send) at `estimated_cost_minor`. Deliveries with no cost
+ *   authority never allocate (never estimated).
  * - `ACQUISITION_TOUCH` — first-touch attribution touches (non
  *   REFERRAL_ASSIST) × the resolving campaign version's `unit_cost_minor`.
  * - `REFERRAL_REWARD` — referral-linked `loyalty.rewards` at
@@ -176,6 +180,21 @@ async function ingestSupplierCogs(exec: Exec, tenantId: string, window: Recomput
     .select(["id", "currency", "settled_at"])
     .where("tenant_id", "=", tenantId)
     .where("status", "=", "SETTLED")
+    // Anti-join BEFORE the limit: already-allocated facts must not occupy
+    // the run's fact budget, or facts past the first `limit` rows starve.
+    .where((eb) =>
+      eb.not(
+        eb.exists((qb) =>
+          qb
+            .selectFrom("finance.cost_allocations")
+            .select("finance.cost_allocations.id")
+            .whereRef("finance.cost_allocations.allocation_target_id", "=", "commerce.orders.id")
+            .where("finance.cost_allocations.tenant_id", "=", tenantId)
+            .where("finance.cost_allocations.cost_type", "=", COST_SUPPLIER_COGS)
+            .where("finance.cost_allocations.allocation_target_type", "=", "ORDER"),
+        ),
+      ),
+    )
     .orderBy("settled_at", "asc")
     .limit(limit);
   query = windowed(query, "settled_at", window);
@@ -238,6 +257,24 @@ async function ingestProviderCogs(exec: Exec, tenantId: string, window: Recomput
     .select(["id", "currency", "starts_at", "base_provider_cost_minor"])
     .where("tenant_id", "=", tenantId)
     .where("base_provider_cost_minor", "is not", null)
+    // Anti-join BEFORE the limit (see ingestSupplierCogs).
+    .where((eb) =>
+      eb.not(
+        eb.exists((qb) =>
+          qb
+            .selectFrom("finance.cost_allocations")
+            .select("finance.cost_allocations.id")
+            .whereRef(
+              "finance.cost_allocations.allocation_target_id",
+              "=",
+              "subscription.subscription_cycles.id",
+            )
+            .where("finance.cost_allocations.tenant_id", "=", tenantId)
+            .where("finance.cost_allocations.cost_type", "=", COST_PROVIDER_COGS)
+            .where("finance.cost_allocations.allocation_target_type", "=", "SUBSCRIPTION_CYCLE"),
+        ),
+      ),
+    )
     .orderBy("starts_at", "asc")
     .limit(limit);
   query = windowed(query, "starts_at", window);
@@ -263,23 +300,74 @@ async function ingestProviderCogs(exec: Exec, tenantId: string, window: Recomput
   }
 }
 
+/**
+ * MESSAGING_COST from the real send fact: successful OUTBOUND deliveries.
+ * No runtime ever transitions `scheduled_contacts` to SENT, so the legacy
+ * `scheduled_contacts.status = SENT` read could never allocate. Money
+ * authority stays with the campaign cost fact (latest scheduled contact
+ * for the same person+channel at or before the send); deliveries without
+ * cost authority never allocate.
+ */
 async function ingestMessagingCost(exec: Exec, tenantId: string, window: RecomputeWindow, result: RecomputeResult): Promise<void> {
   const limit = window.limit ?? 500;
   let query = exec
-    .selectFrom("communication.scheduled_contacts")
-    .select(["id", "estimated_cost_minor", "scheduled_for", "sent_at"])
-    .where("tenant_id", "=", tenantId)
-    .where("status", "=", "SENT")
-    .orderBy("scheduled_for", "asc")
+    .selectFrom("communication.message_deliveries")
+    .innerJoin("communication.messages", (join) =>
+      join
+        .onRef("communication.messages.tenant_id", "=", "communication.message_deliveries.tenant_id")
+        .onRef("communication.messages.id", "=", "communication.message_deliveries.message_id"),
+    )
+    .select([
+      "communication.message_deliveries.id as delivery_id",
+      "communication.message_deliveries.occurred_at as occurred_at",
+      "communication.messages.person_id as person_id",
+      "communication.messages.channel as channel",
+    ])
+    .where("communication.message_deliveries.tenant_id", "=", tenantId)
+    .where("communication.messages.direction", "=", "OUTBOUND")
+    .where("communication.message_deliveries.status", "in", ["SENT", "DELIVERED", "READ"])
+    // Anti-join BEFORE the limit (see ingestSupplierCogs).
+    .where((eb) =>
+      eb.not(
+        eb.exists((qb) =>
+          qb
+            .selectFrom("finance.cost_allocations")
+            .select("finance.cost_allocations.id")
+            .whereRef(
+              "finance.cost_allocations.allocation_target_id",
+              "=",
+              "communication.message_deliveries.id",
+            )
+            .where("finance.cost_allocations.tenant_id", "=", tenantId)
+            .where("finance.cost_allocations.cost_type", "=", COST_MESSAGING)
+            .where("finance.cost_allocations.allocation_target_type", "=", "MESSAGE_DELIVERY"),
+        ),
+      ),
+    )
+    .orderBy("communication.message_deliveries.occurred_at", "asc")
     .limit(limit);
-  query = windowed(query, "scheduled_for", window);
-  const contacts = await query.execute();
-  for (const contact of contacts) {
+  query = windowed(query, "communication.message_deliveries.occurred_at", window);
+  const deliveries = await query.execute();
+  for (const delivery of deliveries) {
+    const contact = await exec
+      .selectFrom("communication.scheduled_contacts")
+      .select(["id", "estimated_cost_minor", "scheduled_for"])
+      .where("tenant_id", "=", tenantId)
+      .where("person_id", "=", delivery.person_id)
+      .where("channel", "=", delivery.channel)
+      .where("scheduled_for", "<=", delivery.occurred_at)
+      .orderBy("scheduled_for", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    if (contact === undefined) {
+      tally(result, COST_MESSAGING, false);
+      continue;
+    }
     const cost = toMinorStrict(contact.estimated_cost_minor);
     if (cost <= 0n) {
       continue;
     }
-    if (await existsFactLinked(exec, tenantId, COST_MESSAGING, "SCHEDULED_CONTACT", contact.id)) {
+    if (await existsFactLinked(exec, tenantId, COST_MESSAGING, "MESSAGE_DELIVERY", delivery.delivery_id)) {
       tally(result, COST_MESSAGING, false);
       continue;
     }
@@ -287,10 +375,10 @@ async function ingestMessagingCost(exec: Exec, tenantId: string, window: Recompu
       costType: COST_MESSAGING,
       amountMinor: cost,
       currency: "BRL",
-      targetType: "SCHEDULED_CONTACT",
-      targetId: contact.id,
+      targetType: "MESSAGE_DELIVERY",
+      targetId: delivery.delivery_id,
       sourceTransactionId: null,
-      occurredAt: contact.sent_at ?? contact.scheduled_for,
+      occurredAt: delivery.occurred_at,
     });
     tally(result, COST_MESSAGING, inserted);
   }
@@ -319,6 +407,24 @@ async function ingestAcquisitionTouches(
     .where("growth.attribution_touches.tenant_id", "=", tenantId)
     .where("growth.attribution_touches.touch_type", "!=", "REFERRAL_ASSIST")
     .where("growth.campaign_versions.unit_cost_minor", "is not", null)
+    // Anti-join BEFORE the limit (see ingestSupplierCogs).
+    .where((eb) =>
+      eb.not(
+        eb.exists((qb) =>
+          qb
+            .selectFrom("finance.cost_allocations")
+            .select("finance.cost_allocations.id")
+            .whereRef(
+              "finance.cost_allocations.allocation_target_id",
+              "=",
+              "growth.attribution_touches.id",
+            )
+            .where("finance.cost_allocations.tenant_id", "=", tenantId)
+            .where("finance.cost_allocations.cost_type", "=", COST_ACQUISITION_TOUCH)
+            .where("finance.cost_allocations.allocation_target_type", "=", "ATTRIBUTION_TOUCH"),
+        ),
+      ),
+    )
     .orderBy("growth.attribution_touches.occurred_at", "asc")
     .limit(limit);
   query = windowed(query, "growth.attribution_touches.occurred_at", window);
@@ -372,6 +478,20 @@ async function ingestReferralRewards(
     ])
     .where("loyalty.rewards.tenant_id", "=", tenantId)
     .where("loyalty.rewards.estimated_cost_minor", "is not", null)
+    // Anti-join BEFORE the limit (see ingestSupplierCogs).
+    .where((eb) =>
+      eb.not(
+        eb.exists((qb) =>
+          qb
+            .selectFrom("finance.cost_allocations")
+            .select("finance.cost_allocations.id")
+            .whereRef("finance.cost_allocations.allocation_target_id", "=", "loyalty.rewards.id")
+            .where("finance.cost_allocations.tenant_id", "=", tenantId)
+            .where("finance.cost_allocations.cost_type", "=", COST_REFERRAL_REWARD)
+            .where("finance.cost_allocations.allocation_target_type", "=", "REWARD"),
+        ),
+      ),
+    )
     .orderBy("loyalty.rewards.created_at", "asc")
     .limit(limit);
   query = windowed(query, "loyalty.rewards.created_at", window);

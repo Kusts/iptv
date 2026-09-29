@@ -209,11 +209,17 @@ async function projectSales(db: Db, tenantId: string, days: Date[], points: Poin
   failIfInjected(window, "SALES");
   const orders = await db
     .selectFrom("commerce.orders")
-    .select(["settled_at as at", "settled_amount_minor"])
+    .select(["settled_at as at", "settled_amount_minor", "order_type", "net_amount_minor"])
     .where("tenant_id", "=", tenantId)
     .where("status", "=", "SETTLED")
     .execute();
-  const inWindow = orders.filter((o) => o.at !== null);
+  // Economic sales only: zero-value ADJUSTMENT orders minted by reward
+  // redemption (SPEC §10) and any other non-positive-net settlement carry
+  // no economic counterpart — same isNonEconomicConversion rule the
+  // referral qualification uses, so redemptions never inflate sales counts.
+  const inWindow = orders.filter(
+    (o) => o.at !== null && o.order_type !== "ADJUSTMENT" && toMinorStrict(o.net_amount_minor) > 0n,
+  );
   const counts = tallyByDay(inWindow as Array<{ at: Date }>, days);
   const revenueByDay = new Map<string, bigint>();
   for (const day of days) {

@@ -204,6 +204,23 @@ export class FinanceController {
       (await this.allocationSums(tenantId, COGS_COST_TYPES, "ORDER", orderIds)) +
       (await this.allocationSums(tenantId, COGS_COST_TYPES, "SUBSCRIPTION_CYCLE", cycleIds));
 
+    // MESSAGING_COST allocates per successful OUTBOUND delivery (the real
+    // send fact — no runtime ever transitions scheduled_contacts to SENT),
+    // so contribution sums MESSAGE_DELIVERY allocations for this person's
+    // outbound messages. Legacy SCHEDULED_CONTACT rows (if any) still count.
+    const deliveryRows = await db
+      .selectFrom("communication.message_deliveries as d")
+      .innerJoin("communication.messages as m", (join) =>
+        join
+          .onRef("m.tenant_id", "=", "d.tenant_id")
+          .onRef("m.id", "=", "d.message_id"),
+      )
+      .select(["d.id as delivery_id"])
+      .where("d.tenant_id", "=", tenantId)
+      .where("m.person_id", "=", customer.person_id)
+      .where("m.direction", "=", "OUTBOUND")
+      .where("d.status", "in", ["SENT", "DELIVERED", "READ"])
+      .execute();
     const contacts = await db
       .selectFrom("communication.scheduled_contacts")
       .select(["id"])
@@ -224,6 +241,7 @@ export class FinanceController {
       .where("customer_id", "=", customerId)
       .execute();
     const variableMinor =
+      (await this.allocationSums(tenantId, VARIABLE_COST_TYPES, "MESSAGE_DELIVERY", deliveryRows.map((d) => d.delivery_id))) +
       (await this.allocationSums(tenantId, VARIABLE_COST_TYPES, "SCHEDULED_CONTACT", contacts.map((c) => c.id))) +
       (await this.allocationSums(tenantId, VARIABLE_COST_TYPES, "ATTRIBUTION_TOUCH", touches.map((t) => t.id))) +
       (await this.allocationSums(tenantId, VARIABLE_COST_TYPES, "REWARD", rewards.map((r) => r.id)));

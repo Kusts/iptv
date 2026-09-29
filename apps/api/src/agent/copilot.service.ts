@@ -119,7 +119,7 @@ export const COPILOT_COMMANDS: Record<string, AllowedCommand> = {
     risk: "HIGH",
     label: "Reabrir ticket de suporte",
   },
-  "billing.refund.request": {
+  "refund.request": {
     permission: "billing.refund.request",
     risk: "HIGH",
     label: "Solicitar reembolso",
@@ -435,7 +435,7 @@ export class CopilotService {
       suggestions.push({
         kind: "draft",
         label: "Preparar solicitação de reembolso",
-        draftCommand: "billing.refund.request",
+        draftCommand: "refund.request",
         draftInput: {},
         needsInput: ["paymentId", "amountMinor"],
         reason: "Ação financeira: exige aprovação humana (HITL) antes de executar.",

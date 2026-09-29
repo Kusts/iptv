@@ -657,6 +657,56 @@ describe.skipIf(!hasDb)("Wave 14-COPILOT Tenant Copilot (requires TEST_DATABASE_
     expect(await ticketStatus(ticketId)).toBe("RESOLVED");
   });
 
+  it("execute routes the refund draft command through HITL approval (refund.request)", async () => {
+    // Regression: the allowlist must name the REGISTERED command
+    // `refund.request` (the permission stays `billing.refund.request`).
+    const ask = await inject({
+      method: "POST",
+      url: "/v1/agent/copilot/ask",
+      token: tokenOwner,
+      payload: {
+        question: "preciso pedir um reembolso para o cliente",
+        screen: { route: "/orders" },
+      },
+    });
+    expect(ask.statusCode).toBe(201);
+    const draft = ask
+      .json<{ suggestions: Array<{ kind: string; draftCommand?: string }> }>()
+      .suggestions.find((s) => s.kind === "draft");
+    expect(draft?.draftCommand).toBe("refund.request");
+
+    const input = {
+      paymentId: newId(),
+      amountMinor: "100",
+      currency: "BRL",
+      reason: "copilot refund probe",
+      idempotencyKey: `copilot-refund-${newId().slice(0, 8)}`,
+    };
+    const parked = await inject({
+      method: "POST",
+      url: "/v1/agent/copilot/execute",
+      token: tokenOwner,
+      payload: { command: "refund.request", input },
+    });
+    expect(parked.statusCode).toBe(201);
+    expect(parked.json<{ status: string }>().status).toBe("pending_review");
+    const reviewId = parked.json<{ reviewId: string }>().reviewId;
+
+    expect((await approveReview(reviewId)).statusCode).toBe(201);
+
+    const executed = await inject({
+      method: "POST",
+      url: "/v1/agent/copilot/execute",
+      token: tokenOwner,
+      payload: { command: "refund.request", input, reviewId },
+    });
+    // The draft dispatches to the real handler: the unknown payment fails
+    // THERE (NOT_FOUND), proving the allowlist routes instead of rejecting
+    // with UNKNOWN_COMMAND.
+    expect(executed.statusCode).toBe(404);
+    expect(executed.json<{ code: string }>().code).toBe("NOT_FOUND");
+  });
+
   it("self-approval of a copilot_command review is forbidden; another approver succeeds", async () => {
     const personId = await makePerson();
     const opened = await bus.execute<{ id: string }>(ownerActor(), "support.ticket.open", {
