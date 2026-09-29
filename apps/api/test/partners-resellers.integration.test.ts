@@ -459,7 +459,7 @@ describe.skipIf(!hasDb)("Wave 13 Partners/Resellers (requires TEST_DATABASE_URL)
       }
     }
     const lastTwo = TOPICS.slice(8);
-    const [first, second] = await Promise.all(
+    const raceResults = await Promise.all(
       lastTwo.map((topicKey) =>
         bus.execute<{ status: string; completedCount: number }>(actor(), "partners.complete_topic", {
           partnerAccountId: account.id,
@@ -467,6 +467,10 @@ describe.skipIf(!hasDb)("Wave 13 Partners/Resellers (requires TEST_DATABASE_URL)
         }),
       ),
     );
+    const [first, second] = raceResults;
+    if (!first || !second) {
+      throw new Error("race produced fewer results than topics");
+    }
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(true);
     const statuses = [first, second].flatMap((result) => (result.ok ? [result.data.status] : []));
