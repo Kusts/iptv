@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { NeedsAttention } from "../components/NeedsAttention";
 import { Shell } from "../components/Shell";
 import { Card } from "../components/ui/Card";
 import { EmptyState, ErrorState, LoadingSkeleton } from "../components/ui/States";
@@ -12,6 +13,7 @@ export default function Home(): React.JSX.Element {
     <Shell>
       <h1>Painel</h1>
       <HealthCard />
+      <NeedsAttention />
       <Card title="Atalhos operacionais">
         <ul>
           <li><Link href="/conversations">Conversas</Link> — assumir, devolver e responder manualmente.</li>

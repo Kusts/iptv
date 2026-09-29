@@ -92,7 +92,13 @@ function ConversationDetail({ conversation, onChanged }: { conversation: Convers
         <ul>
           {data.messages.map((m) => (
             <li key={m.id}>
-              <strong>{m.senderType}</strong> <span className="cc-muted">{formatDateTime(m.occurredAt)}</span>
+              <strong>{m.senderType}</strong> <span className="cc-muted">{formatDateTime(m.occurredAt)}</span>{" "}
+              {m.deliveryStatus ? <StatusPill status={m.deliveryStatus} /> : null}
+              {m.deliveryStatus === "CANCELLED" ? (
+                <span role="status" className="cc-badge cc-badge-danger">
+                  Entrega cancelada — não execute
+                </span>
+              ) : null}
               <p>{m.bodyText}</p>
             </li>
           ))}

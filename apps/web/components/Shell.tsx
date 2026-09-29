@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useAuth } from "../lib/auth";
+import { ApiError } from "../lib/api";
 import { Select } from "./ui/Input";
 import { Button } from "./ui/Button";
 
@@ -36,8 +37,15 @@ export function Shell({ children }: { children: React.ReactNode }): React.JSX.El
     setSwitchError(null);
     try {
       await switchTenant(tenantId);
-    } catch {
-      setSwitchError("Não foi possível trocar de tenant.");
+    } catch (err) {
+      // Conflito de troca concorrente: o tenant atual foi cometido (estado
+      // autoritativo) e a mensagem específica orienta o operador; demais
+      // falhas mantêm o erro genérico.
+      setSwitchError(
+        err instanceof ApiError && err.code === "TENANT_SWITCH_CONFLICT"
+          ? err.message
+          : "Não foi possível trocar de tenant.",
+      );
     } finally {
       setSwitching(false);
     }

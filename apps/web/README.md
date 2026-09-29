@@ -16,6 +16,15 @@ Variáveis:
 | --- | ------- | --------- |
 | `NEXT_PUBLIC_API_BASE_URL` | `http://localhost:3001` | Base da API `/v1` |
 
+CORS local: o navegador só enxerga as respostas da API quando a origem da web
+(`http://localhost:3000` por padrão) está na allowlist `CORS_ALLOWED_ORIGINS`
+da API. São dois ajustes distintos: `NEXT_PUBLIC_API_BASE_URL` diz **para onde**
+a web chama, e `CORS_ALLOWED_ORIGINS` (lado servidor da API) diz **quais origens**
+o navegador pode ler. Em produção, configure na API a(s) origem(ns) pública(s)
+explícita(s) da web (separadas por vírgula, sem wildcard); sem isso, o
+cross-origin é negado. CORS não substitui autenticação Bearer/sessão nem as
+guards de tenant/revisão.
+
 Comandos: `pnpm --filter web test|typecheck|lint|build`.
 
 ## Auth / token (tradeoff documentado)

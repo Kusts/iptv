@@ -10,7 +10,28 @@
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
 
-const TOKEN_KEY = "iptv.session_token";
+export const TOKEN_KEY = "iptv.session_token";
+
+/**
+ * Marcador não-secreto de mudança de sessão entre abas (mesmo token com
+ * tenant trocado não altera o token). O payload NUNCA é confiável como
+ * identidade — serve apenas como sinal para recarregar a sessão no
+ * servidor, que permanece autoritativa. Nunca contém bearer/segredo.
+ */
+export const SESSION_SIGNAL_KEY = "iptv.session_signal";
+
+/** Emite o sinal cross-tab (somente outras abas recebem o `storage` event). */
+export function broadcastSessionSignal(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      SESSION_SIGNAL_KEY,
+      `${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    );
+  } catch {
+    // armazenamento indisponível: a aba atual segue consistente
+  }
+}
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -24,6 +45,68 @@ export function setToken(token: string): void {
 export function clearToken(): void {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(TOKEN_KEY);
+}
+
+import { advanceApiGeneration, clearApiCache } from "./api-cache";
+
+/**
+ * Precondicionante monotônica de frescor do contexto de tenant (string
+ * decimal canônica — nunca número): o cliente envia a revisão que observou
+ * e o servidor rejeita com 409 `TENANT_CONTEXT_CONFLICT` quando ela não
+ * coincide com a revisão autoritativa da sessão. O header nunca seleciona
+ * tenant nem concede permissão.
+ */
+export const TENANT_CONTEXT_REVISION_HEADER = "x-tenant-context-revision";
+
+/**
+ * Revisão corrente observada pela UI (fonte: `SessionResponse` autoritativa).
+ * Espelho em módulo para que o `apiFetch` capture o valor de forma síncrona
+ * na invocação sem importar o `AuthProvider` (sem ciclo). Dono da escrita:
+ * `AuthProvider` (restore/login/troca/reconciliação/logout/401/fail-closed).
+ */
+let currentTenantContextRevision: string | null = null;
+
+/** Revisão esperada corrente, ou `null` quando nenhuma foi comitada ainda. */
+export function getTenantContextRevision(): string | null {
+  return currentTenantContextRevision;
+}
+
+/** Comita (`string`) ou limpa (`null`) a revisão corrente. Sem conversão. */
+export function setTenantContextRevision(revision: string | null): void {
+  currentTenantContextRevision = revision;
+}
+
+/** 409 de contexto stale: a requisição partiu de revisão defasada. */
+export function isTenantContextConflict(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 409 && err.code === "TENANT_CONTEXT_CONFLICT";
+}
+
+type TenantContextConflictHandler = () => void;
+
+let tenantContextConflictHandler: TenantContextConflictHandler | null = null;
+
+/**
+ * Registra o reconciliador do `AuthProvider`: invocado (best-effort, sem
+ * await) quando uma chamada protegida não-switch do token ainda corrente
+ * recebe 409 `TENANT_CONTEXT_CONFLICT`. Fora do provider: sem handler.
+ */
+export function setTenantContextConflictHandler(fn: TenantContextConflictHandler | null): void {
+  tenantContextConflictHandler = fn;
+}
+
+/** Bootstrap/descoberta de sessão: não exigem o precondicionante. */
+function isTenantContextExempt(path: string, method: string): boolean {
+  const clean = path.split("?", 1)[0];
+  if (method === "GET" && clean === "/v1/auth/session") return true;
+  if (method === "POST" && clean === "/v1/auth/logout") return true;
+  return false;
+}
+
+/** A troca de tenant tem fluxo próprio de reconciliação (sem notify global). */
+function isTenantSwitchRequest(path: string, method: string): boolean {
+  if (method !== "POST") return false;
+  const clean = path.split("?", 1)[0] ?? "";
+  return clean.startsWith("/v1/tenants/") && clean.endsWith("/switch");
 }
 
 /** Erro central da camada API, com mensagem amigável em pt-BR. */
@@ -68,26 +151,73 @@ export interface ApiOptions {
   body?: unknown;
   token?: string | null;
   onUnauthorized?: () => void;
+  /**
+   * Revisão de contexto esperada (`x-tenant-context-revision`).
+   * `undefined` (default) = usa a revisão corrente da sessão; `null` = omite
+   * o precondicionante (bootstrap `/v1/auth/session`, `/v1/auth/logout`);
+   * `string` = vincula a chamada exatamente a essa revisão (ex.: `/v1/me`
+   * vinculado ao snapshot da sessão que o originou). Chamadas de ação da API
+   * usam o default (revisão corrente capturada na invocação).
+   */
+  tenantContextRevision?: string | null;
+  /**
+   * Interno: `false` nas leituras internas do `refreshSession` (o próprio
+   * retry limitado é dono do 409). Default `true` (leituras/ações disparam a
+   * reconciliação do provider via handler global).
+   */
+  notifyContextConflict?: boolean;
 }
 
 export async function apiFetch<T>(path: string, opts: ApiOptions = {}): Promise<T> {
   const token = opts.token !== undefined ? opts.token : getToken();
+  const method = opts.method ?? "GET";
+  // Captura síncrona na invocação: fixa token e revisão esperada antes de
+  // qualquer await. Nunca reler o valor mutável após a resposta para
+  // rotular/cachear a requisição.
+  const requestRevision =
+    opts.tenantContextRevision !== undefined ? opts.tenantContextRevision : getTenantContextRevision();
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
+  // Toda chamada autenticada protegida leva o precondicionante, exceto o
+  // bootstrap de sessão e o logout (que existem para descobrir/encerrar).
+  if (token !== null && token !== undefined && requestRevision != null && !isTenantContextExempt(path, method)) {
+    headers[TENANT_CONTEXT_REVISION_HEADER] = requestRevision;
+  }
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, {
-      method: opts.method ?? "GET",
-      headers: {
-        "content-type": "application/json",
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
+      method,
+      headers,
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     });
   } catch {
     throw new ApiError(0, "NETWORK_ERROR", "Não foi possível alcançar a API. Verifique sua conexão.");
   }
   if (res.status === 401) {
-    clearToken();
-    (opts.onUnauthorized ?? defaultUnauthorized)();
+    // Guarda anti-race: uma resposta 401 tardia de um token antigo (A) não
+    // pode revogar uma sessão mais nova (B). Só transiciona o escopo e
+    // navega quando o token capturado da requisição ainda é o token atual.
+    const requestToken = token ? token : null;
+    const currentTokenRaw = getToken();
+    const currentToken = currentTokenRaw ? currentTokenRaw : null;
+    const isCurrent = requestToken === currentToken;
+    if (isCurrent) {
+      (opts.onUnauthorized ?? defaultUnauthorized)();
+      // Só transiciona o escopo quando a requisição levava credencial: sem
+      // esse guarda, o refetch anônimo pós-401 geraria 401 de novo e o
+      // avanço de geração entraria em loop, prendendo `loading=true`.
+      if (requestToken !== null) {
+        clearToken();
+        setTenantContextRevision(null);
+        // Invalida o escopo do cache: respostas do escopo antigo não podem
+        // vazar para o próximo login/tenant. Sem ciclo: api-cache é folha.
+        clearApiCache();
+        advanceApiGeneration();
+        broadcastSessionSignal();
+      }
+    }
     throw new ApiError(401, "UNAUTHENTICATED", messageForStatus(401));
   }
   if (!res.ok) {
@@ -98,7 +228,28 @@ export async function apiFetch<T>(path: string, opts: ApiOptions = {}): Promise<
     } catch {
       // corpo não-JSON: mantém o código genérico
     }
-    throw new ApiError(res.status, code, messageForStatus(res.status, code));
+    const err = new ApiError(res.status, code, messageForStatus(res.status, code));
+    // Conflito de contexto do token ainda corrente em chamada não-switch:
+    // o token segue válido (nada é limpo aqui) — apenas sinaliza o
+    // `AuthProvider` para reconciliação autoritativa (com dedupe no
+    // provider). A troca tem fluxo próprio e nunca dispara este sinal.
+    if (
+      err.status === 409 &&
+      code === "TENANT_CONTEXT_CONFLICT" &&
+      token !== null &&
+      token !== undefined &&
+      token === getToken() &&
+      !isTenantContextExempt(path, method) &&
+      !isTenantSwitchRequest(path, method) &&
+      opts.notifyContextConflict !== false
+    ) {
+      try {
+        tenantContextConflictHandler?.();
+      } catch {
+        // reconciliação é best-effort: o erro original é propagado abaixo
+      }
+    }
+    throw err;
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -125,13 +276,23 @@ export function userMessage(err: unknown): string {
 export interface LoginResponse {
   token: string;
   activeTenantId: string | null;
+  /** Revisão monotônica do contexto (string decimal — nunca número). */
+  tenantContextRevision: string;
   user: { id: string; email: string; displayName: string | null };
 }
 
 export interface SessionResponse {
   user: { id: string; email: string; displayName: string | null };
   activeTenantId: string | null;
+  /** Revisão autoritativa corrente da sessão (string decimal). */
+  tenantContextRevision: string;
   memberships: { tenantId: string; tenantSlug: string; tenantName: string; roleKey: string; status: string }[];
+}
+
+/** Resposta da troca de tenant (nunca comitada direto: só via refresh). */
+export interface SwitchTenantResponse {
+  activeTenantId: string;
+  tenantContextRevision: string;
 }
 
 export interface TenantsResponse {
@@ -163,6 +324,7 @@ export interface ChatMessage {
   contentType?: string;
   bodyText: string;
   externalMessageId?: string | null;
+  deliveryStatus?: string | null;
   occurredAt: string;
 }
 
