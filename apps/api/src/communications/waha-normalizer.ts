@@ -112,3 +112,44 @@ export function normalizeSender(from: string): string {
   const digits = bare.replace(/[^+\d]/g, "");
   return digits.length > 0 ? digits : bare;
 }
+
+export type NormalizedWahaStatus =
+  | { kind: "status"; session: string | null; status: string }
+  | { kind: "not-status" };
+
+export function normalizeWahaStatus(raw: unknown): NormalizedWahaStatus {
+  const root = asRecord(raw);
+  if (root === null) {
+    return { kind: "not-status" };
+  }
+  const event = asString(root["event"]) ?? "";
+  if (event !== "session.status" && event !== "session_status" && event !== "status") {
+    return { kind: "not-status" };
+  }
+  const payload = asRecord(root["payload"]) ?? {};
+  const status =
+    asString(payload["status"]) ??
+    asString(payload["state"]) ??
+    asString(root["status"]) ??
+    asString(root["state"]);
+  if (status === null) {
+    return { kind: "not-status" };
+  }
+  return { kind: "status", session: asString(root["session"]), status };
+}
+
+export type WahaStatusRisk = "HEALTHY" | "DEGRADED" | "CAPPED" | null;
+
+export function riskForSessionStatus(status: string): WahaStatusRisk {
+  const upper = status.trim().toUpperCase();
+  if (/(TIMELOCK|CAPPED|BLOCKED|BANNED|RATE_LIMIT|FLOOD)/.test(upper)) {
+    return "CAPPED";
+  }
+  if (/(FAILED|STOPPED|DISCONNECTED|ERROR|EXPIRED|LOGOUT)/.test(upper)) {
+    return "DEGRADED";
+  }
+  if (/(WORKING|CONNECTED|STARTING|SCAN_QR_CODE|READY|OPEN)/.test(upper)) {
+    return "HEALTHY";
+  }
+  return null;
+}

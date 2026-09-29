@@ -16,7 +16,12 @@ import {
   GatewayUnknownError,
   resetGatewayForTests,
   setGatewayForTests,
+  type MessagingGatewayPort,
+  type SendTextInput,
+  type SendTextResult,
 } from "../src/communications/messaging-gateway.js";
+import { setRiskState } from "../src/communications/waha-risk-state.js";
+import { bindSession, clearSessionBindingsForTests } from "../src/communications/waha-sessions.js";
 import { WahaWebhookService } from "../src/communications/waha-webhook.service.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -552,5 +557,193 @@ describe.skipIf(!hasDb)("Wave 2 CRM + Communications (requires TEST_DATABASE_URL
     expect(foreignGet.statusCode).toBe(404);
     const foreignPersons = await inject({ method: "GET", url: "/v1/crm/persons", token: strangerToken });
     expect(foreignPersons.json<{ persons: unknown[] }>().persons).toHaveLength(0);
+  });
+
+  it("F05: capped channel defers new outreach while inbound and existing conversations continue", async () => {
+    const personId = (
+      await db
+        .selectFrom("identity.persons")
+        .select(["id"])
+        .where("tenant_id", "=", tenantId)
+        .orderBy("created_at", "asc")
+        .executeTakeFirstOrThrow()
+    ).id;
+    const pre = await inject({
+      method: "POST",
+      url: "/v1/communications/conversations",
+      token,
+      payload: { personId, channel: "WHATSAPP" },
+    });
+    expect(pre.statusCode).toBe(201);
+    const existingId = pre.json<{ id: string }>().id;
+    const freshPre = await inject({
+      method: "POST",
+      url: "/v1/communications/conversations",
+      token,
+      payload: { personId, channel: "WHATSAPP" },
+    });
+    expect(freshPre.statusCode).toBe(201);
+    const freshId = freshPre.json<{ id: string }>().id;
+    const warmup = await inject({
+      method: "POST",
+      url: `/v1/communications/conversations/${existingId}/send-manual`,
+      token,
+      payload: { text: "warmup before cap" },
+    });
+    expect(warmup.statusCode).toBe(201);
+    setRiskState(tenantId, "WHATSAPP", "CAPPED", "integration timelock");
+    try {
+      const blockedStart = await inject({
+        method: "POST",
+        url: "/v1/communications/conversations",
+        token,
+        payload: { personId, channel: "WHATSAPP" },
+      });
+      expect(blockedStart.statusCode).toBe(409);
+      const blockedSend = await inject({
+        method: "POST",
+        url: `/v1/communications/conversations/${freshId}/send-manual`,
+        token,
+        payload: { text: "new outreach under cap" },
+      });
+      expect(blockedSend.statusCode).toBe(409);
+      const followup = await inject({
+        method: "POST",
+        url: `/v1/communications/conversations/${existingId}/send-manual`,
+        token,
+        payload: { text: "follow-up under cap" },
+      });
+      expect(followup.statusCode).toBe(201);
+      const inboundId = `wamsg-f05-${randomUUID().slice(0, 8)}`;
+      const inbound = await inject({
+        method: "POST",
+        url: `/v1/webhooks/waha/${tenantKey}`,
+        secret: webhookSecret,
+        payload: {
+          event: "message",
+          session: "default",
+          payload: {
+            id: inboundId,
+            from: "5511999990001@c.us",
+            fromMe: false,
+            body: "client reply under cap",
+            timestamp: 1758912000,
+          },
+        },
+      });
+      expect(inbound.statusCode).toBe(202);
+      const rows = await db
+        .selectFrom("communication.messages")
+        .select(["id", "direction"])
+        .where("tenant_id", "=", tenantId)
+        .where("external_message_id", "=", inboundId)
+        .execute();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.direction).toBe("INBOUND");
+    } finally {
+      clearSessionBindingsForTests();
+    }
+  });
+
+  it("F06: restart keeps tenant session routing without cross-session mixup", async () => {
+    bindSession(tenantId, "tenant-f06-a");
+    const sentInputs: SendTextInput[] = [];
+    const recording: MessagingGatewayPort = {
+      name: "recording-f06",
+      async sendText(input: SendTextInput): Promise<SendTextResult> {
+        sentInputs.push(input);
+        return { ok: true, providerMessageId: "recording-f06:1" };
+      },
+    };
+    setGatewayForTests(recording);
+    try {
+      const personId = (
+        await db
+          .selectFrom("identity.persons")
+          .select(["id"])
+          .where("tenant_id", "=", tenantId)
+          .orderBy("created_at", "asc")
+          .executeTakeFirstOrThrow()
+      ).id;
+      const conv = await inject({
+        method: "POST",
+        url: "/v1/communications/conversations",
+        token,
+        payload: { personId, channel: "WHATSAPP" },
+      });
+      expect(conv.statusCode).toBe(201);
+      const conversationId = conv.json<{ id: string }>().id;
+      const foreignId = `wamsg-f06-foreign-${randomUUID().slice(0, 8)}`;
+      const foreign = await inject({
+        method: "POST",
+        url: `/v1/webhooks/waha/${tenantKey}`,
+        secret: webhookSecret,
+        payload: {
+          event: "message",
+          session: "tenant-f06-b",
+          payload: {
+            id: foreignId,
+            from: "5511999990001@c.us",
+            fromMe: false,
+            body: "foreign session",
+            timestamp: 1758912000,
+          },
+        },
+      });
+      expect(foreign.statusCode).toBe(202);
+      const leaked = await db
+        .selectFrom("communication.messages")
+        .select(["id"])
+        .where("tenant_id", "=", tenantId)
+        .where("external_message_id", "=", foreignId)
+        .execute();
+      expect(leaked).toHaveLength(0);
+      const quarantined = await db
+        .selectFrom("communication.exceptions")
+        .select(["id", "status", "reason"])
+        .where("tenant_id", "=", tenantId)
+        .where("external_message_id", "=", foreignId)
+        .execute();
+      expect(quarantined).toHaveLength(1);
+      expect(quarantined[0]?.status).toBe("OPEN");
+      expect(quarantined[0]?.reason ?? "").toContain("session mismatch");
+      const ownId = `wamsg-f06-own-${randomUUID().slice(0, 8)}`;
+      const own = await inject({
+        method: "POST",
+        url: `/v1/webhooks/waha/${tenantKey}`,
+        secret: webhookSecret,
+        payload: {
+          event: "message",
+          session: "tenant-f06-a",
+          payload: {
+            id: ownId,
+            from: "5511999990001@c.us",
+            fromMe: false,
+            body: "own session",
+            timestamp: 1758912000,
+          },
+        },
+      });
+      expect(own.statusCode).toBe(202);
+      const landed = await db
+        .selectFrom("communication.messages")
+        .select(["id", "conversation_id"])
+        .where("tenant_id", "=", tenantId)
+        .where("external_message_id", "=", ownId)
+        .execute();
+      expect(landed).toHaveLength(1);
+      const sent = await inject({
+        method: "POST",
+        url: `/v1/communications/conversations/${conversationId}/send-manual`,
+        token,
+        payload: { text: "post-restart follow-up" },
+      });
+      expect(sent.statusCode).toBe(201);
+      expect(sentInputs).toHaveLength(1);
+      expect(sentInputs[0]?.session).toBe("tenant-f06-a");
+    } finally {
+      resetGatewayForTests();
+      clearSessionBindingsForTests();
+    }
   });
 });

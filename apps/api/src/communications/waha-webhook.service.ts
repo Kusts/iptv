@@ -7,7 +7,8 @@ import type { CommandActor } from "@iptv/domain";
 import { withSpan } from "@iptv/observability";
 import { CommandBus } from "../commands/command-bus.js";
 import type { InboxStore } from "../inbox/inbox-processor.js";
-import { normalizeWahaPayload } from "./waha-normalizer.js";
+import { normalizeWahaPayload, normalizeWahaStatus, riskForSessionStatus } from "./waha-normalizer.js";
+import { setRiskState } from "./waha-risk-state.js";
 import { AgentPipeline } from "../agent/pipeline.js";
 
 function sha256Hex(value: string): string {
@@ -106,6 +107,15 @@ export class WahaWebhookService {
    */
   async processRow(tenantId: string, inboxId: string, payload: unknown): Promise<void> {
     return withSpan("webhook.waha.process", { provider: "waha", tenant: tenantId }, async () => {
+    const status = normalizeWahaStatus(payload);
+    if (status.kind === "status") {
+      const risk = riskForSessionStatus(status.status);
+      if (risk !== null) {
+        setRiskState(tenantId, "WHATSAPP", risk, `waha session status: ${status.status}`);
+      }
+      await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
+      return;
+    }
     const normalized = normalizeWahaPayload(payload);
     if (normalized.kind === "unknown") {
       await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { withSpan } from "@iptv/observability";
+import { expectedSessionFor } from "./waha-sessions.js";
 
 /**
  * Wave 2 messaging gateway port. The external provider (WAHA today, GOWS
@@ -14,11 +15,12 @@ export interface SendTextInput {
   /** Provider-routable destination (e.g. `5511999999999@c.us`). */
   to: string;
   text: string;
+  session?: string;
 }
 
 export type SendTextResult =
   | { ok: true; providerMessageId: string }
-  | { ok: false; code: "UNKNOWN_EFFECT" | "FAILED"; message: string };
+  | { ok: false; code: "UNKNOWN_EFFECT" | "FAILED" | "CAPPED" | "SESSION_MISMATCH"; message: string };
 
 /** Transport failure with uncertain effect (timeout after the send attempt). */
 export class GatewayUnknownError extends Error {
@@ -36,7 +38,9 @@ export interface MessagingGatewayPort {
 /** Default when no WAHA env is configured: logs and returns a fake id. */
 export class LocalEchoGateway implements MessagingGatewayPort {
   readonly name = "echo";
+  readonly sentInputs: SendTextInput[] = [];
   async sendText(input: SendTextInput): Promise<SendTextResult> {
+    this.sentInputs.push(input);
     // Visible in server logs; never touches a real provider.
     console.log(`[echo-gateway] tenant=${input.tenantId} to=${input.to} text=${input.text.slice(0, 80)}`);
     return { ok: true, providerMessageId: `echo:${randomUUID()}` };
@@ -58,15 +62,27 @@ export class WahaGatewayAdapter implements MessagingGatewayPort {
   ) {}
 
   async sendText(input: SendTextInput): Promise<SendTextResult> {
+    const session = input.session ?? this.session;
+    const expected = expectedSessionFor(input.tenantId);
+    if (session !== expected) {
+      return {
+        ok: false,
+        code: "SESSION_MISMATCH",
+        message: `tenant session mismatch: expected ${expected}, got ${session}`,
+      };
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const res = await fetch(`${this.baseUrl}/api/sendText`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Api-Key": this.apiKey },
-        body: JSON.stringify({ chatId: input.to, text: input.text, session: this.session }),
+        body: JSON.stringify({ chatId: input.to, text: input.text, session }),
         signal: controller.signal,
       });
+      if (res.status === 429) {
+        return { ok: false, code: "CAPPED", message: "waha rejected send: HTTP 429 (timelock/capping)" };
+      }
       if (!res.ok) {
         return { ok: false, code: "FAILED", message: `waha rejected send: HTTP ${res.status}` };
       }

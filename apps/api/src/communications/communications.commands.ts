@@ -16,6 +16,8 @@ import {
   currentGateway,
 } from "./messaging-gateway.js";
 import { normalizeSender } from "./waha-normalizer.js";
+import { getRiskState, riskBlockReason, setRiskState } from "./waha-risk-state.js";
+import { expectedSessionFor, validateSessionForTenant } from "./waha-sessions.js";
 
 /**
  * Wave 2 Communications slice.
@@ -272,6 +274,30 @@ async function resolveDestination(
   return fallbackThread ?? "unknown";
 }
 
+async function conversationHasHistory(ctx: CommandHandlerContext, conversationId: string): Promise<boolean> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx !== null) {
+    const row = await trx
+      .selectFrom("communication.messages")
+      .select(["id"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("conversation_id", "=", conversationId)
+      .limit(1)
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+  const mem = memoryStateOf(ctx);
+  if (mem === null) {
+    throw new Error("no Wave 2 store available");
+  }
+  for (const m of mem.messages.values()) {
+    if (m.tenantId === ctx.tenantId && m.conversationId === conversationId) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function appendControlEvent(
   ctx: CommandHandlerContext,
   input: { conversationId: string; fromMode: string | null; toMode: string; reason: string },
@@ -324,6 +350,10 @@ async function handleStartManual(
   ctx: CommandHandlerContext,
   input: StartManualInput,
 ): Promise<CommandResult<{ id: string }>> {
+  const risk = getRiskState(ctx.tenantId, input.channel);
+  if (risk === "CAPPED") {
+    return { ok: false, code: "precondition_failed", message: riskBlockReason(risk) };
+  }
   const conversationId = newId();
   const trx = kyselyTrxOf(ctx);
   if (trx !== null) {
@@ -406,6 +436,11 @@ async function handleSendManual(
   if (block.blocked) {
     return { ok: false, code: "forbidden", message: block.reason };
   }
+  const session = expectedSessionFor(ctx.tenantId);
+  const risk = getRiskState(ctx.tenantId, conv.channel);
+  if (risk === "CAPPED" && !(await conversationHasHistory(ctx, conv.id))) {
+    return { ok: false, code: "precondition_failed", message: riskBlockReason(risk) };
+  }
   const to = await resolveDestination(ctx, conv.personId, conv.externalThreadId);
   const messageId = newId();
   const occurred = now();
@@ -460,12 +495,16 @@ async function handleSendManual(
       conversationId: conv.id,
       to,
       text: input.text,
+      session,
     });
     if (result.ok) {
       providerMessageId = result.providerMessageId;
     } else {
       deliveryStatus = "FAILED";
       errorCode = result.code;
+      if (result.code === "CAPPED") {
+        setRiskState(ctx.tenantId, conv.channel, "CAPPED", result.message);
+      }
     }
   } catch (err) {
     if (err instanceof GatewayUnknownError) {
@@ -555,6 +594,53 @@ async function handleIngest(
 ): Promise<
   CommandResult<{ messageId: string | null; conversationId: string | null; exceptionId: string | null; duplicate: boolean }>
 > {
+  const sessionCheck = validateSessionForTenant(ctx.tenantId, input.session);
+  if (!sessionCheck.ok) {
+    const reason = `session mismatch: expected ${sessionCheck.expected}, got ${sessionCheck.observed}`;
+    const trxForMismatch = kyselyTrxOf(ctx);
+    if (trxForMismatch !== null) {
+      const exceptionId = newId();
+      await trxForMismatch
+        .insertInto("communication.exceptions")
+        .values({
+          id: exceptionId,
+          tenant_id: ctx.tenantId,
+          kind: "UNMATCHED_INBOUND",
+          status: "OPEN",
+          channel: input.channel,
+          external_message_id: input.externalMessageId,
+          from_address: input.from,
+          conversation_id: null,
+          person_id: null,
+          reason,
+          payload_json: { text: input.text, session: input.session ?? null },
+          created_at: now(),
+          updated_at: now(),
+          resolved_at: null,
+        })
+        .execute();
+      return { ok: true, data: { messageId: null, conversationId: null, exceptionId, duplicate: false } };
+    }
+    const memForMismatch = memoryStateOf(ctx);
+    if (memForMismatch === null) {
+      throw new Error("no Wave 2 store available");
+    }
+    const exceptionId = newId();
+    memForMismatch.exceptions.set(exceptionId, {
+      id: exceptionId,
+      tenantId: ctx.tenantId,
+      kind: "UNMATCHED_INBOUND",
+      status: "OPEN",
+      channel: input.channel,
+      externalMessageId: input.externalMessageId,
+      fromAddress: input.from,
+      reason,
+      conversationId: null,
+      personId: null,
+      resolvedAt: null,
+    });
+    return { ok: true, data: { messageId: null, conversationId: null, exceptionId, duplicate: false } };
+  }
   const trx = kyselyTrxOf(ctx);
   if (trx !== null) {
     const dup = await trx
