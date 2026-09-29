@@ -53,10 +53,20 @@ describe.skipIf(!hasDb)("Wave 4 Trials + Compatibility (requires TEST_DATABASE_U
     };
   }
 
-  function inject(opts: { method: "GET" | "POST"; url: string; token?: string; payload?: Record<string, unknown> }) {
+  function inject(opts: {
+    method: "GET" | "POST";
+    url: string;
+    token?: string;
+    /** Tenant-context precondition; defaults to "0" with a token, `null` omits it. */
+    revision?: string | null;
+    payload?: Record<string, unknown>;
+  }) {
     const headers: Record<string, string> = {};
     if (opts.token !== undefined) {
       headers["authorization"] = `Bearer ${opts.token}`;
+      if (opts.revision !== null) {
+        headers["x-tenant-context-revision"] = opts.revision ?? "0";
+      }
     }
     const options: {
       method: "GET" | "POST";
