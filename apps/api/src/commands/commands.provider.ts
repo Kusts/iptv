@@ -13,6 +13,7 @@ import { registerCommerceCommands } from "../commerce/commerce.commands.js";
 import { registerBillingCommands } from "../billing/billing.commands.js";
 import { registerSubscriptionCommands } from "../subscription/subscription.commands.js";
 import { registerRenewalCommands } from "../renewal/renewal.commands.js";
+import { registerReferralCommands } from "../referral/referral.commands.js";
 import { registerFulfillmentCommands } from "../fulfillment/fulfillment.commands.js";
 import { registerSupportCommands } from "../support/support.commands.js";
 import { registerKnowledgeCommands } from "../knowledge/knowledge.commands.js";
@@ -35,7 +36,9 @@ import {
  *   Wave 9 slice (Renewal + Retention: quote/renew/reminders/trust/expiry +
  *   recovery queue, reusing the Wave 5 billing and Wave 6 subscription
  *   primitives) and the Wave 8 slice (Support tickets/incidents/problems +
- *   Knowledge items + `human_review.claim` for the HITL center).
+ *   Knowledge items + `human_review.claim` for the HITL center) and the
+ *   Wave 12 slice (Referral attribution/qualification + Rewards
+ *   issue/redeem + gift passes over the Wave 5 order/billing primitives).
  * Explicit tokens everywhere — esbuild/vitest emits no `design:paramtypes`.
  *
  * Provider adapters are explicit: `PROVIDER_OPS_ADAPTER=echo|manual`
@@ -64,6 +67,7 @@ export const CommandsProvider = {
       registerBillingCommands(bus, { asaasPort: resolveAsaasPort(asaasAdapterNameFromEnv()) });
       registerSubscriptionCommands(bus);
       registerRenewalCommands(bus);
+      registerReferralCommands(bus);
       registerFulfillmentCommands(bus, { opsPort });
       registerSupportCommands(bus);
       registerKnowledgeCommands(bus);

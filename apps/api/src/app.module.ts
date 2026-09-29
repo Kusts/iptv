@@ -26,6 +26,7 @@ import { WahaWebhookService } from "./communications/waha-webhook.service.js";
 import { CommerceController } from "./commerce/commerce.controller.js";
 import { SubscriptionController } from "./subscription/subscription.controller.js";
 import { RenewalController } from "./renewal/renewal.controller.js";
+import { ReferralController } from "./referral/referral.controller.js";
 import { RecoveryController } from "./renewal/recovery.controller.js";
 import { FulfillmentController } from "./fulfillment/fulfillment.controller.js";
 import { BillingController } from "./billing/billing.controller.js";
@@ -82,6 +83,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     CommerceController,
     SubscriptionController,
     RenewalController,
+    ReferralController,
     RecoveryController,
     FulfillmentController,
     BillingController,

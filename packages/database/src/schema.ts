@@ -1254,6 +1254,134 @@ export interface InventorySupplierAppItemsTable {
   availability: string;
 }
 
+/** Mirrors `referral.referral_programs` (migration 011, Wave 12 runtime). */
+export interface ReferralProgramsTable {
+  id: string;
+  tenant_id: string;
+  name: string;
+  status: string;
+  rules_version: string;
+  rules_json: unknown;
+  starts_at: Date;
+  ends_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `referral.referrals` (migration 011, Wave 12 runtime). */
+export interface ReferralReferralsTable {
+  id: string;
+  tenant_id: string;
+  program_id: string;
+  advocate_customer_id: string;
+  referred_person_id: string | null;
+  referral_code: string;
+  status: string;
+  source_context: string | null;
+  created_at: Date;
+  attributed_at: Date | null;
+  confirmed_at: Date | null;
+  expired_at: Date | null;
+  reversed_at: Date | null;
+}
+
+/** Mirrors `referral.referral_qualifications` (migration 011, Wave 12 runtime). */
+export interface ReferralQualificationsTable {
+  id: string;
+  tenant_id: string;
+  referral_id: string;
+  status: string;
+  risk_assessment_id: string | null;
+  reason_codes: string[];
+  qualified_order_id: string | null;
+  policy_version: string;
+  created_at: Date;
+  resolved_at: Date | null;
+}
+
+/** Mirrors `referral.referral_reward_links` (migration 011, Wave 12 runtime). */
+export interface ReferralRewardLinksTable {
+  id: string;
+  tenant_id: string;
+  referral_id: string;
+  reward_id: string;
+  created_at: Date;
+}
+
+/** Mirrors `loyalty.reward_definitions` (migration 011, Wave 12 runtime). */
+export interface LoyaltyRewardDefinitionsTable {
+  id: string;
+  tenant_id: string;
+  reward_key: string;
+  reward_type: string;
+  status: string;
+  perceived_value_minor: string | null;
+  estimated_cost_minor: string | null;
+  currency: string | null;
+  recurring_cost_policy: string | null;
+  rules_json: unknown;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `loyalty.rewards` (migration 011, Wave 12 runtime). */
+export interface LoyaltyRewardsTable {
+  id: string;
+  tenant_id: string;
+  customer_id: string;
+  reward_definition_id: string;
+  source_type: string;
+  source_id: string | null;
+  status: string;
+  economic_value_minor: string | null;
+  estimated_cost_minor: string | null;
+  currency: string | null;
+  issued_at: Date | null;
+  available_at: Date | null;
+  redeemed_at: Date | null;
+  expires_at: Date | null;
+  revoked_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * Mirrors `loyalty.reward_ledger_entries` (migration 011, append-only,
+ * Wave 12 runtime). Money columns stay `string` (exact minor units);
+ * signed amounts encode direction (EARNED positive, REDEEMED/REVOKED/
+ * EXPIRED negative, REVERSAL compensating) so `SUM(amount)` reconciles
+ * the outstanding balance per reward.
+ */
+export interface LoyaltyRewardLedgerEntriesTable {
+  id: string;
+  tenant_id: string;
+  customer_id: string;
+  reward_id: string | null;
+  entry_type: string;
+  amount_minor: string | null;
+  points_delta: number | null;
+  currency: string | null;
+  idempotency_key: string;
+  reference_type: string | null;
+  reference_id: string | null;
+  created_at: Date;
+}
+
+/** Mirrors `loyalty.gift_passes` (migration 011, Wave 12 runtime). */
+export interface LoyaltyGiftPassesTable {
+  id: string;
+  tenant_id: string;
+  issued_to_customer_id: string;
+  source_reward_id: string | null;
+  code: string;
+  status: string;
+  benefit_json: unknown;
+  expires_at: Date;
+  redeemed_by_person_id: string | null;
+  redeemed_at: Date | null;
+  created_at: Date;
+}
+
 export interface Database {
   "control.tenants": ControlTenantsTable;
   "control.users": ControlUsersTable;
@@ -1342,4 +1470,12 @@ export interface Database {
   "inventory.suppliers": InventorySuppliersTable;
   "inventory.supplier_app_snapshots": InventorySupplierAppSnapshotsTable;
   "inventory.supplier_app_items": InventorySupplierAppItemsTable;
+  "referral.referral_programs": ReferralProgramsTable;
+  "referral.referrals": ReferralReferralsTable;
+  "referral.referral_qualifications": ReferralQualificationsTable;
+  "referral.referral_reward_links": ReferralRewardLinksTable;
+  "loyalty.reward_definitions": LoyaltyRewardDefinitionsTable;
+  "loyalty.rewards": LoyaltyRewardsTable;
+  "loyalty.reward_ledger_entries": LoyaltyRewardLedgerEntriesTable;
+  "loyalty.gift_passes": LoyaltyGiftPassesTable;
 }

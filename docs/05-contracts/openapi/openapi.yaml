@@ -792,6 +792,25 @@ paths:
   /v1/customers/{customerId}/referrals:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Referral
+      operationId: listCustomerReferrals
+      summary: List advocate referrals
+      parameters:
+      - $ref: '#/components/parameters/CustomerId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Advocate referrals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListReferralsResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
     post:
       tags:
       - Referral
@@ -3196,11 +3215,19 @@ components:
           - 'null'
     CreateReferralRequest:
       type: object
-      required:
-      - referredIdentity
+      description: At least one of referredIdentity / referredPersonId is
+        required; the runtime accepts either (referredPersonId alone is
+        enough when the person is already registered in this tenant).
       properties:
         referredIdentity:
           $ref: '#/components/schemas/IdentityInput'
+        referredPersonId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: Direct referred-person link (alternative to referredIdentity
+            when the person is already registered in this tenant).
         programId:
           type:
           - string
@@ -3256,6 +3283,15 @@ components:
           - string
           - 'null'
           format: date-time
+    ListReferralsResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Referral'
     SendMessageRequest:
       type: object
       required:
@@ -3962,8 +3998,6 @@ components:
                 - 'null'
     ReferralQualificationRequest:
       type: object
-      required:
-      - policyVersion
       properties:
         qualifiedOrderId:
           type:
@@ -3973,26 +4007,55 @@ components:
         policyVersion:
           type: string
           minLength: 1
+          default: v1
         evidence:
           type: object
           additionalProperties: true
     ReferralQualification:
       type: object
+      description: Result of POST /v1/referrals/{referralId}/qualification as
+        returned by the runtime (qualificationId/decision/referralStatus
+        shape). `status` is a deprecated alias of `decision` kept for the
+        DB-check enum parity (referral_qualifications_status_check).
       required:
-      - id
       - referralId
-      - status
-      - policyVersion
-      - createdAt
+      - referralStatus
+      - decision
+      - reasonCodes
+      - already
       properties:
-        id:
-          type: string
-          format: uuid
         referralId:
           type: string
           format: uuid
+        qualificationId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        referralStatus:
+          type: string
+          enum:
+          - CREATED
+          - ATTRIBUTED
+          - ENGAGED
+          - QUALIFYING
+          - CONFIRMED
+          - REJECTED
+          - EXPIRED
+          - REVERSED
+        decision:
+          type: string
+          enum:
+          - PENDING
+          - ALLOW
+          - REVIEW
+          - DENY
+          - REVERSED
+          - EXPIRED
         status:
           type: string
+          deprecated: true
+          description: Deprecated alias of decision (qualifying outcomes only).
           enum:
           - PENDING
           - ALLOW
@@ -4008,11 +4071,13 @@ components:
           - string
           - 'null'
           format: uuid
-        policyVersion:
-          type: string
-        createdAt:
-          type: string
-          format: date-time
+        rewardId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        already:
+          type: boolean
     Reward:
       type: object
       required:
@@ -4044,14 +4109,18 @@ components:
           - FAILED
         economicValueMinor:
           type:
-          - integer
+          - string
           - 'null'
-          format: int64
+          pattern: ^[0-9]+$
+          description: Exact minor units as a decimal string (runtime returns
+            strings, never JSON numbers, to avoid float precision loss).
         estimatedCostMinor:
           type:
-          - integer
+          - string
           - 'null'
-          format: int64
+          pattern: ^[0-9]+$
+          description: Exact minor units as a decimal string (runtime returns
+            strings, never JSON numbers, to avoid float precision loss).
         currency:
           type:
           - string
