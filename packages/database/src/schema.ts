@@ -200,6 +200,17 @@ export interface AgentHumanReviewRequestsTable {
   resolved_at: Date | null;
 }
 
+/** Mirrors `agent.copilot_review_consumptions` (migration 037, single-use Copilot approvals). */
+export interface AgentCopilotReviewConsumptionsTable {
+  id: string;
+  tenant_id: string;
+  human_review_request_id: string;
+  command: string;
+  command_hash: string;
+  consumed_by_actor_id: string;
+  consumed_at: Date;
+}
+
 /** Mirrors `agent.human_review_actions` (migration 010, append-only). */
 export interface AgentHumanReviewActionsTable {
   id: string;
@@ -1815,6 +1826,7 @@ export interface Database {
   "platform.migration_history": PlatformMigrationHistoryTable;
   "agent.human_review_requests": AgentHumanReviewRequestsTable;
   "agent.human_review_actions": AgentHumanReviewActionsTable;
+  "agent.copilot_review_consumptions": AgentCopilotReviewConsumptionsTable;
   "agent.agent_releases": AgentReleasesTable;
   "agent.agent_runs": AgentRunsTable;
   "agent.agent_tasks": AgentTasksTable;

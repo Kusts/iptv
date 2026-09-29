@@ -50,6 +50,7 @@ import { KnowledgeController } from "./knowledge/knowledge.controller.js";
 import { ContextBuilder } from "./agent/context-builder.js";
 import { KyselyAgentReleaseStore } from "./agent/release-store.js";
 import { AgentPipeline } from "./agent/pipeline.js";
+import { CopilotService } from "./agent/copilot.service.js";
 import { SchedulerService } from "./scheduler/scheduler.service.js";
 import { createWorkflowAdapter } from "@iptv/workflows";
 
@@ -120,6 +121,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     ContextBuilder,
     KyselyAgentReleaseStore,
     AgentPipeline,
+    CopilotService,
     { provide: "TRANSPORT", useClass: LocalTransport },
     OutboxDrainer,
     InboxStoreProvider,

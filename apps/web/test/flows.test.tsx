@@ -5,6 +5,8 @@ import type { ReactNode } from "react";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { ApiError } from "../lib/api";
 import { Shell } from "../components/Shell";
+import { CopilotWidget, clearCopilotSessionMemory, loadDrafts } from "../components/CopilotWidget";
+import { ToastProvider } from "../components/ui/Toast";
 import { getApiGeneration, readScopedCache } from "../lib/api-cache";
 import { clearApiCache, useApi } from "../lib/useApi";
 import { LoginForm } from "../components/LoginForm";
@@ -4139,5 +4141,218 @@ describe("SLA desconhecido no HitlCenter", () => {
     const badgeClass = unknownBadge.closest("span")?.className ?? "";
     expect(badgeClass).toContain("cc-badge-info");
     expect(badgeClass).not.toContain("cc-badge-success");
+  });
+});
+
+describe("Tenant Copilot (widget)", () => {
+  beforeEach(() => {
+    clearCopilotSessionMemory();
+  });
+
+  const askAnswer = {
+    summary: "Você está em /. 2 ticket(s) aberto(s) neste tenant.",
+    confidence: "OBSERVED",
+    sectionsUsed: ["tickets"],
+    data: {},
+    suggestions: [
+      {
+        kind: "draft",
+        label: "Preparar abertura de ticket",
+        draftCommand: "support.ticket.open",
+        draftInput: { priority: "NORMAL", summary: "ajuda" },
+        needsInput: ["personId"],
+        reason: "Informe a pessoa (cliente) para concluir o draft.",
+      },
+      { kind: "navigate", label: "Abrir visão filtrada: /support", deepLink: "/support" },
+    ],
+    deepLinks: [{ label: "Suporte", href: "/support" }],
+  };
+
+  function stubCopilot(fetchFn: (url: string, init?: RequestInit) => Promise<Response>): void {
+    vi.stubGlobal("fetch", vi.fn(fetchFn));
+  }
+
+  it("abre, envia o contexto da tela e renderiza a resposta estruturada", async () => {
+    const seen: string[] = [];
+    stubCopilot(async (url: string, init?: RequestInit) => {
+      seen.push(url);
+      if (url.endsWith("/v1/agent/copilot/ask")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { screen?: { route?: string } };
+        expect(body.screen?.route).toBe("/");
+        return jsonResponse(200, askAnswer);
+      }
+      return jsonResponse(404, { code: "NOT_FOUND" });
+    });
+    render(<CopilotWidget />);
+    fireEvent.click(screen.getByRole("button", { name: "Copilot" }));
+    expect(screen.getByText("Pergunte sobre esta tela")).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText("Ex.: explique esta tela"), { target: { value: "ajuda" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => expect(screen.getByText(/Você está em \//)).toBeTruthy());
+    expect(screen.getByText("OBSERVED")).toBeTruthy();
+    expect(screen.getByText(/Preparar abertura de ticket/)).toBeTruthy();
+    expect(screen.getByText(/Abrir visão filtrada: \/support/)).toBeTruthy();
+    expect(seen.some((u) => u.endsWith("/v1/agent/copilot/ask"))).toBe(true);
+  });
+
+  it("action-card executa via pipeline mockado e confirma sem executar draft", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    stubCopilot(async (url: string, init?: RequestInit) => {
+      calls.push({ url, body: init?.body !== undefined ? JSON.parse(String(init.body)) : null });
+      if (url.endsWith("/v1/agent/copilot/ask")) return jsonResponse(200, askAnswer);
+      if (url.endsWith("/v1/agent/copilot/execute")) {
+        return jsonResponse(200, { status: "executed", message: "ok", command: "support.ticket.open" });
+      }
+      return jsonResponse(404, { code: "NOT_FOUND" });
+    });
+    render(<CopilotWidget />);
+    fireEvent.click(screen.getByRole("button", { name: "Copilot" }));
+    fireEvent.change(screen.getByPlaceholderText("Ex.: explique esta tela"), { target: { value: "ajuda" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => expect(screen.getByText(/Preparar abertura de ticket/)).toBeTruthy());
+    // O draft exige personId: o botão Executar fica desabilitado e nada chama o execute.
+    expect(screen.getByRole("button", { name: "Executar" })).toBeDisabled();
+    expect(calls.some((c) => c.url.endsWith("/v1/agent/copilot/execute"))).toBe(false);
+    // Salvar draft não executa: só persiste na memória da sessão, isolada por escopo.
+    fireEvent.click(screen.getByRole("button", { name: "Salvar draft" }));
+    await waitFor(() =>
+      expect(loadDrafts("public:anonymous").map((d) => d.command)).toContain("support.ticket.open"),
+    );
+    expect(calls.some((c) => c.url.endsWith("/v1/agent/copilot/execute"))).toBe(false);
+    // Outro escopo não enxerga o draft (isolamento por identidade).
+    expect(loadDrafts("auth:u9:t9:0:0")).toEqual([]);
+  });
+
+  it("action-card executável chama o execute e exibe o estado de aprovação", async () => {
+    const readyAnswer = {
+      ...askAnswer,
+      suggestions: [
+        {
+          kind: "draft",
+          label: "Preparar resolução do ticket em foco",
+          draftCommand: "support.ticket.resolve",
+          draftInput: { ticketId: "11111111-1111-4111-8111-111111111111" },
+          reason: "Ação sensível: exige aprovação humana (HITL) antes de executar.",
+        },
+      ],
+    };
+    const calls: string[] = [];
+    stubCopilot(async (url: string) => {
+      calls.push(url);
+      if (url.endsWith("/v1/agent/copilot/ask")) return jsonResponse(200, readyAnswer);
+      if (url.endsWith("/v1/agent/copilot/execute")) {
+        return jsonResponse(201, { status: "pending_review", message: "aguarda aprovação", command: "support.ticket.resolve", reviewId: "r1" });
+      }
+      return jsonResponse(404, { code: "NOT_FOUND" });
+    });
+    render(
+      <ToastProvider>
+        <CopilotWidget />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Copilot" }));
+    fireEvent.change(screen.getByPlaceholderText("Ex.: explique esta tela"), { target: { value: "resolver" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => expect(screen.getByText(/Preparar resolução do ticket em foco/)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Executar" }));
+    await waitFor(() => expect(calls.some((u) => u.endsWith("/v1/agent/copilot/execute"))).toBe(true));
+    await waitFor(() => expect(screen.getByText(/Enviado para aprovação humana/)).toBeTruthy());
+  });
+
+  it("erro do ask exibe estado de erro com retry", async () => {
+    stubCopilot(async (url: string) => {
+      if (url.endsWith("/v1/agent/copilot/ask")) return jsonResponse(403, { code: "FORBIDDEN" });
+      return jsonResponse(404, { code: "NOT_FOUND" });
+    });
+    render(<CopilotWidget />);
+    fireEvent.click(screen.getByRole("button", { name: "Copilot" }));
+    fireEvent.change(screen.getByPlaceholderText("Ex.: explique esta tela"), { target: { value: "ajuda" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => expect(screen.getByText("Não foi possível carregar.")).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Tentar de novo" })).toBeTruthy();
+  });
+
+  it("resposta de ask em voo é descartada quando a identidade muda (dado de A nunca aparece em B)", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-u1");
+    let resolveAsk!: (res: Response) => void;
+    const askGate = new Promise<Response>((resolve) => {
+      resolveAsk = resolve;
+    });
+    let askCalls = 0;
+    stubCopilot(async (url: string) => {
+      if (url.endsWith("/v1/auth/session")) {
+        return jsonResponse(200, {
+          user: { id: "u1", email: "u1@tenant.com", displayName: null },
+          activeTenantId: "t1",
+          memberships: [
+            { tenantId: "t1", tenantSlug: "t1", tenantName: "Tenant 1", roleKey: "owner", status: "ACTIVE" },
+          ],
+        });
+      }
+      if (url.endsWith("/v1/me")) {
+        return jsonResponse(200, {
+          user: { id: "u1", email: "u1@tenant.com" },
+          activeTenant: { id: "t1" },
+          roleKeys: [],
+          permissions: [],
+        });
+      }
+      if (url.endsWith("/v1/auth/logout")) return jsonResponse(200, {});
+      if (url.endsWith("/v1/agent/copilot/ask")) {
+        askCalls += 1;
+        return askGate;
+      }
+      return jsonResponse(404, { code: "NOT_FOUND" });
+    });
+    function LogoutProbe(): React.JSX.Element {
+      const { logout } = useAuth();
+      return <button onClick={() => void logout()}>sair-probe</button>;
+    }
+    render(
+      <AuthProvider>
+        <CopilotWidget />
+        <LogoutProbe />
+      </AuthProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Copilot" }));
+    fireEvent.change(screen.getByPlaceholderText("Ex.: explique esta tela"), { target: { value: "ajuda" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => expect(askCalls).toBe(1));
+    // Troca de identidade com o ask ainda pendente: o estado visível reseta.
+    fireEvent.click(screen.getByRole("button", { name: "sair-probe" }));
+    await waitFor(() => expect(screen.getByText("Pergunte sobre esta tela")).toBeTruthy());
+    // A resposta tardia do escopo antigo chega e deve ser descartada.
+    await act(async () => {
+      resolveAsk(jsonResponse(200, askAnswer));
+    });
+    await waitFor(() => expect(askCalls).toBe(1));
+    expect(screen.queryByText(/Você está em \//)).toBeNull();
+    expect(screen.getByText("Pergunte sobre esta tela")).toBeTruthy();
+  });
+
+  it("histórico e drafts vivem só em memória: nada persiste e o reload evapora tudo", async () => {
+    stubCopilot(async (url: string) => {
+      if (url.endsWith("/v1/agent/copilot/ask")) return jsonResponse(200, askAnswer);
+      return jsonResponse(404, { code: "NOT_FOUND" });
+    });
+    const view = render(<CopilotWidget />);
+    fireEvent.click(screen.getByRole("button", { name: "Copilot" }));
+    fireEvent.change(screen.getByPlaceholderText("Ex.: explique esta tela"), { target: { value: "ajuda" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => expect(screen.getByText(/Preparar abertura de ticket/)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Salvar draft" }));
+    await waitFor(() => expect(loadDrafts("public:anonymous")).toHaveLength(1));
+    // Nenhuma chave do Copilot com dado de cliente toca o armazenamento persistente.
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      expect(window.localStorage.key(i)?.startsWith("iptv.copilot.")).toBe(false);
+    }
+    // Reload simulado: registry novo, memória evaporada, conversa vazia.
+    clearCopilotSessionMemory();
+    expect(loadDrafts("public:anonymous")).toEqual([]);
+    view.unmount();
+    render(<CopilotWidget />);
+    fireEvent.click(screen.getByRole("button", { name: "Copilot" }));
+    expect(screen.getByText("Pergunte sobre esta tela")).toBeTruthy();
+    expect(screen.queryByText(/Você está em \//)).toBeNull();
   });
 });

@@ -33,6 +33,7 @@ tags:
 - name: Provider Operations
 - name: Support
 - name: HITL
+- name: Copilot
 - name: Referral
 - name: Inventory
 - name: Communications
@@ -1961,6 +1962,170 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           $ref: '#/components/responses/TenantContextConflict'
+  /v1/agent/copilot/context:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Copilot
+      operationId: getCopilotContext
+      summary: Permission-scoped Copilot screen context
+      description: >-
+        Wave 14-COPILOT (G18). Assembles the current route/entity/selection/filter
+        context from tenant-scoped reads gated per section by the caller
+        permission (`support.ticket.read`, `crm.person.read`, `billing.read`,
+        `subscription.read`, `agent.review.request`). A denied section is
+        silently omitted (never a global 403); foreign entity ids resolve to
+        null. Requires `agent.review.request` at admission.
+      parameters:
+      - name: route
+        in: query
+        required: true
+        schema:
+          type: string
+        example: /support
+      - name: entityKind
+        in: query
+        required: false
+        schema:
+          type: string
+        example: ticket
+      - name: entityId
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: selection
+        in: query
+        required: false
+        description: JSON array of {kind, id} (max 20).
+        schema:
+          type: string
+      - name: filters
+        in: query
+        required: false
+        description: JSON object of string filters (max 20).
+        schema:
+          type: string
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Screen context sections
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CopilotContext'
+        '400':
+          description: Invalid screen parameters (INVALID_SCREEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/agent/copilot/ask:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Copilot
+      operationId: askCopilot
+      summary: Explain the current screen and propose drafts
+      description: >-
+        Wave 14-COPILOT (G18). Deterministic stub (no live model): explains the
+        current screen from permission-scoped facts and may propose
+        `draftCommands`. Never writes a domain row; commands execute only via
+        `POST /v1/agent/copilot/execute`. Requires `agent.review.request`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CopilotAskRequest'
+      responses:
+        '201':
+          description: Structured Copilot answer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CopilotAskResponse'
+        '400':
+          description: Invalid question or screen (INVALID_QUESTION / INVALID_SCREEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/agent/copilot/execute:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Copilot
+      operationId: executeCopilotCommand
+      summary: Execute a Copilot-proposed command through the authorized pipeline
+      description: >-
+        Wave 14-COPILOT (G18). Closed command allowlist; the target command
+        permission is re-checked and MEDIUM/LOW commands run through the normal
+        command/policy/audit pipeline. HIGH-risk commands create a
+        `HumanReviewRequest` (existing HITL) instead of executing; an approved
+        review id (`reviewId`) authorizes exactly one later execution
+        (single-use: a second execute with the same reviewId fails with 409
+        CONSUMED). A `copilot_command` review cannot be approved by its own
+        requester (403/409). Stale
+        `expectedStatus` values fail with 409. The HTTP request id is
+        propagated as the bus `correlationId`. Idempotency comes from the
+        `Idempotency-Key` header when present, falling back to the body's
+        `idempotencyKey`; both are documented, the header wins. Requires
+        `agent.review.request` at admission.
+      parameters:
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CopilotExecuteRequest'
+      responses:
+        '200':
+          description: Command executed (EXECUTED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CopilotExecuteResponse'
+        '201':
+          description: Sensitive action parked for human approval (PENDING_REVIEW)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CopilotExecuteResponse'
+        '400':
+          description: Invalid command/input (INVALID_COMMAND / INVALID_INPUT / INVALID_REVIEW)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Target permission denied (DENIED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown command or review not found (UNKNOWN_COMMAND / NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Stale resource or unapproved review (STALE), consumed single-use approval (CONSUMED), or tenant-context revision precondition failed (TENANT_CONTEXT_CONFLICT)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/conversations/{conversationId}:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -6465,6 +6630,194 @@ components:
             $ref: '#/components/schemas/HumanReviewCenterItem'
         slaPolicy:
           $ref: '#/components/schemas/HumanReviewCenterSlaPolicy'
+    CopilotContext:
+      type: object
+      required:
+      - route
+      - sections
+      - generatedAt
+      properties:
+        route:
+          type: string
+        generatedAt:
+          type: string
+          format: date-time
+        sections:
+          type: array
+          items:
+            $ref: '#/components/schemas/CopilotSection'
+    CopilotSection:
+      type: object
+      required:
+      - key
+      - title
+      - summary
+      - deepLink
+      - entity
+      properties:
+        key:
+          type: string
+          enum:
+          - tickets
+          - conversations
+          - orders
+          - subscriptions
+          - reviews
+        title:
+          type: string
+        summary:
+          type: string
+        deepLink:
+          type: string
+        entity:
+          type:
+          - object
+          - 'null'
+          additionalProperties: true
+    CopilotAskRequest:
+      type: object
+      required:
+      - question
+      - screen
+      properties:
+        question:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        screen:
+          type: object
+          required:
+          - route
+          properties:
+            route:
+              type: string
+            entityKind:
+              type: string
+            entityId:
+              type: string
+            selection:
+              type: array
+              items:
+                type: object
+            filters:
+              type: object
+              additionalProperties:
+                type: string
+    CopilotSuggestion:
+      type: object
+      required:
+      - kind
+      - label
+      properties:
+        kind:
+          type: string
+          enum:
+          - navigate
+          - draft
+          - info
+        label:
+          type: string
+        deepLink:
+          type: string
+        draftCommand:
+          type: string
+        draftInput:
+          type: object
+          additionalProperties: true
+        needsInput:
+          type: array
+          items:
+            type: string
+        reason:
+          type: string
+    CopilotAskResponse:
+      type: object
+      required:
+      - summary
+      - confidence
+      - sectionsUsed
+      - data
+      - suggestions
+      - deepLinks
+      properties:
+        summary:
+          type: string
+        confidence:
+          type: string
+          enum:
+          - OBSERVED
+          - INFERRED
+        sectionsUsed:
+          type: array
+          items:
+            type: string
+        data:
+          type: object
+          additionalProperties: true
+        suggestions:
+          type: array
+          items:
+            $ref: '#/components/schemas/CopilotSuggestion'
+        deepLinks:
+          type: array
+          items:
+            type: object
+            required:
+            - label
+            - href
+            properties:
+              label:
+                type: string
+              href:
+                type: string
+    CopilotExecuteRequest:
+      type: object
+      required:
+      - command
+      - input
+      properties:
+        command:
+          type: string
+          example: support.ticket.open
+        input:
+          type: object
+          additionalProperties: true
+        reviewId:
+          type: string
+          format: uuid
+        idempotencyKey:
+          type: string
+          minLength: 8
+          maxLength: 200
+          description: Body fallback for the idempotency key; the `Idempotency-Key` header wins when both are present.
+    CopilotExecuteResponse:
+      type: object
+      required:
+      - status
+      - message
+      - command
+      properties:
+        status:
+          type: string
+          enum:
+          - executed
+          - pending_review
+          - denied
+          - stale
+          - consumed
+          - unknown_command
+          - not_found
+          - invalid
+        message:
+          type: string
+        command:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+        reviewId:
+          type: string
+          format: uuid
     AuthRegisterRequest:
       type: object
       required:

@@ -15,6 +15,7 @@ const NAV = [
   { href: "/orders", label: "Pedidos" },
   { href: "/support", label: "Suporte" },
   { href: "/hitl", label: "Centro HITL" },
+  { href: "/copilot", label: "Copilot" },
 ];
 
 export function Shell({ children }: { children: React.ReactNode }): React.JSX.Element {

@@ -26,6 +26,8 @@ import { registerLicenseCommands } from "../inventory/license.commands.js";
 import { registerPartnersCommands } from "../partners/partners.commands.js";
 import { resolveSupplierBalancePort, supplierBalanceAdapterFromEnv } from "../inventory/supplier-balance.port.js";
 import { refundReviewResolvedHook, refundTargetRevalidator } from "../billing/refund-review.js";
+import { copilotTargetRevalidator } from "../agent/copilot-review.js";
+import type { CommandHandlerContext, StoredReviewRequest } from "./command-bus.js";
 import { asaasAdapterNameFromEnv, resolveAsaasPort } from "../billing/asaas-port.js";
 import {
   StubProviderReadback,
@@ -64,13 +66,30 @@ import {
  * (default `echo`); `real` requires `ASAAS_API_KEY` + `ASAAS_BASE_URL` and
  * maps transport uncertainty to UNKNOWN_EFFECT (never auto-retries).
  */
+/**
+ * Combined HumanReview target revalidator: the Copilot guard owns
+ * `copilot_command` reviews (no self-approval + command binding), the
+ * refund guard owns linked `refund_request` reviews. Each passes through
+ * reviews outside its resource type, so chaining is order-independent.
+ */
+async function combinedTargetRevalidator(
+  ctx: CommandHandlerContext,
+  request: StoredReviewRequest,
+  decision?: "APPROVED" | "REJECTED",
+): Promise<string | null> {
+  return (
+    (await copilotTargetRevalidator(ctx, request, decision)) ??
+    (await refundTargetRevalidator(ctx, request, decision))
+  );
+}
+
 export const CommandsProvider = {
   provide: CommandBus,
   useFactory: (commandDb: DbPort | null) => {
     const bus = new CommandBus(commandDb);
     if (commandDb !== null) {
       registerHumanReviewCommands(bus, {
-        revalidate: refundTargetRevalidator,
+        revalidate: combinedTargetRevalidator,
         onResolved: refundReviewResolvedHook,
       });
       registerPolicyCommands(bus);

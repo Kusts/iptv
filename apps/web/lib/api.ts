@@ -456,3 +456,74 @@ export interface HealthResponse {
   scheduler: string;
   tickSeconds: number;
 }
+
+// ---------------------------------------------------------------------------
+// Tenant Copilot (Wave 14-COPILOT, G18) — tipos espelhados das respostas /v1.
+// ---------------------------------------------------------------------------
+
+export interface CopilotSection {
+  key: string;
+  title: string;
+  summary: string;
+  deepLink: string;
+  entity: Record<string, unknown> | null;
+}
+
+export interface CopilotContextResponse {
+  route: string;
+  sections: CopilotSection[];
+  generatedAt: string;
+}
+
+export interface CopilotSuggestion {
+  kind: "navigate" | "draft" | "info";
+  label: string;
+  deepLink?: string;
+  draftCommand?: string;
+  draftInput?: Record<string, unknown>;
+  needsInput?: string[];
+  reason?: string;
+}
+
+export interface CopilotAskResponse {
+  summary: string;
+  confidence: "OBSERVED" | "INFERRED";
+  sectionsUsed: string[];
+  data: Record<string, unknown>;
+  suggestions: CopilotSuggestion[];
+  deepLinks: Array<{ label: string; href: string }>;
+}
+
+export type CopilotExecuteStatus =
+  | "executed"
+  | "pending_review"
+  | "denied"
+  | "stale"
+  | "unknown_command"
+  | "not_found"
+  | "invalid";
+
+export interface CopilotExecuteResponse {
+  status: CopilotExecuteStatus;
+  message: string;
+  command: string;
+  data?: Record<string, unknown>;
+  reviewId?: string;
+}
+
+export interface CopilotScreenInput {
+  route: string;
+  entityKind?: string;
+  entityId?: string;
+  selection?: Array<{ kind: string; id: string }>;
+  filters?: Record<string, string>;
+}
+
+export function copilotContextQuery(screen: CopilotScreenInput): string {
+  const params = new URLSearchParams({ route: screen.route });
+  if (screen.entityKind !== undefined) params.set("entityKind", screen.entityKind);
+  if (screen.entityId !== undefined) params.set("entityId", screen.entityId);
+  if (screen.selection !== undefined) params.set("selection", JSON.stringify(screen.selection));
+  if (screen.filters !== undefined) params.set("filters", JSON.stringify(screen.filters));
+  return `/v1/agent/copilot/context?${params.toString()}`;
+}
