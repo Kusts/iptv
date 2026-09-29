@@ -1761,6 +1761,42 @@ export interface PartnersLearningProgressTable {
   updated_at: Date;
 }
 
+/**
+ * Mirrors `analytics.metric_definitions` (migration 036, Wave 14 read-model).
+ * Tenant-scoped catalog of computed metric keys (formula_ref points at the
+ * canonical metric-catalog section; never a source of truth).
+ */
+export interface AnalyticsMetricDefinitionsTable {
+  id: string;
+  tenant_id: string;
+  metric_key: string;
+  family: string;
+  formula_ref: string;
+  formula_version: string;
+  unit: string;
+  granularity: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * Mirrors `analytics.metric_snapshots` (migration 036, Wave 14 read-model).
+ * Replaceable daily points, idempotent by (tenant, key, bucket) — replay
+ * deletes + re-inserts the window's own rows. Money stays `string`
+ * (node-pg bigint text); ratios are integer basis points in `value_json`.
+ */
+export interface AnalyticsMetricSnapshotsTable {
+  id: string;
+  tenant_id: string;
+  metric_key: string;
+  bucket_start: Date;
+  granularity: string;
+  value_json: unknown;
+  value_minor: string | null;
+  computed_at: Date;
+  data_quality: string;
+}
+
 export interface Database {
   "control.tenants": ControlTenantsTable;
   "control.users": ControlUsersTable;
@@ -1884,4 +1920,6 @@ export interface Database {
   "partners.learning_content": PartnersLearningContentTable;
   "partners.learning_content_versions": PartnersLearningContentVersionsTable;
   "partners.learning_progress": PartnersLearningProgressTable;
+  "analytics.metric_definitions": AnalyticsMetricDefinitionsTable;
+  "analytics.metric_snapshots": AnalyticsMetricSnapshotsTable;
 }

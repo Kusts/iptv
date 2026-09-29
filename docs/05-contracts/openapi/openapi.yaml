@@ -746,6 +746,128 @@ paths:
                 $ref: '#/components/schemas/MetricsOverview'
         '409':
           $ref: '#/components/responses/TenantContextConflict'
+  /v1/metrics:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Analytics
+      operationId: listMetricDefinitions
+      description: Wave 14 metric catalog (tenant-scoped materialization of the static registry; formulas owned by docs/08-data-analytics/metric-catalog.md). Read-only.
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Metric catalog
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricCatalog'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/metrics/{key}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Analytics
+      operationId: getMetricSeries
+      description: Wave 14 daily series for one catalog key (replaceable read-model snapshots, idempotent replay). Unknown keys 404; static finance keys (cac/cohorts/overview) keep their own routes.
+      parameters:
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+        example: sales.settled_revenue_minor
+      - name: from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+      - name: to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Daily metric series
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricSeries'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/analytics/overview:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Analytics
+      operationId: getAnalyticsOverview
+      description: Wave 14 dashboard summary (latest snapshot per catalog key with freshness/quality flags). Read-only; EMPTY before the first recompute.
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Analytics overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsOverview'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/analytics/recompute:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Analytics
+      operationId: recomputeAnalytics
+      description: Wave 14 idempotent recompute (reads domain facts, writes only analytics.* snapshots; per-family F14 isolation with degradedFamilies + DEGRADED markers).
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecomputeAnalyticsRequest'
+      responses:
+        '200':
+          description: Recompute result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecomputeAnalyticsResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/control-center/summary:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Analytics
+      operationId: getControlCenterSummary
+      description: Wave 14 Control Center aggregation (current operation, business summary, AI activity, scheduled work, data quality per dashboards.md §14). Per-section F14 isolation; never 500s on read-model failure.
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Control Center summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlCenterSummary'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/subscriptions/{subscriptionId}:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -7164,3 +7286,185 @@ components:
           enum:
           - OK
           - DEGRADED
+    MetricDefinition:
+      type: object
+      required:
+      - key
+      - family
+      - formulaRef
+      - formulaVersion
+      - unit
+      - granularity
+      properties:
+        key:
+          type: string
+        family:
+          type: string
+        formulaRef:
+          type: string
+        formulaVersion:
+          type: string
+        unit:
+          type: string
+        granularity:
+          type: string
+          enum:
+          - DAY
+    MetricCatalog:
+      type: object
+      required:
+      - items
+      - seeded
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricDefinition'
+        seeded:
+          type: boolean
+    MetricSeriesPoint:
+      type: object
+      required:
+      - bucket
+      - value
+      - computedAt
+      - dataQuality
+      properties:
+        bucket:
+          type: string
+          format: date-time
+        value:
+          type: object
+        valueMinor:
+          type:
+          - string
+          - 'null'
+        computedAt:
+          type: string
+          format: date-time
+        dataQuality:
+          type: string
+          enum:
+          - OK
+          - PARTIAL
+          - EMPTY
+          - DEGRADED
+    MetricSeries:
+      type: object
+      required:
+      - key
+      - from
+      - to
+      - points
+      properties:
+        key:
+          type: string
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricSeriesPoint'
+    AnalyticsOverview:
+      type: object
+      required:
+      - metrics
+      - trackedMetrics
+      - totalMetrics
+      - dataQuality
+      - degradedMetrics
+      properties:
+        metrics:
+          type: object
+        trackedMetrics:
+          type: integer
+        totalMetrics:
+          type: integer
+        latestComputedAt:
+          type:
+          - string
+          - 'null'
+        dataQuality:
+          type: string
+          enum:
+          - OK
+          - DEGRADED
+          - EMPTY
+        degradedMetrics:
+          type: integer
+    RecomputeAnalyticsRequest:
+      type: object
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        failFamily:
+          type: string
+          description: Diagnostic fault-injection (tests/drills) — the named family throws to exercise the F14 degraded path.
+    RecomputeAnalyticsResponse:
+      type: object
+      required:
+      - snapshotsWritten
+      - degradedFamilies
+      - computedAt
+      - window
+      properties:
+        snapshotsWritten:
+          type: integer
+        degradedFamilies:
+          type: array
+          items:
+            type: string
+        computedAt:
+          type: string
+          format: date-time
+        window:
+          type: object
+          required:
+          - from
+          - to
+          properties:
+            from:
+              type: string
+              format: date-time
+            to:
+              type: string
+              format: date-time
+    ControlCenterSummary:
+      type: object
+      required:
+      - operation
+      - business
+      - aiActivity
+      - scheduledWork
+      - dataQuality
+      - degradedSections
+      - dataQualityOverall
+      properties:
+        operation:
+          type: object
+        business:
+          type: object
+        aiActivity:
+          type: object
+        scheduledWork:
+          type: object
+        dataQuality:
+          type: object
+        degradedSections:
+          type: array
+          items:
+            type: string
+        dataQualityOverall:
+          type: string
+          enum:
+          - OK
+          - DEGRADED
+          - EMPTY
