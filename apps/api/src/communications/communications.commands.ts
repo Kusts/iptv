@@ -132,15 +132,25 @@ async function loadConversation(
 
 /** Pure suppression/opt-out decision over plain rows (shared by both stores; unit-tested). */
 export function suppressionDecision(input: {
-  suppressions: Array<{ personId: string | null; channel: string | null; startsAt: Date; endsAt: Date | null }>;
+  suppressions: Array<{
+    personId: string | null;
+    identityId: string | null;
+    channel: string | null;
+    startsAt: Date;
+    endsAt: Date | null;
+  }>;
   preferences: Array<{ personId: string; channel: string; status: string }>;
   personId: string;
+  identityIds: string[];
   channel: string;
   at: Date;
 }): { blocked: true; reason: string } | { blocked: false } {
+  // A NULL person_id is an identity-directed suppression, never a
+  // tenant-wide wildcard: it matches only via the linked identity ids.
   const hit = input.suppressions.find(
     (s) =>
-      (s.personId === null || s.personId === input.personId) &&
+      (s.personId === input.personId ||
+        (s.personId === null && s.identityId !== null && input.identityIds.includes(s.identityId))) &&
       (s.channel === null || s.channel === input.channel) &&
       s.startsAt.getTime() <= input.at.getTime() &&
       (s.endsAt === null || s.endsAt.getTime() > input.at.getTime()),
@@ -166,11 +176,24 @@ async function suppressionBlock(
   const at = new Date();
   const trx = kyselyTrxOf(ctx);
   if (trx !== null) {
+    const identityRows = await trx
+      .selectFrom("identity.identities")
+      .select(["id"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("person_id", "=", personId)
+      .where("detached_at", "is", null)
+      .execute();
+    const identityIds = identityRows.map((row) => row.id);
     const suppressions = await trx
       .selectFrom("communication.communication_suppressions")
-      .select(["person_id", "channel", "starts_at", "ends_at"])
+      .select(["person_id", "identity_id", "channel", "starts_at", "ends_at"])
       .where("tenant_id", "=", ctx.tenantId)
-      .where((eb) => eb.or([eb("person_id", "=", personId), eb("person_id", "is", null)]))
+      .where((eb) =>
+        eb.or([
+          eb("person_id", "=", personId),
+          ...(identityIds.length > 0 ? [eb("identity_id", "in", identityIds)] : []),
+        ]),
+      )
       .execute();
     const preferences = await trx
       .selectFrom("communication.communication_preferences")
@@ -182,12 +205,14 @@ async function suppressionBlock(
     return suppressionDecision({
       suppressions: suppressions.map((s) => ({
         personId: s.person_id,
+        identityId: s.identity_id,
         channel: s.channel,
         startsAt: s.starts_at,
         endsAt: s.ends_at,
       })),
       preferences: preferences.map((p) => ({ personId: p.person_id, channel: p.channel, status: p.status })),
       personId,
+      identityIds,
       channel,
       at,
     });
@@ -200,11 +225,12 @@ async function suppressionBlock(
     {
       suppressions: mem.suppressions
         .filter((s) => s.tenantId === ctx.tenantId)
-        .map((s) => ({ personId: s.personId, channel: s.channel, startsAt: s.startsAt, endsAt: s.endsAt })),
+        .map((s) => ({ personId: s.personId, identityId: null, channel: s.channel, startsAt: s.startsAt, endsAt: s.endsAt })),
       preferences: mem.preferences
         .filter((p) => p.tenantId === ctx.tenantId)
         .map((p) => ({ personId: p.personId, channel: p.channel, status: p.status })),
       personId,
+      identityIds: [],
       channel,
       at,
     },

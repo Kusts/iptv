@@ -148,7 +148,7 @@ describe("suppression / preference decision (pure)", () => {
   const at = new Date("2026-09-26T12:00:00Z");
   it("passes with no rows", () => {
     expect(
-      suppressionDecision({ suppressions: [], preferences: [], personId: "p", channel: "WHATSAPP", at }),
+      suppressionDecision({ suppressions: [], preferences: [], personId: "p", identityIds: [], channel: "WHATSAPP", at }),
     ).toEqual({ blocked: false });
   });
 
@@ -156,10 +156,41 @@ describe("suppression / preference decision (pure)", () => {
     expect(
       suppressionDecision({
         suppressions: [
-          { personId: "p", channel: "WHATSAPP", startsAt: new Date("2026-01-01"), endsAt: null },
+          { personId: "p", identityId: null, channel: "WHATSAPP", startsAt: new Date("2026-01-01"), endsAt: null },
         ],
         preferences: [],
         personId: "p",
+        identityIds: [],
+        channel: "WHATSAPP",
+        at,
+      }),
+    ).toEqual({ blocked: true, reason: "recipient is suppressed for this channel" });
+  });
+
+  it("never treats an identity-only row as a tenant-wide wildcard", () => {
+    expect(
+      suppressionDecision({
+        suppressions: [
+          { personId: null, identityId: "other-identity", channel: "WHATSAPP", startsAt: new Date("2026-01-01"), endsAt: null },
+        ],
+        preferences: [],
+        personId: "p",
+        identityIds: ["my-identity"],
+        channel: "WHATSAPP",
+        at,
+      }),
+    ).toEqual({ blocked: false });
+  });
+
+  it("blocks via a linked identity suppression", () => {
+    expect(
+      suppressionDecision({
+        suppressions: [
+          { personId: null, identityId: "my-identity", channel: "WHATSAPP", startsAt: new Date("2026-01-01"), endsAt: null },
+        ],
+        preferences: [],
+        personId: "p",
+        identityIds: ["my-identity"],
         channel: "WHATSAPP",
         at,
       }),
@@ -170,11 +201,12 @@ describe("suppression / preference decision (pure)", () => {
     expect(
       suppressionDecision({
         suppressions: [
-          { personId: "p", channel: "WHATSAPP", startsAt: new Date("2026-01-01"), endsAt: new Date("2026-02-01") },
-          { personId: "p", channel: "SMS", startsAt: new Date("2026-01-01"), endsAt: null },
+          { personId: "p", identityId: null, channel: "WHATSAPP", startsAt: new Date("2026-01-01"), endsAt: new Date("2026-02-01") },
+          { personId: "p", identityId: null, channel: "SMS", startsAt: new Date("2026-01-01"), endsAt: null },
         ],
         preferences: [],
         personId: "p",
+        identityIds: [],
         channel: "WHATSAPP",
         at,
       }),
@@ -187,6 +219,7 @@ describe("suppression / preference decision (pure)", () => {
         suppressions: [],
         preferences: [{ personId: "p", channel: "WHATSAPP", status: "DENIED" }],
         personId: "p",
+        identityIds: [],
         channel: "WHATSAPP",
         at,
       }),

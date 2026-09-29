@@ -14,6 +14,7 @@ import { registerBillingCommands } from "../billing/billing.commands.js";
 import { registerSubscriptionCommands } from "../subscription/subscription.commands.js";
 import { registerRenewalCommands } from "../renewal/renewal.commands.js";
 import { registerReferralCommands } from "../referral/referral.commands.js";
+import { registerGrowthCommands } from "../growth/growth.commands.js";
 import { registerFulfillmentCommands } from "../fulfillment/fulfillment.commands.js";
 import { registerSupportCommands } from "../support/support.commands.js";
 import { registerKnowledgeCommands } from "../knowledge/knowledge.commands.js";
@@ -41,9 +42,13 @@ import {
  *   recovery queue, reusing the Wave 5 billing and Wave 6 subscription
  *   primitives) and the Wave 8 slice (Support tickets/incidents/problems +
  *   Knowledge items + `human_review.claim` for the HITL center) and the
- *   Wave 12 slice (Referral attribution/qualification + Rewards
- *   issue/redeem + gift passes over the Wave 5 order/billing primitives).
- *   Explicit tokens everywhere — esbuild/vitest emits no `design:paramtypes`.
+  *   Wave 12 slice (Referral attribution/qualification + Rewards
+  *   issue/redeem + gift passes over the Wave 5 order/billing primitives).
+  *   Explicit tokens everywhere — esbuild/vitest emits no `design:paramtypes`.
+  *   Wave 11 slice (Campaigns/Attribution: campaign lifecycle + versioning,
+  *   audiences, MessageIntent scheduling behind the manual gateway, first-
+  *   touch attribution and version-resolving conversions over the Wave 2
+  *   preference/suppression primitives).
  *
  *   Wave 7 slice (Apps/MK over ports/fakes only): AppTrial lifecycle,
  *   MK supplier-balance snapshots + atomic credit reservations, and the
@@ -78,6 +83,7 @@ export const CommandsProvider = {
       registerSubscriptionCommands(bus);
       registerRenewalCommands(bus);
       registerReferralCommands(bus);
+      registerGrowthCommands(bus);
       registerFulfillmentCommands(bus, { opsPort });
       registerSupportCommands(bus);
       registerKnowledgeCommands(bus);

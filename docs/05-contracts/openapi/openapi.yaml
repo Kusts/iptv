@@ -2044,6 +2044,374 @@ paths:
                 $ref: '#/components/schemas/GiftPass'
         '409':
           $ref: '#/components/responses/TenantContextConflict'
+  /v1/campaigns:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Growth
+      operationId: listCampaigns
+      summary: List campaigns
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Tenant campaigns
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListCampaignsResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+    post:
+      tags:
+      - Growth
+      operationId: createCampaign
+      summary: Create a campaign in DRAFT with a DRAFT v1 shell
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCampaignRequest'
+      responses:
+        '201':
+          description: Campaign created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Campaign'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/campaigns/{campaignId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Growth
+      operationId: getCampaign
+      summary: Get campaign
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Campaign
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Campaign'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/campaigns/{campaignId}/versions:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Growth
+      operationId: publishCampaignVersion
+      summary: Publish a new immutable campaign version
+      description: Material edits to a published version always create a new version row; published rows are never mutated.
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishCampaignVersionRequest'
+      responses:
+        '201':
+          description: Campaign version published
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignVersion'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/campaigns/{campaignId}/creatives:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Growth
+      operationId: addCreative
+      summary: Add a per-channel creative to a campaign
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddCreativeRequest'
+      responses:
+        '201':
+          description: Creative added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddCreativeResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/campaigns/{campaignId}/activate:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Growth
+      operationId: activateCampaign
+      summary: Activate a campaign
+      description: Requires a published version with a budget cap, an audience and a creative. Emits growth.campaign.activated.v1.
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201':
+          description: Campaign activated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Campaign'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/campaigns/{campaignId}/pause:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Growth
+      operationId: pauseCampaign
+      summary: Pause a campaign
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201':
+          description: Campaign paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Campaign'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/campaigns/{campaignId}/complete:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Growth
+      operationId: completeCampaign
+      summary: Complete a campaign
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201':
+          description: Campaign completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Campaign'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/campaigns/{campaignId}/schedule:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Growth
+      operationId: scheduleMessageIntent
+      summary: Schedule a message intent behind the manual gateway
+      description: Never sends directly. Per-contact outcome is SCHEDULED, DEFERRED (quiet hours) or BLOCKED (suppressed, opted out, budget exceeded).
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleMessageIntentRequest'
+      responses:
+        '201':
+          description: Message intent scheduled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageIntent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/campaigns/{campaignId}/intents:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Growth
+      operationId: listCampaignIntents
+      summary: List message intents of a campaign
+      parameters:
+      - $ref: '#/components/parameters/CampaignId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Campaign message intents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMessageIntentsResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/audiences:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Growth
+      operationId: listAudiences
+      summary: List audience definitions
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Tenant audiences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAudiencesResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+    post:
+      tags:
+      - Growth
+      operationId: defineAudience
+      summary: Define an audience with dynamic criteria and optional static members
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DefineAudienceRequest'
+      responses:
+        '201':
+          description: Audience defined
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DefineAudienceResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/attribution:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Growth
+      operationId: getAttribution
+      summary: Get attribution touches and conversions for a person
+      parameters:
+      - name: personId
+        in: query
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Person attribution
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttributionResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/attribution/touches:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Growth
+      operationId: recordAttributionTouch
+      summary: Record an attribution touch (first-touch wins)
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordAttributionTouchRequest'
+      responses:
+        '201':
+          description: Attribution touch recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttributionTouch'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/attribution/conversions:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Growth
+      operationId: recordConversion
+      summary: Record a conversion resolving the first-touch campaign version
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordConversionRequest'
+      responses:
+        '201':
+          description: Conversion recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversionEvent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/inventory/app-trials:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -2573,6 +2941,13 @@ components:
         format: uuid
     ReferralId:
       name: referralId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CampaignId:
+      name: campaignId
       in: path
       required: true
       schema:
@@ -3640,6 +4015,423 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Referral'
+    Campaign:
+      type: object
+      required:
+      - id
+      - campaignKey
+      - name
+      - status
+      - createdAt
+      - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        campaignKey:
+          type: string
+        name:
+          type: string
+        objective:
+          type:
+          - string
+          - 'null'
+        status:
+          type: string
+          enum:
+          - DRAFT
+          - ACTIVE
+          - PAUSED
+          - COMPLETED
+        currentVersionId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        currentVersionNo:
+          type:
+          - integer
+          - 'null'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateCampaignRequest:
+      type: object
+      required:
+      - name
+      properties:
+        campaignKey:
+          type: string
+        name:
+          type: string
+        objective:
+          type: string
+    CampaignVersion:
+      type: object
+      required:
+      - versionId
+      - versionNo
+      - campaignId
+      properties:
+        versionId:
+          type: string
+          format: uuid
+        versionNo:
+          type: integer
+        campaignId:
+          type: string
+          format: uuid
+    PublishCampaignVersionRequest:
+      type: object
+      properties:
+        offerSnapshot:
+          type: object
+        policySnapshot:
+          type: object
+        budgetCapMinor:
+          type: string
+        unitCostMinor:
+          type: string
+          description: Authoritative per-contact cost in minor units (migration 030); drives the budget cap.
+        currency:
+          type: string
+    ListCampaignsResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Campaign'
+    AddCreativeRequest:
+      type: object
+      required:
+      - channel
+      - name
+      properties:
+        campaignVersionId:
+          type: string
+          format: uuid
+        channel:
+          type: string
+        name:
+          type: string
+        content:
+          type: object
+    AddCreativeResponse:
+      type: object
+      required:
+      - creativeId
+      properties:
+        creativeId:
+          type: string
+          format: uuid
+    AudienceDefinition:
+      type: object
+      required:
+      - id
+      - name
+      - membershipType
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        campaignId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        name:
+          type: string
+        membershipType:
+          type: string
+          enum:
+          - DYNAMIC
+          - STATIC
+        criteria:
+          type: object
+        createdAt:
+          type: string
+          format: date-time
+    DefineAudienceRequest:
+      type: object
+      required:
+      - name
+      properties:
+        campaignId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        membershipType:
+          type: string
+          enum:
+          - DYNAMIC
+          - STATIC
+        criteriaJson:
+          type: object
+        memberPersonIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+    DefineAudienceResponse:
+      type: object
+      required:
+      - audienceId
+      - memberCount
+      - already
+      properties:
+        audienceId:
+          type: string
+          format: uuid
+        memberCount:
+          type: integer
+        already:
+          type: boolean
+    ListAudiencesResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AudienceDefinition'
+    ScheduledContact:
+      type: object
+      required:
+      - personId
+      - status
+      - scheduledFor
+      properties:
+        personId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - SCHEDULED
+          - DEFERRED
+          - BLOCKED
+        reason:
+          type:
+          - string
+          - 'null'
+        scheduledFor:
+          type: string
+          format: date-time
+          description: Requested instant, or the next allowed release slot for DEFERRED contacts.
+    MessageIntent:
+      type: object
+      required:
+      - intentId
+      - status
+      - scheduledFor
+      - contacts
+      - already
+      properties:
+        intentId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - SCHEDULED
+          - BLOCKED
+        scheduledFor:
+          type: string
+          format: date-time
+        contacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduledContact'
+        already:
+          type: boolean
+    ScheduleMessageIntentRequest:
+      type: object
+      properties:
+        campaignVersionId:
+          type: string
+          format: uuid
+        audienceId:
+          type: string
+          format: uuid
+        personIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        channel:
+          type: string
+        purposeKey:
+          type: string
+        templateRef:
+          type: string
+        scheduledFor:
+          type: string
+          format: date-time
+        estimatedCostMinor:
+          type: string
+          deprecated: true
+          description: Ignored for budget accounting; the campaign version unit cost is authoritative.
+        intentKey:
+          type: string
+    ListMessageIntentsResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageIntentSummary'
+    MessageIntentSummary:
+      type: object
+      required:
+      - id
+      - campaignId
+      - campaignVersionId
+      - channel
+      - purposeKey
+      - status
+      - scheduledFor
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        campaignId:
+          type: string
+          format: uuid
+        campaignVersionId:
+          type: string
+          format: uuid
+        channel:
+          type: string
+        purposeKey:
+          type: string
+        status:
+          type: string
+          enum:
+          - SCHEDULED
+          - BLOCKED
+          - CANCELLED
+        scheduledFor:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    AttributionTouch:
+      type: object
+      required:
+      - touchId
+      - campaignVersionId
+      - already
+      properties:
+        touchId:
+          type: string
+          format: uuid
+        campaignVersionId:
+          type: string
+          format: uuid
+        already:
+          type: boolean
+    RecordAttributionTouchRequest:
+      type: object
+      required:
+      - personId
+      - campaignId
+      - touchType
+      properties:
+        personId:
+          type: string
+          format: uuid
+        campaignId:
+          type: string
+          format: uuid
+        touchType:
+          type: string
+          enum:
+          - CLICK
+          - VIEW
+          - SCAN
+          - REFERRAL_ASSIST
+          - MANUAL
+        occurredAt:
+          type: string
+          format: date-time
+    ConversionEvent:
+      type: object
+      required:
+      - conversionId
+      - already
+      properties:
+        conversionId:
+          type: string
+          format: uuid
+        campaignId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        campaignVersionId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        already:
+          type: boolean
+    RecordConversionRequest:
+      type: object
+      required:
+      - personId
+      - conversionType
+      properties:
+        personId:
+          type: string
+          format: uuid
+        campaignId:
+          type: string
+          format: uuid
+        conversionType:
+          type: string
+        orderId:
+          type: string
+          format: uuid
+        amountMinor:
+          type: string
+        currency:
+          type: string
+        idempotencyKey:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+    AttributionResponse:
+      type: object
+      required:
+      - personId
+      - touches
+      - conversions
+      properties:
+        personId:
+          type: string
+          format: uuid
+        touches:
+          type: array
+          items:
+            type: object
+        conversions:
+          type: array
+          items:
+            type: object
     SendMessageRequest:
       type: object
       required:

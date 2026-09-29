@@ -347,11 +347,21 @@ class RegistryStructureTests(unittest.TestCase):
         for public_id, row in sorted(self.rows.items()):
             with self.subTest(event=public_id):
                 self.assertIn(row["klass"], {"domain", "observational"})
-                self.assertEqual(row["status"], "planned/pre-implementation")
+                self.assertIn(row["status"], {"planned/pre-implementation", "implemented/active"})
                 self.assertTrue(row["declared"])
                 for token in row["declared"]:
                     self.assertTrue(token == "AsyncAPI" or vd.SPEC_TOKEN_RE.fullmatch(token))
                 self.assertTrue(row["correspondence"].strip())
+        # Wave 11 growth events are emitted by the runtime (review iptv-w11-review F7).
+        for emitted in [
+            "growth.attribution_touch.recorded.v1",
+            "growth.campaign.activated.v1",
+            "growth.campaign.paused.v1",
+            "growth.campaign.completed.v1",
+        ]:
+            with self.subTest(event=emitted):
+                self.assertEqual(self.rows[emitted]["status"], "implemented/active")
+                self.assertEqual(self.baseline_rows[emitted]["status"], "implemented/active")
 
     def test_registry_declared_claims_are_verified(self):
         self.assertEqual(vd.verify_declared_claims(self.rows, self.spec_by_dir, self.channels), [])

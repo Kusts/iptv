@@ -65,6 +65,26 @@ channels:
       operationId: publishGiftPassRedeemed
       message:
         $ref: '#/components/messages/GiftPassRedeemed'
+  growth.attribution_touch.recorded.v1:
+    publish:
+      operationId: publishGrowthAttributionTouchRecorded
+      message:
+        $ref: '#/components/messages/GrowthAttributionTouchRecorded'
+  growth.campaign.activated.v1:
+    publish:
+      operationId: publishGrowthCampaignActivated
+      message:
+        $ref: '#/components/messages/GrowthCampaignActivated'
+  growth.campaign.completed.v1:
+    publish:
+      operationId: publishGrowthCampaignCompleted
+      message:
+        $ref: '#/components/messages/GrowthCampaignCompleted'
+  growth.campaign.paused.v1:
+    publish:
+      operationId: publishGrowthCampaignPaused
+      message:
+        $ref: '#/components/messages/GrowthCampaignPaused'
   hitl.action_taken.v1:
     publish:
       operationId: publishHitlActionTaken
@@ -1175,6 +1195,58 @@ components:
           type:
           - string
           - 'null'
+    GrowthCampaignEventData:
+      type: object
+      required:
+      - campaign_id
+      properties:
+        campaign_id:
+          type: string
+          format: uuid
+        campaign_key:
+          type:
+          - string
+          - 'null'
+        status:
+          type:
+          - string
+          - 'null'
+        campaign_version_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        version_no:
+          type:
+          - integer
+          - 'null'
+    GrowthAttributionEventData:
+      type: object
+      required:
+      - attribution_touch_id
+      properties:
+        attribution_touch_id:
+          type: string
+          format: uuid
+        person_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        campaign_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        campaign_version_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        touch_type:
+          type:
+          - string
+          - 'null'
   messages:
     CommunicationOptedOut:
       name: communication.opted_out.v1
@@ -1306,6 +1378,50 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/GiftPassEventData'
+          required:
+          - data
+    GrowthAttributionTouchRecorded:
+      name: growth.attribution_touch.recorded.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/GrowthAttributionEventData'
+          required:
+          - data
+    GrowthCampaignActivated:
+      name: growth.campaign.activated.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/GrowthCampaignEventData'
+          required:
+          - data
+    GrowthCampaignCompleted:
+      name: growth.campaign.completed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/GrowthCampaignEventData'
+          required:
+          - data
+    GrowthCampaignPaused:
+      name: growth.campaign.paused.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/GrowthCampaignEventData'
           required:
           - data
     HitlActionTaken:

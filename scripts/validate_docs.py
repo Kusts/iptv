@@ -22,7 +22,7 @@ Event registry design (IPTV-EVENT-REGISTRY):
    correspondence), not only on ID sets.
 - Each registry row is parsed as a structured markdown table row and
    validated: unique public ID, class in {domain, observational},
-   status exactly `planned/pre-implementation`, non-empty `Declared in`
+   status in {planned/pre-implementation, implemented/active}, non-empty `Declared in`
    with honest tokens (`SPEC <NN-name>` mapping to a real directory
    under docs/04-specs, or `AsyncAPI`), and non-empty `Semantic
    correspondence`. Every claimed source is verified to actually
@@ -54,6 +54,10 @@ REGISTRY_START = "<!-- event-registry:start -->"
 REGISTRY_END = "<!-- event-registry:end -->"
 
 ALLOWED_CLASSES = {"domain", "observational"}
+# Registry lifecycle: rows start as `planned/pre-implementation` and move to
+# `implemented/active` once the runtime actually emits them (Wave 11 growth
+# events are the first to make that transition).
+ALLOWED_STATUSES = {"planned/pre-implementation", "implemented/active"}
 ALLOWED_STATUS = "planned/pre-implementation"
 SPEC_TOKEN_RE = re.compile(r"SPEC (\d{2}-[a-z0-9-]+)")
 TABLE_SPLIT_RE = re.compile(r"(?<!\\)\|")
@@ -131,7 +135,7 @@ def parse_registry_rows(block: str, origin: str) -> tuple[dict[str, dict], list[
         if klass not in ALLOWED_CLASSES:
             errors.append(f"registry row with unknown class in {origin}: {public_id} -> {cells[1]!r}")
         status = cells[2].strip("`").strip()
-        if status != ALLOWED_STATUS:
+        if status not in ALLOWED_STATUSES:
             errors.append(f"registry row with unexpected status in {origin}: {public_id} -> {cells[2]!r}")
         declared = [token.strip() for token in cells[3].split(";") if token.strip()]
         if not declared:

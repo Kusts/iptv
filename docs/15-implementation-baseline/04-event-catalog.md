@@ -103,6 +103,10 @@ Class `domain` = authoritative fact that may mutate an aggregate or drive a work
 | `gift_pass.expired.v1` | domain | planned/pre-implementation | AsyncAPI | no legacy family; gift extension of referral/reward baseline, no alias |
 | `gift_pass.issued.v1` | domain | planned/pre-implementation | AsyncAPI | no legacy family; gift extension of referral/reward baseline, no alias |
 | `gift_pass.redeemed.v1` | domain | planned/pre-implementation | AsyncAPI | no legacy family; gift extension of referral/reward baseline, no alias |
+| `growth.attribution_touch.recorded.v1` | domain | implemented/active | AsyncAPI | `growth.attribution_touch.recorded` |
+| `growth.campaign.activated.v1` | domain | implemented/active | AsyncAPI | `growth.campaign.activated\|paused\|completed` |
+| `growth.campaign.completed.v1` | domain | implemented/active | AsyncAPI | `growth.campaign.activated\|paused\|completed` |
+| `growth.campaign.paused.v1` | domain | implemented/active | AsyncAPI | `growth.campaign.activated\|paused\|completed` |
 | `hitl.action_taken.v1` | domain | planned/pre-implementation | SPEC 07-support-hitl-knowledge; AsyncAPI | `human_review.requested\|decided` split into explicit lifecycle |
 | `hitl.guidance_provided.v1` | domain | planned/pre-implementation | SPEC 07-support-hitl-knowledge; AsyncAPI | `human_review.requested\|decided` split into explicit lifecycle |
 | `hitl.review_acknowledged.v1` | domain | planned/pre-implementation | SPEC 07-support-hitl-knowledge; AsyncAPI | `human_review.requested\|decided` split into explicit lifecycle |
@@ -220,7 +224,7 @@ Class `domain` = authoritative fact that may mutate an aggregate or drive a work
 - The registry block above is the ONLY source the validator reads. Examples elsewhere (e.g. the Asaas line below) never create registry entries.
 - A new public ID requires SPEC or AsyncAPI declaration plus review; adding a row without a source fails `check_registry_sources`.
 - Renames are new events with a new version, never silent reuses. No row above is an automatic alias: where a name changed, the correspondence column says "renamed, not an alias".
-- Known gaps (semantic family with no public v1 yet): `crm.next_action.*`, `support.technical_access.*`, `commerce.order.awaiting_payment`, `subscription.created`, `subscription.cycle.started|ended`, `subscription.entitlement.*`, `subscription.cancel_at_period_end_set`, `provider.operation.started`, `provider.operation.verification_required`, `provider.drift.*`, `inventory.credit_batch.received`, `inventory.license.activated`, `content.*`, `growth.*`, `partner.*`, `ai.agent_run.*`, `ai.autonomy.downgraded`, `platform.*`. These stay unversioned until a SPEC declares them.
+- Known gaps (semantic family with no public v1 yet): `crm.next_action.*`, `support.technical_access.*`, `commerce.order.awaiting_payment`, `subscription.created`, `subscription.cycle.started|ended`, `subscription.entitlement.*`, `subscription.cancel_at_period_end_set`, `provider.operation.started`, `provider.operation.verification_required`, `provider.drift.*`, `inventory.credit_batch.received`, `inventory.license.activated`, `content.*`, `partner.*`, `ai.agent_run.*`, `ai.autonomy.downgraded`, `platform.*`. These stay unversioned until a SPEC declares them.
 
 ## Integration boundary rule
 

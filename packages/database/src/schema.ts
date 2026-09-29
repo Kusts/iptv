@@ -1472,6 +1472,130 @@ export interface LoyaltyGiftPassesTable {
   created_at: Date;
 }
 
+/** Mirrors `growth.campaigns` (migration 028, Wave 11 runtime). */
+export interface GrowthCampaignsTable {
+  id: string;
+  tenant_id: string;
+  campaign_key: string;
+  name: string;
+  objective: string | null;
+  status: string;
+  current_version_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `growth.campaign_versions` (migrations 028 + 030, Wave 11 runtime). */
+export interface GrowthCampaignVersionsTable {
+  id: string;
+  tenant_id: string;
+  campaign_id: string;
+  version_no: number;
+  status: string;
+  offer_snapshot_json: unknown;
+  policy_snapshot_json: unknown;
+  budget_cap_minor: string | null;
+  unit_cost_minor: string | null;
+  currency: string;
+  published_at: Date | null;
+  created_at: Date;
+}
+
+/** Mirrors `growth.audience_definitions` (migration 028, Wave 11 runtime). */
+export interface GrowthAudienceDefinitionsTable {
+  id: string;
+  tenant_id: string;
+  campaign_id: string | null;
+  name: string;
+  membership_type: string;
+  criteria_json: unknown;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `growth.audience_members` (migration 028, Wave 11 runtime). */
+export interface GrowthAudienceMembersTable {
+  id: string;
+  tenant_id: string;
+  audience_id: string;
+  person_id: string;
+  added_at: Date;
+}
+
+/** Mirrors `growth.creatives` (migration 028, Wave 11 runtime). */
+export interface GrowthCreativesTable {
+  id: string;
+  tenant_id: string;
+  campaign_id: string;
+  campaign_version_id: string | null;
+  channel: string;
+  name: string;
+  content_json: unknown;
+  status: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `communication.message_intents` (migration 029, Wave 11 runtime). */
+export interface CommunicationMessageIntentsTable {
+  id: string;
+  tenant_id: string;
+  campaign_id: string;
+  campaign_version_id: string;
+  audience_id: string | null;
+  channel: string;
+  purpose_key: string;
+  template_ref: string | null;
+  idempotency_key: string;
+  scheduled_for: Date;
+  status: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `communication.scheduled_contacts` (migration 029, Wave 11 runtime). */
+export interface CommunicationScheduledContactsTable {
+  id: string;
+  tenant_id: string;
+  intent_id: string;
+  person_id: string;
+  channel: string;
+  scheduled_for: Date;
+  status: string;
+  block_reason: string | null;
+  estimated_cost_minor: string;
+  sent_at: Date | null;
+  created_at: Date;
+}
+
+/** Mirrors `growth.attribution_touches` (migration 029, append-only, Wave 11 runtime). */
+export interface GrowthAttributionTouchesTable {
+  id: string;
+  tenant_id: string;
+  person_id: string;
+  campaign_id: string;
+  campaign_version_id: string;
+  touch_type: string;
+  occurred_at: Date;
+  created_at: Date;
+}
+
+/** Mirrors `growth.conversion_events` (migration 029, append-only, Wave 11 runtime). */
+export interface GrowthConversionEventsTable {
+  id: string;
+  tenant_id: string;
+  person_id: string;
+  campaign_id: string | null;
+  campaign_version_id: string | null;
+  conversion_type: string;
+  order_id: string | null;
+  amount_minor: string | null;
+  currency: string | null;
+  idempotency_key: string | null;
+  occurred_at: Date;
+  created_at: Date;
+}
+
 export interface Database {
   "control.tenants": ControlTenantsTable;
   "control.users": ControlUsersTable;
@@ -1574,4 +1698,13 @@ export interface Database {
   "loyalty.rewards": LoyaltyRewardsTable;
   "loyalty.reward_ledger_entries": LoyaltyRewardLedgerEntriesTable;
   "loyalty.gift_passes": LoyaltyGiftPassesTable;
+  "growth.campaigns": GrowthCampaignsTable;
+  "growth.campaign_versions": GrowthCampaignVersionsTable;
+  "growth.audience_definitions": GrowthAudienceDefinitionsTable;
+  "growth.audience_members": GrowthAudienceMembersTable;
+  "growth.creatives": GrowthCreativesTable;
+  "communication.message_intents": CommunicationMessageIntentsTable;
+  "communication.scheduled_contacts": CommunicationScheduledContactsTable;
+  "growth.attribution_touches": GrowthAttributionTouchesTable;
+  "growth.conversion_events": GrowthConversionEventsTable;
 }
