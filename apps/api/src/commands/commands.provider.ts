@@ -23,6 +23,7 @@ import { registerClaimCommands } from "../human-review/claim.commands.js";
 import { registerAppTrialCommands } from "../inventory/app-trial.commands.js";
 import { registerSupplierCreditCommands } from "../inventory/supplier-credit.commands.js";
 import { registerLicenseCommands } from "../inventory/license.commands.js";
+import { registerPartnersCommands } from "../partners/partners.commands.js";
 import { resolveSupplierBalancePort, supplierBalanceAdapterFromEnv } from "../inventory/supplier-balance.port.js";
 import { refundReviewResolvedHook, refundTargetRevalidator } from "../billing/refund-review.js";
 import { asaasAdapterNameFromEnv, resolveAsaasPort } from "../billing/asaas-port.js";
@@ -95,6 +96,7 @@ export const CommandsProvider = {
         balancePort: resolveSupplierBalancePort(supplierBalanceAdapterFromEnv()),
       });
       registerLicenseCommands(bus, { opsPort, readbackPort: new StubProviderReadback() });
+      registerPartnersCommands(bus);
     }
     return bus;
   },

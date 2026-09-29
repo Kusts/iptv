@@ -162,6 +162,12 @@ Class `domain` = authoritative fact that may mutate an aggregate or drive a work
 | `charge.processing.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `billing.charge.processing` |
 | `charge.paid.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing | `billing.charge.paid`; validated external evidence precedes canonical Payment confirmation |
 | `payment.refunded.v1` | domain | planned/pre-implementation | SPEC 03-commerce-billing; SPEC 08-referral-core | `billing.payment.refunded` and `billing.refund.*` |
+| `partner.account_created.v1` | domain | implemented/active | AsyncAPI | `partner.reseller.created\|activated\|at_risk\|inactive` family; new explicit account creation fact, no alias |
+| `partner.activated.v1` | domain | implemented/active | AsyncAPI | `partner.reseller.created\|activated\|at_risk\|inactive` |
+| `partner.credit_consumed.v1` | domain | implemented/active | AsyncAPI | `inventory.credit.reserved\|consumed\|released` family; reseller-credit scoped, no alias |
+| `partner.credit_reserved.v1` | domain | implemented/active | AsyncAPI | `inventory.credit.reserved\|consumed\|released` family; reseller-credit scoped, no alias |
+| `partner.order_settled.v1` | domain | implemented/active | AsyncAPI | `partner.reseller_order.settled` |
+| `partner.relationship_created.v1` | domain | implemented/active | AsyncAPI | `partner.relationship.created\|ended` family; new explicit creation fact, no alias |
 | `person.created.v1` | domain | planned/pre-implementation | SPEC 01-identity-crm; AsyncAPI | no legacy family; new canonical identity fact (`crm.*` does not cover person), no alias |
 | `problem.created.v1` | domain | planned/pre-implementation | AsyncAPI | no legacy family; new problem lifecycle, no alias |
 | `problem.resolved.v1` | domain | planned/pre-implementation | AsyncAPI | no legacy family; new problem lifecycle, no alias |
@@ -224,7 +230,7 @@ Class `domain` = authoritative fact that may mutate an aggregate or drive a work
 - The registry block above is the ONLY source the validator reads. Examples elsewhere (e.g. the Asaas line below) never create registry entries.
 - A new public ID requires SPEC or AsyncAPI declaration plus review; adding a row without a source fails `check_registry_sources`.
 - Renames are new events with a new version, never silent reuses. No row above is an automatic alias: where a name changed, the correspondence column says "renamed, not an alias".
-- Known gaps (semantic family with no public v1 yet): `crm.next_action.*`, `support.technical_access.*`, `commerce.order.awaiting_payment`, `subscription.created`, `subscription.cycle.started|ended`, `subscription.entitlement.*`, `subscription.cancel_at_period_end_set`, `provider.operation.started`, `provider.operation.verification_required`, `provider.drift.*`, `inventory.credit_batch.received`, `inventory.license.activated`, `content.*`, `partner.*`, `ai.agent_run.*`, `ai.autonomy.downgraded`, `platform.*`. These stay unversioned until a SPEC declares them.
+- Known gaps (semantic family with no public v1 yet): `crm.next_action.*`, `support.technical_access.*`, `commerce.order.awaiting_payment`, `subscription.created`, `subscription.cycle.started|ended`, `subscription.entitlement.*`, `subscription.cancel_at_period_end_set`, `provider.operation.started`, `provider.operation.verification_required`, `provider.drift.*`, `inventory.credit_batch.received`, `inventory.license.activated`, `content.*`, `ai.agent_run.*`, `ai.autonomy.downgraded`, `platform.*`. These stay unversioned until a SPEC declares them.
 
 ## Integration boundary rule
 

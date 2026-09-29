@@ -1618,6 +1618,149 @@ export interface GrowthConversionEventsTable {
   created_at: Date;
 }
 
+/** Mirrors `partners.partner_memberships` (migration 035, auth scoping). */
+export interface PartnersMembershipsTable {
+  id: string;
+  tenant_id: string;
+  partner_account_id: string;
+  user_id: string;
+  created_at: Date;
+}
+
+/** Mirrors `partners.partner_accounts` (migration 032, Wave 13 runtime). */
+export interface PartnersAccountsTable {
+  id: string;
+  tenant_id: string;
+  display_name: string;
+  account_type: string;
+  status: string;
+  linked_tenant_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `partners.partner_relationships` (migration 032, direct edge). */
+export interface PartnersRelationshipsTable {
+  id: string;
+  tenant_id: string;
+  parent_account_id: string;
+  child_account_id: string;
+  status: string;
+  created_at: Date;
+  ended_at: Date | null;
+}
+
+/** Mirrors `partners.partner_capabilities` (migration 032, Wave 13 runtime). */
+export interface PartnersCapabilitiesTable {
+  id: string;
+  tenant_id: string;
+  partner_account_id: string;
+  capability_key: string;
+  status: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * Mirrors `partners.reseller_credit_entries` (migration 033, append-only,
+ * Wave 13 runtime). Signed minor-unit strings: TOPUP positive, CONSUME
+ * negative, ADJUST signed; RESERVE/RELEASE are zero-amount memo rows
+ * (holds live in `reseller_credit_reservations`).
+ */
+export interface PartnersCreditEntriesTable {
+  id: string;
+  tenant_id: string;
+  partner_account_id: string;
+  entry_type: string;
+  amount_minor: string;
+  currency: string;
+  idempotency_key: string;
+  idempotency_fingerprint: string | null;
+  reference_type: string | null;
+  reference_id: string | null;
+  evidence_ref: string | null;
+  created_at: Date;
+}
+
+/** Mirrors `partners.reseller_credit_reservations` (migration 033). */
+export interface PartnersCreditReservationsTable {
+  id: string;
+  tenant_id: string;
+  partner_account_id: string;
+  amount_minor: string;
+  currency: string;
+  status: string;
+  idempotency_key: string;
+  idempotency_fingerprint: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `partners.reseller_price_books` (migration 033, versioned). */
+export interface PartnersPriceBooksTable {
+  id: string;
+  tenant_id: string;
+  book_key: string;
+  version_no: number;
+  status: string;
+  unit_price_minor: string;
+  currency: string;
+  published_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `partners.reseller_orders` (migration 033, Wave 13 runtime). */
+export interface PartnersOrdersTable {
+  id: string;
+  tenant_id: string;
+  partner_account_id: string;
+  price_book_id: string;
+  quantity: number;
+  unit_price_minor: string;
+  total_minor: string;
+  currency: string;
+  status: string;
+  credit_reservation_id: string | null;
+  idempotency_key: string;
+  idempotency_fingerprint: string | null;
+  created_at: Date;
+  updated_at: Date;
+  settled_at: Date | null;
+}
+
+/** Mirrors `partners.learning_content` (migration 034, global catalog). */
+export interface PartnersLearningContentTable {
+  id: string;
+  topic_key: string;
+  title: string;
+  position: number;
+  created_at: Date;
+}
+
+/** Mirrors `partners.learning_content_versions` (migration 034). */
+export interface PartnersLearningContentVersionsTable {
+  id: string;
+  content_id: string;
+  version_no: number;
+  status: string;
+  body_markdown: string;
+  published_at: Date | null;
+  created_at: Date;
+}
+
+/** Mirrors `partners.learning_progress` (migration 034, Wave 13 runtime). */
+export interface PartnersLearningProgressTable {
+  id: string;
+  tenant_id: string;
+  partner_account_id: string;
+  content_id: string;
+  status: string;
+  completed_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export interface Database {
   "control.tenants": ControlTenantsTable;
   "control.users": ControlUsersTable;
@@ -1730,4 +1873,15 @@ export interface Database {
   "communication.scheduled_contacts": CommunicationScheduledContactsTable;
   "growth.attribution_touches": GrowthAttributionTouchesTable;
   "growth.conversion_events": GrowthConversionEventsTable;
+  "partners.partner_accounts": PartnersAccountsTable;
+  "partners.partner_memberships": PartnersMembershipsTable;
+  "partners.partner_relationships": PartnersRelationshipsTable;
+  "partners.partner_capabilities": PartnersCapabilitiesTable;
+  "partners.reseller_credit_entries": PartnersCreditEntriesTable;
+  "partners.reseller_credit_reservations": PartnersCreditReservationsTable;
+  "partners.reseller_price_books": PartnersPriceBooksTable;
+  "partners.reseller_orders": PartnersOrdersTable;
+  "partners.learning_content": PartnersLearningContentTable;
+  "partners.learning_content_versions": PartnersLearningContentVersionsTable;
+  "partners.learning_progress": PartnersLearningProgressTable;
 }

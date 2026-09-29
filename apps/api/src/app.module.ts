@@ -44,6 +44,7 @@ import { CapabilitiesController } from "./capabilities/capabilities.controller.j
 import { AgentController } from "./agent/agent.controller.js";
 import { SupportController } from "./support/support.controller.js";
 import { InventoryController } from "./inventory/inventory.controller.js";
+import { PartnersController } from "./partners/partners.controller.js";
 import { KnowledgeController } from "./knowledge/knowledge.controller.js";
 import { ContextBuilder } from "./agent/context-builder.js";
 import { KyselyAgentReleaseStore } from "./agent/release-store.js";
@@ -95,6 +96,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     AsaasWebhookController,
     SupportController,
     InventoryController,
+    PartnersController,
     KnowledgeController,
     PolicyController,
     CapabilitiesController,

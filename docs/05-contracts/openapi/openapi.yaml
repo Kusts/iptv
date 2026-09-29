@@ -2017,6 +2017,331 @@ paths:
                 $ref: '#/components/schemas/KnowledgeSearchResponse'
         '409':
           $ref: '#/components/responses/TenantContextConflict'
+  /v1/partners:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Partners
+      operationId: listPartnerAccounts
+      summary: List partner accounts
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: List partner accounts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListPartnerAccountsResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+    post:
+      tags:
+      - Partners
+      operationId: createPartnerAccount
+      summary: Create partner account
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePartnerAccountRequest'
+      responses:
+        '201':
+          description: Create partner account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerAccount'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/partners/{partnerAccountId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Partners
+      operationId: getPartnerAccount
+      summary: Get partner account
+      parameters:
+      - $ref: '#/components/parameters/PartnerAccountId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get partner account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerAccount'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/partners/{partnerAccountId}/children:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Partners
+      operationId: createDirectResellerRelationship
+      summary: Create direct reseller relationship
+      parameters:
+      - $ref: '#/components/parameters/PartnerAccountId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDirectRelationshipRequest'
+      responses:
+        '201':
+          description: Create direct reseller relationship
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerRelationship'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/partners/{partnerAccountId}/network:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Partners
+      operationId: getPartnerNetwork
+      summary: Get direct-children network aggregate
+      parameters:
+      - $ref: '#/components/parameters/PartnerAccountId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get direct-children network aggregate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerNetwork'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/partners/{partnerAccountId}/summary:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Partners
+      operationId: getPartnerSummary
+      summary: Get partner 360 summary
+      parameters:
+      - $ref: '#/components/parameters/PartnerAccountId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get partner 360 summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerSummary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/partners/{partnerAccountId}/capabilities:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Partners
+      operationId: setPartnerCapability
+      summary: Set partner capability (direct parent only)
+      parameters:
+      - $ref: '#/components/parameters/PartnerAccountId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPartnerCapabilityRequest'
+      responses:
+        '201':
+          description: Set partner capability
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerCapability'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/partners/{partnerAccountId}/activate:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Partners
+      operationId: activatePartner
+      summary: Activate partner (READY to ACTIVE)
+      parameters:
+      - $ref: '#/components/parameters/PartnerAccountId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201':
+          description: Activate partner
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerAccount'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/partners/{partnerAccountId}/credits/topup:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Partners
+      operationId: topupResellerCredit
+      summary: Top up reseller credit
+      parameters:
+      - $ref: '#/components/parameters/PartnerAccountId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TopupResellerCreditRequest'
+      responses:
+        '201':
+          description: Top up reseller credit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResellerCreditTopup'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/partners/{partnerAccountId}/credits:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Partners
+      operationId: getResellerCredit
+      summary: Get reseller credit balances
+      parameters:
+      - $ref: '#/components/parameters/PartnerAccountId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get reseller credit balances
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResellerCreditBalance'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/reseller-orders:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Partners
+      operationId: createResellerOrder
+      summary: Create reseller order (reserve and settle prepaid credit)
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateResellerOrderRequest'
+      responses:
+        '201':
+          description: Create reseller order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResellerOrder'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/reseller-orders/{resellerOrderId}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Partners
+      operationId: getResellerOrder
+      summary: Get reseller order
+      parameters:
+      - $ref: '#/components/parameters/ResellerOrderId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Get reseller order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResellerOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/academy/content:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Partners
+      operationId: listAcademyContent
+      summary: List Academy content
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: List Academy content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAcademyContentResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/academy/progress:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Partners
+      operationId: completeAcademyTopic
+      summary: Complete Academy topic
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteAcademyTopicRequest'
+      responses:
+        '201':
+          description: Complete Academy topic
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcademyProgress'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/referrals/{referralId}:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -3079,6 +3404,20 @@ components:
       schema:
         type: string
         format: uuid
+    PartnerAccountId:
+      name: partnerAccountId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ResellerOrderId:
+      name: resellerOrderId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     TenantId:
       name: id
       in: path
@@ -4079,6 +4418,347 @@ components:
           type:
           - string
           - 'null'
+    PartnerAccount:
+      type: object
+      required:
+      - id
+      - displayName
+      - accountType
+      - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        accountType:
+          type: string
+          enum:
+          - SERVICE_RESELLER
+        status:
+          type: string
+          enum:
+          - PROSPECT
+          - ONBOARDING
+          - TRAINING
+          - READY
+          - ACTIVE
+          - AT_RISK
+          - INACTIVE
+          - SUSPENDED
+          - TERMINATED
+        linkedTenantId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ListPartnerAccountsResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartnerAccount'
+    CreatePartnerAccountRequest:
+      type: object
+      required:
+      - displayName
+      properties:
+        displayName:
+          type: string
+        initialStatus:
+          type: string
+          enum:
+          - PROSPECT
+          - ONBOARDING
+    PartnerRelationship:
+      type: object
+      required:
+      - relationshipId
+      - parentAccountId
+      - childAccountId
+      properties:
+        relationshipId:
+          type: string
+          format: uuid
+        parentAccountId:
+          type: string
+          format: uuid
+        childAccountId:
+          type: string
+          format: uuid
+    CreateDirectRelationshipRequest:
+      type: object
+      properties:
+        childAccountId:
+          type: string
+          format: uuid
+        childDisplayName:
+          type: string
+    PartnerCapability:
+      type: object
+      required:
+      - partnerAccountId
+      - capabilityKey
+      - status
+      properties:
+        partnerAccountId:
+          type: string
+          format: uuid
+        capabilityKey:
+          type: string
+          enum:
+          - SERVICE_RESELLER
+          - SAAS_RESELLER
+        status:
+          type: string
+          enum:
+          - ACTIVE
+          - SUSPENDED
+          - REVOKED
+    SetPartnerCapabilityRequest:
+      type: object
+      required:
+      - capabilityKey
+      properties:
+        capabilityKey:
+          type: string
+          enum:
+          - SERVICE_RESELLER
+          - SAAS_RESELLER
+        status:
+          type: string
+          enum:
+          - ACTIVE
+          - SUSPENDED
+          - REVOKED
+        actingParentAccountId:
+          type: string
+          format: uuid
+    TopupResellerCreditRequest:
+      type: object
+      required:
+      - amountMinor
+      - currency
+      - idempotencyKey
+      properties:
+        amountMinor:
+          type: string
+        currency:
+          type: string
+        idempotencyKey:
+          type: string
+    ResellerCreditTopup:
+      type: object
+      required:
+      - entryId
+      - amountMinor
+      - currency
+      properties:
+        entryId:
+          type: string
+          format: uuid
+        amountMinor:
+          type: string
+        currency:
+          type: string
+        availableMinor:
+          type: string
+    ResellerCreditBalance:
+      type: object
+      required:
+      - partnerAccountId
+      - balances
+      properties:
+        partnerAccountId:
+          type: string
+          format: uuid
+        balances:
+          type: array
+          items:
+            type: object
+            required:
+            - currency
+            - ledgerMinor
+            - reservedMinor
+            - availableMinor
+            properties:
+              currency:
+                type: string
+              ledgerMinor:
+                type: string
+              reservedMinor:
+                type: string
+              availableMinor:
+                type: string
+    ResellerOrder:
+      type: object
+      required:
+      - id
+      - partnerAccountId
+      - priceBookId
+      - quantity
+      - unitPriceMinor
+      - totalMinor
+      - currency
+      - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        partnerAccountId:
+          type: string
+          format: uuid
+        priceBookId:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+        unitPriceMinor:
+          type: string
+        totalMinor:
+          type: string
+        currency:
+          type: string
+        status:
+          type: string
+          enum:
+          - DRAFT
+          - RESERVED
+          - SETTLED
+          - FAILED
+        creditReservationId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        settledAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    CreateResellerOrderRequest:
+      type: object
+      required:
+      - partnerAccountId
+      - quantity
+      - idempotencyKey
+      properties:
+        partnerAccountId:
+          type: string
+          format: uuid
+        priceBookId:
+          type: string
+          format: uuid
+        priceBookKey:
+          type: string
+        quantity:
+          type: integer
+        idempotencyKey:
+          type: string
+    PartnerNetwork:
+      type: object
+      required:
+      - partnerAccountId
+      - directChildren
+      properties:
+        partnerAccountId:
+          type: string
+          format: uuid
+        directChildren:
+          type: array
+          items:
+            type: object
+    PartnerSummary:
+      type: object
+      required:
+      - account
+      - balances
+      - orders
+      - academy
+      - capabilities
+      properties:
+        account:
+          $ref: '#/components/schemas/PartnerAccount'
+        balances:
+          type: array
+          items:
+            type: object
+        orders:
+          type: array
+          items:
+            type: object
+        academy:
+          type: object
+        capabilities:
+          type: array
+          items:
+            type: object
+    AcademyContentItem:
+      type: object
+      required:
+      - id
+      - topicKey
+      - title
+      - position
+      properties:
+        id:
+          type: string
+          format: uuid
+        topicKey:
+          type: string
+        title:
+          type: string
+        position:
+          type: integer
+    ListAcademyContentResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AcademyContentItem'
+    CompleteAcademyTopicRequest:
+      type: object
+      required:
+      - partnerAccountId
+      - topicKey
+      properties:
+        partnerAccountId:
+          type: string
+          format: uuid
+        topicKey:
+          type: string
+    AcademyProgress:
+      type: object
+      required:
+      - partnerAccountId
+      - topicKey
+      - completedCount
+      - totalTopics
+      - status
+      properties:
+        partnerAccountId:
+          type: string
+          format: uuid
+        topicKey:
+          type: string
+        completedCount:
+          type: integer
+        totalTopics:
+          type: integer
+        status:
+          type: string
     Referral:
       type: object
       required:

@@ -250,6 +250,36 @@ channels:
       operationId: publishPaymentConfirmed
       message:
         $ref: '#/components/messages/PaymentConfirmed'
+  partner.account_created.v1:
+    publish:
+      operationId: publishPartnerAccountCreated
+      message:
+        $ref: '#/components/messages/PartnerAccountCreated'
+  partner.activated.v1:
+    publish:
+      operationId: publishPartnerActivated
+      message:
+        $ref: '#/components/messages/PartnerActivated'
+  partner.credit_consumed.v1:
+    publish:
+      operationId: publishPartnerCreditConsumed
+      message:
+        $ref: '#/components/messages/PartnerCreditConsumed'
+  partner.credit_reserved.v1:
+    publish:
+      operationId: publishPartnerCreditReserved
+      message:
+        $ref: '#/components/messages/PartnerCreditReserved'
+  partner.order_settled.v1:
+    publish:
+      operationId: publishPartnerOrderSettled
+      message:
+        $ref: '#/components/messages/PartnerOrderSettled'
+  partner.relationship_created.v1:
+    publish:
+      operationId: publishPartnerRelationshipCreated
+      message:
+        $ref: '#/components/messages/PartnerRelationshipCreated'
   person.created.v1:
     publish:
       operationId: publishPersonCreated
@@ -1138,6 +1168,46 @@ components:
           type: array
           items:
             type: string
+    PartnerEventData:
+      type: object
+      required:
+      - partner_account_id
+      properties:
+        partner_account_id:
+          type: string
+          format: uuid
+        child_account_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        relationship_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        reservation_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        order_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        status:
+          type:
+          - string
+          - 'null'
+        amount_minor:
+          type:
+          - string
+          - 'null'
+        currency:
+          type:
+          - string
+          - 'null'
     RewardEventData:
       type: object
       required:
@@ -1774,6 +1844,72 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/PaymentConfirmedData'
+          required:
+          - data
+    PartnerAccountCreated:
+      name: partner.account_created.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PartnerEventData'
+          required:
+          - data
+    PartnerActivated:
+      name: partner.activated.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PartnerEventData'
+          required:
+          - data
+    PartnerCreditConsumed:
+      name: partner.credit_consumed.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PartnerEventData'
+          required:
+          - data
+    PartnerCreditReserved:
+      name: partner.credit_reserved.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PartnerEventData'
+          required:
+          - data
+    PartnerOrderSettled:
+      name: partner.order_settled.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PartnerEventData'
+          required:
+          - data
+    PartnerRelationshipCreated:
+      name: partner.relationship_created.v1
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/EventEnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PartnerEventData'
           required:
           - data
     PersonCreated:
