@@ -122,6 +122,13 @@ export interface ReadbackQuery {
 export interface ReadbackResult {
   effectApplied: boolean;
   evidence: string;
+  /**
+   * Wave 7 review fix F6: whether the readback produced conclusive
+   * evidence. `false` (INCONCLUSIVE) means "no proof either way" — the
+   * operation stays VERIFYING and the finding stays OPEN. It must never
+   * be coerced to applied/not-applied.
+   */
+  conclusive: boolean;
 }
 
 export interface ProviderReadbackPort {
@@ -129,19 +136,22 @@ export interface ProviderReadbackPort {
 }
 
 /**
- * Stub readback: answers from `PROVIDER_READBACK_EFFECT` (`APPLIED` or
- * anything else = not applied; safe default NOT_APPLIED). The real
- * CINEVISION readback implements this port after Wave-0 certification.
- * Reconcile NEVER re-executes the operation — it only records what the
- * readback observed.
+ * Stub readback: answers from `PROVIDER_READBACK_EFFECT` (`APPLIED` =
+ * conclusively applied, `NOT_APPLIED`/unset = conclusively not applied,
+ * `UNKNOWN` or any other value = INCONCLUSIVE, no proof either way).
+ * The real CINEVISION readback implements this port after Wave-0
+ * certification. Reconcile NEVER re-executes the operation — it only
+ * records what the readback observed.
  */
 export class StubProviderReadback implements ProviderReadbackPort {
   async verify(query: ReadbackQuery): Promise<ReadbackResult> {
     const raw = (process.env["PROVIDER_READBACK_EFFECT"] ?? "NOT_APPLIED").trim().toUpperCase();
-    const effectApplied = raw === "APPLIED";
-    return {
-      effectApplied,
-      evidence: `stub:${raw}:op=${query.operationId}`,
-    };
+    if (raw === "APPLIED") {
+      return { effectApplied: true, evidence: `stub:${raw}:op=${query.operationId}`, conclusive: true };
+    }
+    if (raw === "NOT_APPLIED") {
+      return { effectApplied: false, evidence: `stub:${raw}:op=${query.operationId}`, conclusive: true };
+    }
+    return { effectApplied: false, evidence: `stub:${raw}:op=${query.operationId}`, conclusive: false };
   }
 }

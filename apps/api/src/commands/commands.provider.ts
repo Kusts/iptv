@@ -18,6 +18,10 @@ import { registerFulfillmentCommands } from "../fulfillment/fulfillment.commands
 import { registerSupportCommands } from "../support/support.commands.js";
 import { registerKnowledgeCommands } from "../knowledge/knowledge.commands.js";
 import { registerClaimCommands } from "../human-review/claim.commands.js";
+import { registerAppTrialCommands } from "../inventory/app-trial.commands.js";
+import { registerSupplierCreditCommands } from "../inventory/supplier-credit.commands.js";
+import { registerLicenseCommands } from "../inventory/license.commands.js";
+import { resolveSupplierBalancePort, supplierBalanceAdapterFromEnv } from "../inventory/supplier-balance.port.js";
 import { refundReviewResolvedHook, refundTargetRevalidator } from "../billing/refund-review.js";
 import { asaasAdapterNameFromEnv, resolveAsaasPort } from "../billing/asaas-port.js";
 import {
@@ -39,7 +43,13 @@ import {
  *   Knowledge items + `human_review.claim` for the HITL center) and the
  *   Wave 12 slice (Referral attribution/qualification + Rewards
  *   issue/redeem + gift passes over the Wave 5 order/billing primitives).
- * Explicit tokens everywhere — esbuild/vitest emits no `design:paramtypes`.
+ *   Explicit tokens everywhere — esbuild/vitest emits no `design:paramtypes`.
+ *
+ *   Wave 7 slice (Apps/MK over ports/fakes only): AppTrial lifecycle,
+ *   MK supplier-balance snapshots + atomic credit reservations, and the
+ *   orchestrated LicenseAsset purchase/activation/reconciliation. The real
+ *   MK Browser Worker adapter stays out of scope and has no implementation
+ *   here.
  *
  * Provider adapters are explicit: `PROVIDER_OPS_ADAPTER=echo|manual`
  * (default `manual`); the real CINEVISION integration stays Wave-0-gated
@@ -72,6 +82,11 @@ export const CommandsProvider = {
       registerSupportCommands(bus);
       registerKnowledgeCommands(bus);
       registerClaimCommands(bus);
+      registerAppTrialCommands(bus);
+      registerSupplierCreditCommands(bus, {
+        balancePort: resolveSupplierBalancePort(supplierBalanceAdapterFromEnv()),
+      });
+      registerLicenseCommands(bus, { opsPort, readbackPort: new StubProviderReadback() });
     }
     return bus;
   },

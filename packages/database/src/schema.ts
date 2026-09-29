@@ -1254,6 +1254,96 @@ export interface InventorySupplierAppItemsTable {
   availability: string;
 }
 
+/** Mirrors `inventory.app_trials` (migration 024, mutable lifecycle). */
+export interface InventoryAppTrialsTable {
+  id: string;
+  tenant_id: string;
+  person_id: string;
+  customer_id: string | null;
+  supplier_id: string;
+  supplier_app_external_id: string;
+  status: string;
+  requested_at: Date;
+  activated_at: Date | null;
+  validated_at: Date | null;
+  expires_at: Date | null;
+  invalidated_reason: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `inventory.supplier_balance_snapshots` (migration 025, append-only). */
+export interface InventorySupplierBalanceSnapshotsTable {
+  id: string;
+  tenant_id: string;
+  supplier_id: string;
+  balance_minor: string;
+  currency: string;
+  observed_at: Date;
+  evidence_ref: string;
+  created_at: Date;
+}
+
+/** Mirrors `inventory.credit_reservations` (migration 025, mutable lifecycle). */
+export interface InventoryCreditReservationsTable {
+  id: string;
+  tenant_id: string;
+  supplier_id: string;
+  total_minor: string;
+  reserved_minor: string;
+  available_minor: string;
+  currency: string;
+  status: string;
+  idempotency_key: string;
+  expires_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `inventory.procurement_orders` (migration 025, mutable lifecycle). */
+export interface InventoryProcurementOrdersTable {
+  id: string;
+  tenant_id: string;
+  supplier_id: string;
+  commerce_order_id: string;
+  app_trial_id: string;
+  credit_reservation_id: string | null;
+  status: string;
+  total_cost_minor: string;
+  currency: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `inventory.license_assets` (migration 026, append-only rows). */
+export interface InventoryLicenseAssetsTable {
+  id: string;
+  tenant_id: string;
+  customer_id: string;
+  procurement_order_id: string;
+  supplier_id: string;
+  prior_asset_id: string | null;
+  external_license_ref: string | null;
+  status: string;
+  activation_evidence_json: unknown;
+  created_at: Date;
+}
+
+/** Mirrors `inventory.reconciliation_findings` (migration 026, mutable). */
+export interface InventoryReconciliationFindingsTable {
+  id: string;
+  tenant_id: string;
+  entity_type: string;
+  entity_id: string;
+  expected_json: unknown;
+  observed_json: unknown;
+  status: string;
+  resolution_ref: string | null;
+  created_at: Date;
+  updated_at: Date;
+  resolved_at: Date | null;
+}
+
 /** Mirrors `referral.referral_programs` (migration 011, Wave 12 runtime). */
 export interface ReferralProgramsTable {
   id: string;
@@ -1470,6 +1560,12 @@ export interface Database {
   "inventory.suppliers": InventorySuppliersTable;
   "inventory.supplier_app_snapshots": InventorySupplierAppSnapshotsTable;
   "inventory.supplier_app_items": InventorySupplierAppItemsTable;
+  "inventory.app_trials": InventoryAppTrialsTable;
+  "inventory.supplier_balance_snapshots": InventorySupplierBalanceSnapshotsTable;
+  "inventory.credit_reservations": InventoryCreditReservationsTable;
+  "inventory.procurement_orders": InventoryProcurementOrdersTable;
+  "inventory.license_assets": InventoryLicenseAssetsTable;
+  "inventory.reconciliation_findings": InventoryReconciliationFindingsTable;
   "referral.referral_programs": ReferralProgramsTable;
   "referral.referrals": ReferralReferralsTable;
   "referral.referral_qualifications": ReferralQualificationsTable;

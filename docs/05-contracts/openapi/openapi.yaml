@@ -33,6 +33,7 @@ tags:
 - name: Support
 - name: HITL
 - name: Referral
+- name: Inventory
 - name: Communications
 - name: Webhooks
 - name: Knowledge
@@ -2041,6 +2042,353 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GiftPass'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/inventory/app-trials:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Inventory
+      operationId: listAppTrials
+      summary: List app trials for the tenant
+      parameters:
+      - name: personId
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: supplierId
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: status
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/AppTrialStatus'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Tenant app trials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAppTrialsResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+    post:
+      tags:
+      - Inventory
+      operationId: requestAppTrial
+      summary: Request an app trial
+      description: Opens a REQUESTED app trial for one person and supplier. One open trial per (tenant, person, supplier); a repeat request returns the open trial with already true.
+      parameters:
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestAppTrialRequest'
+      responses:
+        '201':
+          description: App trial requested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestAppTrialResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/inventory/app-trials/expire-due:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Inventory
+      operationId: expireAppTrials
+      summary: Expire due app trials
+      parameters:
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExpireDueRequest'
+      responses:
+        '201':
+          description: Expiry sweep result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpireAppTrialsResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/inventory/app-trials/{appTrialId}/validate:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Inventory
+      operationId: validateAppTrial
+      summary: Validate or invalidate an app trial
+      description: Moves an open (REQUESTED or ACTIVE) trial to VALIDATED (customer confirmed the free test, the S3 purchase gate proof) or INVALIDATED.
+      parameters:
+      - name: appTrialId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateAppTrialRequest'
+      responses:
+        '201':
+          description: App trial validated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppTrial'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/inventory/supplier-balance:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Inventory
+      operationId: getSupplierBalance
+      summary: Read the latest MK supplier balance snapshot
+      parameters:
+      - name: supplierId
+        in: query
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Latest balance reading
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupplierBalance'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/inventory/supplier-balance/refreshes:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Inventory
+      operationId: refreshSupplierBalance
+      summary: Persist a supplier balance reading
+      description: Appends one balance snapshot through the echo/manual port (ports and fakes only; the real MK Browser Worker adapter is out of scope). Manual refreshes require the operator-supplied balanceMinor, currency and evidenceRef.
+      parameters:
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshSupplierBalanceRequest'
+      responses:
+        '201':
+          description: Balance reading persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupplierBalance'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/inventory/credit-reservations:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Inventory
+      operationId: reserveAppCredit
+      summary: Reserve supplier credit atomically
+      description: Holds funds under a per-supplier lock against the latest balance snapshot minus ACTIVE holds. Insufficient pool fails with BLOCKED INSUFFICIENT_SUPPLIER_BALANCE (the F15 pause/alert signal); no alert is emitted here.
+      parameters:
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReserveAppCreditRequest'
+      responses:
+        '201':
+          description: Credit reserved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditReservation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/inventory/credit-reservations/{reservationId}/release:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Inventory
+      operationId: releaseAppCredit
+      summary: Release an ACTIVE credit hold
+      parameters:
+      - name: reservationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201':
+          description: Credit hold released
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditReservation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/inventory/license-purchases:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Inventory
+      operationId: purchaseAppLicense
+      summary: Purchase an app license (one supplier charge)
+      description: Requires a VALIDATED trial, a SETTLED order and an ACTIVE reservation (fail-closed gate). Consumes the hold and runs exactly one supplier charge (entity_type app_license); unknown effects park VERIFYING with an OPEN reconciliation finding instead of a blind retry.
+      parameters:
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseAppLicenseRequest'
+      responses:
+        '201':
+          description: License purchase recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LicenseAsset'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/licenses/{licenseId}/activate:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Inventory
+      operationId: activateAppLicense
+      summary: Activate a license from the observed supplier effect
+      description: Finalizes a PROVISIONING license from readback only (never re-executes the charge). KNOWN_APPLIED becomes ACTIVE with activation evidence and emits inventory.license.activated.v1.
+      parameters:
+      - name: licenseId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201':
+          description: License activated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LicenseAsset'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/licenses/{licenseId}/reconcile:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Inventory
+      operationId: reconcileSupplierPurchase
+      summary: Reconcile an uncertain supplier purchase
+      description: Closes the OPEN reconciliation finding with the readback result. Never re-executes the charge.
+      parameters:
+      - name: licenseId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201':
+          description: Purchase reconciled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReconcileSupplierPurchaseResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/reconciliation-findings:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Inventory
+      operationId: listReconciliationFindings
+      summary: List supplier reconciliation findings
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ReconciliationFindingStatus'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Reconciliation findings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListReconciliationFindingsResponse'
         '409':
           $ref: '#/components/responses/TenantContextConflict'
 components:
@@ -4584,3 +4932,411 @@ components:
           type: boolean
         deduped:
           type: boolean
+    AppTrialStatus:
+      type: string
+      enum:
+      - REQUESTED
+      - ACTIVE
+      - VALIDATED
+      - EXPIRED
+      - INVALIDATED
+    AppTrial:
+      type: object
+      required:
+      - id
+      - personId
+      - supplierId
+      - supplierAppExternalId
+      - status
+      - requestedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        personId:
+          type: string
+          format: uuid
+        customerId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        supplierId:
+          type: string
+          format: uuid
+        supplierAppExternalId:
+          type: string
+        status:
+          $ref: '#/components/schemas/AppTrialStatus'
+        requestedAt:
+          type: string
+          format: date-time
+        validatedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        expiresAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    ListAppTrialsResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppTrial'
+    RequestAppTrialRequest:
+      type: object
+      required:
+      - personId
+      - supplierId
+      - supplierAppExternalId
+      properties:
+        personId:
+          type: string
+          format: uuid
+        customerId:
+          type: string
+          format: uuid
+        supplierId:
+          type: string
+          format: uuid
+        supplierAppExternalId:
+          type: string
+          minLength: 1
+          maxLength: 200
+        expiresAt:
+          type: string
+          format: date-time
+    RequestAppTrialResponse:
+      type: object
+      description: Actual POST /v1/inventory/app-trials shape (review iptv-w7-review F7 — the endpoint returns the trial identity plus the replay flag, not the full AppTrial).
+      required:
+      - id
+      - status
+      - already
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/AppTrialStatus'
+        already:
+          type: boolean
+    ValidateAppTrialRequest:
+      type: object
+      required:
+      - outcome
+      properties:
+        outcome:
+          type: string
+          enum:
+          - VALIDATED
+          - INVALIDATED
+        reason:
+          type: string
+          maxLength: 500
+    ExpireDueRequest:
+      type: object
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+    ExpireAppTrialsResponse:
+      type: object
+      required:
+      - expiredTrialIds
+      properties:
+        expiredTrialIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+    SupplierBalance:
+      type: object
+      required:
+      - supplierId
+      - balanceMinor
+      - currency
+      - observedAt
+      - evidenceRef
+      properties:
+        supplierId:
+          type: string
+          format: uuid
+        snapshotId:
+          type: string
+          format: uuid
+        balanceMinor:
+          type: string
+          pattern: '^[0-9]+$'
+          description: Exact minor-unit balance, decimal string (never float).
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        observedAt:
+          type: string
+          format: date-time
+        evidenceRef:
+          type: string
+    RefreshSupplierBalanceRequest:
+      type: object
+      required:
+      - supplierId
+      properties:
+        supplierId:
+          type: string
+          format: uuid
+        balanceMinor:
+          type: string
+          description: Operator-supplied reading (manual adapter only).
+        currency:
+          type: string
+        evidenceRef:
+          type: string
+        adapter:
+          type: string
+          enum:
+          - echo
+          - manual
+    CreditReservationStatus:
+      type: string
+      enum:
+      - ACTIVE
+      - CONSUMED
+      - RELEASED
+      - EXPIRED
+    CreditReservation:
+      type: object
+      required:
+      - id
+      - supplierId
+      - totalMinor
+      - reservedMinor
+      - availableMinor
+      - currency
+      - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        supplierId:
+          type: string
+          format: uuid
+        procurementOrderId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        totalMinor:
+          type: string
+          pattern: '^[0-9]+$'
+        reservedMinor:
+          type: string
+          pattern: '^[0-9]+$'
+        availableMinor:
+          type: string
+          pattern: '^[0-9]+$'
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        status:
+          $ref: '#/components/schemas/CreditReservationStatus'
+        expiresAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        already:
+          type: boolean
+    ReserveAppCreditRequest:
+      type: object
+      required:
+      - supplierId
+      - commerceOrderId
+      - appTrialId
+      - amountMinor
+      - currency
+      - idempotencyKey
+      properties:
+        supplierId:
+          type: string
+          format: uuid
+        commerceOrderId:
+          type: string
+          format: uuid
+        appTrialId:
+          type: string
+          format: uuid
+        amountMinor:
+          type: string
+          pattern: '^[0-9]+$'
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+        expiresAt:
+          type: string
+          format: date-time
+    LicenseAssetStatus:
+      type: string
+      enum:
+      - PROVISIONING
+      - ACTIVE
+      - FAILED
+      - REVOKED
+    LicenseAsset:
+      type: object
+      required:
+      - id
+      - customerId
+      - procurementOrderId
+      - supplierId
+      - status
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        customerId:
+          type: string
+          format: uuid
+        procurementOrderId:
+          type: string
+          format: uuid
+        supplierId:
+          type: string
+          format: uuid
+        priorAssetId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        externalLicenseRef:
+          type:
+          - string
+          - 'null'
+        status:
+          $ref: '#/components/schemas/LicenseAssetStatus'
+        activationEvidence:
+          type: object
+        createdAt:
+          type: string
+          format: date-time
+        already:
+          type: boolean
+        operationId:
+          type: string
+          format: uuid
+        effectCertainty:
+          type: string
+    PurchaseAppLicenseRequest:
+      type: object
+      required:
+      - procurementOrderId
+      - customerId
+      properties:
+        procurementOrderId:
+          type: string
+          format: uuid
+        customerId:
+          type: string
+          format: uuid
+        providerAccountId:
+          type: string
+          format: uuid
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+        adapter:
+          type: string
+          enum:
+          - echo
+          - manual
+        echoOutcome:
+          type: string
+          enum:
+          - success
+          - failed
+          - unknown
+    ReconcileSupplierPurchaseResponse:
+      type: object
+      required:
+      - findingId
+      - status
+      - effectApplied
+      - operationId
+      properties:
+        findingId:
+          type: string
+          format: uuid
+        status:
+          type: string
+        effectApplied:
+          type: boolean
+        operationId:
+          type: string
+          format: uuid
+    ReconciliationFindingStatus:
+      type: string
+      enum:
+      - OPEN
+      - RESOLVED
+    ReconciliationFinding:
+      type: object
+      required:
+      - id
+      - entityType
+      - entityId
+      - status
+      - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        entityType:
+          type: string
+        entityId:
+          type: string
+          format: uuid
+        expected:
+          type: object
+        observed:
+          type: object
+        status:
+          $ref: '#/components/schemas/ReconciliationFindingStatus'
+        resolutionRef:
+          type:
+          - string
+          - 'null'
+        createdAt:
+          type: string
+          format: date-time
+        resolvedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    ListReconciliationFindingsResponse:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReconciliationFinding'
