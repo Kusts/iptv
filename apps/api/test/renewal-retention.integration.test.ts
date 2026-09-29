@@ -76,12 +76,17 @@ describe.skipIf(!hasDb)("Wave 9 Renewal + Retention (requires TEST_DATABASE_URL)
     method: "GET" | "POST";
     url: string;
     token?: string;
+    /** Tenant-context precondition; defaults to "0" with a token, `null` omits it. */
+    revision?: string | null;
     headers?: Record<string, string>;
     payload?: Record<string, unknown>;
   }) {
     const headers: Record<string, string> = { ...(opts.headers ?? {}) };
     if (opts.token !== undefined) {
       headers["authorization"] = `Bearer ${opts.token}`;
+      if (opts.revision !== null && headers["x-tenant-context-revision"] === undefined) {
+        headers["x-tenant-context-revision"] = opts.revision ?? "0";
+      }
     }
     const options: {
       method: "GET" | "POST";
@@ -410,7 +415,11 @@ describe.skipIf(!hasDb)("Wave 9 Renewal + Retention (requires TEST_DATABASE_URL)
     expect(cycles).toHaveLength(2);
     expect(cycles[0]?.status).toBe("COMPLETED");
     expect(cycles[1]?.status).toBe("ACTIVE");
-    expect(cycles[1]?.renewal_order_id).toBe(renewalOrderId);
+    // Canonical lifecycle: only the prior cycle keeps the pointer to its
+    // upcoming renewal order; the newly opened cycle starts unlinked so the
+    // next quote/reminder is never blocked by the settled order.
+    expect(cycles[0]?.renewal_order_id).toBe(renewalOrderId);
+    expect(cycles[1]?.renewal_order_id).toBeNull();
     expect(String(cycles[1]?.base_revenue_minor)).toBe("3000");
     // Subscription persists across renewals: same row, new period.
     const sub = await db
@@ -643,6 +652,643 @@ describe.skipIf(!hasDb)("Wave 9 Renewal + Retention (requires TEST_DATABASE_URL)
     expect(deliveries).toHaveLength(1);
     expect(deliveries[0]?.status).toBe("QUEUED");
     expect(deliveries[0]?.provider).toBe("manual");
+  });
+
+  it("concurrent reminders_due for the same cycle create one message without aborting", async () => {
+    const { subscriptionId } = await activeSubscriptionFixture();
+    await moveCycleEnd(subscriptionId, 2);
+    // Two concurrent worker runs over the same due subscription: the
+    // per-reminder advisory lock serializes the appends and the message
+    // insert resolves conflicts via ON CONFLICT DO NOTHING, so neither run
+    // fails with a transaction-aborted (23505 catch-and-continue) error and
+    // no orphan SYSTEM conversation is left behind.
+    const [left, right] = await Promise.all([
+      bus.execute<{ scanned: number; reminded: string[] }>(actor(), "renewal.reminders_due", { limit: 100 }),
+      bus.execute<{ scanned: number; reminded: string[] }>(actor(), "renewal.reminders_due", { limit: 100 }),
+    ]);
+    if (!left.ok) {
+      throw new Error(`concurrent reminders_due (left) failed: ${JSON.stringify(left)}`);
+    }
+    if (!right.ok) {
+      throw new Error(`concurrent reminders_due (right) failed: ${JSON.stringify(right)}`);
+    }
+    const remindedCount =
+      (left.data.reminded.includes(subscriptionId) ? 1 : 0) +
+      (right.data.reminded.includes(subscriptionId) ? 1 : 0);
+    expect(remindedCount).toBe(1);
+
+    const cycle = await openCycle(subscriptionId);
+    expect(cycle).toBeDefined();
+    const key = `renewal-reminder:${subscriptionId}:${(cycle as { id: string }).id}`;
+    const notes = await db
+      .selectFrom("communication.messages")
+      .select(["id", "conversation_id", "person_id", "direction", "sender_type", "channel"])
+      .where("tenant_id", "=", tenantId)
+      .where("idempotency_key", "=", key)
+      .execute();
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.direction).toBe("INTERNAL");
+    expect(notes[0]?.sender_type).toBe("SYSTEM");
+    const messageId = notes[0]?.id as string;
+    const conversationId = notes[0]?.conversation_id as string;
+    const personId = notes[0]?.person_id as string;
+
+    // Fixture context: provider activation appends one credential SYSTEM
+    // message (idempotency key `subscription-credentials:{subscriptionId}`)
+    // into the same conversation, so it must not be counted as a duplicate
+    // reminder — it is asserted independently below.
+    const credentials = await db
+      .selectFrom("communication.messages")
+      .select(["id", "conversation_id", "person_id", "direction", "sender_type"])
+      .where("tenant_id", "=", tenantId)
+      .where("idempotency_key", "=", `subscription-credentials:${subscriptionId}`)
+      .execute();
+    expect(credentials).toHaveLength(1);
+    expect(credentials[0]?.direction).toBe("INTERNAL");
+    expect(credentials[0]?.sender_type).toBe("SYSTEM");
+    expect(credentials[0]?.conversation_id).toBe(conversationId);
+    expect(credentials[0]?.person_id).toBe(personId);
+    const credentialId = credentials[0]?.id as string;
+    expect(credentialId).not.toBe(messageId);
+
+    const history = await db
+      .selectFrom("communication.messages")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("conversation_id", "=", conversationId)
+      .execute();
+    expect(history).toHaveLength(2);
+    expect(history.map((m) => m.id).sort()).toEqual([credentialId, messageId].sort());
+    const conversations = await db
+      .selectFrom("communication.conversations")
+      .select(["id", "channel", "person_id"])
+      .where("tenant_id", "=", tenantId)
+      .where("person_id", "=", personId)
+      .execute();
+    expect(conversations).toHaveLength(1);
+    expect(conversations[0]?.id).toBe(conversationId);
+    expect(conversations[0]?.channel).toBe("SYSTEM");
+
+    const deliveries = await db
+      .selectFrom("communication.message_deliveries")
+      .select(["status", "provider"])
+      .where("tenant_id", "=", tenantId)
+      .where("message_id", "=", messageId)
+      .execute();
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.status).toBe("QUEUED");
+    expect(deliveries[0]?.provider).toBe("manual");
+  });
+
+  it("F13: settled renewal order suppresses the reminder before subscription.renew runs", async () => {
+    const { subscriptionId } = await activeSubscriptionFixture();
+    await moveCycleEnd(subscriptionId, 2);
+    const quote = await bus.execute<{
+      orderId: string;
+      status: string;
+      already: boolean;
+    }>(actor(), "renewal.quote", { subscriptionId });
+    if (!quote.ok) {
+      throw new Error(`renewal.quote failed: ${JSON.stringify(quote)}`);
+    }
+    const renewalOrderId = quote.data.orderId;
+    await settleOrder(renewalOrderId);
+
+    // Deliberately do NOT call `subscription.renew`: the prior cycle stays
+    // OPEN and still carries the settled link.
+    const cycle = await openCycle(subscriptionId);
+    expect(cycle).toBeDefined();
+    expect((cycle as { renewal_order_id: string | null }).renewal_order_id).toBe(renewalOrderId);
+
+    const result = await bus.execute<{ scanned: number; reminded: string[] }>(
+      actor(),
+      "renewal.reminders_due",
+      { limit: 100 },
+    );
+    if (!result.ok) {
+      throw new Error(`reminders_due failed: ${JSON.stringify(result)}`);
+    }
+    expect(result.data.reminded).not.toContain(subscriptionId);
+
+    const notes = await db
+      .selectFrom("communication.messages")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where(
+        "idempotency_key",
+        "=",
+        `renewal-reminder:${subscriptionId}:${(cycle as { id: string }).id}`,
+      )
+      .execute();
+    expect(notes).toHaveLength(0);
+  });
+
+  it("next-cycle continuity: after subscription.renew the new cycle quotes and reminds", async () => {
+    const { subscriptionId } = await activeSubscriptionFixture();
+    await moveCycleEnd(subscriptionId, 2);
+    const first = await bus.execute<{ orderId: string; already: boolean }>(actor(), "renewal.quote", {
+      subscriptionId,
+    });
+    if (!first.ok) {
+      throw new Error(`first quote failed: ${JSON.stringify(first)}`);
+    }
+    const firstOrderId = first.data.orderId;
+    await settleOrder(firstOrderId);
+    const renewed = await bus.execute<{ cycleId: string; already: boolean }>(actor(), "subscription.renew", {
+      orderId: firstOrderId,
+    });
+    if (!renewed.ok) {
+      throw new Error(`subscription.renew failed: ${JSON.stringify(renewed)}`);
+    }
+    // New cycle opens unlinked; the prior cycle retains the settled pointer.
+    const afterRenew = await db
+      .selectFrom("subscription.subscription_cycles")
+      .select(["id", "cycle_no", "renewal_order_id"])
+      .where("tenant_id", "=", tenantId)
+      .where("subscription_id", "=", subscriptionId)
+      .orderBy("cycle_no", "asc")
+      .execute();
+    expect(afterRenew).toHaveLength(2);
+    expect(afterRenew[0]?.renewal_order_id).toBe(firstOrderId);
+    expect(afterRenew[1]?.renewal_order_id).toBeNull();
+
+    // Replay stays idempotent via the sequential chain (no duplicate link).
+    const replay = await bus.execute<{ cycleId: string; already: boolean }>(actor(), "subscription.renew", {
+      orderId: firstOrderId,
+    });
+    if (!replay.ok) {
+      throw new Error(`renew replay failed: ${JSON.stringify(replay)}`);
+    }
+    expect(replay.data.cycleId).toBe(renewed.data.cycleId);
+    expect(replay.data.already).toBe(true);
+
+    // Move the NEW cycle into the reminder window: its next quote succeeds
+    // and the AWAITING_PAYMENT renewal stays reminder-eligible.
+    await moveCycleEnd(subscriptionId, 2);
+    const second = await bus.execute<{ orderId: string; status: string; already: boolean }>(
+      actor(),
+      "renewal.quote",
+      { subscriptionId },
+    );
+    if (!second.ok) {
+      throw new Error(`second-cycle quote failed: ${JSON.stringify(second)}`);
+    }
+    expect(second.data.already).toBe(false);
+    expect(second.data.status).toBe("AWAITING_PAYMENT");
+    expect(second.data.orderId).not.toBe(firstOrderId);
+
+    const reminders = await bus.execute<{ scanned: number; reminded: string[] }>(
+      actor(),
+      "renewal.reminders_due",
+      { limit: 100 },
+    );
+    if (!reminders.ok) {
+      throw new Error(`reminders_due failed: ${JSON.stringify(reminders)}`);
+    }
+    expect(reminders.data.reminded).toContain(subscriptionId);
+  });
+
+  it("legacy duplicate: open-cycle copy of the settled order does not block the next quote/reminder", async () => {
+    const { subscriptionId } = await activeSubscriptionFixture();
+    await moveCycleEnd(subscriptionId, 2);
+    const first = await bus.execute<{ orderId: string }>(actor(), "renewal.quote", { subscriptionId });
+    if (!first.ok) {
+      throw new Error(`first quote failed: ${JSON.stringify(first)}`);
+    }
+    const firstOrderId = first.data.orderId;
+    await settleOrder(firstOrderId);
+    const renewed = await bus.execute<{ cycleId: string }>(actor(), "subscription.renew", {
+      orderId: firstOrderId,
+    });
+    if (!renewed.ok) {
+      throw new Error(`subscription.renew failed: ${JSON.stringify(renewed)}`);
+    }
+    // Simulate a row written by the old behavior: the same settled order
+    // pointer copied onto the newly opened cycle.
+    const open = await openCycle(subscriptionId);
+    expect(open).toBeDefined();
+    await db
+      .updateTable("subscription.subscription_cycles")
+      .set({ renewal_order_id: firstOrderId })
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", (open as { id: string }).id)
+      .execute();
+
+    await moveCycleEnd(subscriptionId, 2);
+    // The duplicated historical pointer must not suppress the next-cycle
+    // reminder.
+    const reminders = await bus.execute<{ scanned: number; reminded: string[] }>(
+      actor(),
+      "renewal.reminders_due",
+      { limit: 100 },
+    );
+    if (!reminders.ok) {
+      throw new Error(`reminders_due failed: ${JSON.stringify(reminders)}`);
+    }
+    expect(reminders.data.reminded).toContain(subscriptionId);
+
+    // Quoting clears the stale open-cycle pointer and mints a fresh order.
+    const second = await bus.execute<{ orderId: string; already: boolean }>(actor(), "renewal.quote", {
+      subscriptionId,
+    });
+    if (!second.ok) {
+      throw new Error(`legacy-duplicate quote failed: ${JSON.stringify(second)}`);
+    }
+    expect(second.data.already).toBe(false);
+    expect(second.data.orderId).not.toBe(firstOrderId);
+    const reopened = await openCycle(subscriptionId);
+    expect((reopened as { renewal_order_id: string | null }).renewal_order_id).toBe(second.data.orderId);
+    // The prior cycle still carries the historical settled link.
+    const prior = await db
+      .selectFrom("subscription.subscription_cycles")
+      .select(["renewal_order_id"])
+      .where("tenant_id", "=", tenantId)
+      .where("subscription_id", "=", subscriptionId)
+      .where("cycle_no", "=", 1)
+      .executeTakeFirst();
+    expect(prior?.renewal_order_id).toBe(firstOrderId);
+  });
+
+  it("settled order appends CANCELLED to a previously queued reminder (append-only, visible via GET)", async () => {
+    const { subscriptionId } = await activeSubscriptionFixture();
+    await moveCycleEnd(subscriptionId, 2);
+    const first = await bus.execute<{ scanned: number; reminded: string[] }>(
+      actor(),
+      "renewal.reminders_due",
+      { limit: 100 },
+    );
+    if (!first.ok) {
+      throw new Error(`first reminders_due failed: ${JSON.stringify(first)}`);
+    }
+    expect(first.data.reminded).toContain(subscriptionId);
+
+    const cycle = await openCycle(subscriptionId);
+    expect(cycle).toBeDefined();
+    const cycleId = (cycle as { id: string }).id;
+    const key = `renewal-reminder:${subscriptionId}:${cycleId}`;
+    const before = await db
+      .selectFrom("communication.messages")
+      .select(["id", "conversation_id"])
+      .where("tenant_id", "=", tenantId)
+      .where("idempotency_key", "=", key)
+      .executeTakeFirstOrThrow();
+    const conversationId = before.conversation_id;
+    const messageId = before.id;
+
+    // Settle the renewal order AFTER the reminder was queued, then run the
+    // due worker again without calling `subscription.renew`.
+    const quote = await bus.execute<{ orderId: string }>(actor(), "renewal.quote", { subscriptionId });
+    if (!quote.ok) {
+      throw new Error(`renewal.quote failed: ${JSON.stringify(quote)}`);
+    }
+    await settleOrder(quote.data.orderId);
+
+    const second = await bus.execute<{ scanned: number; reminded: string[] }>(
+      actor(),
+      "renewal.reminders_due",
+      { limit: 100 },
+    );
+    if (!second.ok) {
+      throw new Error(`second reminders_due failed: ${JSON.stringify(second)}`);
+    }
+    expect(second.data.reminded).not.toContain(subscriptionId);
+
+    // No new message: the same record carries the full attempt history.
+    const notes = await db
+      .selectFrom("communication.messages")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("idempotency_key", "=", key)
+      .execute();
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.id).toBe(messageId);
+
+    const deliveries = await db
+      .selectFrom("communication.message_deliveries")
+      .select(["status", "provider", "attempt_no", "error_code"])
+      .where("tenant_id", "=", tenantId)
+      .where("message_id", "=", messageId)
+      .orderBy("attempt_no", "asc")
+      .execute();
+    expect(deliveries).toHaveLength(2);
+    expect(deliveries[0]?.status).toBe("QUEUED");
+    expect(deliveries[0]?.attempt_no).toBe(1);
+    expect(deliveries[1]?.status).toBe("CANCELLED");
+    expect(deliveries[1]?.attempt_no).toBe(2);
+    expect(deliveries[1]?.provider).toBe("manual");
+    expect(deliveries[1]?.error_code).toBe("RENEWAL_ORDER_SETTLED");
+
+    // A third run is a no-op: the latest attempt is no longer QUEUED.
+    const third = await bus.execute<{ scanned: number; reminded: string[] }>(
+      actor(),
+      "renewal.reminders_due",
+      { limit: 100 },
+    );
+    if (!third.ok) {
+      throw new Error(`third reminders_due failed: ${JSON.stringify(third)}`);
+    }
+    expect(third.data.reminded).not.toContain(subscriptionId);
+    const again = await db
+      .selectFrom("communication.message_deliveries")
+      .select(["status", "attempt_no"])
+      .where("tenant_id", "=", tenantId)
+      .where("message_id", "=", messageId)
+      .orderBy("attempt_no", "asc")
+      .execute();
+    expect(again).toHaveLength(2);
+
+    // The latest cancellation is visible through the tenant-scoped GET
+    // message list as `deliveryStatus`.
+    const listed = await injectRaw({
+      method: "GET",
+      url: `/v1/communications/conversations/${conversationId}/messages`,
+      token,
+    });
+    expect(listed.statusCode).toBe(200);
+    const body = listed.json<{ messages: Array<{ id: string; deliveryStatus: string | null }> }>();
+    const found = body.messages.find((m) => m.id === messageId);
+    expect(found?.deliveryStatus).toBe("CANCELLED");
+  });
+
+  it("stale cancellation scan skips already-cancelled head rows within a small limit", async () => {
+    // Older subscription: queue a reminder, settle, and let the worker
+    // append CANCELLED — its message stays at the scan head forever
+    // (append-only, ordered by occurred_at asc).
+    const older = await activeSubscriptionFixture();
+    await moveCycleEnd(older.subscriptionId, 2);
+    const olderFirst = await bus.execute<{ scanned: number; reminded: string[] }>(
+      actor(),
+      "renewal.reminders_due",
+      { limit: 100 },
+    );
+    if (!olderFirst.ok) {
+      throw new Error(`older reminders_due failed: ${JSON.stringify(olderFirst)}`);
+    }
+    expect(olderFirst.data.reminded).toContain(older.subscriptionId);
+    const olderCycle = await openCycle(older.subscriptionId);
+    expect(olderCycle).toBeDefined();
+    const olderKey = `renewal-reminder:${older.subscriptionId}:${(olderCycle as { id: string }).id}`;
+    const olderQuote = await bus.execute<{ orderId: string }>(actor(), "renewal.quote", {
+      subscriptionId: older.subscriptionId,
+    });
+    if (!olderQuote.ok) {
+      throw new Error(`older quote failed: ${JSON.stringify(olderQuote)}`);
+    }
+    await settleOrder(olderQuote.data.orderId);
+    const olderCancel = await bus.execute<{ scanned: number; reminded: string[] }>(
+      actor(),
+      "renewal.reminders_due",
+      { limit: 100 },
+    );
+    if (!olderCancel.ok) {
+      throw new Error(`older cancel run failed: ${JSON.stringify(olderCancel)}`);
+    }
+    const olderMessage = await db
+      .selectFrom("communication.messages")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("idempotency_key", "=", olderKey)
+      .executeTakeFirstOrThrow();
+    const olderDeliveries = await db
+      .selectFrom("communication.message_deliveries")
+      .select(["status", "attempt_no"])
+      .where("tenant_id", "=", tenantId)
+      .where("message_id", "=", olderMessage.id)
+      .orderBy("attempt_no", "asc")
+      .execute();
+    expect(olderDeliveries).toHaveLength(2);
+    expect(olderDeliveries[1]?.status).toBe("CANCELLED");
+
+    // Later subscription: queue a reminder, then settle — but do NOT run the
+    // worker yet, so its latest delivery stays QUEUED behind the older
+    // already-cancelled head row.
+    const later = await activeSubscriptionFixture();
+    await moveCycleEnd(later.subscriptionId, 2);
+    const laterFirst = await bus.execute<{ scanned: number; reminded: string[] }>(
+      actor(),
+      "renewal.reminders_due",
+      { limit: 100 },
+    );
+    if (!laterFirst.ok) {
+      throw new Error(`later reminders_due failed: ${JSON.stringify(laterFirst)}`);
+    }
+    expect(laterFirst.data.reminded).toContain(later.subscriptionId);
+    const laterCycle = await openCycle(later.subscriptionId);
+    expect(laterCycle).toBeDefined();
+    const laterKey = `renewal-reminder:${later.subscriptionId}:${(laterCycle as { id: string }).id}`;
+    const laterQuote = await bus.execute<{ orderId: string }>(actor(), "renewal.quote", {
+      subscriptionId: later.subscriptionId,
+    });
+    if (!laterQuote.ok) {
+      throw new Error(`later quote failed: ${JSON.stringify(laterQuote)}`);
+    }
+    await settleOrder(laterQuote.data.orderId);
+    const laterMessage = await db
+      .selectFrom("communication.messages")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("idempotency_key", "=", laterKey)
+      .executeTakeFirstOrThrow();
+    const laterBefore = await db
+      .selectFrom("communication.message_deliveries")
+      .select(["status", "attempt_no"])
+      .where("tenant_id", "=", tenantId)
+      .where("message_id", "=", laterMessage.id)
+      .orderBy("attempt_no", "asc")
+      .execute();
+    expect(laterBefore).toHaveLength(1);
+    expect(laterBefore[0]?.status).toBe("QUEUED");
+
+    // A small-limit run must still reach the later stale reminder: the scan
+    // filters to genuinely stale QUEUED candidates BEFORE applying LIMIT,
+    // so the already-cancelled older head row cannot starve it.
+    const small = await bus.execute<{ scanned: number; reminded: string[] }>(
+      actor(),
+      "renewal.reminders_due",
+      { limit: 1 },
+    );
+    if (!small.ok) {
+      throw new Error(`small-limit reminders_due failed: ${JSON.stringify(small)}`);
+    }
+    expect(small.data.reminded).not.toContain(later.subscriptionId);
+    const laterAfter = await db
+      .selectFrom("communication.message_deliveries")
+      .select(["status", "provider", "attempt_no", "error_code"])
+      .where("tenant_id", "=", tenantId)
+      .where("message_id", "=", laterMessage.id)
+      .orderBy("attempt_no", "asc")
+      .execute();
+    expect(laterAfter).toHaveLength(2);
+    expect(laterAfter[0]?.status).toBe("QUEUED");
+    expect(laterAfter[1]?.status).toBe("CANCELLED");
+    expect(laterAfter[1]?.attempt_no).toBe(2);
+    expect(laterAfter[1]?.provider).toBe("manual");
+    expect(laterAfter[1]?.error_code).toBe("RENEWAL_ORDER_SETTLED");
+
+    // The older head row stays untouched (no duplicate CANCELLED append).
+    const olderAgain = await db
+      .selectFrom("communication.message_deliveries")
+      .select(["status", "attempt_no"])
+      .where("tenant_id", "=", tenantId)
+      .where("message_id", "=", olderMessage.id)
+      .orderBy("attempt_no", "asc")
+      .execute();
+    expect(olderAgain).toHaveLength(2);
+  });
+
+  it("overdue expiry filters genuine settled rows before LIMIT (no starvation)", async () => {
+    // Pin the default no-suspension policy so this test stays
+    // order-independent of the suspension test below.
+    const suspensionPolicy = await bus.execute(actor(), "policy.publish", {
+      family: "subscription.suspension",
+      scope: "TENANT",
+      class: "TENANT_POLICY",
+      document: { allow: false },
+    });
+    if (!suspensionPolicy.ok) {
+      throw new Error(`policy.publish failed: ${JSON.stringify(suspensionPolicy)}`);
+    }
+    // Older paid candidate: genuinely settled renewal order on the
+    // still-current (overdue) cycle — no earlier cycle carries it.
+    const { subscriptionId: paidSubscriptionId } = await activeSubscriptionFixture();
+    await moveCycleEnd(paidSubscriptionId, 2);
+    const paidQuote = await bus.execute<{ orderId: string }>(actor(), "renewal.quote", {
+      subscriptionId: paidSubscriptionId,
+    });
+    if (!paidQuote.ok) {
+      throw new Error(`paid quote failed: ${JSON.stringify(paidQuote)}`);
+    }
+    await settleOrder(paidQuote.data.orderId);
+    // Later unpaid candidate: no renewal order at all.
+    const { subscriptionId: unpaidSubscriptionId } = await activeSubscriptionFixture();
+    // Order matters: the paid row ends EARLIER, so a LIMIT applied before
+    // the settled filter would return only the paid row and starve the
+    // unpaid one.
+    await moveCycleEnd(paidSubscriptionId, -10);
+    await moveCycleEnd(unpaidSubscriptionId, -9);
+
+    const result = await bus.execute<{ expired: string[]; suspended: string[]; recoveryTasks: string[] }>(
+      actor(),
+      "renewal.expire_overdue_due",
+      { limit: 1 },
+    );
+    if (!result.ok) {
+      throw new Error(`expire_overdue_due failed: ${JSON.stringify(result)}`);
+    }
+    expect(result.data.expired).toContain(unpaidSubscriptionId);
+    expect(result.data.expired).not.toContain(paidSubscriptionId);
+
+    const unpaid = await db
+      .selectFrom("subscription.subscriptions")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", unpaidSubscriptionId)
+      .executeTakeFirstOrThrow();
+    expect(unpaid.status).toBe("ENDED");
+
+    const paid = await db
+      .selectFrom("subscription.subscriptions")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", paidSubscriptionId)
+      .executeTakeFirstOrThrow();
+    expect(paid.status).toBe("ACTIVE");
+  });
+
+  it("overdue expiry ignores a legacy duplicate pointer on the newly opened cycle", async () => {
+    // Restore the default no-suspension policy: the suspension test below
+    // publishes `{ allow: true }` at TENANT scope, so this test pins the
+    // default explicitly and stays order-independent.
+    const suspensionPolicy = await bus.execute(actor(), "policy.publish", {
+      family: "subscription.suspension",
+      scope: "TENANT",
+      class: "TENANT_POLICY",
+      document: { allow: false },
+    });
+    if (!suspensionPolicy.ok) {
+      throw new Error(`policy.publish failed: ${JSON.stringify(suspensionPolicy)}`);
+    }
+    // Legacy-duplicate subscription: quote → settle → renew, then simulate
+    // the old behavior by copying the settled order pointer onto the newly
+    // opened cycle. That open cycle's end is overdue.
+    const { subscriptionId } = await activeSubscriptionFixture();
+    await moveCycleEnd(subscriptionId, 2);
+    const first = await bus.execute<{ orderId: string }>(actor(), "renewal.quote", { subscriptionId });
+    if (!first.ok) {
+      throw new Error(`first quote failed: ${JSON.stringify(first)}`);
+    }
+    const firstOrderId = first.data.orderId;
+    await settleOrder(firstOrderId);
+    const renewed = await bus.execute(actor(), "subscription.renew", { orderId: firstOrderId });
+    if (!renewed.ok) {
+      throw new Error(`subscription.renew failed: ${JSON.stringify(renewed)}`);
+    }
+    const duplicateOpen = await openCycle(subscriptionId);
+    expect(duplicateOpen).toBeDefined();
+    await db
+      .updateTable("subscription.subscription_cycles")
+      .set({ renewal_order_id: firstOrderId })
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", (duplicateOpen as { id: string }).id)
+      .execute();
+    await moveCycleEnd(subscriptionId, -10);
+
+    // Control subscription: a genuinely settled renewal order on the
+    // still-current (overdue) cycle — no earlier cycle carries it, so expiry
+    // must stay suppressed and `subscription.renew` keeps owning it.
+    const { subscriptionId: paidSubscriptionId } = await activeSubscriptionFixture();
+    await moveCycleEnd(paidSubscriptionId, 2);
+    const paidQuote = await bus.execute<{ orderId: string }>(actor(), "renewal.quote", {
+      subscriptionId: paidSubscriptionId,
+    });
+    if (!paidQuote.ok) {
+      throw new Error(`paid quote failed: ${JSON.stringify(paidQuote)}`);
+    }
+    await settleOrder(paidQuote.data.orderId);
+    await moveCycleEnd(paidSubscriptionId, -10);
+
+    const result = await bus.execute<{ expired: string[]; suspended: string[]; recoveryTasks: string[] }>(
+      actor(),
+      "renewal.expire_overdue_due",
+      { limit: 100 },
+    );
+    if (!result.ok) {
+      throw new Error(`expire_overdue_due failed: ${JSON.stringify(result)}`);
+    }
+    // The stale duplicate must not suppress expiry; the genuine paid link must.
+    expect(result.data.expired).toContain(subscriptionId);
+    expect(result.data.expired).not.toContain(paidSubscriptionId);
+    expect(result.data.suspended).toHaveLength(0);
+
+    const sub = await db
+      .selectFrom("subscription.subscriptions")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", subscriptionId)
+      .executeTakeFirstOrThrow();
+    expect(sub.status).toBe("ENDED");
+
+    const paidSub = await db
+      .selectFrom("subscription.subscriptions")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", paidSubscriptionId)
+      .executeTakeFirstOrThrow();
+    expect(paidSub.status).toBe("ACTIVE");
+
+    // The recovery task for the duplicate cycle carries no stale renewal
+    // order link (the historical pointer belongs to the earlier cycle).
+    const tasks = await db
+      .selectFrom("renewal.recovery_tasks")
+      .select(["id", "reason", "status", "renewal_order_id"])
+      .where("tenant_id", "=", tenantId)
+      .where("subscription_id", "=", subscriptionId)
+      .orderBy("created_at", "desc")
+      .execute();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.reason).toBe("OVERDUE_NO_RENEWAL");
+    expect(tasks[0]?.status).toBe("OPEN");
+    expect(tasks[0]?.renewal_order_id).toBeNull();
   });
 
   it("overdue expiry ends at cycle end by default + opens a recovery task", async () => {

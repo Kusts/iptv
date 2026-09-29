@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger, type OnModuleDestroy } from "@nestjs/common";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { Database } from "@iptv/database";
 import { newId, type CommandActor } from "@iptv/domain";
 import { recordCommandExecuted, withSpan } from "@iptv/observability";
@@ -271,6 +271,74 @@ export class SchedulerService implements OnModuleDestroy {
     // subscription is a candidate — the commands no-op otherwise.
     await collect("subscription.candidates", () =>
       db.selectFrom("subscription.subscriptions").select(["tenant_id"]).distinct().where("status", "=", "ACTIVE").execute(),
+    );
+    // Stale-reminder recheck (F13): a payment may settle AFTER the
+    // subscription already transitioned to ENDED, leaving no ACTIVE row to
+    // trigger the worker above — yet `renewal.reminders_due` still owns an
+    // append-only CANCELLED pass for the queued reminder. Scan precisely the
+    // tenants that own a generated SYSTEM/INTERNAL `renewal-reminder:*`
+    // message whose latest delivery is still QUEUED and whose exact
+    // same-tenant linked renewal order is SETTLED, excluding legacy
+    // duplicate links already covered by a prior cycle. Tenant-safe on every
+    // join/subquery (message ↔ cycle ↔ order ↔ deliveries ↔ earlier cycle);
+    // unpaid/foreign/missing links never match, so tenants with only unpaid
+    // queued reminders are not re-scanned forever.
+    await collect("renewal.stale_reminders", () =>
+      db
+        .selectFrom("communication.messages as m")
+        .innerJoin("subscription.subscription_cycles as c", (join) =>
+          join.onRef("c.tenant_id", "=", "m.tenant_id"),
+        )
+        .innerJoin("commerce.orders as o", (join) =>
+          join
+            .onRef("o.tenant_id", "=", "c.tenant_id")
+            .onRef("o.id", "=", "c.renewal_order_id"),
+        )
+        .select(["m.tenant_id"])
+        .distinct()
+        .where("m.direction", "=", "INTERNAL")
+        .where("m.sender_type", "=", "SYSTEM")
+        .where("m.idempotency_key", "like", "renewal-reminder:%")
+        .where(sql<boolean>`"c"."id"::text = split_part("m"."idempotency_key", ':', 3)`)
+        .where(sql<boolean>`"c"."subscription_id"::text = split_part("m"."idempotency_key", ':', 2)`)
+        .where(sql<boolean>`"c"."renewal_order_id" is not null`)
+        .where("o.status", "=", "SETTLED")
+        .where((eb) =>
+          eb.exists((qb) =>
+            qb
+              .selectFrom("communication.message_deliveries as ld")
+              .select("ld.id")
+              .whereRef("ld.tenant_id", "=", "m.tenant_id")
+              .whereRef("ld.message_id", "=", "m.id")
+              .where("ld.status", "=", "QUEUED")
+              .where((neb) =>
+                neb.not(
+                  neb.exists((newer) =>
+                    newer
+                      .selectFrom("communication.message_deliveries as n")
+                      .select("n.id")
+                      .whereRef("n.tenant_id", "=", "ld.tenant_id")
+                      .whereRef("n.message_id", "=", "ld.message_id")
+                      .whereRef("n.attempt_no", ">", "ld.attempt_no"),
+                  ),
+                ),
+              ),
+          ),
+        )
+        .where((eb) =>
+          eb.not(
+            eb.exists((qb) =>
+              qb
+                .selectFrom("subscription.subscription_cycles as earlier")
+                .select("earlier.id")
+                .whereRef("earlier.tenant_id", "=", "c.tenant_id")
+                .whereRef("earlier.subscription_id", "=", "c.subscription_id")
+                .whereRef("earlier.renewal_order_id", "=", "c.renewal_order_id")
+                .whereRef("earlier.cycle_no", "<", "c.cycle_no"),
+            ),
+          ),
+        )
+        .execute(),
     );
     return [...found];
   }

@@ -73,12 +73,17 @@ describe.skipIf(!hasDb)("Scheduler tick end-to-end (requires TEST_DATABASE_URL)"
     method: "GET" | "POST";
     url: string;
     token?: string;
+    /** Tenant-context precondition; defaults to "0" with a token, `null` omits it. */
+    revision?: string | null;
     headers?: Record<string, string>;
     payload?: Record<string, unknown>;
   }) {
     const headers: Record<string, string> = { ...(opts.headers ?? {}) };
     if (opts.token !== undefined) {
       headers["authorization"] = `Bearer ${opts.token}`;
+      if (opts.revision !== null && headers["x-tenant-context-revision"] === undefined) {
+        headers["x-tenant-context-revision"] = opts.revision ?? "0";
+      }
     }
     const options: {
       method: "GET" | "POST";
@@ -378,5 +383,247 @@ describe.skipIf(!hasDb)("Scheduler tick end-to-end (requires TEST_DATABASE_URL)"
     } finally {
       spy.mockRestore();
     }
+  }, 180_000);
+
+  it("tick revisits an ENDED tenant to cancel a queued reminder after its renewal order settles", async () => {
+    // Fixture: ACTIVE subscription → reminder queued → renewal order settled
+    // → subscription/cycle transitioned to ENDED/COMPLETED (payment settled
+    // after the end), leaving no ACTIVE row for the tenant.
+    const person = await bus.execute<{ id: string }>(actor(), "person.register", {
+      canonicalName: "Scheduler Stale Reminder",
+    });
+    if (!person.ok) {
+      throw new Error(`person.register failed: ${JSON.stringify(person)}`);
+    }
+    const planId = await seedMonthlyPlan();
+    const quoted = await bus.execute<{ id: string }>(actor(), "offer.quote", {
+      personId: person.data.id,
+      items: [{ sellableType: "PLAN", sellableId: planId, quantity: 1 }],
+      orderType: "NEW_SUBSCRIPTION",
+    });
+    if (!quoted.ok) {
+      throw new Error(`offer.quote failed: ${JSON.stringify(quoted)}`);
+    }
+    const submitted = await bus.execute(actor(), "order.submit", { orderId: quoted.data.id });
+    if (!submitted.ok) {
+      throw new Error(`order.submit failed: ${JSON.stringify(submitted)}`);
+    }
+    const tenantKey = `asaas-${newId().replace(/-/g, "").slice(-12)}`;
+    await db
+      .insertInto("billing.tenant_channels")
+      .values({
+        id: newId(),
+        tenant_id: tenantId,
+        channel: "ASAAS",
+        tenant_key: tenantKey,
+        webhook_secret_hash: sha256Hex(ASAAS_SECRET),
+        status: "ACTIVE",
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+    async function settleOrder(orderId: string): Promise<void> {
+      const created = await bus.execute<{ id: string; providerChargeId: string | null }>(actor(), "charge.create", {
+        orderId,
+      });
+      if (!created.ok || created.data.providerChargeId === null) {
+        throw new Error(`charge.create failed: ${JSON.stringify(created)}`);
+      }
+      const delivered = await injectRaw({
+        method: "POST",
+        url: `/v1/webhooks/asaas/${tenantKey}`,
+        headers: { "x-asaas-secret": ASAAS_SECRET },
+        payload: {
+          event: "PAYMENT_RECEIVED",
+          id: `evt-sched-stale-${newId().replace(/-/g, "").slice(-12)}`,
+          payment: { id: created.data.providerChargeId, value: 30.0, currency: "BRL" },
+        },
+      });
+      expect(delivered.statusCode).toBe(202);
+      const order = await db
+        .selectFrom("commerce.orders")
+        .select(["status"])
+        .where("tenant_id", "=", tenantId)
+        .where("id", "=", orderId)
+        .executeTakeFirstOrThrow();
+      expect(order.status).toBe("SETTLED");
+    }
+    await settleOrder(quoted.data.id);
+    const activated = await bus.execute<{ id: string }>(actor(), "subscription.activate_from_order", {
+      orderId: quoted.data.id,
+    });
+    if (!activated.ok) {
+      throw new Error(`activate_from_order failed: ${JSON.stringify(activated)}`);
+    }
+    const subscriptionId = activated.data.id;
+    const requested = await bus.execute(actor(), "fulfillment.request_for_subscription", {
+      subscriptionId,
+      adapter: "manual",
+    });
+    if (!requested.ok) {
+      throw new Error(`fulfillment request failed: ${JSON.stringify(requested)}`);
+    }
+    const operationId = (requested.data as { operationId: string }).operationId;
+    const resolved = await bus.execute(actor(), "provider.resolve_operation", {
+      operationId,
+      outcome: "SUCCEEDED",
+    });
+    if (!resolved.ok) {
+      throw new Error(`provider resolve failed: ${JSON.stringify(resolved)}`);
+    }
+    // Move the open cycle into the reminder window and queue the reminder.
+    const reminderEnd = new Date(Date.now() + 2 * 86_400_000);
+    const reminderStart = new Date(reminderEnd.getTime() - 30 * 86_400_000);
+    await db
+      .updateTable("subscription.subscription_cycles")
+      .set({ starts_at: reminderStart, ends_at: reminderEnd })
+      .where("tenant_id", "=", tenantId)
+      .where("subscription_id", "=", subscriptionId)
+      .where("status", "in", ["PENDING", "ACTIVE"])
+      .execute();
+    await db
+      .updateTable("subscription.subscriptions")
+      .set({ current_period_start: reminderStart, current_period_end: reminderEnd })
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", subscriptionId)
+      .execute();
+    const queued = await bus.execute<{ scanned: number; reminded: string[] }>(actor(), "renewal.reminders_due", {
+      limit: 100,
+    });
+    if (!queued.ok) {
+      throw new Error(`reminders_due failed: ${JSON.stringify(queued)}`);
+    }
+    expect(queued.data.reminded).toContain(subscriptionId);
+    const cycle = await db
+      .selectFrom("subscription.subscription_cycles")
+      .select(["id", "cycle_no"])
+      .where("tenant_id", "=", tenantId)
+      .where("subscription_id", "=", subscriptionId)
+      .where("status", "in", ["PENDING", "ACTIVE"])
+      .executeTakeFirstOrThrow();
+    const messageKey = `renewal-reminder:${subscriptionId}:${cycle.id}`;
+    const message = await db
+      .selectFrom("communication.messages")
+      .select(["id", "direction", "sender_type"])
+      .where("tenant_id", "=", tenantId)
+      .where("idempotency_key", "=", messageKey)
+      .executeTakeFirstOrThrow();
+    expect(message.direction).toBe("INTERNAL");
+    expect(message.sender_type).toBe("SYSTEM");
+
+    // Settle the linked renewal order AFTER the reminder was queued.
+    const quote = await bus.execute<{ orderId: string }>(actor(), "renewal.quote", { subscriptionId });
+    if (!quote.ok) {
+      throw new Error(`renewal.quote failed: ${JSON.stringify(quote)}`);
+    }
+    const renewalOrderId = quote.data.orderId;
+    await settleOrder(renewalOrderId);
+
+    // Transition the subscription/cycle to ENDED/COMPLETED while preserving
+    // the settled link (payment settled after the end). End every other
+    // ACTIVE subscription of this tenant too so the pre-tick state has no
+    // ACTIVE row at all — the scheduler must find the tenant via the stale
+    // reminder scan, not via the ACTIVE-subscription scan.
+    await db
+      .updateTable("subscription.subscription_cycles")
+      .set({ status: "COMPLETED" })
+      .where("tenant_id", "=", tenantId)
+      .where("subscription_id", "=", subscriptionId)
+      .where("id", "=", cycle.id)
+      .execute();
+    await db
+      .updateTable("subscription.subscriptions")
+      .set({ status: "ENDED" })
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", subscriptionId)
+      .execute();
+    await db
+      .updateTable("subscription.subscription_cycles")
+      .set({ status: "COMPLETED" })
+      .where("tenant_id", "=", tenantId)
+      .where("status", "in", ["PENDING", "ACTIVE"])
+      .execute();
+    await db
+      .updateTable("subscription.subscriptions")
+      .set({ status: "ENDED" })
+      .where("tenant_id", "=", tenantId)
+      .where("status", "=", "ACTIVE")
+      .execute();
+    const actives = await db
+      .selectFrom("subscription.subscriptions")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("status", "=", "ACTIVE")
+      .execute();
+    expect(actives).toHaveLength(0);
+    const beforeDeliveries = await db
+      .selectFrom("communication.message_deliveries")
+      .select(["status", "attempt_no"])
+      .where("tenant_id", "=", tenantId)
+      .where("message_id", "=", message.id)
+      .orderBy("attempt_no", "asc")
+      .execute();
+    expect(beforeDeliveries).toHaveLength(1);
+    expect(beforeDeliveries[0]?.status).toBe("QUEUED");
+    const cyclesBefore = await db
+      .selectFrom("subscription.subscription_cycles")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("subscription_id", "=", subscriptionId)
+      .execute();
+    expect(cyclesBefore).toHaveLength(1);
+
+    // The scheduler tick must still revisit this tenant and append the
+    // append-only CANCELLED attempt — no renewal, no outbound send, no
+    // status updates/deletions.
+    const result = await scheduler.tick();
+    expect(result.errors).toEqual([]);
+    expect(result.tenants).toBeGreaterThanOrEqual(1);
+
+    const afterDeliveries = await db
+      .selectFrom("communication.message_deliveries")
+      .select(["status", "provider", "attempt_no", "error_code"])
+      .where("tenant_id", "=", tenantId)
+      .where("message_id", "=", message.id)
+      .orderBy("attempt_no", "asc")
+      .execute();
+    expect(afterDeliveries).toHaveLength(2);
+    expect(afterDeliveries[0]?.status).toBe("QUEUED");
+    expect(afterDeliveries[0]?.attempt_no).toBe(1);
+    expect(afterDeliveries[1]?.status).toBe("CANCELLED");
+    expect(afterDeliveries[1]?.attempt_no).toBe(2);
+    expect(afterDeliveries[1]?.provider).toBe("manual");
+    expect(afterDeliveries[1]?.error_code).toBe("RENEWAL_ORDER_SETTLED");
+
+    const notes = await db
+      .selectFrom("communication.messages")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("idempotency_key", "=", messageKey)
+      .execute();
+    expect(notes).toHaveLength(1);
+
+    const subscription = await db
+      .selectFrom("subscription.subscriptions")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", subscriptionId)
+      .executeTakeFirstOrThrow();
+    expect(subscription.status).toBe("ENDED");
+    const closedCycle = await db
+      .selectFrom("subscription.subscription_cycles")
+      .select(["status", "renewal_order_id"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", cycle.id)
+      .executeTakeFirstOrThrow();
+    expect(closedCycle.status).toBe("COMPLETED");
+    expect(closedCycle.renewal_order_id).toBe(renewalOrderId);
+    const cyclesAfter = await db
+      .selectFrom("subscription.subscription_cycles")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("subscription_id", "=", subscriptionId)
+      .execute();
+    expect(cyclesAfter).toHaveLength(cyclesBefore.length);
   }, 180_000);
 });

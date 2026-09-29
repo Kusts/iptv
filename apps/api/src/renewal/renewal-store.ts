@@ -49,6 +49,18 @@ export async function advisoryLockSubscription(
   await sql`SELECT pg_advisory_xact_lock(hashtext(${"renewal:" + subscriptionId}))`.execute(trx);
 }
 
+export async function advisoryLockRenewalReminder(
+  trx: Transaction<Database>,
+  tenantId: string,
+  key: string,
+): Promise<void> {
+  // Per-reminder serialization: concurrent appends for the SAME
+  // `renewal-reminder:{subscription}:{cycle}` key queue here BEFORE the
+  // existing-message lookup, so only one caller can create the SYSTEM
+  // conversation + message. Tenant-scoped so different tenants never block.
+  await sql`SELECT pg_advisory_xact_lock(hashtext(${"renewal-reminder:" + tenantId + ":" + key}))`.execute(trx);
+}
+
 export async function getCycle(
   ctx: CommandHandlerContext,
   cycleId: string,
@@ -254,6 +266,65 @@ export async function getOrder(
   };
 }
 
+/**
+ * Tenant-scoped order re-read that row-locks (`FOR UPDATE`) the linked
+ * order. Settlement's `evaluateOrderSettlement` holds the same row lock
+ * while moving AWAITING_PAYMENT → SETTLED, so a reminder worker that
+ * rechecks here serializes against a concurrent settlement instead of
+ * appending on a stale candidate snapshot. Missing/foreign links return
+ * null (never suppressing).
+ */
+export async function getOrderForUpdate(
+  ctx: CommandHandlerContext,
+  orderId: string,
+): Promise<RenewalOrderRow | null> {
+  const trx = requireTrx(ctx);
+  const row = await trx
+    .selectFrom("commerce.orders")
+    .select(["id", "person_id", "customer_id", "order_type", "status", "net_amount_minor", "currency"])
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("id", "=", orderId)
+    .forUpdate()
+    .executeTakeFirst();
+  if (row === undefined) {
+    return null;
+  }
+  return {
+    id: row.id,
+    personId: row.person_id,
+    customerId: row.customer_id,
+    orderType: row.order_type,
+    status: row.status,
+    netMinor: String(row.net_amount_minor),
+    currency: row.currency,
+  };
+}
+
+/**
+ * Legacy-duplicate probe: an earlier cycle for the same subscription already
+ * carries this renewal order, so the open cycle's identical pointer is a
+ * stale copy from the pre-fix `subscription.renew` behavior — not a paid
+ * link for the new cycle. Tenant-scoped; never crosses subscriptions.
+ */
+export async function hasEarlierCycleWithRenewalOrder(
+  ctx: CommandHandlerContext,
+  subscriptionId: string,
+  cycleNo: number,
+  orderId: string,
+): Promise<boolean> {
+  const trx = requireTrx(ctx);
+  const row = await trx
+    .selectFrom("subscription.subscription_cycles")
+    .select(["id"])
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("subscription_id", "=", subscriptionId)
+    .where("renewal_order_id", "=", orderId)
+    .where("cycle_no", "<", cycleNo)
+    .limit(1)
+    .executeTakeFirst();
+  return row !== undefined;
+}
+
 export interface ActivePlanPrice {
   priceId: string;
   amountMinor: string;
@@ -397,6 +468,7 @@ export interface RenewalCandidate {
   cycleId: string;
   cycleNo: number;
   cycleEnd: Date;
+  renewalOrderId: string | null;
 }
 
 export async function listRenewalWindowCandidates(
@@ -415,6 +487,23 @@ export async function listRenewalWindowCandidates(
           "subscription.subscriptions.id",
         ),
     )
+    // F13: the current cycle keeps its `renewal_order_id` link after the
+    // renewal order settles and until `subscription.renew` opens the next
+    // cycle. A SETTLED linked order means the money arrived — suppress the
+    // reminder. The join carries BOTH tenant ids so a missing row or a
+    // foreign-tenant order never matches (no suppression, no leak); only a
+    // same-tenant SETTLED order suppresses.
+    // Legacy compatibility: rows written before the F13 lifecycle fix carry
+    // the same settled order pointer on BOTH the prior and the newly opened
+    // cycle. That open-cycle duplicate is historical, not a paid link for
+    // the new cycle — an earlier cycle with the same order proves it. The
+    // EXISTS branch keeps such next-cycle candidates reminder-eligible; the
+    // stale pointer itself is cleared when quoting the next renewal.
+    .leftJoin("commerce.orders", (join) =>
+      join
+        .onRef("commerce.orders.tenant_id", "=", "subscription.subscriptions.tenant_id")
+        .onRef("commerce.orders.id", "=", "subscription.subscription_cycles.renewal_order_id"),
+    )
     .select([
       "subscription.subscriptions.id as subscription_id",
       "subscription.subscriptions.customer_id as customer_id",
@@ -422,12 +511,29 @@ export async function listRenewalWindowCandidates(
       "subscription.subscription_cycles.id as cycle_id",
       "subscription.subscription_cycles.cycle_no as cycle_no",
       "subscription.subscription_cycles.ends_at as cycle_end",
+      "subscription.subscription_cycles.renewal_order_id as renewal_order_id",
     ])
     .where("subscription.subscriptions.tenant_id", "=", ctx.tenantId)
     .where("subscription.subscriptions.status", "=", "ACTIVE")
     .where("subscription.subscription_cycles.status", "in", ["PENDING", "ACTIVE"])
     .where("subscription.subscription_cycles.ends_at", ">=", input.from)
     .where("subscription.subscription_cycles.ends_at", "<=", input.to)
+    .where((eb) =>
+      eb.or([
+        eb("subscription.subscription_cycles.renewal_order_id", "is", null),
+        eb("commerce.orders.id", "is", null),
+        eb("commerce.orders.status", "!=", "SETTLED"),
+        eb.exists((qb) =>
+          qb
+            .selectFrom("subscription.subscription_cycles as earlier")
+            .select("earlier.id")
+            .whereRef("earlier.tenant_id", "=", "subscription.subscriptions.tenant_id")
+            .whereRef("earlier.subscription_id", "=", "subscription.subscriptions.id")
+            .whereRef("earlier.renewal_order_id", "=", "subscription.subscription_cycles.renewal_order_id")
+            .whereRef("earlier.cycle_no", "<", "subscription.subscription_cycles.cycle_no"),
+        ),
+      ]),
+    )
     .orderBy("subscription.subscription_cycles.ends_at", "asc")
     .limit(input.limit)
     .execute();
@@ -438,6 +544,7 @@ export async function listRenewalWindowCandidates(
     cycleId: row["cycle_id"] as string,
     cycleNo: Number(row["cycle_no"]),
     cycleEnd: row["cycle_end"] as Date,
+    renewalOrderId: (row["renewal_order_id"] as string | null) ?? null,
   }));
 }
 
@@ -458,6 +565,19 @@ export async function listOverdueCandidates(
           "subscription.subscriptions.id",
         ),
     )
+    // Same genuine-settlement filter as the reminder window (F13): a
+    // same-tenant SETTLED linked order means `subscription.renew` owns the
+    // transition, so the row is excluded BEFORE `LIMIT` — a batch of paid
+    // rows must never starve unpaid overdue rows. Missing/null/non-settled
+    // links stay eligible, and a legacy duplicate (an earlier cycle carries
+    // the same order) proves the pointer is a stale copy, keeping the row
+    // eligible. The handler row-lock/recheck still serializes settlement
+    // races.
+    .leftJoin("commerce.orders", (join) =>
+      join
+        .onRef("commerce.orders.tenant_id", "=", "subscription.subscriptions.tenant_id")
+        .onRef("commerce.orders.id", "=", "subscription.subscription_cycles.renewal_order_id"),
+    )
     .select([
       "subscription.subscriptions.id as subscription_id",
       "subscription.subscriptions.customer_id as customer_id",
@@ -465,11 +585,28 @@ export async function listOverdueCandidates(
       "subscription.subscription_cycles.id as cycle_id",
       "subscription.subscription_cycles.cycle_no as cycle_no",
       "subscription.subscription_cycles.ends_at as cycle_end",
+      "subscription.subscription_cycles.renewal_order_id as renewal_order_id",
     ])
     .where("subscription.subscriptions.tenant_id", "=", ctx.tenantId)
     .where("subscription.subscriptions.status", "=", "ACTIVE")
     .where("subscription.subscription_cycles.status", "in", ["PENDING", "ACTIVE"])
     .where("subscription.subscription_cycles.ends_at", "<=", input.before)
+    .where((eb) =>
+      eb.or([
+        eb("subscription.subscription_cycles.renewal_order_id", "is", null),
+        eb("commerce.orders.id", "is", null),
+        eb("commerce.orders.status", "!=", "SETTLED"),
+        eb.exists((qb) =>
+          qb
+            .selectFrom("subscription.subscription_cycles as earlier")
+            .select("earlier.id")
+            .whereRef("earlier.tenant_id", "=", "subscription.subscriptions.tenant_id")
+            .whereRef("earlier.subscription_id", "=", "subscription.subscriptions.id")
+            .whereRef("earlier.renewal_order_id", "=", "subscription.subscription_cycles.renewal_order_id")
+            .whereRef("earlier.cycle_no", "<", "subscription.subscription_cycles.cycle_no"),
+        ),
+      ]),
+    )
     .orderBy("subscription.subscription_cycles.ends_at", "asc")
     .limit(input.limit)
     .execute();
@@ -480,6 +617,7 @@ export async function listOverdueCandidates(
     cycleId: row["cycle_id"] as string,
     cycleNo: Number(row["cycle_no"]),
     cycleEnd: row["cycle_end"] as Date,
+    renewalOrderId: (row["renewal_order_id"] as string | null) ?? null,
   }));
 }
 
@@ -488,6 +626,16 @@ export async function listOverdueCandidates(
  * a QUEUED manual delivery — the same shape as the Wave 6 credential
  * notification. NOT automated outbound: a human operator carries it out.
  * Idempotent per cycle via `renewal-reminder:{subscription}:{cycle}`.
+ *
+ * Concurrency: the transaction-level advisory lock on the reminder key
+ * serializes concurrent appends for the SAME cycle BEFORE the
+ * existing-message lookup, so only one caller creates the SYSTEM
+ * conversation + message. The message insert itself uses `ON CONFLICT
+ * (tenant_id, channel, idempotency_key) WHERE idempotency_key IS NOT NULL
+ * DO NOTHING` (matching the `messages_idempotency_unique` partial index):
+ * a conflict returns no row and resolves to the existing row as a duplicate
+ * in a still-valid transaction. Never catch PG 23505 here — a caught unique
+ * violation would abort the surrounding transaction.
  */
 export async function appendRenewalReminder(
   ctx: CommandHandlerContext,
@@ -495,6 +643,7 @@ export async function appendRenewalReminder(
 ): Promise<{ messageId: string; conversationId: string; duplicate: boolean }> {
   const trx = requireTrx(ctx);
   const key = renewalReminderKey(input.subscriptionId, input.cycleId);
+  await advisoryLockRenewalReminder(trx, ctx.tenantId, key);
   const existing = await trx
     .selectFrom("communication.messages")
     .select(["id", "conversation_id"])
@@ -540,45 +689,49 @@ export async function appendRenewalReminder(
   }
   const messageId = newId();
   const occurred = now();
-  try {
-    await trx
-      .insertInto("communication.messages")
-      .values({
-        id: messageId,
-        tenant_id: ctx.tenantId,
-        conversation_id: conversationId,
-        person_id: input.personId,
-        direction: "INTERNAL",
-        channel,
-        sender_type: "SYSTEM",
-        external_message_id: null,
-        idempotency_key: key,
-        content_type: "TEXT",
-        body_text:
-          `Sua assinatura vence em ${input.cycleEnd.toISOString()}. ` +
-          `Renove para manter o acesso sem interrupção. Assinatura ${input.subscriptionId}.`,
-        attachment_ref: null,
-        metadata_json: {
-          subscription_id: input.subscriptionId,
-          cycle_id: input.cycleId,
-          kind: "renewal_reminder",
-        },
-        occurred_at: occurred,
-        received_at: null,
-        created_at: now(),
-      })
-      .execute();
-  } catch (err) {
-    if (typeof err === "object" && err !== null && (err as { code?: string }).code === "23505") {
-      const raced = await trx
-        .selectFrom("communication.messages")
-        .select(["id", "conversation_id"])
-        .where("tenant_id", "=", ctx.tenantId)
-        .where("idempotency_key", "=", key)
-        .executeTakeFirstOrThrow();
-      return { messageId: raced.id, conversationId: raced.conversation_id, duplicate: true };
-    }
-    throw err;
+  // ON CONFLICT DO NOTHING (not try/catch 23505): a failed statement would
+  // abort the command transaction — Postgres has no statement-level recovery
+  // without an explicit savepoint. The conflict target mirrors the
+  // `messages_idempotency_unique` partial index.
+  const inserted = await trx
+    .insertInto("communication.messages")
+    .values({
+      id: messageId,
+      tenant_id: ctx.tenantId,
+      conversation_id: conversationId,
+      person_id: input.personId,
+      direction: "INTERNAL",
+      channel,
+      sender_type: "SYSTEM",
+      external_message_id: null,
+      idempotency_key: key,
+      content_type: "TEXT",
+      body_text:
+        `Sua assinatura vence em ${input.cycleEnd.toISOString()}. ` +
+        `Renove para manter o acesso sem interrupção. Assinatura ${input.subscriptionId}.`,
+      attachment_ref: null,
+      metadata_json: {
+        subscription_id: input.subscriptionId,
+        cycle_id: input.cycleId,
+        kind: "renewal_reminder",
+      },
+      occurred_at: occurred,
+      received_at: null,
+      created_at: now(),
+    })
+    .onConflict((oc) =>
+      oc.columns(["tenant_id", "channel", "idempotency_key"]).where("idempotency_key", "is not", null).doNothing(),
+    )
+    .returning(["id", "conversation_id"])
+    .executeTakeFirst();
+  if (inserted === undefined) {
+    const raced = await trx
+      .selectFrom("communication.messages")
+      .select(["id", "conversation_id"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("idempotency_key", "=", key)
+      .executeTakeFirstOrThrow();
+    return { messageId: raced.id, conversationId: raced.conversation_id, duplicate: true };
   }
   await trx
     .insertInto("communication.message_deliveries")
@@ -602,6 +755,216 @@ export async function appendRenewalReminder(
     .where("id", "=", conversationId)
     .execute();
   return { messageId, conversationId, duplicate: false };
+}
+
+/**
+ * Stable error code recorded on the append-only CANCELLED delivery attempt
+ * when a renewal order settles after its reminder was queued. The code is a
+ * fixed internal constant (never provider output, never free text).
+ */
+export const RENEWAL_REMINDER_CANCELLED_CODE = "RENEWAL_ORDER_SETTLED";
+
+/** Existing generated reminder message for a subscription cycle, if any. */
+export async function findRenewalReminderMessage(
+  ctx: CommandHandlerContext,
+  input: { subscriptionId: string; cycleId: string },
+): Promise<{ id: string } | null> {
+  const trx = requireTrx(ctx);
+  const row = await trx
+    .selectFrom("communication.messages")
+    .select(["id"])
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("idempotency_key", "=", renewalReminderKey(input.subscriptionId, input.cycleId))
+    .executeTakeFirst();
+  return row === undefined ? null : { id: row.id };
+}
+
+/**
+ * Append-only cancellation of a queued renewal reminder: when the latest
+ * delivery attempt (ordered by `attempt_no` DESC) is still QUEUED, append a
+ * new attempt (`latest + 1`) with status CANCELLED and the preserved
+ * provider. A latest non-QUEUED attempt (already cancelled, sent, failed…)
+ * is a no-op so later passes are idempotent. Never UPDATEs or DELETEs
+ * messages/deliveries (append-only triggers). The latest row is locked
+ * (`FOR UPDATE`) and the append uses `ON CONFLICT (tenant_id, message_id,
+ * attempt_no) DO NOTHING`: a concurrent worker that raced to the same
+ * `attempt_no` resolves to a no-op without aborting the surrounding
+ * transaction (a caught PG 23505 would leave it aborted — never catch it).
+ */
+export async function cancelQueuedRenewalReminder(
+  ctx: CommandHandlerContext,
+  input: { messageId: string; subscriptionId: string; cycleId: string; orderId: string },
+): Promise<boolean> {
+  const trx = requireTrx(ctx);
+  const latest = await trx
+    .selectFrom("communication.message_deliveries")
+    .select(["provider", "status", "attempt_no"])
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("message_id", "=", input.messageId)
+    .orderBy("attempt_no", "desc")
+    .limit(1)
+    .forUpdate()
+    .executeTakeFirst();
+  if (latest === undefined || latest.status !== "QUEUED") {
+    return false;
+  }
+  // ON CONFLICT DO NOTHING (not try/catch): a failed statement would abort
+  // the command transaction — Postgres has no statement-level recovery
+  // without an explicit savepoint.
+  const inserted = await trx
+    .insertInto("communication.message_deliveries")
+    .values({
+      id: newId(),
+      tenant_id: ctx.tenantId,
+      message_id: input.messageId,
+      provider: latest.provider,
+      status: "CANCELLED",
+      attempt_no: latest.attempt_no + 1,
+      external_delivery_id: null,
+      error_code: RENEWAL_REMINDER_CANCELLED_CODE,
+      error_detail_json: {
+        reason: "renewal order settled; reminder no longer needed",
+        subscription_id: input.subscriptionId,
+        cycle_id: input.cycleId,
+        order_id: input.orderId,
+      },
+      occurred_at: now(),
+    })
+    .onConflict((oc) => oc.columns(["tenant_id", "message_id", "attempt_no"]).doNothing())
+    .returning(["id"])
+    .executeTakeFirst();
+  return inserted !== undefined;
+}
+
+/**
+ * Tenant-scoped recheck pass: for existing generated
+ * `renewal-reminder:{subscription}:{cycle}` SYSTEM/INTERNAL messages whose
+ * latest delivery is still QUEUED, re-evaluate the cycle's genuine
+ * same-tenant linked renewal order and append a CANCELLED attempt when it
+ * is SETTLED. Legacy duplicates (an earlier cycle carries the same order),
+ * missing/foreign links and non-QUEUED latest attempts are excluded from the
+ * candidate scan itself — BEFORE `LIMIT` — so an already-cancelled head row
+ * can never starve a later stale reminder. Every join/subquery carries an
+ * explicit tenant predicate; the per-message handler still re-reads and
+ * row-locks before appending. Bounded by `limit`; returns the cancelled
+ * message ids.
+ */
+export async function cancelStaleRenewalReminders(
+  ctx: CommandHandlerContext,
+  input: { limit: number },
+): Promise<{ cancelled: string[] }> {
+  const trx = requireTrx(ctx);
+  const candidates = await trx
+    .selectFrom("communication.messages as m")
+    .innerJoin("subscription.subscription_cycles as c", (join) =>
+      join.onRef("c.tenant_id", "=", "m.tenant_id"),
+    )
+    .innerJoin("commerce.orders as o", (join) =>
+      join
+        .onRef("o.tenant_id", "=", "c.tenant_id")
+        .onRef("o.id", "=", "c.renewal_order_id"),
+    )
+    .select([
+      "m.id as message_id",
+      sql<string>`split_part("m"."idempotency_key", ':', 2)`.as("subscription_id"),
+      sql<string>`split_part("m"."idempotency_key", ':', 3)`.as("cycle_id"),
+      "c.renewal_order_id as order_id",
+    ])
+    .where("m.tenant_id", "=", ctx.tenantId)
+    .where("m.direction", "=", "INTERNAL")
+    .where("m.sender_type", "=", "SYSTEM")
+    .where("m.idempotency_key", "like", "renewal-reminder:%")
+    // The key encodes `renewal-reminder:{subscription}:{cycle}`; the cycle
+    // row must be the one the key names (text comparison avoids cast errors
+    // on malformed keys, which simply fail to join).
+    .where(sql<boolean>`"c"."id"::text = split_part("m"."idempotency_key", ':', 3)`)
+    .where(sql<boolean>`"c"."subscription_id"::text = split_part("m"."idempotency_key", ':', 2)`)
+    .where(sql<boolean>`"c"."renewal_order_id" is not null`)
+    // Genuine same-tenant settlement only: the tenant-scoped order join
+    // above already enforces it; a missing/foreign link never matches.
+    .where("o.status", "=", "SETTLED")
+    // Latest delivery is still QUEUED: a QUEUED attempt with no newer
+    // attempt on the same tenant-scoped message.
+    .where((eb) =>
+      eb.exists((qb) =>
+        qb
+          .selectFrom("communication.message_deliveries as ld")
+          .select("ld.id")
+          .whereRef("ld.tenant_id", "=", "m.tenant_id")
+          .whereRef("ld.message_id", "=", "m.id")
+          .where("ld.status", "=", "QUEUED")
+          .where((neb) =>
+            neb.not(
+              neb.exists((newer) =>
+                newer
+                  .selectFrom("communication.message_deliveries as n")
+                  .select("n.id")
+                  .whereRef("n.tenant_id", "=", "ld.tenant_id")
+                  .whereRef("n.message_id", "=", "ld.message_id")
+                  .whereRef("n.attempt_no", ">", "ld.attempt_no"),
+              ),
+            ),
+          ),
+      ),
+    )
+    // Not an earlier-cycle legacy duplicate: no earlier same-tenant cycle
+    // for the same subscription carries this order.
+    .where((eb) =>
+      eb.not(
+        eb.exists((qb) =>
+          qb
+            .selectFrom("subscription.subscription_cycles as earlier")
+            .select("earlier.id")
+            .whereRef("earlier.tenant_id", "=", "c.tenant_id")
+            .whereRef("earlier.subscription_id", "=", "c.subscription_id")
+            .whereRef("earlier.renewal_order_id", "=", "c.renewal_order_id")
+            .whereRef("earlier.cycle_no", "<", "c.cycle_no"),
+        ),
+      ),
+    )
+    .orderBy("m.occurred_at", "asc")
+    .limit(input.limit)
+    .execute();
+  const cancelled: string[] = [];
+  for (const candidate of candidates) {
+    const subscriptionId = candidate.subscription_id;
+    const cycleId = candidate.cycle_id;
+    const orderId = candidate.order_id;
+    if (subscriptionId === null || cycleId === null || orderId === null) {
+      continue;
+    }
+    await advisoryLockSubscription(trx, subscriptionId);
+    const cycle = await getCycle(ctx, cycleId);
+    if (cycle === null || cycle.subscriptionId !== subscriptionId) {
+      continue;
+    }
+    if (cycle.renewalOrderId === null) {
+      continue;
+    }
+    const locked = await getOrderForUpdate(ctx, cycle.renewalOrderId);
+    if (locked === null || locked.status !== "SETTLED") {
+      continue;
+    }
+    const legacyDuplicate = await hasEarlierCycleWithRenewalOrder(
+      ctx,
+      subscriptionId,
+      cycle.cycleNo,
+      locked.id,
+    );
+    if (legacyDuplicate) {
+      continue;
+    }
+    const appended = await cancelQueuedRenewalReminder(ctx, {
+      messageId: candidate.message_id,
+      subscriptionId,
+      cycleId,
+      orderId: locked.id,
+    });
+    if (appended) {
+      cancelled.push(candidate.message_id);
+    }
+  }
+  return { cancelled };
 }
 
 export interface TrustGrantRow {

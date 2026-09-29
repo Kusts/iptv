@@ -31,18 +31,23 @@ import {
   advisoryLockSubscription,
   appendRenewalReminder,
   approvedTrustReview,
+  cancelQueuedRenewalReminder,
+  cancelStaleRenewalReminders,
   createRenewalOrder,
   extendEntitlementsEndsAt,
   extendOpenCycle,
   findOpenTrustReview,
+  findRenewalReminderMessage,
   getActivePlanPrice,
   getCycle,
   getCycleByRenewalOrder,
   getOpenCycle,
   getOrder,
+  getOrderForUpdate,
   getRecoveryTask,
   getSubscription,
   getTrustGrantForCycle,
+  hasEarlierCycleWithRenewalOrder,
   insertCycle,
   insertRecoveryTask,
   insertTrustGrant,
@@ -173,11 +178,26 @@ async function handleQuote(
       };
     }
     if (linked !== null && linked.status === "SETTLED") {
-      return {
-        ok: false,
-        code: "precondition_failed",
-        message: "renewal order already settled; run subscription.renew to open the next cycle",
-      };
+      // Legacy compatibility: rows written before the F13 lifecycle fix
+      // carry the same settled order on both the prior and the newly opened
+      // cycle. An earlier cycle with the same order proves the open-cycle
+      // pointer is a stale copy — clear it inside this tenant transaction
+      // and quote fresh instead of refusing.
+      const legacyDuplicate = await hasEarlierCycleWithRenewalOrder(
+        ctx,
+        subscription.id,
+        open.cycleNo,
+        linked.id,
+      );
+      if (legacyDuplicate) {
+        await setCycleRenewalOrder(ctx, open.id, null);
+      } else {
+        return {
+          ok: false,
+          code: "precondition_failed",
+          message: "renewal order already settled; run subscription.renew to open the next cycle",
+        };
+      }
     }
     // CANCELLED / EXPIRED / missing: drop the stale link and quote fresh.
     await setCycleRenewalOrder(ctx, open.id, null);
@@ -271,19 +291,46 @@ async function handleRenew(
       message: `subscription is ${subscription.status}; renewal requires ACTIVE/SUSPENDED/ENDED`,
     };
   }
-  // Idempotency: a newer cycle already carrying this order means renew ran.
+  // Idempotency: the renewal link rides on the PRIOR cycle only (canonical
+  // `renewal-store.ts` storage comment). Two replay shapes are accepted:
+  // (a) legacy rows where the next cycle duplicated the same order pointer,
+  // (b) current rows where the next cycle is identified by the sequential
+  // chain — it starts exactly at the prior cycle end with a greater cycle_no.
+  const priorRow = await getCycle(ctx, prior.id);
+  if (priorRow === null) {
+    return { ok: false, code: "not_found", message: "prior cycle not found in this tenant" };
+  }
   const cycles = await listCycles(ctx, subscription.id);
-  const newer = cycles.find((c) => c.cycleNo > prior.cycleNo && c.renewalOrderId === order.id);
-  if (newer !== undefined) {
+  const newerByLink = cycles.find((c) => c.cycleNo > prior.cycleNo && c.renewalOrderId === order.id);
+  if (newerByLink !== undefined) {
     return {
       ok: true,
       data: {
         subscriptionId: subscription.id,
         priorCycleId: prior.id,
-        cycleId: newer.id,
-        cycleNo: newer.cycleNo,
-        startsAt: newer.startsAt.toISOString(),
-        endsAt: newer.endsAt.toISOString(),
+        cycleId: newerByLink.id,
+        cycleNo: newerByLink.cycleNo,
+        startsAt: newerByLink.startsAt.toISOString(),
+        endsAt: newerByLink.endsAt.toISOString(),
+        already: true,
+      },
+    };
+  }
+  const chained = cycles
+    .filter(
+      (c) => c.cycleNo > priorRow.cycleNo && c.startsAt.getTime() === priorRow.endsAt.getTime(),
+    )
+    .sort((a, b) => a.cycleNo - b.cycleNo)[0];
+  if (chained !== undefined) {
+    return {
+      ok: true,
+      data: {
+        subscriptionId: subscription.id,
+        priorCycleId: priorRow.id,
+        cycleId: chained.id,
+        cycleNo: chained.cycleNo,
+        startsAt: chained.startsAt.toISOString(),
+        endsAt: chained.endsAt.toISOString(),
         already: true,
       },
     };
@@ -291,10 +338,6 @@ async function handleRenew(
   const catalogPlan = await getCatalogPlan(ctx, subscription.planId);
   if (catalogPlan === null) {
     return { ok: false, code: "not_found", message: "catalog plan not found in this tenant" };
-  }
-  const priorRow = await getCycle(ctx, prior.id);
-  if (priorRow === null) {
-    return { ok: false, code: "not_found", message: "prior cycle not found in this tenant" };
   }
   // Money exact: the next cycle carries the SETTLED order net (integer
   // minor units as exact strings — never floats, never webhook amounts).
@@ -323,12 +366,10 @@ async function handleRenew(
     baseRevenueMinor: netMinor.toString(),
     currency: order.currency,
   });
-  await trx
-    .updateTable("subscription.subscription_cycles")
-    .set({ renewal_order_id: order.id })
-    .where("tenant_id", "=", ctx.tenantId)
-    .where("id", "=", next.id)
-    .execute();
+  // The renewal link stays on the PRIOR cycle (canonical storage rule):
+  // the newly opened cycle starts with a null `renewal_order_id` so the
+  // next `renewal.quote` and future reminders are never blocked by the
+  // already-settled order. `insertCycle` defaults the link to null.
   await updateSubscription(ctx, subscription.id, {
     status: "ACTIVE",
     currentPeriodStart: nextStart,
@@ -400,6 +441,66 @@ async function handleRemindersDue(
     if (trx !== null) {
       await advisoryLockSubscription(trx, candidate.subscriptionId);
     }
+    // Race revalidation (tenant-scoped): the candidate snapshot may predate
+    // a concurrent settlement OR a Trust Renewal extension applied while
+    // this worker waited on the advisory lock. Re-read the live
+    // subscription/cycle and re-evaluate the CURRENT time against
+    // `[now, now + windowDays]` — never the pre-lock candidate date. A cycle
+    // that left ACTIVE/PENDING or moved outside the window is skipped, and
+    // an eligible cycle is reminded with its FRESH end date.
+    // The linked order is then row-locked (`FOR UPDATE` serializes against
+    // settlement's own row lock). A same-tenant SETTLED link suppresses the
+    // reminder — except a legacy duplicate (an earlier cycle carries the
+    // same order), which stays reminder-eligible. Missing/foreign links
+    // never suppress. Never auto-runs `subscription.renew` here; only skips
+    // stale appends.
+    const freshSubscription = await getSubscription(ctx, candidate.subscriptionId);
+    if (freshSubscription === null || freshSubscription.status !== "ACTIVE") {
+      continue;
+    }
+    const freshCycle = await getCycle(ctx, candidate.cycleId);
+    if (freshCycle === null || freshCycle.subscriptionId !== candidate.subscriptionId) {
+      continue;
+    }
+    if (freshCycle.status !== "PENDING" && freshCycle.status !== "ACTIVE") {
+      continue;
+    }
+    const recheckAt = now();
+    const freshEndsAtMs = freshCycle.endsAt.getTime();
+    if (freshEndsAtMs < recheckAt.getTime() || freshEndsAtMs > recheckAt.getTime() + policy.windowDays * 86_400_000) {
+      continue;
+    }
+    if (freshCycle.renewalOrderId !== null) {
+      const locked = await getOrderForUpdate(ctx, freshCycle.renewalOrderId);
+      if (locked !== null && locked.status === "SETTLED") {
+        const legacyDuplicate = await hasEarlierCycleWithRenewalOrder(
+          ctx,
+          candidate.subscriptionId,
+          freshCycle.cycleNo,
+          locked.id,
+        );
+        if (!legacyDuplicate) {
+          // Settlement raced the candidate snapshot after an earlier run
+          // already queued the reminder: append the append-only CANCELLED
+          // attempt for the existing message instead of leaving a stale
+          // QUEUED delivery behind. Never UPDATEs/DELETEs; legacy
+          // duplicates and missing messages stay untouched.
+          const existing = await findRenewalReminderMessage(ctx, {
+            subscriptionId: candidate.subscriptionId,
+            cycleId: freshCycle.id,
+          });
+          if (existing !== null) {
+            await cancelQueuedRenewalReminder(ctx, {
+              messageId: existing.id,
+              subscriptionId: candidate.subscriptionId,
+              cycleId: freshCycle.id,
+              orderId: locked.id,
+            });
+          }
+          continue;
+        }
+      }
+    }
     const personId = await getPersonIdForCustomer(ctx, candidate.customerId);
     if (personId === null) {
       continue;
@@ -408,12 +509,19 @@ async function handleRemindersDue(
       personId,
       subscriptionId: candidate.subscriptionId,
       cycleId: candidate.cycleId,
-      cycleEnd: candidate.cycleEnd,
+      cycleEnd: freshCycle.endsAt,
     });
     if (!recorded.duplicate) {
       reminded.push(candidate.subscriptionId);
     }
   }
+  // Idempotent recheck pass (F13): the due-window query already excludes
+  // genuine settled links, so a reminder queued by an earlier run would
+  // otherwise keep a stale QUEUED latest delivery forever. Re-evaluate every
+  // generated reminder whose latest delivery is still QUEUED and append a
+  // CANCELLED attempt where its cycle's genuine same-tenant order settled.
+  // The public result shape stays `{ scanned, reminded }`.
+  await cancelStaleRenewalReminders(ctx, { limit: input.limit });
   return { ok: true, data: { scanned: candidates.length, reminded } };
 }
 
@@ -636,14 +744,30 @@ async function handleExpireOverdueDue(
       continue;
     }
     // A SETTLED renewal order means the money arrived and `subscription.renew`
-    // owns the transition — the worker must never steal it.
+    // owns the transition — the worker must never steal it. The link is
+    // row-locked (`FOR UPDATE` serializes against settlement's own row
+    // lock) and tenant-scoped (missing/foreign links never suppress).
+    // Legacy compatibility: rows written before the F13 lifecycle fix carry
+    // the same settled order on both the prior and the newly opened cycle.
+    // An earlier cycle with the same order proves the overdue cycle's
+    // pointer is a stale copy — not a paid link for the current cycle — so
+    // expiry proceeds with `renewalOrderId: null` (no stale pointer on the
+    // recovery task). Only a genuine upcoming renewal for the currently
+    // overdue cycle (no earlier cycle carries the order) suppresses expiry.
     let linkedRenewalOrderId: string | null = null;
     if (cycle.renewalOrderId !== null) {
-      const linked = await getOrder(ctx, cycle.renewalOrderId);
+      const linked = await getOrderForUpdate(ctx, cycle.renewalOrderId);
       if (linked !== null && linked.status === "SETTLED") {
-        continue;
-      }
-      if (linked !== null && (linked.status === "DRAFT" || linked.status === "AWAITING_PAYMENT")) {
+        const legacyDuplicate = await hasEarlierCycleWithRenewalOrder(
+          ctx,
+          subscription.id,
+          cycle.cycleNo,
+          linked.id,
+        );
+        if (!legacyDuplicate) {
+          continue;
+        }
+      } else if (linked !== null && (linked.status === "DRAFT" || linked.status === "AWAITING_PAYMENT")) {
         linkedRenewalOrderId = linked.id;
       }
     }
