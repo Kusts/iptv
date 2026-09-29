@@ -1,0 +1,68 @@
+services:
+  infisical:
+    image: infisical/infisical:v0.165.16@sha256:6b911e3938ac2ff385a782df59ce9272799be7976d26dc5667266a2aecac4116
+    container_name: iptv-infisical
+    restart: unless-stopped
+    depends_on:
+      infisical-postgres:
+        condition: service_healthy
+      infisical-redis:
+        condition: service_healthy
+    env_file:
+      - .env.infisical
+    environment:
+      DB_CONNECTION_URI: postgresql://${INFISICAL_POSTGRES_USER:?INFISICAL_POSTGRES_USER is required}:${INFISICAL_POSTGRES_PASSWORD:?INFISICAL_POSTGRES_PASSWORD is required}@infisical-postgres:5432/${INFISICAL_POSTGRES_DB:?INFISICAL_POSTGRES_DB is required}
+      REDIS_URL: redis://infisical-redis:6379
+      HOST: "0.0.0.0"
+      PORT: "8080"
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - infisical-net
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/api/status').then(function(r){if(!r.ok)process.exit(1)}).catch(function(){process.exit(1)})\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  infisical-postgres:
+    image: postgres:17-alpine
+    container_name: iptv-infisical-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${INFISICAL_POSTGRES_DB:?INFISICAL_POSTGRES_DB is required}
+      POSTGRES_USER: ${INFISICAL_POSTGRES_USER:?INFISICAL_POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${INFISICAL_POSTGRES_PASSWORD:?INFISICAL_POSTGRES_PASSWORD is required}
+    volumes:
+      - infisical_pgdata:/var/lib/postgresql/data
+    networks:
+      - infisical-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${INFISICAL_POSTGRES_USER:?} -d $${INFISICAL_POSTGRES_DB:?}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  infisical-redis:
+    image: redis:7-alpine
+    container_name: iptv-infisical-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - infisical_redisdata:/data
+    networks:
+      - infisical-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  infisical-net:
+    driver: bridge
+
+volumes:
+  infisical_pgdata:
+  infisical_redisdata:
