@@ -39,6 +39,7 @@ const PERMISSIONS = [
   "provider.operation.write",
   "subscription.read",
   "subscription.write",
+  "support.ticket.write",
   "settings.manage",
   "agent.review.request",
   "agent.review.decide",
@@ -469,6 +470,201 @@ describe.skipIf(!hasDb)("Wave 6 Subscriptions + Fulfillment (requires TEST_DATAB
       .where("id", "=", subscriptionId2)
       .executeTakeFirstOrThrow();
     expect(active.status).toBe("ACTIVE");
+  });
+
+  it("F04: DOM drift degrades only the affected write; unrelated fulfillment continues", async () => {
+    const drifted = await settledOrderFixture();
+    const driftedSubscriptionId = await activateFromOrder(drifted.orderId);
+    const degraded = await bus.execute<{ operationId: string; status: string; subscriptionStatus: string }>(
+      actor(),
+      "fulfillment.request_for_subscription",
+      { subscriptionId: driftedSubscriptionId, adapter: "echo", echoOutcome: "drift" },
+    );
+    if (!degraded.ok) {
+      throw new Error(`drift fulfillment failed: ${JSON.stringify(degraded)}`);
+    }
+    expect(degraded.data.status).toBe("VERIFYING");
+    expect(degraded.data.subscriptionStatus).toBe("PENDING_ACTIVATION");
+    const driftedOp = await db
+      .selectFrom("provider.provider_operations")
+      .select(["status", "effect_certainty", "result_summary_json"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", degraded.data.operationId)
+      .executeTakeFirstOrThrow();
+    expect(driftedOp.status).toBe("VERIFYING");
+    expect(driftedOp.effect_certainty).toBe("UNKNOWN");
+    const summary = driftedOp.result_summary_json as Record<string, unknown>;
+    expect(summary["degraded"]).toBe(true);
+    expect(summary["drift_detected"]).toBe(true);
+    const driftedAttempts = await db
+      .selectFrom("provider.provider_operation_attempts")
+      .select(["error_code"])
+      .where("tenant_id", "=", tenantId)
+      .where("provider_operation_id", "=", degraded.data.operationId)
+      .execute();
+    expect(driftedAttempts.some((a) => a.error_code === "DOM_DRIFT")).toBe(true);
+    const driftedEvidence = await db
+      .selectFrom("provider.provider_evidence")
+      .select(["evidence_type"])
+      .where("tenant_id", "=", tenantId)
+      .where("provider_operation_id", "=", degraded.data.operationId)
+      .execute();
+    expect(driftedEvidence.some((e) => e.evidence_type === "FULFILLMENT_DEGRADED")).toBe(true);
+    const healthy = await settledOrderFixture();
+    const healthySubscriptionId = await activateFromOrder(healthy.orderId);
+    const healthyRequested = await bus.execute<{ status: string; subscriptionStatus: string }>(
+      actor(),
+      "fulfillment.request_for_subscription",
+      { subscriptionId: healthySubscriptionId, adapter: "echo", echoOutcome: "success" },
+    );
+    if (!healthyRequested.ok) {
+      throw new Error(`healthy fulfillment failed: ${JSON.stringify(healthyRequested)}`);
+    }
+    expect(healthyRequested.data.status).toBe("SUCCEEDED");
+    expect(healthyRequested.data.subscriptionStatus).toBe("ACTIVE");
+    const driftedOrder = await db
+      .selectFrom("commerce.orders")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", drifted.orderId)
+      .executeTakeFirstOrThrow();
+    expect(driftedOrder.status).toBe("SETTLED");
+    const crmPersonId = await makePerson();
+    expect(typeof crmPersonId).toBe("string");
+    const ticket = await bus.execute<{ id: string; status: string }>(actor(), "support.ticket.open", {
+      personId: drifted.personId,
+      summary: "F04 continuity probe: support resolves while one fulfillment is degraded",
+    });
+    if (!ticket.ok) {
+      throw new Error(`support continuity failed: ${JSON.stringify(ticket)}`);
+    }
+    expect(ticket.data.id.length).toBeGreaterThan(0);
+    const driftedRead = await injectRaw({ method: "GET", url: `/v1/subscriptions/${driftedSubscriptionId}`, token });
+    expect(driftedRead.statusCode).toBe(200);
+    expect(driftedRead.json<{ status: string }>().status).toBe("PENDING_ACTIVATION");
+    const healthyRead = await injectRaw({ method: "GET", url: `/v1/subscriptions/${healthySubscriptionId}`, token });
+    expect(healthyRead.statusCode).toBe(200);
+    expect(healthyRead.json<{ status: string }>().status).toBe("ACTIVE");
+  });
+
+  it("F02: provider outage queues fulfillment; recovery resumes without duplicate effect", async () => {
+    const outage = await settledOrderFixture();
+    const outageSubscriptionId = await activateFromOrder(outage.orderId);
+    const failed = await bus.execute<{ operationId: string; status: string }>(
+      actor(),
+      "fulfillment.request_for_subscription",
+      { subscriptionId: outageSubscriptionId, adapter: "echo", echoOutcome: "failed" },
+    );
+    if (!failed.ok) {
+      throw new Error(`outage fulfillment failed: ${JSON.stringify(failed)}`);
+    }
+    expect(failed.data.status).toBe("FAILED");
+    const queuedSub = await db
+      .selectFrom("subscription.subscriptions")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", outageSubscriptionId)
+      .executeTakeFirstOrThrow();
+    expect(queuedSub.status).toBe("PENDING_ACTIVATION");
+    const queuedOrder = await db
+      .selectFrom("commerce.orders")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", outage.orderId)
+      .executeTakeFirstOrThrow();
+    expect(queuedOrder.status).toBe("SETTLED");
+    const queuedCharges = await db
+      .selectFrom("billing.charges")
+      .select(["id", "status"])
+      .where("tenant_id", "=", tenantId)
+      .where("order_id", "=", outage.orderId)
+      .execute();
+    expect(queuedCharges.length).toBeGreaterThan(0);
+    const peer = await settledOrderFixture();
+    const peerSubscriptionId = await activateFromOrder(peer.orderId);
+    const peerRequested = await bus.execute<{ status: string; subscriptionStatus: string }>(
+      actor(),
+      "fulfillment.request_for_subscription",
+      { subscriptionId: peerSubscriptionId, adapter: "echo", echoOutcome: "success" },
+    );
+    if (!peerRequested.ok) {
+      throw new Error(`peer fulfillment failed: ${JSON.stringify(peerRequested)}`);
+    }
+    expect(peerRequested.data.subscriptionStatus).toBe("ACTIVE");
+    const crmProbe = await makePerson();
+    expect(typeof crmProbe).toBe("string");
+    const supportProbe = await bus.execute<{ id: string }>(actor(), "support.ticket.open", {
+      personId: outage.personId,
+      summary: "F02 continuity probe: support resolves while fulfillment is queued",
+    });
+    if (!supportProbe.ok) {
+      throw new Error(`support continuity failed: ${JSON.stringify(supportProbe)}`);
+    }
+    const drained = await bus.execute<{ retried: number; succeeded: number; stillPending: number }>(
+      actor(),
+      "fulfillment.retry_due",
+      { limit: 100, adapter: "echo", echoOutcome: "success" },
+    );
+    if (!drained.ok) {
+      throw new Error(`fulfillment.retry_due failed: ${JSON.stringify(drained)}`);
+    }
+    expect(drained.data.retried).toBeGreaterThanOrEqual(1);
+    expect(drained.data.succeeded).toBeGreaterThanOrEqual(1);
+    const recovered = await db
+      .selectFrom("subscription.subscriptions")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", outageSubscriptionId)
+      .executeTakeFirstOrThrow();
+    expect(recovered.status).toBe("ACTIVE");
+    const recoveredCycles = await db
+      .selectFrom("subscription.subscription_cycles")
+      .select(["id", "status"])
+      .where("tenant_id", "=", tenantId)
+      .where("subscription_id", "=", outageSubscriptionId)
+      .execute();
+    expect(recoveredCycles).toHaveLength(1);
+    expect(recoveredCycles[0]?.status).toBe("ACTIVE");
+    const recoveredEntitlements = await db
+      .selectFrom("entitlement.entitlements")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("source_type", "=", "subscription")
+      .where("source_id", "=", outageSubscriptionId)
+      .execute();
+    expect(recoveredEntitlements).toHaveLength(1);
+    expect(recoveredEntitlements[0]?.status).toBe("ACTIVE");
+    const recoveredBindings = await db
+      .selectFrom("provider.provider_bindings")
+      .select(["external_id"])
+      .where("tenant_id", "=", tenantId)
+      .where("entity_type", "=", "subscription")
+      .where("entity_id", "=", outageSubscriptionId)
+      .execute();
+    expect(recoveredBindings).toHaveLength(1);
+    const settledAgain = await db
+      .selectFrom("commerce.orders")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", outage.orderId)
+      .executeTakeFirstOrThrow();
+    expect(settledAgain.status).toBe("SETTLED");
+    const drainedAgain = await bus.execute<{ retried: number; succeeded: number; stillPending: number }>(
+      actor(),
+      "fulfillment.retry_due",
+      { limit: 100, adapter: "echo", echoOutcome: "success" },
+    );
+    if (!drainedAgain.ok) {
+      throw new Error(`second fulfillment.retry_due failed: ${JSON.stringify(drainedAgain)}`);
+    }
+    expect(drainedAgain.data.retried).toBe(0);
+    const cyclesAfter = await db
+      .selectFrom("subscription.subscription_cycles")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("subscription_id", "=", outageSubscriptionId)
+      .execute();
+    expect(cyclesAfter).toHaveLength(1);
   });
 
   it("FAILED fulfillment opens a review and never grants access", async () => {

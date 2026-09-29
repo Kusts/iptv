@@ -38,12 +38,15 @@ export interface ProviderOpsPort {
   requestOperation(input: ProviderOperationRequest): Promise<AdapterResult>;
 }
 
-export type EchoOutcome = "success" | "failed" | "unknown";
+export type EchoOutcome = "success" | "failed" | "unknown" | "drift";
 
 /** Read the deterministic echo mode (call time, so tests can set per case). */
 export function echoOutcomeFromEnv(): EchoOutcome {
   const raw = (process.env["PROVIDER_ECHO_OUTCOME"] ?? "success").trim().toLowerCase();
-  return raw === "failed" || raw === "unknown" ? raw : "success";
+  if (raw === "failed" || raw === "unknown" || raw === "drift") {
+    return raw;
+  }
+  return "success";
 }
 
 /** Deterministic synthetic adapter: no network, no credentials. */
@@ -53,7 +56,7 @@ export class EchoProviderOpsAdapter implements ProviderOpsPort {
   async requestOperation(input: ProviderOperationRequest): Promise<AdapterResult> {
     const forced = input.payload["__echo_outcome"];
     const mode: EchoOutcome =
-      forced === "failed" || forced === "unknown" || forced === "success"
+      forced === "failed" || forced === "unknown" || forced === "success" || forced === "drift"
         ? forced
         : echoOutcomeFromEnv();
     if (mode === "success") {
@@ -65,6 +68,9 @@ export class EchoProviderOpsAdapter implements ProviderOpsPort {
     }
     if (mode === "failed") {
       return { outcome: "FAILED", detail: "echo: synthetic failure", externalRef: null };
+    }
+    if (mode === "drift") {
+      return { outcome: "UNKNOWN", detail: "echo: synthetic DOM drift, degraded, verify before retry", externalRef: null };
     }
     return { outcome: "UNKNOWN", detail: "echo: synthetic unknown effect", externalRef: null };
   }

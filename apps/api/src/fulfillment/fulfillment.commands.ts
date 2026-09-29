@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { CommandResult } from "@iptv/domain";
 import type { CommandBus, CommandHandlerContext } from "../commands/command-bus.js";
-import { emitAndEnqueue } from "../crm/wave2-store.js";
+import { emitAndEnqueue, kyselyTrxOf } from "../crm/wave2-store.js";
 import {
   adapterNameFromEnv,
   applyCapabilityGate,
@@ -21,6 +21,7 @@ import {
   ensureFulfillmentProviderAccount,
   getCatalogPlan,
   getSubscription,
+  insertProviderEvidence,
   upsertSubscriptionBinding,
 } from "../subscription/subscription-store.js";
 
@@ -45,9 +46,16 @@ import {
 export const requestFulfillmentInput = z.object({
   subscriptionId: z.string().uuid(),
   adapter: z.enum(["echo", "manual"]).optional(),
-  echoOutcome: z.enum(["success", "failed", "unknown"]).optional(),
+  echoOutcome: z.enum(["success", "failed", "unknown", "drift"]).optional(),
 });
 export type RequestFulfillmentInput = z.infer<typeof requestFulfillmentInput>;
+
+export const retryDueInput = z.object({
+  limit: z.number().int().min(1).max(1000).default(100),
+  adapter: z.enum(["echo", "manual"]).optional(),
+  echoOutcome: z.enum(["success", "failed", "unknown", "drift"]).optional(),
+});
+export type RetryDueInput = z.infer<typeof retryDueInput>;
 
 export interface FulfillmentCommandDeps {
   opsPort?: ProviderOpsPort;
@@ -72,13 +80,13 @@ async function emitProvider(
   });
 }
 
-function handleRequestFactory(deps: FulfillmentCommandDeps) {
-  return async (
-    ctx: CommandHandlerContext,
-    input: RequestFulfillmentInput,
-  ): Promise<
-    CommandResult<{ operationId: string; status: string; subscriptionStatus: string; already: boolean }>
-  > => {
+async function executeFulfillmentRequest(
+  ctx: CommandHandlerContext,
+  input: RequestFulfillmentInput,
+  deps: FulfillmentCommandDeps,
+): Promise<
+  CommandResult<{ operationId: string; status: string; subscriptionStatus: string; already: boolean }>
+> {
     const subscription = await getSubscription(ctx, input.subscriptionId);
     if (subscription === null) {
       return { ok: false, code: "not_found", message: "subscription not found in this tenant" };
@@ -224,14 +232,29 @@ function handleRequestFactory(deps: FulfillmentCommandDeps) {
       };
     }
     if (result.outcome === "UNKNOWN") {
+      const drifted = input.echoOutcome === "drift" || result.detail.includes("drift");
       await updateProviderOperation(ctx, operation.id, {
         status: "VERIFYING",
         effectCertainty: "UNKNOWN",
         executionChannel: "MANUAL",
-        resultSummary: { detail: result.detail },
+        resultSummary: drifted
+          ? { detail: result.detail, degraded: true, drift_detected: true }
+          : { detail: result.detail },
         started: true,
       });
-      await insertProviderAttempt(ctx, { operationId: operation.id, status: "VERIFYING", errorCode: "EFFECT_UNKNOWN" });
+      await insertProviderAttempt(ctx, {
+        operationId: operation.id,
+        status: "VERIFYING",
+        errorCode: drifted ? "DOM_DRIFT" : "EFFECT_UNKNOWN",
+      });
+      if (drifted) {
+        await insertProviderEvidence(ctx, {
+          operationId: operation.id,
+          evidenceType: "FULFILLMENT_DEGRADED",
+          objectRef: `subscription:${subscription.id}`,
+          structured: { degraded: true, drift: true, detail: result.detail },
+        });
+      }
       return {
         ok: true,
         data: {
@@ -259,6 +282,76 @@ function handleRequestFactory(deps: FulfillmentCommandDeps) {
         already: false,
       },
     };
+}
+
+function handleRequestFactory(deps: FulfillmentCommandDeps) {
+  return async (
+    ctx: CommandHandlerContext,
+    input: RequestFulfillmentInput,
+  ): Promise<
+    CommandResult<{ operationId: string; status: string; subscriptionStatus: string; already: boolean }>
+  > => executeFulfillmentRequest(ctx, input, deps);
+}
+
+export interface RetryDueResult {
+  scanned: number;
+  queued: number;
+  retried: number;
+  succeeded: number;
+  stillPending: number;
+}
+
+function handleRetryDueFactory(deps: FulfillmentCommandDeps) {
+  return async (ctx: CommandHandlerContext, input: RetryDueInput): Promise<CommandResult<RetryDueResult>> => {
+    const trx = kyselyTrxOf(ctx);
+    if (trx === null) {
+      throw new Error("fulfillment retry requires a database transaction");
+    }
+    const rows = await trx
+      .selectFrom("subscription.subscriptions")
+      .select(["id"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("status", "=", "PENDING_ACTIVATION")
+      .orderBy("created_at", "asc")
+      .limit(input.limit)
+      .execute();
+    let queued = 0;
+    let retried = 0;
+    let succeeded = 0;
+    for (const row of rows) {
+      const latest = await latestProviderOperationForEntity(ctx, "subscription", row.id);
+      if (latest === null) {
+        continue;
+      }
+      if (latest.status === "HUMAN_REQUIRED" || latest.status === "VERIFYING") {
+        queued += 1;
+        continue;
+      }
+      if (latest.status !== "FAILED") {
+        continue;
+      }
+      retried += 1;
+      try {
+        const resumed = await executeFulfillmentRequest(
+          ctx,
+          {
+            subscriptionId: row.id,
+            ...(input.adapter !== undefined ? { adapter: input.adapter } : {}),
+            ...(input.echoOutcome !== undefined ? { echoOutcome: input.echoOutcome } : {}),
+          },
+          deps,
+        );
+        if (resumed.ok && resumed.data.status === "SUCCEEDED") {
+          succeeded += 1;
+        }
+      } catch {
+        continue;
+      }
+    }
+    return {
+      ok: true,
+      data: { scanned: rows.length, queued, retried, succeeded, stillPending: queued + (retried - succeeded) },
+    };
   };
 }
 
@@ -273,6 +366,14 @@ export function registerFulfillmentCommands(bus: CommandBus, deps: FulfillmentCo
     auditResource: "provider_operation",
     input: requestFulfillmentInput,
     handler: handleRequestFactory(deps),
+  });
+  bus.register<RetryDueInput, RetryDueResult>({
+    name: "fulfillment.retry_due",
+    permission: "subscription.write",
+    auditAction: "fulfillment.retry_due",
+    auditResource: "provider_operation",
+    input: retryDueInput,
+    handler: handleRetryDueFactory(deps),
   });
 }
 
