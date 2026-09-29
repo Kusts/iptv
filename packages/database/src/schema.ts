@@ -964,6 +964,28 @@ export interface FinanceFinancialLedgerEntriesTable {
   created_at: Date;
 }
 
+/**
+ * Mirrors `finance.cost_allocations` (migrations 005 + 031, Wave 10 ingest).
+ * Derived managerial costs (never a source of truth — the ledger is).
+ * Money stays `string` (exact minor units). Dedupe: one row per fact per
+ * cost type — `(tenant, cost_type, source_transaction_id, target)` when
+ * ledger-linked, `(tenant, cost_type, target type, target)` partial unique
+ * index when `source_transaction_id IS NULL` (migration 031).
+ */
+export interface FinanceCostAllocationsTable {
+  id: string;
+  tenant_id: string;
+  cost_type: string;
+  amount_minor: string;
+  currency: string;
+  allocation_target_type: string;
+  allocation_target_id: string;
+  allocation_method: string;
+  source_transaction_id: string | null;
+  occurred_at: Date;
+  created_at: Date;
+}
+
 /** Mirrors `subscription.subscriptions` (migration 006). */
 export interface SubscriptionSubscriptionsTable {
   id: string;
@@ -1669,6 +1691,7 @@ export interface Database {
   "finance.financial_accounts": FinanceFinancialAccountsTable;
   "finance.financial_transactions": FinanceFinancialTransactionsTable;
   "finance.financial_ledger_entries": FinanceFinancialLedgerEntriesTable;
+  "finance.cost_allocations": FinanceCostAllocationsTable;
   "renewal.recovery_tasks": RenewalRecoveryTasksTable;
   "subscription.trust_renewal_grants": SubscriptionTrustRenewalGrantsTable;
   "support.incidents": SupportIncidentsTable;

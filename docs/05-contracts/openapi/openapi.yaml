@@ -29,6 +29,7 @@ tags:
 - name: Commerce
 - name: Billing
 - name: Subscription
+- name: Finance
 - name: Provider Operations
 - name: Support
 - name: HITL
@@ -627,6 +628,124 @@ paths:
                 $ref: '#/components/schemas/Refund'
         '409':
           $ref: '#/components/responses/Conflict'
+  /v1/finance/contribution:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Finance
+      operationId: getFinanceContribution
+      description: FIN-04 contribution profit per customer (settled revenue minus COGS minus variable costs minus refunds/chargebacks). Read-only managerial view; analytics never drives sale/payment runtime (F14 degrades, never cascades).
+      parameters:
+      - name: customerId
+        in: query
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Contribution breakdown
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinanceContribution'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/finance/recompute:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Finance
+      operationId: recomputeCostAllocations
+      description: Idempotent cost-allocation ingest (replay-safe via migration-031 dedupe keys). Writes only finance.cost_allocations; ledger stays append-only.
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecomputeAllocationsRequest'
+      responses:
+        '200':
+          description: Recompute counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecomputeAllocationsResponse'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/metrics/cac:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Finance
+      operationId: getCustomerCac
+      description: ACQ-04/REF-06 acquisition cost per customer (paid touches plus referral reward, kept separate). BASELINE_UNAVAILABLE when no attributed acquisition fact exists.
+      parameters:
+      - name: customerId
+        in: query
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Customer acquisition cost
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerCac'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/metrics/cohorts:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Finance
+      operationId: listCohorts
+      description: RET-04 monthly customer cohorts with accumulated settled revenue. Empty cohorts report quality flags, never invented values.
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Monthly cohorts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CohortList'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
+  /v1/metrics/overview:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Finance
+      operationId: getMetricsOverview
+      description: FIN-01/FIN-04 executive summary (MRR, month revenue/cost, contribution margin). Degrades with quality flags, never fails sale/payment (F14).
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Executive metrics summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsOverview'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/subscriptions/{subscriptionId}:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -6132,3 +6251,236 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ReconciliationFinding'
+    FinanceContributionCycle:
+      type: object
+      required:
+      - cycleId
+      - status
+      - revenueMinor
+      - costMinor
+      properties:
+        cycleId:
+          type: string
+          format: uuid
+        status:
+          type: string
+        revenueMinor:
+          type: string
+          description: Exact minor units
+        costMinor:
+          type: string
+          description: Exact minor units
+    FinanceContribution:
+      type: object
+      required:
+      - customerId
+      - revenueMinor
+      - cogsMinor
+      - variableMinor
+      - refundsMinor
+      - chargebacksMinor
+      - contributionMinor
+      - cycles
+      - aiCostStatus
+      - paymentFeeStatus
+      - dataQuality
+      properties:
+        customerId:
+          type: string
+          format: uuid
+        revenueMinor:
+          type: string
+        cogsMinor:
+          type: string
+        variableMinor:
+          type: string
+        refundsMinor:
+          type: string
+        chargebacksMinor:
+          type: string
+        contributionMinor:
+          type: string
+        contributionMarginBps:
+          type:
+          - string
+          - 'null'
+        contributionMarginPercent:
+          type:
+          - string
+          - 'null'
+        cycles:
+          type: array
+          items:
+            $ref: '#/components/schemas/FinanceContributionCycle'
+        aiCostStatus:
+          type: string
+          enum:
+          - BASELINE_UNAVAILABLE
+        paymentFeeStatus:
+          type: string
+          enum:
+          - BASELINE_UNAVAILABLE
+        dataQuality:
+          type: string
+          enum:
+          - COMPLETE
+          - PARTIAL
+          - EMPTY
+          - DEGRADED
+    RecomputeAllocationsRequest:
+      type: object
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 5000
+    RecomputeAllocationsResponse:
+      type: object
+      required:
+      - inserted
+      - skipped
+      - byCostType
+      properties:
+        inserted:
+          type: integer
+        skipped:
+          type: integer
+        byCostType:
+          type: object
+          additionalProperties:
+            type: object
+            required:
+            - inserted
+            - skipped
+            properties:
+              inserted:
+                type: integer
+              skipped:
+                type: integer
+    CustomerCac:
+      type: object
+      required:
+      - customerId
+      - status
+      - paidAcquisitionMinor
+      - referralCostMinor
+      - blendedAcquisitionMinor
+      - newPayingCustomers
+      properties:
+        customerId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - AVAILABLE
+          - BASELINE_UNAVAILABLE
+          - DEGRADED
+        reason:
+          type: string
+        paidAcquisitionMinor:
+          type: string
+        referralCostMinor:
+          type: string
+        blendedAcquisitionMinor:
+          type: string
+        newPayingCustomers:
+          type: integer
+    RevenueCohort:
+      type: object
+      required:
+      - cohortMonth
+      - members
+      - revenueAccumulatedMinor
+      - activeSubscriptions
+      - dataQuality
+      properties:
+        cohortMonth:
+          type: string
+          pattern: '^[0-9]{4}-[0-9]{2}$'
+        members:
+          type: integer
+        revenueAccumulatedMinor:
+          type: string
+        activeSubscriptions:
+          type: integer
+        dataQuality:
+          type: string
+          enum:
+          - COMPLETE
+          - PARTIAL
+          - EMPTY
+    CohortList:
+      type: object
+      required:
+      - cohorts
+      - dataQuality
+      properties:
+        cohorts:
+          type: array
+          items:
+            $ref: '#/components/schemas/RevenueCohort'
+        dataQuality:
+          type: string
+          enum:
+          - OK
+          - EMPTY
+          - DEGRADED
+    MetricsOverview:
+      type: object
+      required:
+      - mrrMinor
+      - mrrActiveSubscriptions
+      - mrrCoverage
+      - monthRevenueMinor
+      - monthCostMinor
+      - monthRefundsMinor
+      - monthContributionMinor
+      - aiCostStatus
+      - paymentFeeStatus
+      - dataQuality
+      properties:
+        mrrMinor:
+          type: string
+        mrrActiveSubscriptions:
+          type: integer
+        mrrCoverage:
+          type: string
+          enum:
+          - COMPLETE
+          - PARTIAL
+        monthRevenueMinor:
+          type: string
+        monthCostMinor:
+          type: string
+        monthRefundsMinor:
+          type: string
+        monthContributionMinor:
+          type: string
+        contributionMarginBps:
+          type:
+          - string
+          - 'null'
+        contributionMarginPercent:
+          type:
+          - string
+          - 'null'
+        aiCostStatus:
+          type: string
+          enum:
+          - BASELINE_UNAVAILABLE
+        paymentFeeStatus:
+          type: string
+          enum:
+          - BASELINE_UNAVAILABLE
+        dataQuality:
+          type: string
+          enum:
+          - OK
+          - DEGRADED

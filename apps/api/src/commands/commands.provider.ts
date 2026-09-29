@@ -11,6 +11,7 @@ import { registerTrialCommands } from "../trial/trial.commands.js";
 import { registerProviderCommands } from "../provider/provider.commands.js";
 import { registerCommerceCommands } from "../commerce/commerce.commands.js";
 import { registerBillingCommands } from "../billing/billing.commands.js";
+import { registerFinanceCommands } from "../finance/finance.commands.js";
 import { registerSubscriptionCommands } from "../subscription/subscription.commands.js";
 import { registerRenewalCommands } from "../renewal/renewal.commands.js";
 import { registerReferralCommands } from "../referral/referral.commands.js";
@@ -80,6 +81,7 @@ export const CommandsProvider = {
       registerProviderCommands(bus, { opsPort, readbackPort: new StubProviderReadback() });
       registerCommerceCommands(bus);
       registerBillingCommands(bus, { asaasPort: resolveAsaasPort(asaasAdapterNameFromEnv()) });
+      registerFinanceCommands(bus);
       registerSubscriptionCommands(bus);
       registerRenewalCommands(bus);
       registerReferralCommands(bus);

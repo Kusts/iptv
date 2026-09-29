@@ -31,6 +31,7 @@ import { GrowthController } from "./growth/growth.controller.js";
 import { RecoveryController } from "./renewal/recovery.controller.js";
 import { FulfillmentController } from "./fulfillment/fulfillment.controller.js";
 import { BillingController } from "./billing/billing.controller.js";
+import { FinanceController } from "./finance/finance.controller.js";
 import { AsaasWebhookController } from "./billing/asaas-webhook.controller.js";
 import { AsaasWebhookService } from "./billing/asaas-webhook.service.js";
 import { KyselyPolicyRepository, PolicyResolver } from "./policy/policy-resolver.js";
@@ -90,6 +91,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     RecoveryController,
     FulfillmentController,
     BillingController,
+    FinanceController,
     AsaasWebhookController,
     SupportController,
     InventoryController,
