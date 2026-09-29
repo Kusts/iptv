@@ -17,8 +17,16 @@ services:
       PORT: "8080"
     ports:
       - "127.0.0.1:8080:8080"
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.infisical.entrypoints=websecure
+      - traefik.http.routers.infisical.rule=Host(`infisical.synkroo.com.br`)
+      - traefik.http.routers.infisical.tls.certresolver=cf
+      - traefik.http.services.infisical.loadbalancer.server.port=8080
     networks:
       - infisical-net
+      - proxy
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/api/status').then(function(r){if(!r.ok)process.exit(1)}).catch(function(){process.exit(1)})\""]
       interval: 30s
@@ -39,7 +47,7 @@ services:
     networks:
       - infisical-net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${INFISICAL_POSTGRES_USER:?} -d $${INFISICAL_POSTGRES_DB:?}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -62,6 +70,8 @@ services:
 networks:
   infisical-net:
     driver: bridge
+  proxy:
+    external: true
 
 volumes:
   infisical_pgdata:

@@ -73,8 +73,8 @@ subir (possivel re-push legitimo ou imagem inesperada; nao prosseguir no escuro)
 
 ```sh
 cd ~/infisical
-docker compose -f docker-compose.infisical.yml up -d
-docker compose -f docker-compose.infisical.yml ps
+docker compose --env-file .env.infisical -f docker-compose.infisical.yml up -d
+docker compose --env-file .env.infisical -f docker-compose.infisical.yml ps
 ```
 
 Validacao: 3 servicos `Up`; `infisical` fica `healthy` em ate ~2 min
@@ -85,7 +85,7 @@ Validacao: 3 servicos `Up`; `infisical` fica `healthy` em ate ~2 min
 ```sh
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/status
 # Esperado: 200
-docker compose -f docker-compose.infisical.yml logs --tail=50 infisical | grep -iE 'migration|listening|error'
+docker compose --env-file .env.infisical -f docker-compose.infisical.yml logs --tail=50 infisical | grep -iE 'migration|listening|error'
 # Esperado: migrations aplicadas, sem erro fatal
 ```
 
@@ -126,7 +126,7 @@ Validacao: mesma checagem HTTPS da opcao A + certificado valido no browser.
 
 ```sh
 cd ~/infisical
-docker compose -f docker-compose.infisical.yml exec -T infisical-postgres \
+docker compose --env-file .env.infisical -f docker-compose.infisical.yml exec -T infisical-postgres \
   pg_dump -U "$INFISICAL_POSTGRES_USER" "$INFISICAL_POSTGRES_DB" \
   > "/backups/infisical_$(date +%Y%m%d).sql"
 ```
@@ -137,7 +137,7 @@ em vez de redigita-las. Agende em cron diario e retenha 7+ copias.
 no cofre do operador, separada dos dumps. Restore:
 
 ```sh
-docker compose -f docker-compose.infisical.yml exec -T infisical-postgres \
+docker compose --env-file .env.infisical -f docker-compose.infisical.yml exec -T infisical-postgres \
   psql -U "$INFISICAL_POSTGRES_USER" "$INFISICAL_POSTGRES_DB" < backup.sql
 ```
 
@@ -147,7 +147,7 @@ Validacao do restore (em staging ou janela de manutencao): subir, checar
 ## 8. Rollback
 
 - Falha no primeiro deploy (`/api/status` != 200 apos 5 min, erro fatal de
-  migration, digest divergente): `docker compose -f docker-compose.infisical.yml down`
+  migration, digest divergente): `docker compose --env-file .env.infisical -f docker-compose.infisical.yml down`
   (volumes preservados por padrao), corrigir causa, repetir da etapa 3.
   **Nunca** `down -v` em incidente — isso apaga `infisical_pgdata`.
 - Regressao apos upgrade: voltar a tag anterior no compose, `pull` + `up -d`,
