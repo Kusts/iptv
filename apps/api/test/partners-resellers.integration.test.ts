@@ -602,4 +602,118 @@ describe.skipIf(!hasDb)("Wave 13 Partners/Resellers (requires TEST_DATABASE_URL)
     expect(foreign.statusCode).toBe(404);
     expect(otherBody.activeTenantId).not.toBe(tenantId);
   });
+
+  it("G16: ACTIVE reseller converts to an isolated SaaS tenant and keeps operating", async () => {
+    const account = await createAccount("G16 Reseller");
+    const book = await publishBook("2500");
+    const topup = await bus.execute(actor(), "partners.topup_credit", {
+      partnerAccountId: account.id,
+      amountMinor: "10000",
+      currency: "BRL",
+      idempotencyKey: `g16-topup-${newId()}`,
+    });
+    expect(topup.ok).toBe(true);
+    for (const topicKey of TOPICS) {
+      const done = await bus.execute(actor(), "partners.complete_topic", {
+        partnerAccountId: account.id,
+        topicKey,
+      });
+      if (!done.ok) {
+        throw new Error(`complete_topic failed: ${done.message}`);
+      }
+    }
+    const activated = await bus.execute(actor(), "partners.activate", { partnerAccountId: account.id });
+    expect(activated.ok).toBe(true);
+
+    const convert = await injectRaw({
+      method: "POST",
+      url: `/v1/partners/${account.id}/convert-to-tenant`,
+      token,
+      payload: { tenantName: `G16 SaaS ${newId().slice(0, 8)}` },
+    });
+    expect(convert.statusCode).toBe(201);
+    const converted = convert.json<{
+      id: string;
+      status: string;
+      linkedTenantId: string | null;
+      tenant: { id: string; slug: string; name: string } | null;
+      already: boolean;
+    }>();
+    expect(converted.already).toBe(false);
+    expect(converted.status).toBe("ACTIVE");
+    expect(converted.linkedTenantId).toBeTypeOf("string");
+    const linkedTenantId = converted.linkedTenantId as string;
+    expect(linkedTenantId).not.toBe(tenantId);
+    expect(converted.tenant?.id).toBe(linkedTenantId);
+
+    const fetched = await injectRaw({ method: "GET", url: `/v1/partners/${account.id}`, token });
+    expect(fetched.statusCode).toBe(200);
+    expect(fetched.json<{ linkedTenantId: string | null }>().linkedTenantId).toBe(linkedTenantId);
+
+    const tenantRow = await db
+      .selectFrom("control.tenants")
+      .select(["id", "slug", "name", "status"])
+      .where("id", "=", linkedTenantId)
+      .executeTakeFirst();
+    expect(tenantRow?.status).toBe("ACTIVE");
+
+    const membership = await db
+      .selectFrom("control.tenant_memberships")
+      .select(["id", "role_key", "status"])
+      .where("tenant_id", "=", linkedTenantId)
+      .where("user_id", "=", userId)
+      .executeTakeFirst();
+    expect(membership?.role_key).toBe("tenant_owner");
+    expect(membership?.status).toBe("ACTIVE");
+
+    const partnerRow = await db
+      .selectFrom("partners.partner_accounts")
+      .select(["tenant_id", "linked_tenant_id", "status"])
+      .where("id", "=", account.id)
+      .executeTakeFirst();
+    expect(partnerRow?.tenant_id).toBe(tenantId);
+    expect(partnerRow?.linked_tenant_id).toBe(linkedTenantId);
+    expect(partnerRow?.status).toBe("ACTIVE");
+
+    const leaked = await db
+      .selectFrom("partners.partner_accounts")
+      .select(["id"])
+      .where("tenant_id", "=", linkedTenantId)
+      .execute();
+    expect(leaked).toHaveLength(0);
+
+    const again = await injectRaw({
+      method: "POST",
+      url: `/v1/partners/${account.id}/convert-to-tenant`,
+      token,
+      payload: {},
+    });
+    expect(again.statusCode).toBe(201);
+    const repeated = again.json<{ linkedTenantId: string; already: boolean }>();
+    expect(repeated.already).toBe(true);
+    expect(repeated.linkedTenantId).toBe(linkedTenantId);
+    const tenantCount = await db.selectFrom("control.tenants").select(["id"]).where("id", "=", linkedTenantId).execute();
+    expect(tenantCount).toHaveLength(1);
+
+    const prospect = await createAccount("G16 Prospect");
+    const denied = await injectRaw({
+      method: "POST",
+      url: `/v1/partners/${prospect.id}/convert-to-tenant`,
+      token,
+      payload: {},
+    });
+    expect(denied.statusCode).toBe(409);
+
+    const order = await bus.execute<{ status: string; totalMinor: string }>(actor(), "partners.create_reseller_order", {
+      partnerAccountId: account.id,
+      priceBookId: book.id,
+      quantity: 2,
+      idempotencyKey: `g16-order-${newId()}`,
+    });
+    expect(order.ok).toBe(true);
+    if (order.ok) {
+      expect(order.data.status).toBe("SETTLED");
+      expect(order.data.totalMinor).toBe("5000");
+    }
+  });
 });

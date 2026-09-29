@@ -253,6 +253,27 @@ export async function updateAccountStatus(
   return updated === undefined ? null : toAccount(updated);
 }
 
+export function canConvertToTenant(status: PartnerStatus, linkedTenantId: string | null): boolean {
+  return status === "ACTIVE" && linkedTenantId === null;
+}
+
+export async function linkPartnerTenant(
+  ctx: CommandHandlerContext,
+  accountId: string,
+  newTenantId: string,
+): Promise<PartnerAccountRow | null> {
+  const trx = requireTrx(ctx);
+  const updated = await trx
+    .updateTable("partners.partner_accounts")
+    .set({ linked_tenant_id: newTenantId, updated_at: now() })
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("id", "=", accountId)
+    .where("linked_tenant_id", "is", null)
+    .returning(["id", "tenant_id", "display_name", "account_type", "status", "linked_tenant_id", "created_at", "updated_at"])
+    .executeTakeFirst();
+  return updated === undefined ? null : toAccount(updated);
+}
+
 /** Live ACTIVE edge parent → child, or null. Tenant-scoped. */
 export async function getActiveParentEdge(
   ctx: CommandHandlerContext,

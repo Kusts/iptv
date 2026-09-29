@@ -202,6 +202,21 @@ export class PartnersController {
     return send(result);
   }
 
+  @Post("partners/:id/convert-to-tenant")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("crm.lead.write")
+  async convertToTenant(@Param("id") id: string, @Body() body: unknown, @Req() req: FastifyRequest) {
+    const payload =
+      body !== null && typeof body === "object" && !Array.isArray(body)
+        ? { ...(body as Record<string, unknown>), partnerAccountId: id }
+        : { partnerAccountId: id };
+    const result = await this.bus.execute(actorFromRequest(req), "partners.convert_to_tenant", payload, {
+      correlationId: req.id,
+      idempotencyKey: idempotencyKeyOf(req),
+    });
+    return send(result);
+  }
+
   private async creditBalance(tenantId: string, accountId: string): Promise<{ currency: string; ledgerMinor: string; reservedMinor: string; availableMinor: string }[]> {
     const db = this.requireDb();
     const ledger = await sql<{ currency: string; total: string }>`

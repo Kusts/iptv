@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { newId } from "@iptv/domain";
 import {
   ACADEMY_TOPIC_KEYS,
   canActivate,
+  canConvertToTenant,
   canOrder,
   computeAvailableCredit,
   nextStatusOnTopicStart,
@@ -29,6 +31,13 @@ describe("Wave 13 partners store (pure)", () => {
     expect(canActivate("ONBOARDING")).toBe(false);
     expect(canOrder("ACTIVE")).toBe(true);
     expect(canOrder("READY")).toBe(false);
+  });
+
+  it("conversion gate: only ACTIVE unlinked partners convert", () => {
+    expect(canConvertToTenant("ACTIVE", null)).toBe(true);
+    expect(canConvertToTenant("READY", null)).toBe(false);
+    expect(canConvertToTenant("ONBOARDING", null)).toBe(false);
+    expect(canConvertToTenant("ACTIVE", newId())).toBe(false);
   });
 
   it("available credit is ledger minus holds (exact strings)", () => {

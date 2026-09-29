@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
+import { newId, now } from "@iptv/domain";
 import type { CommandResult } from "@iptv/domain";
 import type { CommandBus, CommandHandlerContext } from "../commands/command-bus.js";
 import { emitAndEnqueue, kyselyTrxOf } from "../crm/wave2-store.js";
@@ -9,6 +10,7 @@ import {
   advisoryLockPartnerCredit,
   appendCreditEntry,
   canActivate,
+  canConvertToTenant,
   canOrder,
   completeTopicProgress,
   computeAvailableCredit,
@@ -28,6 +30,7 @@ import {
   isAncestorOf,
   isDirectParentOf,
   latestPublishedPriceBook,
+  linkPartnerTenant,
   listAcademyContent,
   getActiveParentEdge,
   parsePositiveMinor,
@@ -144,6 +147,26 @@ export const activatePartnerInput = z.object({
   partnerAccountId: z.string().uuid(),
 });
 export type ActivatePartnerInput = z.infer<typeof activatePartnerInput>;
+
+export const convertToTenantInput = z.object({
+  partnerAccountId: z.string().uuid(),
+  tenantName: z.string().trim().min(1).max(200).optional(),
+  tenantSlug: z.string().trim().min(1).max(64).optional(),
+});
+export type ConvertToTenantInput = z.infer<typeof convertToTenantInput>;
+
+const TENANT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+function slugifyTenant(name: string): string {
+  const base = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  const suffix = newId().replace(/-/g, "").slice(-8);
+  return `${base.length > 0 ? base : "tenant"}-${suffix}`;
+}
 
 const CURRENCY_RE = /^[A-Z]{3}$/;
 
@@ -750,6 +773,130 @@ async function handleActivate(
   return { ok: true, data: { id: moved.id, status: moved.status, already: false } };
 }
 
+async function handleConvertToTenant(
+  ctx: CommandHandlerContext,
+  input: ConvertToTenantInput,
+): Promise<CommandResult<Record<string, unknown>>> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx === null) {
+    throw new Error("partners commands require a database transaction");
+  }
+  const account = await getAccount(ctx, input.partnerAccountId);
+  if (account === null) {
+    return { ok: false, code: "not_found", message: "partner account not found in this tenant" };
+  }
+  const scopeDenial = await denyWithoutPartnerScope(ctx, account.id);
+  if (scopeDenial !== null) {
+    return scopeDenial;
+  }
+  if (account.linkedTenantId !== null) {
+    const existing = await trx
+      .selectFrom("control.tenants")
+      .select(["id", "slug", "name"])
+      .where("id", "=", account.linkedTenantId)
+      .executeTakeFirst();
+    return {
+      ok: true,
+      data: {
+        id: account.id,
+        status: account.status,
+        linkedTenantId: account.linkedTenantId,
+        tenant: existing === undefined ? null : { id: existing.id, slug: existing.slug, name: existing.name },
+        already: true,
+      },
+    };
+  }
+  if (!canConvertToTenant(account.status as PartnerStatus, account.linkedTenantId)) {
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: `partner account is ${account.status}; conversion to a SaaS tenant requires ACTIVE`,
+    };
+  }
+  const tenantName = (input.tenantName ?? `${account.displayName} SaaS`).trim();
+  if (tenantName.length === 0 || tenantName.length > 200) {
+    return { ok: false, code: "validation_failed", message: "tenantName must be a non-empty name up to 200 chars" };
+  }
+  let slug: string;
+  if (input.tenantSlug !== undefined) {
+    if (!TENANT_SLUG_RE.test(input.tenantSlug)) {
+      return { ok: false, code: "validation_failed", message: "tenantSlug is invalid" };
+    }
+    slug = input.tenantSlug;
+  } else {
+    slug = slugifyTenant(tenantName);
+  }
+  const tenantId = newId();
+  const at = now();
+  try {
+    await trx
+      .insertInto("control.tenants")
+      .values({
+        id: tenantId,
+        slug,
+        name: tenantName,
+        status: "ACTIVE",
+        default_currency: "BRL",
+        timezone: "America/Sao_Paulo",
+        created_at: at,
+        updated_at: at,
+      })
+      .execute();
+    await trx
+      .insertInto("control.tenant_memberships")
+      .values({
+        id: newId(),
+        tenant_id: tenantId,
+        user_id: ctx.actor.userId,
+        role_key: "tenant_owner",
+        status: "ACTIVE",
+        created_at: at,
+        updated_at: at,
+      })
+      .execute();
+  } catch (err) {
+    if (err instanceof UniqueViolationError) {
+      return { ok: false, code: "precondition_failed", message: "tenant slug is taken (SLUG_TAKEN)" };
+    }
+    throw err;
+  }
+  const linked = await linkPartnerTenant(ctx, account.id, tenantId);
+  if (linked === null) {
+    const raced = await getAccount(ctx, account.id);
+    const racedTenantId = raced?.linkedTenantId ?? tenantId;
+    const racedTenant = await trx
+      .selectFrom("control.tenants")
+      .select(["id", "slug", "name"])
+      .where("id", "=", racedTenantId)
+      .executeTakeFirst();
+    return {
+      ok: true,
+      data: {
+        id: account.id,
+        status: raced?.status ?? account.status,
+        linkedTenantId: racedTenantId,
+        tenant: racedTenant === undefined ? null : { id: racedTenant.id, slug: racedTenant.slug, name: racedTenant.name },
+        already: true,
+      },
+    };
+  }
+  await emitPartner(ctx, "partner.converted_to_tenant.v1", linked.id, {
+    linked_tenant_id: linked.linkedTenantId,
+    tenant_id: tenantId,
+    tenant_slug: slug,
+  });
+  return {
+    ok: true,
+    data: {
+      id: linked.id,
+      status: linked.status,
+      linkedTenantId: linked.linkedTenantId,
+      tenant: { id: tenantId, slug, name: tenantName },
+      already: false,
+    },
+  };
+}
+
 export function registerPartnersCommands(bus: CommandBus): void {
   bus.register<CreateAccountInput, Record<string, unknown>>({
     name: "partners.create_account",
@@ -822,5 +969,13 @@ export function registerPartnersCommands(bus: CommandBus): void {
     auditResource: "partner_account",
     input: activatePartnerInput,
     handler: handleActivate,
+  });
+  bus.register<ConvertToTenantInput, Record<string, unknown>>({
+    name: "partners.convert_to_tenant",
+    permission: "crm.lead.write",
+    auditAction: "partners.convert_to_tenant",
+    auditResource: "partner_account",
+    input: convertToTenantInput,
+    handler: handleConvertToTenant,
   });
 }
