@@ -191,6 +191,29 @@ export class CommunicationsController {
       .limit(limit)
       .offset(offset)
       .execute();
+    // Latest delivery attempt per message (ordered by attempt_no DESC), or
+    // null when no delivery exists. Tenant-scoped: never exposes another
+    // tenant's deliveries. Additive field matching the OpenAPI Message
+    // `deliveryStatus` concept (`string | null`).
+    const latestByMessage = new Map<string, string>();
+    if (rows.length > 0) {
+      const deliveries = await db
+        .selectFrom("communication.message_deliveries")
+        .select(["message_id", "status", "attempt_no"])
+        .where("tenant_id", "=", tenant.id)
+        .where(
+          "message_id",
+          "in",
+          rows.map((r) => r.id),
+        )
+        .orderBy("attempt_no", "desc")
+        .execute();
+      for (const delivery of deliveries) {
+        if (!latestByMessage.has(delivery.message_id)) {
+          latestByMessage.set(delivery.message_id, delivery.status);
+        }
+      }
+    }
     return {
       messages: rows.map((r) => ({
         id: r.id,
@@ -200,6 +223,7 @@ export class CommunicationsController {
         bodyText: r.body_text,
         externalMessageId: r.external_message_id,
         occurredAt: r.occurred_at.toISOString(),
+        deliveryStatus: latestByMessage.get(r.id) ?? null,
       })),
     };
   }
