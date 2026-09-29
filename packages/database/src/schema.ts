@@ -100,6 +100,12 @@ export interface ControlAuthSessionsTable {
   user_id: string;
   token_hash: string;
   active_tenant_id: string | null;
+  /**
+   * Per-session monotonic tenant-context revision (migration 023). Postgres
+   * `bigint` arrives via node-pg as text, so `string` keeps it exact
+   * end-to-end (canonical decimal string, never JS number arithmetic).
+   */
+  tenant_context_revision: string;
   expires_at: Date;
   created_at: Date;
   last_seen_at: Date;
@@ -1209,6 +1215,45 @@ export interface KnowledgeSolutionOutcomesTable {
   observed_at: Date;
 }
 
+/** Mirrors `inventory.suppliers` (migration 008, tenant-scoped). */
+export interface InventorySuppliersTable {
+  id: string;
+  tenant_id: string;
+  name: string;
+  supplier_type: string;
+  status: string;
+  metadata_json: unknown;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Mirrors `inventory.supplier_app_snapshots` (migration 022, append-only). */
+export interface InventorySupplierAppSnapshotsTable {
+  id: string;
+  tenant_id: string;
+  supplier_id: string;
+  source_hash: string;
+  item_count: number;
+  capture_metadata_json: unknown;
+  captured_at: Date;
+}
+
+/** Mirrors `inventory.supplier_app_items` (migration 022, append-only). */
+export interface InventorySupplierAppItemsTable {
+  id: string;
+  tenant_id: string;
+  snapshot_id: string;
+  supplier_id: string;
+  external_id: string;
+  name: string;
+  annual_price_minor: string | null;
+  lifetime_price_minor: string | null;
+  currency: string;
+  activation_flags_json: unknown;
+  media_refs_json: unknown;
+  availability: string;
+}
+
 export interface Database {
   "control.tenants": ControlTenantsTable;
   "control.users": ControlUsersTable;
@@ -1294,4 +1339,7 @@ export interface Database {
   "knowledge.knowledge_versions": KnowledgeVersionsTable;
   "knowledge.solutions": KnowledgeSolutionsTable;
   "knowledge.solution_outcomes": KnowledgeSolutionOutcomesTable;
+  "inventory.suppliers": InventorySuppliersTable;
+  "inventory.supplier_app_snapshots": InventorySupplierAppSnapshotsTable;
+  "inventory.supplier_app_items": InventorySupplierAppItemsTable;
 }
