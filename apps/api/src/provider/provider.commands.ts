@@ -7,12 +7,26 @@ import type {
 import { emitAndEnqueue, kyselyTrxOf } from "../crm/wave2-store.js";
 import {
   StubProviderReadback,
+  SECRET_REQUIRED_ADAPTER_VERSION,
   adapterNameFromEnv,
   applyCapabilityGate,
   resolveOpsPort,
   type ProviderOpsPort,
   type ProviderReadbackPort,
 } from "./provider-port.js";
+import { resolveSecretsPort, type SecretsPort } from "@iptv/secrets";
+import {
+  assertBrowserSecretReady,
+  findExistingTrialProviderAccountId,
+  getProviderAccountSecretRef,
+  isCapabilityUnavailable,
+  isSecretRequiringPort,
+  projectSecretPortResult,
+  PROVIDER_CALL_UNCERTAIN_CODE,
+  stripSecretKeysFromPayload,
+  validatePublicRequestPayload,
+  validateSecretRequestShape,
+} from "./provider-secret-gate.js";
 import {
   UniqueViolationError,
   applyProviderTerminalOutcome,
@@ -36,7 +50,11 @@ import { resumeLinkedSubscription } from "../subscription/subscription.commands.
  *   VERIFYING for readback — never blind retry.
  * - `provider.reconcile` verifies an uncertain operation through the
  *   `ProviderReadbackPort` stub and records the observed effect. It NEVER
- *   re-executes the operation.
+ *   re-executes the operation. An inconclusive readback (`conclusive=false`,
+ *   e.g. stub without explicit effect or a secret-required operation under
+ *   the synthetic stub) preserves VERIFYING + UNKNOWN with no terminal
+ *   write, event, retry or resume; only fixed outcome codes are persisted
+ *   or emitted, never free-form readback evidence.
  * - When the operation is linked to a trial (`entity_type=trial`), terminal
  *   outcomes resume the trial flow (SUCCEEDED -> ACTIVE, FAILED known-not-
  *   applied -> REQUESTED) with the registry-listed trial events.
@@ -80,6 +98,15 @@ export type ReconcileOperationInput = z.infer<typeof reconcileOperationInput>;
 export interface ProviderCommandDeps {
   opsPort?: ProviderOpsPort;
   readbackPort?: ProviderReadbackPort;
+  /**
+   * PF-05: SecretsPort used ONLY to verify configuration (present + not
+   * Noop) for secret-requiring (future BROWSER) adapters. The gate never
+   * calls `getSecret`. Defaults to `resolveSecretsPort()` (env-gated;
+   * Noop locally) so echo/manual keep working with no config.
+   */
+  secretsPort?: SecretsPort;
+  /** Test seam: override the tenant-scoped `secret_ref` loader. */
+  loadSecretRef?: (ctx: CommandHandlerContext, providerAccountId: string) => Promise<string | null>;
 }
 
 async function emitProvider(
@@ -179,15 +206,196 @@ async function resolveAccountId(
   return { id: account.id };
 }
 
+/**
+ * Secret-required `provider.request_operation` path: restrictive action +
+ * payload contract, lookup-only account resolution (no placeholder creation
+ * before the gate), fail-closed secret gate, allowlist-projected
+ * persistence, and safe port-result projection. Never persists/emits raw
+ * `detail`/`externalRef`; an invalid ref demotes SUCCEEDED to UNKNOWN
+ * (ambiguous effect, reservation retained).
+ */
+async function handleSecretRequest(
+  ctx: CommandHandlerContext,
+  input: RequestOperationInput,
+  deps: ProviderCommandDeps,
+  resolved: { port: ProviderOpsPort; capabilityNote: string },
+): Promise<CommandResult<{ id: string; status: string; effectCertainty: string }>> {
+  const shape = validateSecretRequestShape({
+    action: input.action,
+    entityType: input.entityType,
+    payload: input.payload,
+  });
+  if (!shape.ok) {
+    return { ok: false, code: "validation_failed", message: shape.message };
+  }
+  let accountId: string;
+  if (input.providerAccountId !== undefined) {
+    const found = await resolveAccountId(ctx, input.providerAccountId);
+    if ("error" in found) {
+      return found.error;
+    }
+    accountId = found.id;
+  } else {
+    const existing = await findExistingTrialProviderAccountId(ctx);
+    if (existing === null) {
+      return {
+        ok: false,
+        code: "precondition_failed",
+        message: "browser operations require a configured provider secret (secret_ref is missing)",
+      };
+    }
+    accountId = existing;
+  }
+  const loader = deps.loadSecretRef ?? getProviderAccountSecretRef;
+  const secretRef = await loader(ctx, accountId);
+  const gate = assertBrowserSecretReady({
+    secretRef,
+    secretsPort: deps.secretsPort ?? resolveSecretsPort(),
+  });
+  if (!gate.ok) {
+    return { ok: false, code: "precondition_failed", message: gate.message };
+  }
+  const { port, capabilityNote } = resolved;
+  let operation;
+  try {
+    operation = await insertProviderOperation(ctx, {
+      providerAccountId: accountId,
+      action: input.action,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      idempotencyKey: input.idempotencyKey,
+      requestedPayload: {
+        ...shape.projectedPayload,
+        adapter: port.name,
+        capability: capabilityNote,
+      },
+      // Branch-derived provenance: the reserved constant, never
+      // `${port.name}-v1`, so a secret-requiring port named
+      // `manual`/`echo` is never mistaken for synthetic.
+      adapterVersion: SECRET_REQUIRED_ADAPTER_VERSION,
+    });
+  } catch (err) {
+    if (err instanceof UniqueViolationError) {
+      return { ok: false, code: "precondition_failed", message: err.message };
+    }
+    throw err;
+  }
+  await emitProvider(ctx, {
+    eventType: "provider.operation_requested.v1",
+    operationId: operation.id,
+    data: {
+      action: input.action,
+      entity_type: input.entityType,
+      entity_id: input.entityId,
+      adapter: port.name,
+    },
+  });
+  // The port call may throw AFTER its external effect happened. Catch ONLY
+  // this call (DB failures above/below still propagate and roll back): park
+  // the already-REQUESTED operation in VERIFYING/UNKNOWN with the fixed
+  // code, preserving the attempt/reservation with no completed_at, no
+  // terminal event, no resume and no second call. The response is generic —
+  // never the exception text or a ref. Crash/commit-failure protection is
+  // explicitly NOT claimed here: that waits for durable post-commit
+  // dispatch + readback, so Browser real stays blocked.
+  let raw: Awaited<ReturnType<ProviderOpsPort["requestOperation"]>>;
+  try {
+    raw = await port.requestOperation({
+      tenantId: ctx.tenantId,
+      providerAccountId: accountId,
+      action: input.action,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      idempotencyKey: input.idempotencyKey,
+      payload: { ...shape.projectedPayload },
+      correlationId: ctx.correlationId,
+      secretRef: gate.secretRef,
+    });
+  } catch {
+    await updateProviderOperation(ctx, operation.id, {
+      status: "VERIFYING",
+      effectCertainty: "UNKNOWN",
+      executionChannel: "MANUAL",
+      resultSummary: { error_code: PROVIDER_CALL_UNCERTAIN_CODE },
+      started: true,
+    });
+    await insertProviderAttempt(ctx, {
+      operationId: operation.id,
+      status: "VERIFYING",
+      errorCode: PROVIDER_CALL_UNCERTAIN_CODE,
+    });
+    return { ok: true, data: { id: operation.id, status: "VERIFYING", effectCertainty: "UNKNOWN" } };
+  }
+  const projected = projectSecretPortResult(raw);
+  const effectiveOutcome =
+    projected.externalRefInvalid && projected.outcome === "SUCCEEDED" ? "UNKNOWN" : projected.outcome;
+  if (effectiveOutcome === "SUCCEEDED") {
+    const updated = await updateProviderOperation(ctx, operation.id, {
+      status: "SUCCEEDED",
+      effectCertainty: "KNOWN_APPLIED",
+      executionChannel: "MANUAL",
+      resultSummary:
+        projected.safeExternalRef !== null ? { external_ref: projected.safeExternalRef } : {},
+      started: true,
+      completed: true,
+    });
+    await insertProviderAttempt(ctx, { operationId: operation.id, status: "SUCCEEDED" });
+    await emitProvider(ctx, {
+      eventType: "provider.operation_succeeded.v1",
+      operationId: operation.id,
+      data: { action: input.action, entity_id: input.entityId },
+    });
+    await resumeLinkedTrial(ctx, input.entityType, input.entityId, "SUCCEEDED", operation.id);
+    return {
+      ok: true,
+      data: { id: operation.id, status: updated?.status ?? "SUCCEEDED", effectCertainty: "KNOWN_APPLIED" },
+    };
+  }
+  if (effectiveOutcome === "FAILED") {
+    await updateProviderOperation(ctx, operation.id, {
+      status: "FAILED",
+      effectCertainty: "KNOWN_NOT_APPLIED",
+      executionChannel: "MANUAL",
+      resultSummary: { error_code: "ADAPTER_FAILED" },
+      started: true,
+      completed: true,
+    });
+    await insertProviderAttempt(ctx, { operationId: operation.id, status: "FAILED", errorCode: "ADAPTER_FAILED" });
+    await emitProvider(ctx, {
+      eventType: "provider.operation_failed.v1",
+      operationId: operation.id,
+      data: { action: input.action, entity_id: input.entityId },
+    });
+    await resumeLinkedTrial(ctx, input.entityType, input.entityId, "FAILED", operation.id);
+    return { ok: true, data: { id: operation.id, status: "FAILED", effectCertainty: "KNOWN_NOT_APPLIED" } };
+  }
+  if (effectiveOutcome === "UNKNOWN") {
+    await updateProviderOperation(ctx, operation.id, {
+      status: "VERIFYING",
+      effectCertainty: "UNKNOWN",
+      executionChannel: "MANUAL",
+      resultSummary: {},
+      started: true,
+    });
+    await insertProviderAttempt(ctx, { operationId: operation.id, status: "VERIFYING", errorCode: "EFFECT_UNKNOWN" });
+    return { ok: true, data: { id: operation.id, status: "VERIFYING", effectCertainty: "UNKNOWN" } };
+  }
+  await updateProviderOperation(ctx, operation.id, {
+    status: "HUMAN_REQUIRED",
+    effectCertainty: "UNKNOWN",
+    executionChannel: "MANUAL",
+    resultSummary: {},
+    started: true,
+  });
+  await insertProviderAttempt(ctx, { operationId: operation.id, status: "HUMAN_REQUIRED" });
+  return { ok: true, data: { id: operation.id, status: "HUMAN_REQUIRED", effectCertainty: "UNKNOWN" } };
+}
+
 function handleRequestFactory(deps: ProviderCommandDeps) {
   return async (
     ctx: CommandHandlerContext,
     input: RequestOperationInput,
   ): Promise<CommandResult<{ id: string; status: string; effectCertainty: string }>> => {
-    const account = await resolveAccountId(ctx, input.providerAccountId);
-    if ("error" in account) {
-      return account.error;
-    }
     const fallback: "echo" | "manual" =
       deps.opsPort !== undefined
         ? deps.opsPort.name === "echo"
@@ -197,10 +405,41 @@ function handleRequestFactory(deps: ProviderCommandDeps) {
     const requested: "echo" | "manual" = input.adapter ?? fallback;
     const capability = await ctx.tx.getCapability("provider.cinevision");
     const { name: adapterName, note: capabilityNote } = applyCapabilityGate(requested, capability);
+    // PF-05: an injected secret-requiring (future BROWSER) port bypasses the
+    // echo/manual selection so the gate below always runs for it. Public
+    // inputs stay `echo | manual`; no real BROWSER is enabled here.
+    const injectedSecretPort =
+      deps.opsPort !== undefined && isSecretRequiringPort(deps.opsPort) ? deps.opsPort : null;
     const port =
-      deps.opsPort !== undefined && (deps.opsPort.name === "echo") === (adapterName === "echo")
+      injectedSecretPort ??
+      (deps.opsPort !== undefined && (deps.opsPort.name === "echo") === (adapterName === "echo")
         ? deps.opsPort
-        : resolveOpsPort(adapterName);
+        : resolveOpsPort(adapterName));
+    const secretRequired = isSecretRequiringPort(port);
+    // Capability UNAVAILABLE wins over injection: never call the port and
+    // never create a REQUESTED operation on the secret-required path.
+    if (secretRequired && isCapabilityUnavailable(capability)) {
+      return {
+        ok: false,
+        code: "precondition_failed",
+        message: "provider capability unavailable; secret-required operations are blocked",
+      };
+    }
+    if (secretRequired) {
+      return handleSecretRequest(ctx, input, deps, { port, capabilityNote });
+    }
+    // Public echo/manual frontier: reject secret-like nested payloads,
+    // ref-like values and abusive shapes BEFORE any insert/event/port
+    // call. Never merely strip. (The secret-required path above enforces
+    // its stricter allowlist instead — not weakened here.)
+    const publicShape = validatePublicRequestPayload(input.payload);
+    if (!publicShape.ok) {
+      return { ok: false, code: "validation_failed", message: publicShape.message };
+    }
+    const account = await resolveAccountId(ctx, input.providerAccountId);
+    if ("error" in account) {
+      return account.error;
+    }
     let operation;
     try {
       operation = await insertProviderOperation(ctx, {
@@ -209,7 +448,14 @@ function handleRequestFactory(deps: ProviderCommandDeps) {
         entityType: input.entityType,
         entityId: input.entityId,
         idempotencyKey: input.idempotencyKey,
-        requestedPayload: { ...input.payload, adapter: adapterName, capability: capabilityNote },
+        // Never persist caller secret keys nor the validated ref: the row
+        // carries only routing metadata; the worker resolves credentials
+        // via providerAccountId (+ the in-memory secretRef below).
+        requestedPayload: {
+          ...stripSecretKeysFromPayload(input.payload),
+          adapter: injectedSecretPort !== null ? port.name : adapterName,
+          capability: capabilityNote,
+        },
         adapterVersion: `${port.name}-v1`,
       });
     } catch (err) {
@@ -225,7 +471,7 @@ function handleRequestFactory(deps: ProviderCommandDeps) {
         action: input.action,
         entity_type: input.entityType,
         entity_id: input.entityId,
-        adapter: adapterName,
+        adapter: injectedSecretPort !== null ? port.name : adapterName,
       },
     });
     const result = await port.requestOperation({
@@ -235,7 +481,10 @@ function handleRequestFactory(deps: ProviderCommandDeps) {
       entityType: input.entityType,
       entityId: input.entityId,
       idempotencyKey: input.idempotencyKey,
-      payload: { ...input.payload, ...(input.echoOutcome !== undefined ? { __echo_outcome: input.echoOutcome } : {}) },
+      payload: {
+        ...stripSecretKeysFromPayload(input.payload),
+        ...(input.echoOutcome !== undefined ? { __echo_outcome: input.echoOutcome } : {}),
+      },
       correlationId: ctx.correlationId,
     });
     if (result.outcome === "SUCCEEDED") {
@@ -329,6 +578,25 @@ async function handleResolve(
       data: { id: operation.id, status: updated?.status ?? "VERIFYING", effectCertainty: "UNKNOWN", resumedTrial: false },
     };
   }
+  // PF-05 (MVP-PF05-SECRETREF-05 finding 1, HIGH): a secret-required
+  // operation (persisted branch-derived `adapter_version`, never taken from
+  // request input — `resolveOperationInput` carries no adapterVersion and
+  // `requestedPayload` copies never feed this check) can never be
+  // terminalized by manual resolve. SUCCEEDED/FAILED here would conclude an
+  // uncertain external effect without conclusive readback. Reject BEFORE any
+  // mutation/event/resume with a generic precondition failure; the only
+  // resolution path is `provider.reconcile` with trusted/conclusive
+  // readback. UNKNOWN above still parks VERIFYING (no terminal claim).
+  if (
+    typeof operation.adapterVersion === "string" &&
+    operation.adapterVersion.toLowerCase() === SECRET_REQUIRED_ADAPTER_VERSION.toLowerCase()
+  ) {
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: "secret-required operations resolve only via provider.reconcile with conclusive readback",
+    };
+  }
   const terminal = input.outcome;
   const effectCertainty = terminal === "SUCCEEDED" ? "KNOWN_APPLIED" : "KNOWN_NOT_APPLIED";
   await updateProviderOperation(ctx, operation.id, {
@@ -373,7 +641,17 @@ function handleReconcileFactory(deps: ProviderCommandDeps) {
         message: `operation is ${operation.status}; reconcile requires VERIFYING`,
       };
     }
-    // Readback observes; reconcile never re-executes the operation.
+    // Readback observes; reconcile never re-executes the operation. The
+    // persisted adapter provenance gates the stub (strict mode): an
+    // inconclusive readback is "no proof either way", never a default
+    // not-applied. The free-form `observed.evidence` string is NEVER
+    // persisted or emitted — only fixed outcome codes cross the boundary.
+    const requestedAdapter =
+      operation.requestedPayload !== null &&
+      typeof operation.requestedPayload === "object" &&
+      typeof (operation.requestedPayload as Record<string, unknown>)["adapter"] === "string"
+        ? ((operation.requestedPayload as Record<string, unknown>)["adapter"] as string)
+        : null;
     const observed = await readback.verify({
       tenantId: ctx.tenantId,
       operationId: operation.id,
@@ -382,16 +660,36 @@ function handleReconcileFactory(deps: ProviderCommandDeps) {
         typeof operation.resultSummary?.["external_ref"] === "string"
           ? (operation.resultSummary["external_ref"] as string)
           : null,
+      adapter: requestedAdapter,
+      adapterVersion: operation.adapterVersion,
     });
+    // PF-05 (MVP-PF05-SECRETREF-03): inconclusive readback preserves
+    // VERIFYING + UNKNOWN with zero terminal side effects — no status or
+    // certainty write, no completed_at, no succeeded/failed event, no
+    // retry, no resume. The response asserts no terminal decision.
+    if (observed.conclusive !== true) {
+      return {
+        ok: true,
+        data: {
+          id: operation.id,
+          status: "VERIFYING",
+          effectCertainty: "UNKNOWN",
+          effectApplied: false,
+          resumedTrial: false,
+        },
+      };
+    }
     const terminal = observed.effectApplied ? "SUCCEEDED" : "FAILED";
     const effectCertainty = observed.effectApplied ? "KNOWN_APPLIED" : "KNOWN_NOT_APPLIED";
+    const reconcileOutcome = observed.effectApplied ? "APPLIED" : "NOT_APPLIED";
     await updateProviderOperation(ctx, operation.id, {
       status: terminal,
       effectCertainty,
       resultSummary: {
         ...(operation.resultSummary ?? {}),
-        reconcile_evidence: observed.evidence,
+        reconcile_outcome: reconcileOutcome,
         effect_applied: observed.effectApplied,
+        reconcile_evidence_code: observed.effectApplied ? "READBACK_APPLIED" : "READBACK_NOT_APPLIED",
       },
       completed: true,
     });
@@ -399,7 +697,7 @@ function handleReconcileFactory(deps: ProviderCommandDeps) {
     await emitProvider(ctx, {
       eventType: observed.effectApplied ? "provider.operation_succeeded.v1" : "provider.operation_failed.v1",
       operationId: operation.id,
-      data: { action: operation.action, entity_id: operation.entityId, reconcile_evidence: observed.evidence },
+      data: { action: operation.action, entity_id: operation.entityId, reconcile_outcome: reconcileOutcome },
     });
     const { resumedTrial } = await resumeLinkedTrial(
       ctx,

@@ -6,7 +6,18 @@ import type {
   CommandHandlerContext,
 } from "../commands/command-bus.js";
 import { emitAndEnqueue, kyselyTrxOf, memoryStateOf } from "../crm/wave2-store.js";
+import { resolveSecretsPort, type SecretsPort } from "@iptv/secrets";
 import {
+  assertBrowserSecretReady,
+  findExistingTrialProviderAccountId,
+  getProviderAccountSecretRef,
+  isCapabilityUnavailable,
+  isSecretRequiringPort,
+  projectSecretPortResult,
+  PROVIDER_CALL_UNCERTAIN_CODE,
+} from "../provider/provider-secret-gate.js";
+import {
+  SECRET_REQUIRED_ADAPTER_VERSION,
   adapterNameFromEnv,
   applyCapabilityGate,
   resolveOpsPort,
@@ -527,6 +538,200 @@ async function handleRequestRetrial(
 
 export interface TrialCommandDeps {
   opsPort?: ProviderOpsPort;
+  /**
+   * PF-05: SecretsPort used ONLY to verify configuration for
+   * secret-requiring (future BROWSER) adapters. Never `getSecret`.
+   * Defaults to `resolveSecretsPort()` so echo/manual keep working.
+   */
+  secretsPort?: SecretsPort;
+  /** Test seam: override the tenant-scoped `secret_ref` loader. */
+  loadSecretRef?: (ctx: CommandHandlerContext, providerAccountId: string) => Promise<string | null>;
+}
+
+/**
+ * Secret-required `trial.begin_provisioning` path: lookup-only account
+ * resolution (no placeholder creation before the gate), fail-closed secret
+ * gate, then the same provisioning flow with safe port-result projection
+ * (no raw detail/externalRef persisted or emitted; invalid ref demotes
+ * SUCCEEDED to VERIFYING).
+ */
+async function handleSecretBeginProvisioning(
+  ctx: CommandHandlerContext,
+  input: BeginProvisioningInput,
+  deps: TrialCommandDeps,
+  resolved: {
+    trial: { id: string; personId: string; requestedDurationMinutes: number; adultContentEnabled: boolean; trialKind: string };
+    port: ProviderOpsPort;
+    capabilityNote: string;
+    effectiveAdapter: string;
+  },
+): Promise<CommandResult<{ id: string; status: string; operationId: string; effectUncertain: boolean }>> {
+  const { trial, port, capabilityNote, effectiveAdapter } = resolved;
+  const existingAccountId = await findExistingTrialProviderAccountId(ctx);
+  if (existingAccountId === null) {
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: "browser operations require a configured provider secret (secret_ref is missing)",
+    };
+  }
+  const loader = deps.loadSecretRef ?? getProviderAccountSecretRef;
+  const secretRef = await loader(ctx, existingAccountId);
+  const gate = assertBrowserSecretReady({
+    secretRef,
+    secretsPort: deps.secretsPort ?? resolveSecretsPort(),
+  });
+  if (!gate.ok) {
+    return { ok: false, code: "precondition_failed", message: gate.message };
+  }
+  const accountId = existingAccountId;
+  const attemptIndex = (await countProviderOperationsForEntity(ctx, "trial", trial.id)) + 1;
+  const operation = await insertProviderOperation(ctx, {
+    providerAccountId: accountId,
+    action: "trial.provision",
+    entityType: "trial",
+    entityId: trial.id,
+    idempotencyKey: `trial-provision:${trial.id}:${attemptIndex}`,
+    requestedPayload: {
+      duration_minutes: trial.requestedDurationMinutes,
+      adult_content_enabled: trial.adultContentEnabled,
+      trial_kind: trial.trialKind,
+      adapter: effectiveAdapter,
+      capability: capabilityNote,
+    },
+    // Branch-derived provenance: reserved constant, never `${port.name}-v1`.
+    adapterVersion: SECRET_REQUIRED_ADAPTER_VERSION,
+  });
+  await insertTrialAttempt(ctx, {
+    trialId: trial.id,
+    attemptType: "PROVISIONING",
+    outcome: "STARTED",
+    contextJson: { operation_id: operation.id, adapter: effectiveAdapter, capability: capabilityNote },
+  });
+  await emitProvider(ctx, {
+    eventType: "provider.operation_requested.v1",
+    operationId: operation.id,
+    data: { action: "trial.provision", entity_type: "trial", entity_id: trial.id, adapter: effectiveAdapter },
+  });
+  const provisioning = await updateTrial(ctx, trial.id, { lifecycleStatus: "PROVISIONING", providerAccountId: accountId });
+  if (provisioning === null || !isTrialTransition("REQUESTED", "PROVISIONING")) {
+    return { ok: false, code: "precondition_failed", message: "trial left REQUESTED concurrently" };
+  }
+  await emitTrial(ctx, {
+    eventType: "trial.provisioning_started.v1",
+    trialId: trial.id,
+    data: { person_id: trial.personId, operation_id: operation.id, adapter: effectiveAdapter },
+  });
+  // Post-effect throw shape: ONLY the port call is caught (DB failures
+  // still propagate and roll back). The trial stays PROVISIONING and the
+  // operation parks VERIFYING/UNKNOWN with the fixed code — reservation
+  // preserved, no completed_at, no terminal event, no resume, no second
+  // call. Crash/commit-failure protection is NOT claimed: Browser real
+  // stays blocked until durable post-commit dispatch + readback.
+  let raw: Awaited<ReturnType<ProviderOpsPort["requestOperation"]>>;
+  try {
+    raw = await port.requestOperation({
+      tenantId: ctx.tenantId,
+      providerAccountId: accountId,
+      action: "trial.provision",
+      entityType: "trial",
+      entityId: trial.id,
+      idempotencyKey: `trial-provision:${trial.id}:${attemptIndex}`,
+      payload: {
+        duration_minutes: trial.requestedDurationMinutes,
+        adult_content_enabled: trial.adultContentEnabled,
+      },
+      correlationId: ctx.correlationId,
+      secretRef: gate.secretRef,
+    });
+  } catch {
+    await updateProviderOperation(ctx, operation.id, {
+      status: "VERIFYING",
+      effectCertainty: "UNKNOWN",
+      executionChannel: "MANUAL",
+      resultSummary: { error_code: PROVIDER_CALL_UNCERTAIN_CODE },
+      started: true,
+    });
+    await insertProviderAttempt(ctx, {
+      operationId: operation.id,
+      status: "VERIFYING",
+      errorCode: PROVIDER_CALL_UNCERTAIN_CODE,
+    });
+    return { ok: true, data: { id: trial.id, status: "PROVISIONING", operationId: operation.id, effectUncertain: true } };
+  }
+  const projected = projectSecretPortResult(raw);
+  const effectiveOutcome =
+    projected.externalRefInvalid && projected.outcome === "SUCCEEDED" ? "UNKNOWN" : projected.outcome;
+  if (effectiveOutcome === "SUCCEEDED") {
+    await updateProviderOperation(ctx, operation.id, {
+      status: "SUCCEEDED",
+      effectCertainty: "KNOWN_APPLIED",
+      executionChannel: "MANUAL",
+      resultSummary:
+        projected.safeExternalRef !== null ? { external_ref: projected.safeExternalRef } : {},
+      started: true,
+      completed: true,
+    });
+    await insertProviderAttempt(ctx, { operationId: operation.id, status: "SUCCEEDED" });
+    await emitProvider(ctx, {
+      eventType: "provider.operation_succeeded.v1",
+      operationId: operation.id,
+      data: { action: "trial.provision", entity_id: trial.id },
+    });
+    const { resumed } = await applyProviderTerminalOutcome(ctx, trial.id, "SUCCEEDED");
+    if (!resumed) {
+      return { ok: false, code: "precondition_failed", message: "trial left PROVISIONING concurrently" };
+    }
+    await emitTrial(ctx, {
+      eventType: "trial.activated.v1",
+      trialId: trial.id,
+      data: { person_id: trial.personId, operation_id: operation.id, duration_minutes: trial.requestedDurationMinutes },
+    });
+    return { ok: true, data: { id: trial.id, status: "ACTIVE", operationId: operation.id, effectUncertain: false } };
+  }
+  if (effectiveOutcome === "FAILED") {
+    await updateProviderOperation(ctx, operation.id, {
+      status: "FAILED",
+      effectCertainty: "KNOWN_NOT_APPLIED",
+      executionChannel: "MANUAL",
+      resultSummary: { error_code: "PROVISION_FAILED" },
+      started: true,
+      completed: true,
+    });
+    await insertProviderAttempt(ctx, { operationId: operation.id, status: "FAILED", errorCode: "PROVISION_FAILED" });
+    await emitProvider(ctx, {
+      eventType: "provider.operation_failed.v1",
+      operationId: operation.id,
+      data: { action: "trial.provision", entity_id: trial.id },
+    });
+    await applyProviderTerminalOutcome(ctx, trial.id, "FAILED");
+    await emitTrial(ctx, {
+      eventType: "trial.provisioning_failed.v1",
+      trialId: trial.id,
+      data: { person_id: trial.personId, operation_id: operation.id },
+    });
+    return { ok: true, data: { id: trial.id, status: "REQUESTED", operationId: operation.id, effectUncertain: false } };
+  }
+  if (effectiveOutcome === "UNKNOWN") {
+    await updateProviderOperation(ctx, operation.id, {
+      status: "VERIFYING",
+      effectCertainty: "UNKNOWN",
+      executionChannel: "MANUAL",
+      resultSummary: {},
+      started: true,
+    });
+    await insertProviderAttempt(ctx, { operationId: operation.id, status: "VERIFYING", errorCode: "EFFECT_UNKNOWN" });
+    return { ok: true, data: { id: trial.id, status: "PROVISIONING", operationId: operation.id, effectUncertain: true } };
+  }
+  await updateProviderOperation(ctx, operation.id, {
+    status: "HUMAN_REQUIRED",
+    effectCertainty: "UNKNOWN",
+    executionChannel: "MANUAL",
+    resultSummary: {},
+    started: true,
+  });
+  await insertProviderAttempt(ctx, { operationId: operation.id, status: "HUMAN_REQUIRED" });
+  return { ok: true, data: { id: trial.id, status: "PROVISIONING", operationId: operation.id, effectUncertain: true } };
 }
 
 function handleBeginProvisioningFactory(deps: TrialCommandDeps) {
@@ -564,12 +769,35 @@ function handleBeginProvisioningFactory(deps: TrialCommandDeps) {
     const requested: "echo" | "manual" = input.adapter ?? fallback;
     const capability = await ctx.tx.getCapability("provider.cinevision");
     const { name: adapterName, note: capabilityNote } = applyCapabilityGate(requested, capability);
+    // PF-05: an injected secret-requiring (future BROWSER) port bypasses the
+    // echo/manual selection so the gate below always runs for it.
+    const injectedSecretPort =
+      deps.opsPort !== undefined && isSecretRequiringPort(deps.opsPort) ? deps.opsPort : null;
     const port =
-      deps.opsPort !== undefined &&
-      (deps.opsPort.name === "echo") === (adapterName === "echo")
+      injectedSecretPort ??
+      (deps.opsPort !== undefined && (deps.opsPort.name === "echo") === (adapterName === "echo")
         ? deps.opsPort
-        : resolveOpsPort(adapterName);
+        : resolveOpsPort(adapterName));
+    const secretRequired = isSecretRequiringPort(port);
+    // Capability UNAVAILABLE wins over injection: no account creation, no
+    // operation, no trial move, no port call.
+    if (secretRequired && isCapabilityUnavailable(capability)) {
+      return {
+        ok: false,
+        code: "precondition_failed",
+        message: "provider capability unavailable; secret-required operations are blocked",
+      };
+    }
+    if (secretRequired) {
+      return handleSecretBeginProvisioning(ctx, input, deps, {
+        trial,
+        port,
+        capabilityNote,
+        effectiveAdapter: port.name,
+      });
+    }
     const account = await ensureTrialProviderAccount(ctx);
+    const effectiveAdapter = injectedSecretPort !== null ? port.name : adapterName;
     const attemptIndex = (await countProviderOperationsForEntity(ctx, "trial", trial.id)) + 1;
     const operation = await insertProviderOperation(ctx, {
       providerAccountId: account.id,
@@ -581,7 +809,7 @@ function handleBeginProvisioningFactory(deps: TrialCommandDeps) {
         duration_minutes: trial.requestedDurationMinutes,
         adult_content_enabled: trial.adultContentEnabled,
         trial_kind: trial.trialKind,
-        adapter: adapterName,
+        adapter: effectiveAdapter,
         capability: capabilityNote,
         ...(input.echoOutcome !== undefined ? { __echo_outcome: input.echoOutcome } : {}),
       },
@@ -591,12 +819,12 @@ function handleBeginProvisioningFactory(deps: TrialCommandDeps) {
       trialId: trial.id,
       attemptType: "PROVISIONING",
       outcome: "STARTED",
-      contextJson: { operation_id: operation.id, adapter: adapterName, capability: capabilityNote },
+      contextJson: { operation_id: operation.id, adapter: effectiveAdapter, capability: capabilityNote },
     });
     await emitProvider(ctx, {
       eventType: "provider.operation_requested.v1",
       operationId: operation.id,
-      data: { action: "trial.provision", entity_type: "trial", entity_id: trial.id, adapter: adapterName },
+      data: { action: "trial.provision", entity_type: "trial", entity_id: trial.id, adapter: effectiveAdapter },
     });
     const provisioning = await updateTrial(ctx, trial.id, { lifecycleStatus: "PROVISIONING", providerAccountId: account.id });
     if (provisioning === null || !isTrialTransition("REQUESTED", "PROVISIONING")) {
@@ -605,7 +833,7 @@ function handleBeginProvisioningFactory(deps: TrialCommandDeps) {
     await emitTrial(ctx, {
       eventType: "trial.provisioning_started.v1",
       trialId: trial.id,
-      data: { person_id: trial.personId, operation_id: operation.id, adapter: adapterName },
+      data: { person_id: trial.personId, operation_id: operation.id, adapter: effectiveAdapter },
     });
     const result = await port.requestOperation({
       tenantId: ctx.tenantId,
@@ -779,6 +1007,38 @@ async function handleEnd(
   return { ok: true, data: { id: trial.id, status: "ENDED", event: eventType } };
 }
 
+/**
+ * PF-05 (MVP-PF05-SECRETREF-03/05): pure-manual provenance check for
+ * `trial.cancel` auto-cancel. True only for the EXACT pair written
+ * internally by the manual branch — adapter `manual` TOGETHER WITH
+ * `adapter_version` `manual-v1` (case-insensitive) — which never touches an
+ * external effect, so marking it CANCELLED/KNOWN_NOT_APPLIED cannot lie.
+ * Everything else is ambiguous and returns false (no auto-cancel):
+ * null/blank/missing version, legacy or mismatched versions, prefix/suffix
+ * spoofs (`manual-v2`, `manual-v1-extra`), the reserved `secret-required-v1`
+ * version, or any non-manual adapter. Secret-required (`browser`/flagged)
+ * or otherwise real operations that already called their port keep
+ * UNKNOWN/HUMAN_REQUIRED after a trial cancel: the reservation/state stays
+ * without automatic conclusion and only explicit reconcile may resolve it.
+ */
+function isPureManualOperation(input: {
+  requestedPayload: Record<string, unknown> | null;
+  adapterVersion: string | null;
+}): boolean {
+  const version = input.adapterVersion;
+  // Branch-derived provenance wins over the port name: a secret-required
+  // operation keeps the reserved version even when its port is named
+  // `manual`, and must never auto-conclude.
+  if (typeof version === "string" && version.toLowerCase() === SECRET_REQUIRED_ADAPTER_VERSION.toLowerCase()) {
+    return false;
+  }
+  const adapter = input.requestedPayload?.["adapter"];
+  if (typeof adapter !== "string" || adapter.toLowerCase() !== "manual") {
+    return false;
+  }
+  return typeof version === "string" && version.toLowerCase() === "manual-v1";
+}
+
 async function handleCancel(
   ctx: CommandHandlerContext,
   input: CancelTrialInput,
@@ -795,13 +1055,17 @@ async function handleCancel(
     };
   }
   // Auto-cancel only operations that provably never executed. Anything that
-  // may have touched the provider (RUNNING/VERIFYING/RETRY_WAIT) stays for
-  // explicit reconcile — cancelling it as KNOWN_NOT_APPLIED would lie.
+  // may have touched the provider (RUNNING/VERIFYING/RETRY_WAIT, or any
+  // non-pure-manual operation whose port may have run) stays for explicit
+  // reconcile — cancelling it as KNOWN_NOT_APPLIED would lie. In
+  // particular a secret-required HUMAN_REQUIRED parked AFTER its port call
+  // keeps UNKNOWN/HUMAN_REQUIRED with no automatic conclusion.
   const latestOp = await latestProviderOperationForEntity(ctx, "trial", trial.id);
   const cancelledOperations: string[] = [];
   if (
     latestOp !== null &&
-    ["REQUESTED", "QUEUED", "HUMAN_REQUIRED"].includes(latestOp.status)
+    ["REQUESTED", "QUEUED", "HUMAN_REQUIRED"].includes(latestOp.status) &&
+    isPureManualOperation({ requestedPayload: latestOp.requestedPayload, adapterVersion: latestOp.adapterVersion })
   ) {
     await updateProviderOperation(ctx, latestOp.id, {
       status: "CANCELLED",

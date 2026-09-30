@@ -2,7 +2,18 @@ import { z } from "zod";
 import type { CommandResult } from "@iptv/domain";
 import type { CommandBus, CommandHandlerContext } from "../commands/command-bus.js";
 import { emitAndEnqueue, kyselyTrxOf } from "../crm/wave2-store.js";
+import { resolveSecretsPort, type SecretsPort } from "@iptv/secrets";
 import {
+  assertBrowserSecretReady,
+  getProviderAccountSecretRef,
+  isCapabilityUnavailable,
+  isSecretRequiringPort,
+  projectSecretPortResult,
+  PROVIDER_CALL_UNCERTAIN_CODE,
+  stripSecretKeysFromPayload,
+} from "../provider/provider-secret-gate.js";
+import {
+  SECRET_REQUIRED_ADAPTER_VERSION,
   adapterNameFromEnv,
   applyCapabilityGate,
   resolveOpsPort,
@@ -59,6 +70,14 @@ export type RetryDueInput = z.infer<typeof retryDueInput>;
 
 export interface FulfillmentCommandDeps {
   opsPort?: ProviderOpsPort;
+  /**
+   * PF-05: SecretsPort used ONLY to verify configuration for
+   * secret-requiring (future BROWSER) adapters. Never `getSecret`.
+   * Defaults to `resolveSecretsPort()` so echo/manual keep working.
+   */
+  secretsPort?: SecretsPort;
+  /** Test seam: override the tenant-scoped `secret_ref` loader. */
+  loadSecretRef?: (ctx: CommandHandlerContext, providerAccountId: string) => Promise<string | null>;
 }
 
 async function recordBinding(
@@ -78,6 +97,37 @@ async function emitProvider(
     aggregateId: input.operationId,
     data: { operation_id: input.operationId, ...input.data },
   });
+}
+
+/**
+ * Lookup-only fulfillment provider account for the secret-required pre-gate.
+ * Returns the existing account id or null. NEVER creates provider/account
+ * rows (unlike `ensureFulfillmentProviderAccount`).
+ */
+async function findExistingFulfillmentProviderAccountId(
+  ctx: CommandHandlerContext,
+): Promise<string | null> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx === null) {
+    throw new Error("subscription commands require a database transaction");
+  }
+  const provider = await trx
+    .selectFrom("provider.providers")
+    .select(["id"])
+    .where("provider_key", "=", "cinevision")
+    .executeTakeFirst();
+  if (provider === undefined) {
+    return null;
+  }
+  const existing = await trx
+    .selectFrom("provider.provider_accounts")
+    .select(["id"])
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("provider_id", "=", provider.id)
+    .where("status", "=", "ACTIVE")
+    .orderBy("created_at", "asc")
+    .executeTakeFirst();
+  return existing?.id ?? null;
 }
 
 async function executeFulfillmentRequest(
@@ -119,11 +169,36 @@ async function executeFulfillmentRequest(
     const requested: "echo" | "manual" = input.adapter ?? fallback;
     const capability = await ctx.tx.getCapability("provider.cinevision");
     const { name: adapterName, note: capabilityNote } = applyCapabilityGate(requested, capability);
+    // PF-05: an injected secret-requiring (future BROWSER) port bypasses the
+    // echo/manual selection so the gate below always runs for it.
+    const injectedSecretPort =
+      deps.opsPort !== undefined && isSecretRequiringPort(deps.opsPort) ? deps.opsPort : null;
     const port =
-      deps.opsPort !== undefined && (deps.opsPort.name === "echo") === (adapterName === "echo")
+      injectedSecretPort ??
+      (deps.opsPort !== undefined && (deps.opsPort.name === "echo") === (adapterName === "echo")
         ? deps.opsPort
-        : resolveOpsPort(adapterName);
+        : resolveOpsPort(adapterName));
+    const secretRequired = isSecretRequiringPort(port);
+    // Capability UNAVAILABLE wins over injection: no account creation, no
+    // operation, no port call; the subscription stays PENDING_ACTIVATION.
+    if (secretRequired && isCapabilityUnavailable(capability)) {
+      return {
+        ok: false,
+        code: "precondition_failed",
+        message: "provider capability unavailable; secret-required operations are blocked",
+      };
+    }
+    if (secretRequired) {
+      return executeSecretFulfillmentRequest(ctx, input, deps, {
+        subscription,
+        plan,
+        port,
+        capabilityNote,
+        effectiveAdapter: port.name,
+      });
+    }
     const account = await ensureFulfillmentProviderAccount(ctx);
+    const effectiveAdapter = injectedSecretPort !== null ? port.name : adapterName;
     const attemptIndex = (await countProviderOperationsForEntity(ctx, "subscription", subscription.id)) + 1;
     const idempotencyKey = `subscription-provision:${subscription.id}:${attemptIndex}`;
     let operation;
@@ -138,7 +213,7 @@ async function executeFulfillmentRequest(
           plan_id: plan.id,
           plan_key: plan.planKey,
           customer_id: subscription.customerId,
-          adapter: adapterName,
+          adapter: effectiveAdapter,
           capability: capabilityNote,
           ...(input.echoOutcome !== undefined ? { __echo_outcome: input.echoOutcome } : {}),
         },
@@ -157,7 +232,7 @@ async function executeFulfillmentRequest(
         action: "subscription.provision",
         entity_type: "subscription",
         entity_id: subscription.id,
-        adapter: adapterName,
+        adapter: effectiveAdapter,
       },
     });
     const result = await port.requestOperation({
@@ -168,9 +243,11 @@ async function executeFulfillmentRequest(
       entityId: subscription.id,
       idempotencyKey,
       payload: {
-        plan_id: plan.id,
-        plan_key: plan.planKey,
-        ...(input.echoOutcome !== undefined ? { __echo_outcome: input.echoOutcome } : {}),
+        ...stripSecretKeysFromPayload({
+          plan_id: plan.id,
+          plan_key: plan.planKey,
+          ...(input.echoOutcome !== undefined ? { __echo_outcome: input.echoOutcome } : {}),
+        }),
       },
       correlationId: ctx.correlationId,
     });
@@ -282,6 +359,219 @@ async function executeFulfillmentRequest(
         already: false,
       },
     };
+}
+
+/**
+ * Secret-required fulfillment path: lookup-only account (no placeholder
+ * creation before the gate), fail-closed secret gate, server-built payload
+ * only (no echoOutcome passthrough), and safe port-result projection. Raw
+ * `detail`/`externalRef` never persist to resultSummary/evidence/bindings
+ * and never emit; an invalid ref demotes SUCCEEDED to VERIFYING.
+ */
+async function executeSecretFulfillmentRequest(
+  ctx: CommandHandlerContext,
+  input: RequestFulfillmentInput,
+  deps: FulfillmentCommandDeps,
+  resolved: {
+    subscription: { id: string; customerId: string };
+    plan: { id: string; planKey: string };
+    port: ProviderOpsPort;
+    capabilityNote: string;
+    effectiveAdapter: string;
+  },
+): Promise<
+  CommandResult<{ operationId: string; status: string; subscriptionStatus: string; already: boolean }>
+> {
+  const { subscription, plan, port, capabilityNote, effectiveAdapter } = resolved;
+  const existingAccountId = await findExistingFulfillmentProviderAccountId(ctx);
+  if (existingAccountId === null) {
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: "browser operations require a configured provider secret (secret_ref is missing)",
+    };
+  }
+  const loader = deps.loadSecretRef ?? getProviderAccountSecretRef;
+  const secretRef = await loader(ctx, existingAccountId);
+  const gate = assertBrowserSecretReady({
+    secretRef,
+    secretsPort: deps.secretsPort ?? resolveSecretsPort(),
+  });
+  if (!gate.ok) {
+    return { ok: false, code: "precondition_failed", message: gate.message };
+  }
+  const accountId = existingAccountId;
+  const attemptIndex = (await countProviderOperationsForEntity(ctx, "subscription", subscription.id)) + 1;
+  const idempotencyKey = `subscription-provision:${subscription.id}:${attemptIndex}`;
+  let operation;
+  try {
+    operation = await insertProviderOperation(ctx, {
+      providerAccountId: accountId,
+      action: "subscription.provision",
+      entityType: "subscription",
+      entityId: subscription.id,
+      idempotencyKey,
+      requestedPayload: {
+        plan_id: plan.id,
+        plan_key: plan.planKey,
+        customer_id: subscription.customerId,
+        adapter: effectiveAdapter,
+        capability: capabilityNote,
+      },
+      // Branch-derived provenance: reserved constant, never `${port.name}-v1`.
+      adapterVersion: SECRET_REQUIRED_ADAPTER_VERSION,
+    });
+  } catch (err) {
+    if (err instanceof UniqueViolationError) {
+      return { ok: false, code: "precondition_failed", message: err.message };
+    }
+    throw err;
+  }
+  await emitProvider(ctx, {
+    eventType: "provider.operation_requested.v1",
+    operationId: operation.id,
+    data: {
+      action: "subscription.provision",
+      entity_type: "subscription",
+      entity_id: subscription.id,
+      adapter: effectiveAdapter,
+    },
+  });
+  // Post-effect throw shape: catch ONLY the port call (DB failures still
+  // propagate). The subscription stays PENDING_ACTIVATION and the operation
+  // parks VERIFYING/UNKNOWN with the fixed code — no completed_at, no
+  // terminal event, no activation/binding/review, no second call.
+  let raw: Awaited<ReturnType<ProviderOpsPort["requestOperation"]>>;
+  try {
+    raw = await port.requestOperation({
+      tenantId: ctx.tenantId,
+      providerAccountId: accountId,
+      action: "subscription.provision",
+      entityType: "subscription",
+      entityId: subscription.id,
+      idempotencyKey,
+      payload: { plan_id: plan.id, plan_key: plan.planKey },
+      correlationId: ctx.correlationId,
+      secretRef: gate.secretRef,
+    });
+  } catch {
+    await updateProviderOperation(ctx, operation.id, {
+      status: "VERIFYING",
+      effectCertainty: "UNKNOWN",
+      executionChannel: "MANUAL",
+      resultSummary: { error_code: PROVIDER_CALL_UNCERTAIN_CODE },
+      started: true,
+    });
+    await insertProviderAttempt(ctx, {
+      operationId: operation.id,
+      status: "VERIFYING",
+      errorCode: PROVIDER_CALL_UNCERTAIN_CODE,
+    });
+    return {
+      ok: true,
+      data: {
+        operationId: operation.id,
+        status: "VERIFYING",
+        subscriptionStatus: "PENDING_ACTIVATION",
+        already: false,
+      },
+    };
+  }
+  const projected = projectSecretPortResult(raw);
+  const effectiveOutcome =
+    projected.externalRefInvalid && projected.outcome === "SUCCEEDED" ? "UNKNOWN" : projected.outcome;
+  if (effectiveOutcome === "SUCCEEDED") {
+    await updateProviderOperation(ctx, operation.id, {
+      status: "SUCCEEDED",
+      effectCertainty: "KNOWN_APPLIED",
+      executionChannel: "MANUAL",
+      resultSummary:
+        projected.safeExternalRef !== null ? { external_ref: projected.safeExternalRef } : {},
+      started: true,
+      completed: true,
+    });
+    await insertProviderAttempt(ctx, { operationId: operation.id, status: "SUCCEEDED" });
+    await emitProvider(ctx, {
+      eventType: "provider.operation_succeeded.v1",
+      operationId: operation.id,
+      data: { action: "subscription.provision", entity_id: subscription.id },
+    });
+    if (projected.safeExternalRef !== null) {
+      await recordBinding(ctx, {
+        providerAccountId: accountId,
+        subscriptionId: subscription.id,
+        externalId: projected.safeExternalRef,
+      });
+    }
+    const activated = await activateSubscriptionInternal(ctx, subscription.id, operation.id);
+    const status = activated.ok ? activated.data.status : "PENDING_ACTIVATION";
+    return {
+      ok: true,
+      data: { operationId: operation.id, status: "SUCCEEDED", subscriptionStatus: status, already: false },
+    };
+  }
+  if (effectiveOutcome === "FAILED") {
+    await updateProviderOperation(ctx, operation.id, {
+      status: "FAILED",
+      effectCertainty: "KNOWN_NOT_APPLIED",
+      executionChannel: "MANUAL",
+      resultSummary: { error_code: "ADAPTER_FAILED" },
+      started: true,
+      completed: true,
+    });
+    await insertProviderAttempt(ctx, { operationId: operation.id, status: "FAILED", errorCode: "ADAPTER_FAILED" });
+    await emitProvider(ctx, {
+      eventType: "provider.operation_failed.v1",
+      operationId: operation.id,
+      data: { action: "subscription.provision", entity_id: subscription.id },
+    });
+    await openFulfillmentFailureReview(ctx, subscription.id, operation.id);
+    return {
+      ok: true,
+      data: {
+        operationId: operation.id,
+        status: "FAILED",
+        subscriptionStatus: "PENDING_ACTIVATION",
+        already: false,
+      },
+    };
+  }
+  if (effectiveOutcome === "UNKNOWN") {
+    await updateProviderOperation(ctx, operation.id, {
+      status: "VERIFYING",
+      effectCertainty: "UNKNOWN",
+      executionChannel: "MANUAL",
+      resultSummary: {},
+      started: true,
+    });
+    await insertProviderAttempt(ctx, { operationId: operation.id, status: "VERIFYING", errorCode: "EFFECT_UNKNOWN" });
+    return {
+      ok: true,
+      data: {
+        operationId: operation.id,
+        status: "VERIFYING",
+        subscriptionStatus: "PENDING_ACTIVATION",
+        already: false,
+      },
+    };
+  }
+  await updateProviderOperation(ctx, operation.id, {
+    status: "HUMAN_REQUIRED",
+    effectCertainty: "UNKNOWN",
+    executionChannel: "MANUAL",
+    resultSummary: {},
+    started: true,
+  });
+  await insertProviderAttempt(ctx, { operationId: operation.id, status: "HUMAN_REQUIRED" });
+  return {
+    ok: true,
+    data: {
+      operationId: operation.id,
+      status: "HUMAN_REQUIRED",
+      subscriptionStatus: "PENDING_ACTIVATION",
+      already: false,
+    },
+  };
 }
 
 function handleRequestFactory(deps: FulfillmentCommandDeps) {

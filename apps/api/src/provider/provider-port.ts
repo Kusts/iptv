@@ -23,6 +23,13 @@ export interface ProviderOperationRequest {
   idempotencyKey: string;
   payload: Record<string, unknown>;
   correlationId: string;
+  /**
+   * PF-05: validated `secret_ref` STRING for secret-requiring (future
+   * BROWSER) adapters only. In-memory frontier field — never persisted to
+   * `requested_payload_json`, events or audit. Carries the ref, never a
+   * secret value. Echo/manual never set it.
+   */
+  secretRef?: string;
 }
 
 export type AdapterOutcome = "SUCCEEDED" | "FAILED" | "UNKNOWN" | "MANUAL";
@@ -35,6 +42,13 @@ export interface AdapterResult {
 
 export interface ProviderOpsPort {
   readonly name: string;
+  /**
+   * PF-05: set `true` only on future real (BROWSER) adapters that need a
+   * provider secret. Echo/manual omit it (falsy) so synthetic flows never
+   * hit the secret gate. The gate also treats a port named `browser`
+   * (case-insensitive) as secret-requiring as defense-in-depth.
+   */
+  readonly requiresSecretRef?: boolean;
   requestOperation(input: ProviderOperationRequest): Promise<AdapterResult>;
 }
 
@@ -117,12 +131,34 @@ export function applyCapabilityGate(
   return { name: requested, note: `capability_${capability.availability}_${capability.certificationStatus}` };
 }
 
+/**
+ * PF-05 (MVP-PF05-SECRETREF-04): branch-derived provenance discriminator for
+ * secret-required operations. The secret-required branches persist this
+ * RESERVED constant as `adapter_version` — never `${port.name}-v1` — so a
+ * fake secret-requiring port named `manual`/`echo` can never be mistaken for
+ * a synthetic echo/manual operation by cancel/readback provenance checks,
+ * regardless of the port name. Independent of any port name by design.
+ */
+export const SECRET_REQUIRED_ADAPTER_VERSION = "secret-required-v1";
+
 /** Readback port: verifies the ACTUAL external effect of an uncertain op. */
 export interface ReadbackQuery {
   tenantId: string;
   operationId: string;
   action: string;
   externalRef: string | null;
+  /**
+   * PF-05 (MVP-PF05-SECRETREF-03): operation provenance for the stub gate.
+   * Callers on the provider reconcile path MUST pass the persisted
+   * `requested_payload.adapter` and `adapter_version` so the stub can tell
+   * synthetic (echo/manual) operations apart from secret-required/real ones.
+   * When present, the stub applies strict rules: unset env is INCONCLUSIVE
+   * and an explicit APPLIED/NOT_APPLIED is conclusive ONLY for synthetic
+   * operations. Legacy callers without provenance (inventory/license, out of
+   * PF-05 scope) keep the prior defaults until migrated.
+   */
+  adapter?: string | null;
+  adapterVersion?: string | null;
 }
 
 export interface ReadbackResult {
@@ -142,22 +178,75 @@ export interface ProviderReadbackPort {
 }
 
 /**
+ * PF-05 (MVP-PF05-SECRETREF-03/04/05): synthetic-operation provenance check
+ * for the stub readback gate. True only for the EXACT pairs written
+ * internally by the echo/manual branches — `(echo, echo-v1)` or
+ * `(manual, manual-v1)` (case-insensitive). Everything else is ambiguous
+ * and therefore NOT synthetic: null/blank/missing version, legacy or
+ * mismatched versions, prefix/suffix spoofs (`echo-v2`, `manual-x`,
+ * `echo-v1-extra`), unknown adapters, and the reserved
+ * `secret-required-v1` version all return false (inconclusive, never
+ * resolved by this stub).
+ */
+export function isSyntheticReadbackSubject(input: {
+  adapter?: string | null;
+  adapterVersion?: string | null;
+}): boolean {
+  const version = typeof input.adapterVersion === "string" ? input.adapterVersion.toLowerCase() : "";
+  const adapter = typeof input.adapter === "string" ? input.adapter.toLowerCase() : "";
+  if (adapter === "echo") {
+    return version === "echo-v1";
+  }
+  if (adapter === "manual") {
+    return version === "manual-v1";
+  }
+  return false;
+}
+
+/**
  * Stub readback: answers from `PROVIDER_READBACK_EFFECT` (`APPLIED` =
- * conclusively applied, `NOT_APPLIED`/unset = conclusively not applied,
+ * conclusively applied, `NOT_APPLIED` = conclusively not applied,
  * `UNKNOWN` or any other value = INCONCLUSIVE, no proof either way).
  * The real CINEVISION readback implements this port after Wave-0
  * certification. Reconcile NEVER re-executes the operation — it only
  * records what the readback observed.
+ *
+ * PF-05 (MVP-PF05-SECRETREF-03) provenance gate: when the caller supplies
+ * operation provenance (`adapter`/`adapterVersion`, always set on the
+ * provider reconcile path), strict rules apply —
+ * - unset/blank `PROVIDER_READBACK_EFFECT` is INCONCLUSIVE (never a
+ *   default `effectApplied:false/conclusive:true`), and
+ * - an explicit `APPLIED`/`NOT_APPLIED` is conclusive ONLY for synthetic
+ *   echo/manual operations; secret-required/real operations stay
+ *   INCONCLUSIVE no matter what the env configures.
+ * Callers without provenance (inventory/license, out of PF-05 scope) keep
+ * the legacy defaults so their existing flows stay green.
  */
 export class StubProviderReadback implements ProviderReadbackPort {
   async verify(query: ReadbackQuery): Promise<ReadbackResult> {
-    const raw = (process.env["PROVIDER_READBACK_EFFECT"] ?? "NOT_APPLIED").trim().toUpperCase();
-    if (raw === "APPLIED") {
-      return { effectApplied: true, evidence: `stub:${raw}:op=${query.operationId}`, conclusive: true };
+    const hasProvenance = query.adapter !== undefined || query.adapterVersion !== undefined;
+    const envRaw = process.env["PROVIDER_READBACK_EFFECT"];
+    if (!hasProvenance) {
+      const raw = (envRaw ?? "NOT_APPLIED").trim().toUpperCase();
+      if (raw === "APPLIED") {
+        return { effectApplied: true, evidence: `stub:${raw}:op=${query.operationId}`, conclusive: true };
+      }
+      if (raw === "NOT_APPLIED") {
+        return { effectApplied: false, evidence: `stub:${raw}:op=${query.operationId}`, conclusive: true };
+      }
+      return { effectApplied: false, evidence: `stub:${raw}:op=${query.operationId}`, conclusive: false };
     }
-    if (raw === "NOT_APPLIED") {
-      return { effectApplied: false, evidence: `stub:${raw}:op=${query.operationId}`, conclusive: true };
+    const raw = (envRaw ?? "").trim().toUpperCase();
+    if (
+      (raw === "APPLIED" || raw === "NOT_APPLIED") &&
+      isSyntheticReadbackSubject({ adapter: query.adapter ?? null, adapterVersion: query.adapterVersion ?? null })
+    ) {
+      return {
+        effectApplied: raw === "APPLIED",
+        evidence: `stub:${raw}:op=${query.operationId}`,
+        conclusive: true,
+      };
     }
-    return { effectApplied: false, evidence: `stub:${raw}:op=${query.operationId}`, conclusive: false };
+    return { effectApplied: false, evidence: `stub:INCONCLUSIVE:op=${query.operationId}`, conclusive: false };
   }
 }
