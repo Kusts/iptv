@@ -157,7 +157,7 @@ export interface TrialMemoryState {
     metricsJson: Record<string, unknown>;
   }>;
   providers: Map<string, { id: string; providerKey: string; name: string }>;
-  providerAccounts: Map<string, { id: string; tenantId: string; providerId: string; name: string }>;
+  providerAccounts: Map<string, { id: string; tenantId: string; providerId: string; name: string; secretRef?: string }>;
   providerOperations: Map<string, ProviderOperationRow>;
   providerAttempts: Array<{
     id: string;
@@ -863,7 +863,7 @@ export async function ensureTrialProviderAccount(ctx: CommandHandlerContext): Pr
   if (existing !== undefined) {
     return { id: existing.id };
   }
-  const created = { id: newId(), tenantId: ctx.tenantId, providerId: provider.id, name: "CINEVISION Trial Placeholder" };
+  const created = { id: newId(), tenantId: ctx.tenantId, providerId: provider.id, name: "CINEVISION Trial Placeholder", secretRef: "wave4://no-real-credential" };
   mem.providerAccounts.set(created.id, created);
   return { id: created.id };
 }

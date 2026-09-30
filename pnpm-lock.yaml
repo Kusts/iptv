@@ -47,6 +47,9 @@ importers:
       '@iptv/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@iptv/secrets':
+        specifier: workspace:*
+        version: link:../../packages/secrets
       '@iptv/workflows':
         specifier: workspace:*
         version: link:../../packages/workflows

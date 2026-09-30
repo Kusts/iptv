@@ -18,6 +18,7 @@
     "@iptv/database": "workspace:*",
     "@iptv/domain": "workspace:*",
     "@iptv/observability": "workspace:*",
+    "@iptv/secrets": "workspace:*",
     "@iptv/workflows": "workspace:*",
     "@nestjs/common": "^11.1.9",
     "@nestjs/core": "^11.1.9",
