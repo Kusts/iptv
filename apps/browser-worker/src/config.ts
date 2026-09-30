@@ -1,8 +1,8 @@
-/**
- * Worker config — fail-closed env resolution.
+﻿/**
+ * Worker config â€” fail-closed env resolution.
  *
  * SINGLE-BINDING operator smoke (see `constants.ts`): identity comes ONLY
- * from deployment env — `BROWSER_WORKER_PROVIDER` (must be exactly
+ * from deployment env â€” `BROWSER_WORKER_PROVIDER` (must be exactly
  * `CINEVISION`), `BROWSER_WORKER_TENANT_ID` /
  * `BROWSER_WORKER_PROVIDER_ACCOUNT_ID`, the three `FIXED_SECRET_REFS` and
  * the mandatory `CINEVISION_LOGIN_PATH`. Tenant/account ids are NEVER
@@ -14,7 +14,7 @@
  * Profile isolation: the persistent profile lives OUTSIDE the repo under
  * a per-OS user container (`%LOCALAPPDATA%` on Windows, `XDG_STATE_HOME`
  * or `~/.local/state` elsewhere). On Windows the root MUST stay inside
- * that container (whose ACLs isolate the OS user) — anything outside
+ * that container (whose ACLs isolate the OS user) â€” anything outside
  * fails closed. `BROWSER_WORKER_PROFILE_ROOT` is a restricted escape
  * hatch (tests, unusual layouts): it must be absolute and is validated
  * like the default (inside the user container on Windows, never inside
@@ -47,6 +47,8 @@ export interface WorkerConfig {
   headless: boolean;
   profileRoot: string;
   profileDir: string;
+  /** Bounded wait for a managed challenge to auto-clear (seconds). */
+  challengeWaitSeconds: number;
 }
 
 export class ConfigError extends Error {
@@ -57,6 +59,15 @@ export class ConfigError extends Error {
 }
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** Managed challenges auto-clear in seconds; a bounded wait is not a bypass. */
+function parseChallengeWaitSeconds(raw: string | undefined): number {
+  const value = (raw ?? "").trim();
+  if (value.length === 0) return 45;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0 || n > 300) return 45;
+  return n;
+}
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
   const raw = env[name];
@@ -106,7 +117,7 @@ function isInsideOrEqual(base: string, candidate: string): boolean {
 
 /**
  * Validate a profile root: absolute, not a dangerous ancestor (fs root,
- * home dir itself), never inside the repo checkout, and — on Windows —
+ * home dir itself), never inside the repo checkout, and â€” on Windows â€”
  * inside the `%LOCALAPPDATA%` user container. Returns the resolved path.
  * Throws `ConfigError` with fixed words (never echoes the value).
  */
@@ -158,8 +169,8 @@ export function normalizeAllowedOrigin(raw: string): string {
 
 /**
  * SSRF guard: the secret URL must be `https://` with EXACTLY the allowlist
- * origin. Throws `ConfigError(ORIGIN_MISMATCH…)` otherwise. Never echoes
- * the URL — only the fixed code words.
+ * origin. Throws `ConfigError(ORIGIN_MISMATCHâ€¦)` otherwise. Never echoes
+ * the URL â€” only the fixed code words.
  */
 export function assertSecretUrlAllowed(secretUrl: string, allowedOrigin: string): void {
   let parsed: URL;
@@ -263,6 +274,7 @@ export function resolveWorkerConfig(env: NodeJS.ProcessEnv = process.env): Worke
     infisicalClientId,
     infisicalClientSecret,
     headless: env["BROWSER_WORKER_HEADLESS"] !== "0",
+    challengeWaitSeconds: parseChallengeWaitSeconds(env["BROWSER_WORKER_CHALLENGE_WAIT_SECONDS"]),
     profileRoot,
     profileDir: profileDirFor(profileRoot, tenantId, providerAccountId),
   };

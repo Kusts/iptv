@@ -218,8 +218,15 @@ export async function runReadIdentity(
     page = await deps.browser.open(config.profileDir, config.allowedOrigin, config.loginPath);
     await page.goto(credentials.panelUrl);
 
-    if (await page.detectChallenge()) {
-      return done(outcome("HUMAN_REQUIRED", "CHALLENGE_DETECTED"));
+    // Managed challenges (Cloudflare "Um momento…") auto-clear within
+    // seconds for a real headed browser. Wait a bounded window for that;
+    // interactive or persistent challenges still fail closed below.
+    const challengeDeadline = Date.now() + config.challengeWaitSeconds * 1000;
+    while (await page.detectChallenge()) {
+      if (Date.now() >= challengeDeadline) {
+        return done(outcome("HUMAN_REQUIRED", "CHALLENGE_DETECTED"));
+      }
+      await new Promise((r) => setTimeout(r, 2000));
     }
 
     const form = await page.probeLoginForm();

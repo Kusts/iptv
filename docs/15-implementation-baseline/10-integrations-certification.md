@@ -39,6 +39,26 @@ Provider truths to regression-test:
 - additional connection shares primary expiration;
 - normal cancellation remains active until paid period end.
 
+### W0-09 status — 2026-09-30 (LAB, partially proven; live read blocked)
+
+Environment: operator Windows host, Playwright bundled Chromium (headed), isolated persistent profile per tenant/account (`%LOCALAPPDATA%\iptv\browser-worker\profiles`), panel `https://cinevision.panelbr.site` (Sigma v3.92 family), credentials in Infisical `dev` `/browser-worker/*` via dedicated read-only machine identity (`viewer`; write probed and denied with 403).
+
+Proven in this environment:
+
+- isolated bootstrap: origin allowlist (HTTPS, exact match), SSRF guard, single-POST login window bound to the main frame, profile lock, zero raw secret/URL in outputs (62 unit tests + 2 security review rounds);
+- secrets resolved inside the worker process only, via a dedicated Infisical identity (never the API identity);
+- real login submitted against the live panel (`POST /api/auth/login` discovered from the panel bundle); session token is a Bearer string in `localStorage.token` (not cookies) — readback therefore runs an in-page same-origin `fetch` with that token.
+
+Blocked (live read evidence not yet obtained):
+
+- Cloudflare on `cinevision.panelbr.site` now serves an interstitial loop ("Um momento…") to automated browsers from this IP; recent runs never presented an interactive checkbox, so operator-assisted solving did not clear it, and the post-login `/api/auth/me` was answered with a 403 HTML challenge instead of JSON. This is IP/automation reputation, not a code defect; attempts from this state are rate-limited by design and must cool down.
+
+Fixes already landed from live evidence (do not regress): challenge titles are locale-specific (`Um momento…` pt-BR included); a managed interstitial gets a bounded wait (`BROWSER_WORKER_CHALLENGE_WAIT_SECONDS`, default 45s) before fail-closed `HUMAN_REQUIRED/CHALLENGE_DETECTED`; embedded Turnstile login widgets are not treated as interstitials; readback uses the in-page session Bearer, never `context.request` without credentials.
+
+Unblock paths (any one, then re-run the read-identity probe): operator re-runs the CLI from a rested/clean IP and solves the interactive challenge inside the bounded wait window; or add real-Chrome channel support (`BROWSER_WORKER_BROWSER_CHANNEL`) for a stronger fingerprint; or certify from a different network.
+
+Writes (W0-10) remain rejected regardless of this read gate: durable post-commit dispatch and certified conclusive readback are prerequisites, and neither exists.
+
 ## MK Ativador gate
 
 Authenticated Browser Worker for private balance/purchase/activation. Catalog synchronization retains snapshots/diffs. Paid app acquisition follows trial/test + customer payment before purchase. Unknown purchase effect reconciles before another supplier charge.

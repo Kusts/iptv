@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+﻿import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -36,6 +36,7 @@ function config(): WorkerConfig {
     infisicalClientId: "id-1",
     infisicalClientSecret: "secret-1",
     headless: true,
+    challengeWaitSeconds: 0,
     profileRoot: root,
     profileDir: dir,
   };
@@ -271,6 +272,43 @@ describe("runReadIdentity (fully mocked)", () => {
     expect(result.status).toBe("HUMAN_REQUIRED");
     expect(result.errorCode).toBe("CHALLENGE_DETECTED");
     expect(calls.reads).toBe(0);
+  });
+
+  it("waits a bounded window for a managed challenge that auto-clears", async () => {
+    const requested: string[] = [];
+    const calls = { opened: [] as string[], submitted: 0, reads: 0, closed: 0 };
+    const cfg = { ...config(), challengeWaitSeconds: 1 };
+    let challengeCalls = 0;
+    const browser = fakeBrowser(
+      {
+        form: { forms: 1, emailInputs: 1, passwordInputs: 1, submitButtons: 1 },
+        challenge: false,
+        loginResult: true,
+        reads: [
+          { email: EMAIL },
+          { email: EMAIL },
+        ],
+      },
+      calls,
+    );
+    const originalDetect = browser.open;
+    const patched: typeof browser = {
+      ...browser,
+      open: async (profileDir, allowedOrigin, loginPath) => {
+        const page = await originalDetect(profileDir, allowedOrigin, loginPath);
+        page.detectChallenge = async () => {
+          challengeCalls += 1;
+          return challengeCalls <= 1;
+        };
+        return page;
+      },
+    };
+    const result = await runReadIdentity(cfg, {
+      secrets: fakeSecrets(secretValues(), requested),
+      browser: patched,
+    });
+    expect(result.status).toBe("READ_CONFIRMED");
+    expect(challengeCalls).toBeGreaterThanOrEqual(2);
   });
 
   it("performs no readback when login fails", async () => {

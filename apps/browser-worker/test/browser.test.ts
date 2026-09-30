@@ -1,8 +1,7 @@
-import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it } from "vitest";
 import type { BrowserContext, Page } from "playwright";
 import {
   buildIdentityUrl,
-  CrossOriginRedirectError,
   isCrossOriginRedirect,
   performSubmitLogin,
   PlaywrightPage,
@@ -102,126 +101,118 @@ describe("submitLogin window timing", () => {
   });
 });
 
-describe("fetchIdentity redirect flow (fake request layer, real code)", () => {
-  interface FakeApiResponse {
-    status(): number;
-    headers(): Record<string, string>;
-    ok(): boolean;
-    json(): Promise<unknown>;
-  }
-
-  interface RequestCalls {
-    urls: string[];
-    noRedirect: boolean[];
-  }
-
-  function apiResponse(
-    status: number,
-    headers: Record<string, string>,
-    body: unknown,
-  ): FakeApiResponse {
-    return {
-      status: () => status,
-      headers: () => headers,
-      ok: () => status >= 200 && status < 300,
-      json: async () => body,
-    };
+describe("fetchIdentity (in-page bearer fetch, real code)", () => {
+  interface CapturedRequest {
+    url: string;
+    authorization: string | null;
   }
 
   function fakePageWith(
-    handler: (url: string) => FakeApiResponse,
-    calls: RequestCalls,
+    fetchBehavior: (
+      url: string,
+      authorization: string | null,
+    ) => { ok: boolean; status: number; body?: unknown },
+    calls: CapturedRequest[],
   ): PlaywrightPage {
-    const get = async (url: string, opts: { maxRedirects: number }): Promise<FakeApiResponse> => {
-      calls.urls.push(url);
-      calls.noRedirect.push(opts.maxRedirects === 0);
-      return handler(url);
-    };
-    const context = { request: { get } } as unknown as BrowserContext;
+    const page = {
+      evaluate: async (
+        fn: (url: string) => Promise<unknown>,
+        url: string,
+      ): Promise<unknown> => {
+        calls.push({ url, authorization: null });
+        const scope = globalThis as Record<string, unknown>;
+        const prevFetch = scope.fetch;
+        scope.localStorage = { getItem: (k: string) => (k === "token" ? "spa-token" : null) };
+        scope.fetch = async (
+          _u: string,
+          init?: { headers?: Record<string, string> },
+        ): Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }> => {
+          const authorization = init?.headers?.Authorization ?? null;
+          calls[calls.length - 1].authorization = authorization;
+          const behavior = fetchBehavior(url, authorization);
+          return {
+            ok: behavior.ok,
+            status: behavior.status,
+            json: async () => behavior.body ?? null,
+          };
+        };
+        try {
+          return await fn(url);
+        } finally {
+          delete scope.localStorage;
+          scope.fetch = prevFetch;
+        }
+      },
+    } as unknown as Page;
     return new PlaywrightPage(
-      {} as unknown as Page,
-      context,
+      page,
+      {} as unknown as BrowserContext,
       ALLOWED,
       initialPolicyState(),
       LOGIN_PATH,
     );
   }
 
-  function tracker(): RequestCalls {
-    return { urls: [], noRedirect: [] };
-  }
-
-  it("returns json on 200 with redirects disabled", async () => {
-    const calls = tracker();
+  it("reads the identity with the session bearer token on 200", async () => {
+    const calls: CapturedRequest[] = [];
     const page = fakePageWith(
-      () => apiResponse(200, {}, { email: "operator@example.test" }),
+      () => ({ ok: true, status: 200, body: { email: "operator@example.test" } }),
       calls,
     );
     await expect(page.fetchIdentity()).resolves.toEqual({ email: "operator@example.test" });
-    expect(calls.urls).toEqual([`${ALLOWED}/api/auth/me`]);
-    expect(calls.noRedirect).toEqual([true]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(`${ALLOWED}/api/auth/me`);
+    expect(calls[0].authorization).toBe("Bearer spa-token");
   });
 
-  it("follows a same-origin redirect exactly once", async () => {
-    const calls = tracker();
-    let seen = 0;
-    const page = fakePageWith((url) => {
-      seen += 1;
-      if (seen === 1) {
-        expect(url).toBe(`${ALLOWED}/api/auth/me`);
-        return apiResponse(302, { location: "/api/auth/me?fresh=1" }, null);
-      }
-      return apiResponse(200, {}, { email: "operator@example.test" });
-    }, calls);
-    await expect(page.fetchIdentity()).resolves.toEqual({ email: "operator@example.test" });
-    expect(calls.urls).toEqual([`${ALLOWED}/api/auth/me`, `${ALLOWED}/api/auth/me?fresh=1`]);
-    expect(calls.noRedirect).toEqual([true, true]);
+  it("returns a status marker without throwing on non-ok (401)", async () => {
+    const calls: CapturedRequest[] = [];
+    const page = fakePageWith(() => ({ ok: false, status: 401 }), calls);
+    await expect(page.fetchIdentity()).resolves.toEqual({ __identityReadStatus: 401 });
+    expect(calls).toHaveLength(1);
   });
 
-  it("fails closed without following a cross-origin redirect", async () => {
-    const calls = tracker();
-    const page = fakePageWith(
-      () => apiResponse(302, { location: "https://evil.example.test/steal" }, null),
-      calls,
-    );
-    const err = await page.fetchIdentity().then(
-      () => {
-        throw new Error("should have thrown");
+  it("returns a status marker without throwing on server error (500)", async () => {
+    const calls: CapturedRequest[] = [];
+    const page = fakePageWith(() => ({ ok: false, status: 500 }), calls);
+    await expect(page.fetchIdentity()).resolves.toEqual({ __identityReadStatus: 500 });
+  });
+
+  it("never sends the bearer token when the session token is absent", async () => {
+    const calls: CapturedRequest[] = [];
+    const page = {
+      evaluate: async (
+        fn: (url: string) => Promise<unknown>,
+        url: string,
+      ): Promise<unknown> => {
+        calls.push({ url, authorization: null });
+        const scope = globalThis as Record<string, unknown>;
+        const prevFetch = scope.fetch;
+        scope.localStorage = { getItem: () => null };
+        scope.fetch = async (
+          _u: string,
+          init?: { headers?: Record<string, string> },
+        ): Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }> => {
+          const authorization = init?.headers?.Authorization ?? null;
+          calls[calls.length - 1].authorization = authorization;
+          return { ok: false, status: 401, json: async () => null };
+        };
+        try {
+          return await fn(url);
+        } finally {
+          delete scope.localStorage;
+          scope.fetch = prevFetch;
+        }
       },
-      (caught: unknown) => caught,
+    } as unknown as Page;
+    const instance = new PlaywrightPage(
+      page,
+      {} as unknown as BrowserContext,
+      ALLOWED,
+      initialPolicyState(),
+      LOGIN_PATH,
     );
-    expect(err).toBeInstanceOf(CrossOriginRedirectError);
-    // Fixed message: no origin/secret material leaks into the error.
-    expect(String((err as Error).message)).not.toContain("evil.example.test");
-    expect(calls.urls).toEqual([`${ALLOWED}/api/auth/me`]);
-  });
-
-  it("fails closed on empty or hostile Location", async () => {
-    for (const location of ["", "https://panel.example.test.evil.test/", "//evil.example.test/x"]) {
-      const calls = tracker();
-      const page = fakePageWith(() => apiResponse(302, { location }, null), calls);
-      await expect(page.fetchIdentity(), `location=${location}`).rejects.toBeInstanceOf(
-        CrossOriginRedirectError,
-      );
-      expect(calls.urls, `location=${location}`).toEqual([`${ALLOWED}/api/auth/me`]);
-    }
-  });
-
-  it("fails closed on a redirect chain (second 3xx)", async () => {
-    const calls = tracker();
-    const page = fakePageWith(
-      () => apiResponse(302, { location: "/api/auth/me?step=2" }, null),
-      calls,
-    );
-    await expect(page.fetchIdentity()).rejects.toBeInstanceOf(CrossOriginRedirectError);
-    expect(calls.urls).toHaveLength(2);
-  });
-
-  it("throws a fixed message on non-ok final status", async () => {
-    const calls = tracker();
-    const page = fakePageWith(() => apiResponse(500, {}, null), calls);
-    await expect(page.fetchIdentity()).rejects.toThrowError(
-      "identity read failed with status 500",
-    );
+    await expect(instance.fetchIdentity()).resolves.toEqual({ __identityReadStatus: 401 });
+    expect(calls[0].authorization).toBeNull();
   });
 });

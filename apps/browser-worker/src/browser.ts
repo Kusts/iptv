@@ -1,7 +1,7 @@
-/**
+﻿/**
  * Real Playwright driver (thin glue, NOT unit-tested live here).
  *
- * - `chromium.launchPersistentContext(profileDir, …)` with an exclusive
+ * - `chromium.launchPersistentContext(profileDir, â€¦)` with an exclusive
  *   per-tenant/account profile dir (never the default Chrome profile).
  *   Concurrency for the same binding is serialized beforehand by the
  *   atomic `profileLock.ts` sidecar (the driver never opens a profile
@@ -20,11 +20,11 @@
  *   target fails closed WITHOUT following (no cookie/token leaves the
  *   allowlist origin).
  * - Login submit requires exactly ONE `<form>` with exactly one email-ish
- *   input, one password input and one submit button scoped to that form —
+ *   input, one password input and one submit button scoped to that form â€”
  *   never `first()` over ambiguous controls; anything else returns false
  *   (caller maps to HUMAN_REQUIRED) before any fill or click.
  * - No storageState, HAR, screenshots, traces, console or network-body
- *   capture — none of these APIs are called.
+ *   capture â€” none of these APIs are called.
  */
 
 import { chromium, type BrowserContext, type Page } from "playwright";
@@ -38,7 +38,6 @@ import {
 } from "./policy.js";
 import type { WorkerConfig } from "./config.js";
 
-const CHALLENGE_RE = /captcha|turnstile|cloudflare|challenge|mfa|two-factor|2fa|verify you are human/i;
 
 const FORM_SELECTOR = "form";
 const EMAIL_SELECTOR =
@@ -90,7 +89,7 @@ export interface SubmitLoginSteps {
 }
 
 /**
- * Run fill → click with the single-POST window armed ONLY around the click.
+ * Run fill â†’ click with the single-POST window armed ONLY around the click.
  * Fills execute with the window closed (a page input/change handler firing
  * a POST during fill is blocked by the route); the route consumes the
  * exception (`loginPostUsed`) and the window closes in `finally`, even
@@ -161,13 +160,27 @@ export class PlaywrightPage implements ReadIdentityPage {
   }
 
   async detectChallenge(): Promise<boolean> {
-    const frames = this.page.frames();
-    for (const frame of frames) {
-      const url = frame.url();
-      if (/captcha|turnstile|challenge/i.test(url)) return true;
+    // Interstitial challenges (Cloudflare "Just a moment") manifest on the
+    // main frame: title + marker elements. Embedded Turnstile iframes on the
+    // login form are login-protection widgets, not blockers; if they require
+    // interaction the login submit fails closed downstream.
+    const title = (await this.page.title().catch(() => "")).toLowerCase();
+    if (
+      /just a moment|attention required|checking your browser|verify you are human|um momento|sÃ³ um momento|verifique que vocÃª Ã© humano|por favor aguarde|un momento|verifique que eres humano/.test(
+        title,
+      )
+    ) {
+      return true;
     }
-    const body = await this.page.content().catch(() => "");
-    return CHALLENGE_RE.test(body);
+    const mainUrl = this.page.mainFrame().url();
+    if (/captcha|turnstile|challenge/i.test(mainUrl)) return true;
+    const markers = await this.page
+      .locator(
+        "#challenge-error-text, #cf-please-wait, #cf-challenge-running, #challenge-form, #challenge-stage",
+      )
+      .count()
+      .catch(() => 0);
+    return markers > 0;
   }
 
   async submitLogin(email: string, password: string): Promise<boolean> {
@@ -182,7 +195,7 @@ export class PlaywrightPage implements ReadIdentityPage {
     const submit = form.locator(SUBMIT_SELECTOR);
     if ((await emailBox.count()) !== 1) return false;
     if ((await passwordBox.count()) !== 1) return false;
-    // Exactly one form-associated submit button — no `first()` over many,
+    // Exactly one form-associated submit button â€” no `first()` over many,
     // no Enter-key fallback that bypasses the submit control.
     if ((await submit.count()) !== 1) return false;
     const emailHandle = emailBox.first();
@@ -206,33 +219,26 @@ export class PlaywrightPage implements ReadIdentityPage {
   }
 
   async fetchIdentity(): Promise<unknown> {
-    const url = buildIdentityUrl(this.allowedOrigin);
-    const first = await this.context.request.get(url, { maxRedirects: 0 });
-    const response =
-      first.status() >= 300 && first.status() < 400 ? await this.followSameOriginRedirect(url, first) : first;
-    if (!response.ok()) {
-      throw new Error(`identity read failed with status ${response.status()}`);
-    }
-    return (await response.json().catch(() => null)) as unknown;
-  }
-
-  private async followSameOriginRedirect(
-    requestUrl: string,
-    response: { status(): number; headers(): Record<string, string> },
-  ): Promise<{ ok(): boolean; status(): number; json(): Promise<unknown> }> {
-    const location = response.headers()["location"] ?? "";
-    if (location.length === 0 || isCrossOriginRedirect(this.allowedOrigin, requestUrl, location)) {
-      // Cross-origin (or unparseable) redirect: fail closed WITHOUT
-      // following — no cookie/token is sent to another origin.
-      throw new CrossOriginRedirectError();
-    }
-    const next = await this.context.request.get(new URL(location, requestUrl).toString(), {
-      maxRedirects: 0,
-    });
-    if (next.status() >= 300 && next.status() < 400) {
-      throw new CrossOriginRedirectError();
-    }
-    return next;
+    // The panel authenticates with a Bearer token in localStorage (not
+    // cookies), so the read runs INSIDE the page â€” same-origin fetch with
+    // the session token the worker's own login produced. Cross-origin is
+    // unreachable by construction (page stays on the allowed origin).
+    const identityUrl = buildIdentityUrl(this.allowedOrigin);
+    return await this.page.evaluate(async (url) => {
+      const scope = globalThis as unknown as {
+        localStorage: { getItem(key: string): string | null };
+      };
+      const token = scope.localStorage.getItem("token");
+      const headers: Record<string, string> = { Accept: "application/json" };
+      if (typeof token === "string" && token.length > 0) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      const response = await fetch(url, { headers, redirect: "manual" });
+      if (!response.ok) {
+        return { __identityReadStatus: response.status };
+      }
+      return (await response.json().catch(() => null)) as unknown;
+    }, identityUrl);
   }
 
   async close(): Promise<void> {
@@ -259,7 +265,7 @@ export class PlaywrightBrowser implements ReadIdentityBrowser {
       acceptDownloads: false,
       // No video/HAR/tracing/storageState by construction.
     });
-    // Every popup is closed on sight — only the main page may request.
+    // Every popup is closed on sight â€” only the main page may request.
     context.on("page", (popup) => {
       void (async () => {
         try {
@@ -270,7 +276,7 @@ export class PlaywrightBrowser implements ReadIdentityBrowser {
       })();
     });
     // Main page first (about:blank, no network) so the route below binds
-    // the login exception to its main frame by identity — never by URL.
+    // the login exception to its main frame by identity â€” never by URL.
     const mainPage = context.pages()[0] ?? (await context.newPage());
     await context.route("**", (route) => {
       const request = route.request();
