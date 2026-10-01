@@ -37,6 +37,7 @@ import {
 } from "./supplier-credit.store.js";
 import {
   ensureTrialProviderAccount,
+  getProviderOperation,
   insertProviderAttempt,
   insertProviderOperation,
   latestProviderOperationForEntity,
@@ -687,6 +688,84 @@ async function markProcurementPurchased(
   };
 }
 
+/**
+ * CV-DSP-02 fencing for durable dispatch transitions on `app_license.purchase`
+ * outcomes. Same contract as the provider/trial/fulfillment appliers: with
+ * `fence` + a live Kysely transaction the terminal status write becomes a
+ * conditional UPDATE (`WHERE claimed_by=$token AND status IN
+ * ('QUEUED','RUNNING')`, lease cleared atomically); zero affected rows →
+ * `null` BEFORE any attempt/hold/procurement/finding write. Without `fence`
+ * (inline execute path) behavior is unchanged.
+ *
+ * NOTE (CV-DSP-02 scope, reaffirmed CV-DSP-02-FIX F4): `app_license.purchase`
+ * has NO secret-required branch — the intent row persists
+ * `adapter_version=intent-v1` (echo/manual synthetic), so the dispatcher
+ * claim filter (`secret-required-v1` only) never picks these rows up. The
+ * fenced applier below is the shared source of truth for that future
+ * migration, but the durable license path stays DISABLED in this wave:
+ * inventing a license secret branch would require widening the secret-gate
+ * allowlist (`SECRET_REQUIRED_ALLOWED_ACTIONS` covers only
+ * `trial.provision`/`subscription.provision`) AND centralizing the money
+ * locks at the dispatch seam (this wrapper acquires none) — both are
+ * architectural decisions left to the Planner.
+ */
+export interface LicenseChargeFence {
+  claimedBy: string;
+}
+
+async function fencedLicenseOutcomeUpdate(
+  ctx: CommandHandlerContext,
+  operationId: string,
+  fence: LicenseChargeFence,
+  patch: {
+    status: string;
+    effectCertainty: string;
+    executionChannel: string;
+    resultSummary: Record<string, unknown>;
+    started: boolean;
+    completed: boolean;
+  },
+): Promise<boolean> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx === null) {
+    return true;
+  }
+  const updated = await trx
+    .updateTable("provider.provider_operations")
+    .set({
+      status: patch.status,
+      effect_certainty: patch.effectCertainty,
+      execution_channel: patch.executionChannel,
+      result_summary_json: patch.resultSummary,
+      ...(patch.started ? { started_at: new Date() } : {}),
+      ...(patch.completed ? { completed_at: new Date() } : {}),
+      claimed_by: null,
+      claimed_at: null,
+      lease_expires_at: null,
+    })
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("id", "=", operationId)
+    .where("claimed_by", "=", fence.claimedBy)
+    .where("status", "in", ["QUEUED", "RUNNING"])
+    .executeTakeFirst();
+  return Number(updated.numUpdatedRows ?? 0) >= 1;
+}
+
+/**
+ * CV-DSP-02 pure branch decision for `app_license.purchase` outcomes
+ * (unit-tested): which finalizer owns a port outcome. Anything that is not
+ * a proven success or a proven failure parks uncertain — never a retry.
+ */
+export function decideLicenseChargeBranch(outcome: string): "charged" | "not_applied" | "uncertain" {
+  if (outcome === "SUCCEEDED") {
+    return "charged";
+  }
+  if (outcome === "FAILED") {
+    return "not_applied";
+  }
+  return "uncertain";
+}
+
 interface FinalizeSuccessInput {
   license: LicenseAssetRow;
   procurement: ProcurementOrderRow;
@@ -700,15 +779,30 @@ interface FinalizeSuccessInput {
 async function applyChargedSuccess(
   ctx: CommandHandlerContext,
   input: FinalizeSuccessInput,
-): Promise<CommandResult<Record<string, unknown>>> {
-  await updateProviderOperation(ctx, input.operationId, {
-    status: "SUCCEEDED",
-    effectCertainty: "KNOWN_APPLIED",
-    executionChannel: "MANUAL",
-    resultSummary: { detail: input.detail, external_ref: input.externalRef },
-    started: true,
-    completed: true,
-  });
+  fence?: LicenseChargeFence,
+): Promise<CommandResult<Record<string, unknown>> | null> {
+  if (fence !== undefined && kyselyTrxOf(ctx) !== null) {
+    const claimed = await fencedLicenseOutcomeUpdate(ctx, input.operationId, fence, {
+      status: "SUCCEEDED",
+      effectCertainty: "KNOWN_APPLIED",
+      executionChannel: "MANUAL",
+      resultSummary: { detail: input.detail, external_ref: input.externalRef },
+      started: true,
+      completed: true,
+    });
+    if (!claimed) {
+      return null;
+    }
+  } else {
+    await updateProviderOperation(ctx, input.operationId, {
+      status: "SUCCEEDED",
+      effectCertainty: "KNOWN_APPLIED",
+      executionChannel: "MANUAL",
+      resultSummary: { detail: input.detail, external_ref: input.externalRef },
+      started: true,
+      completed: true,
+    });
+  }
   await insertProviderAttempt(ctx, { operationId: input.operationId, status: "SUCCEEDED" });
   await emitProvider(ctx, {
     eventType: "provider.operation_succeeded.v1",
@@ -746,15 +840,30 @@ interface FinalizeFailureInput {
 async function applyProvenNotApplied(
   ctx: CommandHandlerContext,
   input: FinalizeFailureInput,
-): Promise<CommandResult<Record<string, unknown>>> {
-  await updateProviderOperation(ctx, input.operationId, {
-    status: "FAILED",
-    effectCertainty: "KNOWN_NOT_APPLIED",
-    executionChannel: "MANUAL",
-    resultSummary: { detail: input.detail },
-    started: true,
-    completed: true,
-  });
+  fence?: LicenseChargeFence,
+): Promise<CommandResult<Record<string, unknown>> | null> {
+  if (fence !== undefined && kyselyTrxOf(ctx) !== null) {
+    const claimed = await fencedLicenseOutcomeUpdate(ctx, input.operationId, fence, {
+      status: "FAILED",
+      effectCertainty: "KNOWN_NOT_APPLIED",
+      executionChannel: "MANUAL",
+      resultSummary: { detail: input.detail },
+      started: true,
+      completed: true,
+    });
+    if (!claimed) {
+      return null;
+    }
+  } else {
+    await updateProviderOperation(ctx, input.operationId, {
+      status: "FAILED",
+      effectCertainty: "KNOWN_NOT_APPLIED",
+      executionChannel: "MANUAL",
+      resultSummary: { detail: input.detail },
+      started: true,
+      completed: true,
+    });
+  }
   await insertProviderAttempt(ctx, { operationId: input.operationId, status: "FAILED", errorCode: "ADAPTER_FAILED" });
   await emitProvider(ctx, {
     eventType: "provider.operation_failed.v1",
@@ -787,15 +896,30 @@ async function applyProvenNotApplied(
 async function parkUncertainEffect(
   ctx: CommandHandlerContext,
   input: FinalizeFailureInput & { outcome: "UNKNOWN" | "MANUAL" },
-): Promise<CommandResult<Record<string, unknown>>> {
+  fence?: LicenseChargeFence,
+): Promise<CommandResult<Record<string, unknown>> | null> {
   const parked = input.outcome === "UNKNOWN" ? "VERIFYING" : "HUMAN_REQUIRED";
-  await updateProviderOperation(ctx, input.operationId, {
-    status: parked,
-    effectCertainty: "UNKNOWN",
-    executionChannel: "MANUAL",
-    resultSummary: { detail: input.detail },
-    started: true,
-  });
+  if (fence !== undefined && kyselyTrxOf(ctx) !== null) {
+    const claimed = await fencedLicenseOutcomeUpdate(ctx, input.operationId, fence, {
+      status: parked,
+      effectCertainty: "UNKNOWN",
+      executionChannel: "MANUAL",
+      resultSummary: { detail: input.detail },
+      started: true,
+      completed: false,
+    });
+    if (!claimed) {
+      return null;
+    }
+  } else {
+    await updateProviderOperation(ctx, input.operationId, {
+      status: parked,
+      effectCertainty: "UNKNOWN",
+      executionChannel: "MANUAL",
+      resultSummary: { detail: input.detail },
+      started: true,
+    });
+  }
   await insertProviderAttempt(ctx, {
     operationId: input.operationId,
     status: parked,
@@ -821,6 +945,121 @@ async function parkUncertainEffect(
       status: parked,
     },
   };
+}
+
+/**
+ * CV-DSP-02-FIX F4: pure dispatch-status decision for
+ * `app_license.purchase` outcomes (unit-tested). Maps the branch plus the
+ * REAL domain-finalizer result to the provider operation status the
+ * dispatcher counts. A failed domain finalization (`finalizerOk=false` —
+ * lost hold race, concurrent procurement move) NEVER reports its branch
+ * status: it surfaces as HUMAN_REQUIRED/UNKNOWN so an operator reconciles
+ * instead of a masked SUCCEEDED.
+ */
+export function resolveLicenseDispatchStatus(input: {
+  branch: "charged" | "not_applied" | "uncertain";
+  finalizerOk: boolean;
+  rawOutcome: string;
+}): { status: string; effectCertainty: string } {
+  if (!input.finalizerOk) {
+    return { status: "HUMAN_REQUIRED", effectCertainty: "UNKNOWN" };
+  }
+  if (input.branch === "charged") {
+    return { status: "SUCCEEDED", effectCertainty: "KNOWN_APPLIED" };
+  }
+  if (input.branch === "not_applied") {
+    return { status: "FAILED", effectCertainty: "KNOWN_NOT_APPLIED" };
+  }
+  return {
+    status: input.rawOutcome === "MANUAL" ? "HUMAN_REQUIRED" : "VERIFYING",
+    effectCertainty: "UNKNOWN",
+  };
+}
+
+/**
+ * CV-DSP-02 unified `app_license.purchase` outcome applier for the durable
+ * dispatcher: loads the operation + license + procurement, routes the raw
+ * port outcome through the shared finalizers above (the ONE source of truth
+ * — the inline execute path calls the same three functions), and reports
+ * the provider operation status for dispatch accounting. Returns `null`
+ * when the row/license/procurement is missing or when a fenced write loses
+ * its claim (caller aborts with no result write).
+ *
+ * CV-DSP-02-FIX F4 preconditions + scope: this wrapper is NOT durable-ready
+ * in this wave and must stay INERT — `app_license.purchase` intent rows
+ * persist `adapter_version=intent-v1`, so the dispatcher claim filter
+ * (`secret-required-v1` only) never picks them up. The inline execute path
+ * holds the shared money locks before finalizing (`advisoryLockLicenseScope`
+ * + `advisoryLockSupplierBalance` + `advisoryLockReservationScope`, supplier
+ * first — the same keys and order as release/expire); this wrapper acquires
+ * NONE of them. Do NOT route license rows through the dispatcher until those
+ * locks are centralized at the dispatch seam. Domain-finalizer failures are
+ * propagated honestly via `resolveLicenseDispatchStatus` (never masked).
+ */
+export interface AppLicensePurchaseOutcomeInput {
+  operationId: string;
+  raw: { outcome: string; detail: string; externalRef: string | null };
+}
+
+export async function applyAppLicensePurchaseOutcome(
+  ctx: CommandHandlerContext,
+  input: AppLicensePurchaseOutcomeInput,
+  fence?: LicenseChargeFence,
+): Promise<{ status: string; effectCertainty: string } | null> {
+  const operation = await getProviderOperation(ctx, input.operationId);
+  if (operation === null) {
+    return null;
+  }
+  const license = await getLicenseAsset(ctx, operation.entityId);
+  if (license === null) {
+    return null;
+  }
+  const procurement = await getProcurementOrder(ctx, license.procurementOrderId);
+  if (procurement === null) {
+    return null;
+  }
+  const finalizeInput = {
+    license,
+    procurement,
+    operationId: operation.id,
+    amountMinor: String((operation.requestedPayload?.["amount_minor"] as string | undefined) ?? ""),
+    currency: String((operation.requestedPayload?.["currency"] as string | undefined) ?? ""),
+  };
+  const branch = decideLicenseChargeBranch(input.raw.outcome);
+  if (branch === "charged") {
+    const charged = await applyChargedSuccess(
+      ctx,
+      { ...finalizeInput, detail: input.raw.detail, externalRef: input.raw.externalRef },
+      fence,
+    );
+    if (charged === null) {
+      return null;
+    }
+    // CV-DSP-02-FIX F4: propagate the REAL finalizer outcome — a failed
+    // hold/procurement finalization surfaces as HUMAN_REQUIRED, never as a
+    // masked SUCCEEDED.
+    return resolveLicenseDispatchStatus({ branch, finalizerOk: charged.ok, rawOutcome: input.raw.outcome });
+  }
+  if (branch === "not_applied") {
+    const notApplied = await applyProvenNotApplied(ctx, { ...finalizeInput, detail: input.raw.detail }, fence);
+    if (notApplied === null) {
+      return null;
+    }
+    return resolveLicenseDispatchStatus({ branch, finalizerOk: notApplied.ok, rawOutcome: input.raw.outcome });
+  }
+  const parked = await parkUncertainEffect(
+    ctx,
+    {
+      ...finalizeInput,
+      detail: input.raw.detail,
+      outcome: input.raw.outcome === "MANUAL" ? "MANUAL" : "UNKNOWN",
+    },
+    fence,
+  );
+  if (parked === null) {
+    return null;
+  }
+  return resolveLicenseDispatchStatus({ branch, finalizerOk: parked.ok, rawOutcome: input.raw.outcome });
 }
 
 function handleExecuteChargeFactory(deps: LicenseCommandDeps) {
@@ -921,6 +1160,9 @@ function handleExecuteChargeFactory(deps: LicenseCommandDeps) {
           detail: observed.evidence,
           externalRef: null,
         });
+        if (finalized === null) {
+          throw new Error("license outcome applier lost its own inline row");
+        }
         if (!finalized.ok) {
           return finalized;
         }
@@ -938,6 +1180,9 @@ function handleExecuteChargeFactory(deps: LicenseCommandDeps) {
         currency: String((operation.requestedPayload?.["currency"] as string | undefined) ?? ""),
         detail: observed.evidence,
       });
+      if (failed === null) {
+        throw new Error("license outcome applier lost its own inline row");
+      }
       if (!failed.ok) {
         return failed;
       }
@@ -1047,16 +1292,28 @@ function handleExecuteChargeFactory(deps: LicenseCommandDeps) {
       currency: gate.data.currency,
     };
     if (result.outcome === "SUCCEEDED") {
-      return applyChargedSuccess(ctx, {
+      const charged = await applyChargedSuccess(ctx, {
         ...finalizeInput,
         detail: result.detail,
         externalRef: result.externalRef,
       });
+      if (charged === null) {
+        throw new Error("license outcome applier lost its own inline row");
+      }
+      return charged;
     }
     if (result.outcome === "FAILED") {
-      return applyProvenNotApplied(ctx, { ...finalizeInput, detail: result.detail });
+      const notApplied = await applyProvenNotApplied(ctx, { ...finalizeInput, detail: result.detail });
+      if (notApplied === null) {
+        throw new Error("license outcome applier lost its own inline row");
+      }
+      return notApplied;
     }
-    return parkUncertainEffect(ctx, { ...finalizeInput, detail: result.detail, outcome: result.outcome });
+    const parked = await parkUncertainEffect(ctx, { ...finalizeInput, detail: result.detail, outcome: result.outcome });
+    if (parked === null) {
+      throw new Error("license outcome applier lost its own inline row");
+    }
+    return parked;
   };
 }
 

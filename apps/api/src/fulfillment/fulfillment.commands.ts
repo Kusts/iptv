@@ -5,6 +5,7 @@ import { emitAndEnqueue, kyselyTrxOf } from "../crm/wave2-store.js";
 import { resolveSecretsPort, type SecretsPort } from "@iptv/secrets";
 import {
   assertBrowserSecretReady,
+  buildSubscriptionProvisionExternalPayload,
   getProviderAccountSecretRef,
   isCapabilityUnavailable,
   isSecretRequiringPort,
@@ -16,6 +17,7 @@ import {
   SECRET_REQUIRED_ADAPTER_VERSION,
   adapterNameFromEnv,
   applyCapabilityGate,
+  providerDispatchModeFromEnv,
   resolveOpsPort,
   type ProviderOpsPort,
 } from "../provider/provider-port.js";
@@ -362,6 +364,193 @@ async function executeFulfillmentRequest(
 }
 
 /**
+ * CV-DSP-02 shared secret-branch outcome applier for
+ * `subscription.provision`: the ONE source of truth for secret-required
+ * fulfillment transitions (SUCCEEDED/FAILED/UNKNOWN/MANUAL → terminal /
+ * VERIFYING / HUMAN_REQUIRED + binding + activation + failure review + safe
+ * evidence + the registry-listed `provider.operation_*` events). The inline
+ * fulfillment handler and the durable `ProviderDispatcherService` both call
+ * it — never duplicate these transitions.
+ *
+ * `raw` carries the port result; projection (`projectSecretPortResult`) and
+ * the invalid-ref SUCCEEDED→UNKNOWN demotion happen here so both callers
+ * share them. Never persists/emits raw `detail`/`externalRef`.
+ *
+ * `status` is the PROVIDER OPERATION status (what the dispatcher counts).
+ * When the subscription row is missing (only possible for a
+ * dispatcher-claimed row the inline handler did not create), the operation
+ * still terminalizes but activation/review are skipped best-effort
+ * (`subscriptionStatus` stays `PENDING_ACTIVATION`) — the inline handler
+ * validated the subscription first, so it never hits that path.
+ */
+export interface SubscriptionProvisionOutcomeInput {
+  operationId: string;
+  subscriptionId: string;
+  providerAccountId: string;
+  raw: { outcome: string; detail: string; externalRef: string | null };
+}
+
+export interface SubscriptionProvisionOutcome {
+  /** Provider operation status (SUCCEEDED | FAILED | VERIFYING | HUMAN_REQUIRED). */
+  status: string;
+  subscriptionStatus: string;
+  effectCertainty: string;
+}
+
+/**
+ * CV-DSP-02 fencing for durable dispatch transitions. Same contract as the
+ * provider/trial appliers: with `fence` + a live Kysely transaction the
+ * terminal status write becomes a conditional UPDATE
+ * (`WHERE claimed_by=$token AND status IN ('QUEUED','RUNNING')`, lease
+ * cleared atomically); zero affected rows → `null` BEFORE any
+ * attempt/event/binding/activation/review. Without `fence` (inline path)
+ * behavior is unchanged.
+ */
+export interface SubscriptionProvisionFence {
+  claimedBy: string;
+}
+
+async function fencedSubscriptionOutcomeUpdate(
+  ctx: CommandHandlerContext,
+  operationId: string,
+  fence: SubscriptionProvisionFence,
+  patch: {
+    status: string;
+    effectCertainty: string;
+    executionChannel: string;
+    resultSummary: Record<string, unknown>;
+    started: boolean;
+    completed: boolean;
+  },
+): Promise<boolean> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx === null) {
+    return true;
+  }
+  const updated = await trx
+    .updateTable("provider.provider_operations")
+    .set({
+      status: patch.status,
+      effect_certainty: patch.effectCertainty,
+      execution_channel: patch.executionChannel,
+      result_summary_json: patch.resultSummary,
+      ...(patch.started ? { started_at: new Date() } : {}),
+      ...(patch.completed ? { completed_at: new Date() } : {}),
+      claimed_by: null,
+      claimed_at: null,
+      lease_expires_at: null,
+    })
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("id", "=", operationId)
+    .where("claimed_by", "=", fence.claimedBy)
+    .where("status", "in", ["QUEUED", "RUNNING"])
+    .executeTakeFirst();
+  return Number(updated.numUpdatedRows ?? 0) >= 1;
+}
+
+export async function applySubscriptionProvisionOutcome(
+  ctx: CommandHandlerContext,
+  input: SubscriptionProvisionOutcomeInput,
+  fence?: SubscriptionProvisionFence,
+): Promise<SubscriptionProvisionOutcome | null> {
+  const fenced = fence !== undefined && kyselyTrxOf(ctx) !== null;
+  async function writeTerminal(patch: {
+    status: string;
+    effectCertainty: string;
+    resultSummary: Record<string, unknown>;
+    completed: boolean;
+  }): Promise<boolean> {
+    if (fenced) {
+      return fencedSubscriptionOutcomeUpdate(ctx, input.operationId, fence as SubscriptionProvisionFence, {
+        ...patch,
+        executionChannel: "MANUAL",
+        started: true,
+      });
+    }
+    await updateProviderOperation(ctx, input.operationId, {
+      ...patch,
+      executionChannel: "MANUAL",
+      started: true,
+    });
+    return true;
+  }
+  const projected = projectSecretPortResult(input.raw);
+  const effectiveOutcome =
+    projected.externalRefInvalid && projected.outcome === "SUCCEEDED" ? "UNKNOWN" : projected.outcome;
+  if (effectiveOutcome === "SUCCEEDED") {
+    const claimed = await writeTerminal({
+      status: "SUCCEEDED",
+      effectCertainty: "KNOWN_APPLIED",
+      resultSummary:
+        projected.safeExternalRef !== null ? { external_ref: projected.safeExternalRef } : {},
+      completed: true,
+    });
+    if (!claimed) {
+      return null;
+    }
+    await insertProviderAttempt(ctx, { operationId: input.operationId, status: "SUCCEEDED" });
+    await emitProvider(ctx, {
+      eventType: "provider.operation_succeeded.v1",
+      operationId: input.operationId,
+      data: { action: "subscription.provision", entity_id: input.subscriptionId },
+    });
+    if (projected.safeExternalRef !== null) {
+      await recordBinding(ctx, {
+        providerAccountId: input.providerAccountId,
+        subscriptionId: input.subscriptionId,
+        externalId: projected.safeExternalRef,
+      });
+    }
+    const activated = await activateSubscriptionInternal(ctx, input.subscriptionId, input.operationId);
+    const status = activated.ok ? activated.data.status : "PENDING_ACTIVATION";
+    return { status: "SUCCEEDED", subscriptionStatus: status, effectCertainty: "KNOWN_APPLIED" };
+  }
+  if (effectiveOutcome === "FAILED") {
+    const claimed = await writeTerminal({
+      status: "FAILED",
+      effectCertainty: "KNOWN_NOT_APPLIED",
+      resultSummary: { error_code: "ADAPTER_FAILED" },
+      completed: true,
+    });
+    if (!claimed) {
+      return null;
+    }
+    await insertProviderAttempt(ctx, { operationId: input.operationId, status: "FAILED", errorCode: "ADAPTER_FAILED" });
+    await emitProvider(ctx, {
+      eventType: "provider.operation_failed.v1",
+      operationId: input.operationId,
+      data: { action: "subscription.provision", entity_id: input.subscriptionId },
+    });
+    await openFulfillmentFailureReview(ctx, input.subscriptionId, input.operationId);
+    return { status: "FAILED", subscriptionStatus: "PENDING_ACTIVATION", effectCertainty: "KNOWN_NOT_APPLIED" };
+  }
+  if (effectiveOutcome === "UNKNOWN") {
+    const claimed = await writeTerminal({
+      status: "VERIFYING",
+      effectCertainty: "UNKNOWN",
+      resultSummary: {},
+      completed: false,
+    });
+    if (!claimed) {
+      return null;
+    }
+    await insertProviderAttempt(ctx, { operationId: input.operationId, status: "VERIFYING", errorCode: "EFFECT_UNKNOWN" });
+    return { status: "VERIFYING", subscriptionStatus: "PENDING_ACTIVATION", effectCertainty: "UNKNOWN" };
+  }
+  const claimed = await writeTerminal({
+    status: "HUMAN_REQUIRED",
+    effectCertainty: "UNKNOWN",
+    resultSummary: {},
+    completed: false,
+  });
+  if (!claimed) {
+    return null;
+  }
+  await insertProviderAttempt(ctx, { operationId: input.operationId, status: "HUMAN_REQUIRED" });
+  return { status: "HUMAN_REQUIRED", subscriptionStatus: "PENDING_ACTIVATION", effectCertainty: "UNKNOWN" };
+}
+
+/**
  * Secret-required fulfillment path: lookup-only account (no placeholder
  * creation before the gate), fail-closed secret gate, server-built payload
  * only (no echoOutcome passthrough), and safe port-result projection. Raw
@@ -437,6 +626,24 @@ async function executeSecretFulfillmentRequest(
       adapter: effectiveAdapter,
     },
   });
+  // CV-DSP-02 durable cut (same point as the provider cut): the REQUESTED
+  // row + `operation_requested` event are already committed by the caller
+  // transaction. In durable mode the external port call moves to
+  // `ProviderDispatcherService.drainOnce` (claim with lease → RUNNING +
+  // `dispatch_started_at` frontier → port call → outcome via
+  // `applySubscriptionProvisionOutcome`). Inline (default) keeps the current
+  // in-transaction port call untouched.
+  if (providerDispatchModeFromEnv() === "durable") {
+    return {
+      ok: true,
+      data: {
+        operationId: operation.id,
+        status: "QUEUED",
+        subscriptionStatus: "PENDING_ACTIVATION",
+        already: false,
+      },
+    };
+  }
   // Post-effect throw shape: catch ONLY the port call (DB failures still
   // propagate). The subscription stays PENDING_ACTIVATION and the operation
   // parks VERIFYING/UNKNOWN with the fixed code — no completed_at, no
@@ -450,7 +657,10 @@ async function executeSecretFulfillmentRequest(
       entityType: "subscription",
       entityId: subscription.id,
       idempotencyKey,
-      payload: { plan_id: plan.id, plan_key: plan.planKey },
+      // CV-DSP-02-FIX F1: shared projection with the dispatcher — the port
+      // frontier carries only certified fields (domain metadata such as
+      // `customer_id` stays on the persisted operation row).
+      payload: buildSubscriptionProvisionExternalPayload({ plan_id: plan.id, plan_key: plan.planKey }),
       correlationId: ctx.correlationId,
       secretRef: gate.secretRef,
     });
@@ -477,98 +687,21 @@ async function executeSecretFulfillmentRequest(
       },
     };
   }
-  const projected = projectSecretPortResult(raw);
-  const effectiveOutcome =
-    projected.externalRefInvalid && projected.outcome === "SUCCEEDED" ? "UNKNOWN" : projected.outcome;
-  if (effectiveOutcome === "SUCCEEDED") {
-    await updateProviderOperation(ctx, operation.id, {
-      status: "SUCCEEDED",
-      effectCertainty: "KNOWN_APPLIED",
-      executionChannel: "MANUAL",
-      resultSummary:
-        projected.safeExternalRef !== null ? { external_ref: projected.safeExternalRef } : {},
-      started: true,
-      completed: true,
-    });
-    await insertProviderAttempt(ctx, { operationId: operation.id, status: "SUCCEEDED" });
-    await emitProvider(ctx, {
-      eventType: "provider.operation_succeeded.v1",
-      operationId: operation.id,
-      data: { action: "subscription.provision", entity_id: subscription.id },
-    });
-    if (projected.safeExternalRef !== null) {
-      await recordBinding(ctx, {
-        providerAccountId: accountId,
-        subscriptionId: subscription.id,
-        externalId: projected.safeExternalRef,
-      });
-    }
-    const activated = await activateSubscriptionInternal(ctx, subscription.id, operation.id);
-    const status = activated.ok ? activated.data.status : "PENDING_ACTIVATION";
-    return {
-      ok: true,
-      data: { operationId: operation.id, status: "SUCCEEDED", subscriptionStatus: status, already: false },
-    };
-  }
-  if (effectiveOutcome === "FAILED") {
-    await updateProviderOperation(ctx, operation.id, {
-      status: "FAILED",
-      effectCertainty: "KNOWN_NOT_APPLIED",
-      executionChannel: "MANUAL",
-      resultSummary: { error_code: "ADAPTER_FAILED" },
-      started: true,
-      completed: true,
-    });
-    await insertProviderAttempt(ctx, { operationId: operation.id, status: "FAILED", errorCode: "ADAPTER_FAILED" });
-    await emitProvider(ctx, {
-      eventType: "provider.operation_failed.v1",
-      operationId: operation.id,
-      data: { action: "subscription.provision", entity_id: subscription.id },
-    });
-    await openFulfillmentFailureReview(ctx, subscription.id, operation.id);
-    return {
-      ok: true,
-      data: {
-        operationId: operation.id,
-        status: "FAILED",
-        subscriptionStatus: "PENDING_ACTIVATION",
-        already: false,
-      },
-    };
-  }
-  if (effectiveOutcome === "UNKNOWN") {
-    await updateProviderOperation(ctx, operation.id, {
-      status: "VERIFYING",
-      effectCertainty: "UNKNOWN",
-      executionChannel: "MANUAL",
-      resultSummary: {},
-      started: true,
-    });
-    await insertProviderAttempt(ctx, { operationId: operation.id, status: "VERIFYING", errorCode: "EFFECT_UNKNOWN" });
-    return {
-      ok: true,
-      data: {
-        operationId: operation.id,
-        status: "VERIFYING",
-        subscriptionStatus: "PENDING_ACTIVATION",
-        already: false,
-      },
-    };
-  }
-  await updateProviderOperation(ctx, operation.id, {
-    status: "HUMAN_REQUIRED",
-    effectCertainty: "UNKNOWN",
-    executionChannel: "MANUAL",
-    resultSummary: {},
-    started: true,
+  const applied = await applySubscriptionProvisionOutcome(ctx, {
+    operationId: operation.id,
+    subscriptionId: subscription.id,
+    providerAccountId: accountId,
+    raw: { outcome: raw.outcome, detail: raw.detail, externalRef: raw.externalRef },
   });
-  await insertProviderAttempt(ctx, { operationId: operation.id, status: "HUMAN_REQUIRED" });
+  if (applied === null) {
+    throw new Error("fulfillment outcome applier lost its own inline row");
+  }
   return {
     ok: true,
     data: {
       operationId: operation.id,
-      status: "HUMAN_REQUIRED",
-      subscriptionStatus: "PENDING_ACTIVATION",
+      status: applied.status,
+      subscriptionStatus: applied.subscriptionStatus,
       already: false,
     },
   };

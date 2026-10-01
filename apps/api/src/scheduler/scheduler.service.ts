@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, type OnModuleDestroy } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional, type OnModuleDestroy } from "@nestjs/common";
 import { sql, type Kysely } from "kysely";
 import type { Database } from "@iptv/database";
 import { newId, type CommandActor } from "@iptv/domain";
@@ -7,6 +7,8 @@ import { CommandBus } from "../commands/command-bus.js";
 import { OutboxDrainer } from "../outbox/outbox-drainer.js";
 import { WahaWebhookService } from "../communications/waha-webhook.service.js";
 import { AsaasWebhookService } from "../billing/asaas-webhook.service.js";
+import { ProviderDispatcherService } from "../provider/provider-dispatcher.service.js";
+import { providerDispatchModeFromEnv } from "../provider/provider-port.js";
 
 /**
  * W1-08 in-process scheduler (opt-in; OFF by default).
@@ -98,6 +100,7 @@ export class SchedulerService implements OnModuleDestroy {
     @Inject(OutboxDrainer) private readonly outbox: OutboxDrainer,
     @Inject(WahaWebhookService) private readonly waha: WahaWebhookService,
     @Inject(AsaasWebhookService) private readonly asaas: AsaasWebhookService,
+    @Optional() @Inject(ProviderDispatcherService) private readonly providerDispatcher?: ProviderDispatcherService | null,
   ) {}
 
   isEnabled(): boolean {
@@ -173,6 +176,9 @@ export class SchedulerService implements OnModuleDestroy {
     for (const name of WORKER_COMMANDS) {
       result.commands[name] = { ok: 0, failed: 0 };
     }
+    result.commands["provider.dispatch_due"] = { ok: 0, failed: 0 };
+    result.commands["provider.dispatch_recovery"] = { ok: 0, failed: 0 };
+    result.commands["provider.dispatch_reconcile"] = { ok: 0, failed: 0 };
 
     // Due commands first (they emit domain events → outbox rows), deferred
     // webhook drains next (their normalize stage emits too), and the outbox
@@ -205,6 +211,29 @@ export class SchedulerService implements OnModuleDestroy {
     await this.runTask(result, "webhook.asaas.drainPending", async () => {
       result.webhooks.asaas = await this.asaas.drainPending(25);
     });
+    // CV-DSP-01 durable provider dispatch (platform-level, opt-in): runs
+    // only in `durable` dispatch mode — inline (default) never claims. The
+    // scheduler loop itself stays opt-in via API_SCHEDULER_ENABLED, and the
+    // drain emits domain events, so the outbox drain below still converges
+    // the same tick.
+    if (providerDispatchModeFromEnv() === "durable" && this.providerDispatcher != null) {
+      const dispatcher = this.providerDispatcher;
+      await this.runTask(result, "provider.dispatch_recovery", async () => {
+        await dispatcher.recoverOnce(100);
+        (result.commands["provider.dispatch_recovery"] as SchedulerCommandCounts).ok += 1;
+      });
+      await this.runTask(result, "provider.dispatch_due", async () => {
+        await dispatcher.drainOnce(25);
+        (result.commands["provider.dispatch_due"] as SchedulerCommandCounts).ok += 1;
+      });
+      // FASE5-FIX4-N1: reconcile VERIFYING secret-required trial rows
+      // outside any transaction (readback + CAS-fenced outcome). Same
+      // opt-in durable gate as drain/recovery; idempotent per tick.
+      await this.runTask(result, "provider.dispatch_reconcile", async () => {
+        await dispatcher.reconcileOnce(100);
+        (result.commands["provider.dispatch_reconcile"] as SchedulerCommandCounts).ok += 1;
+      });
+    }
     await this.runTask(result, "outbox.drain", async () => {
       result.outbox = await this.outbox.drain(25);
     });

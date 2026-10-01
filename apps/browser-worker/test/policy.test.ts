@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { decideRequest, decideRoutedRequest, isSignInRoute, normalizeLoginPath } from "../src/policy.js";
+import {
+  armReauthWindow,
+  consumeLoginPost,
+  decideRequest,
+  decideRoutedRequest,
+  initialPolicyState,
+  isSignInRoute,
+  normalizeLoginPath,
+} from "../src/policy.js";
 
 const ALLOWED = "https://panel.example.test";
 const LOGIN_PATH = "/api/auth/login";
@@ -94,6 +102,123 @@ describe("network policy", () => {
 
   it("blocks a second POST after the window was consumed", () => {
     expect(post(`${ALLOWED}/api/auth/login`, { loginPostUsed: true })).toBe("block");
+  });
+
+  it("authorizes exactly one bounded reauth POST with identical guarantees", () => {
+    const state = initialPolicyState();
+    // Initial slot consumed by the first login.
+    expect(
+      decideRoutedRequest({
+        method: "POST",
+        url: `${ALLOWED}/api/auth/login`,
+        allowedOrigin: ALLOWED,
+        mainPageUrl: `${ALLOWED}/#/sign-in`,
+        isMainFrame: true,
+        loginWindowOpen: true,
+        loginPath: LOGIN_PATH,
+        loginPostUsed: state.loginPostUsed,
+        reauthArmed: state.reauthArmed,
+        reauthLoginPostUsed: state.reauthLoginPostUsed,
+      }),
+    ).toBe("allow-login-post");
+    consumeLoginPost(state);
+    const blocked = {
+      method: "POST",
+      url: `${ALLOWED}/api/auth/login`,
+      allowedOrigin: ALLOWED,
+      mainPageUrl: `${ALLOWED}/#/sign-in`,
+      isMainFrame: true,
+      loginWindowOpen: true,
+      loginPath: LOGIN_PATH,
+      loginPostUsed: state.loginPostUsed,
+      reauthArmed: state.reauthArmed,
+      reauthLoginPostUsed: state.reauthLoginPostUsed,
+    } as const;
+    expect(decideRoutedRequest({ ...blocked })).toBe("block");
+    // Arming authorizes exactly one more POST — same window/route/path rules.
+    expect(armReauthWindow(state)).toBe(true);
+    expect(
+      decideRoutedRequest({
+        ...blocked,
+        loginPostUsed: state.loginPostUsed,
+        reauthArmed: state.reauthArmed,
+        reauthLoginPostUsed: state.reauthLoginPostUsed,
+      }),
+    ).toBe("allow-login-post");
+    consumeLoginPost(state);
+    // Third POST blocked; re-arming is refused — the limit is never lifted.
+    expect(
+      decideRoutedRequest({
+        ...blocked,
+        loginPostUsed: state.loginPostUsed,
+        reauthArmed: state.reauthArmed,
+        reauthLoginPostUsed: state.reauthLoginPostUsed,
+      }),
+    ).toBe("block");
+    expect(armReauthWindow(state)).toBe(false);
+    expect(
+      decideRoutedRequest({
+        ...blocked,
+        loginPostUsed: state.loginPostUsed,
+        reauthArmed: state.reauthArmed,
+        reauthLoginPostUsed: state.reauthLoginPostUsed,
+      }),
+    ).toBe("block");
+  });
+
+  it("retires the initial slot when reauth is armed: at most one POST after arming (N3)", () => {
+    const state = initialPolicyState();
+    // Initial slot NOT consumed, then reauth armed on the single reauth path.
+    expect(armReauthWindow(state)).toBe(true);
+    const attempt = () =>
+      decideRoutedRequest({
+        method: "POST",
+        url: `${ALLOWED}/api/auth/login`,
+        allowedOrigin: ALLOWED,
+        mainPageUrl: `${ALLOWED}/#/sign-in`,
+        isMainFrame: true,
+        loginWindowOpen: true,
+        loginPath: LOGIN_PATH,
+        loginPostUsed: state.loginPostUsed,
+        reauthArmed: state.reauthArmed,
+        reauthLoginPostUsed: state.reauthLoginPostUsed,
+      });
+    // First POST after arming: allowed (the single reauth-phase slot).
+    expect(attempt()).toBe("allow-login-post");
+    consumeLoginPost(state);
+    // Second POST: blocked — the retired initial slot is not a second chance.
+    expect(attempt()).toBe("block");
+    expect(attempt()).toBe("block");
+  });
+
+  it("keeps every guarantee on the rearmed window", () => {
+    const state = initialPolicyState();
+    state.loginPostUsed = true;
+    expect(armReauthWindow(state)).toBe(true);
+    const base = {
+      method: "POST",
+      url: `${ALLOWED}/api/auth/login`,
+      allowedOrigin: ALLOWED,
+      mainPageUrl: `${ALLOWED}/#/sign-in`,
+      isMainFrame: true,
+      loginWindowOpen: true,
+      loginPath: LOGIN_PATH,
+      loginPostUsed: true,
+      reauthArmed: true,
+      reauthLoginPostUsed: false,
+    } as const;
+    expect(decideRoutedRequest({ ...base })).toBe("allow-login-post");
+    // Same guarantees: off-route, off-path, closed window, subframe, or
+    // cross-origin reauth POSTs are still blocked.
+    expect(decideRoutedRequest({ ...base, mainPageUrl: `${ALLOWED}/#/dashboard` })).toBe("block");
+    expect(decideRoutedRequest({ ...base, url: `${ALLOWED}/api/auth/refresh` })).toBe("block");
+    expect(decideRoutedRequest({ ...base, loginWindowOpen: false })).toBe("block");
+    expect(decideRoutedRequest({ ...base, isMainFrame: false })).toBe("block");
+    expect(
+      decideRoutedRequest({ ...base, url: "https://evil.example.test/api/auth/login" }),
+    ).toBe("block");
+    // The blocked attempts did not consume the single reauth slot.
+    expect(decideRoutedRequest({ ...base })).toBe("allow-login-post");
   });
 
   it("blocks arbitrary POST targets even with an open window on the route", () => {

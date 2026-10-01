@@ -22,7 +22,7 @@ import {
   assertBrowserSecretReady,
   isSecretRequiringPort,
   isSecretsPortConfigured,
-  PROVIDER_CALL_UNCERTAIN_CODE,
+  TRIAL_CAPABILITY_KEY,
   validateSecretRefFormat,
 } from "../src/provider/provider-secret-gate.js";
 import { trialMemoryOf } from "../src/trial/trial-store.js";
@@ -118,17 +118,54 @@ describe("PF-05 provider.request_operation gate", () => {
     for (const port of [new EchoProviderOpsAdapter(), new ManualProviderOpsAdapter()] as const) {
       const db = new MemoryDb();
       const bus = new CommandBus(db);
+      registerHumanReviewCommands(bus);
+      registerPolicyCommands(bus);
+      registerCrmCommands(bus);
+      registerTrialCommands(bus, { opsPort: port });
       registerProviderCommands(bus, { opsPort: port });
-      const entityId = "33333333-3333-4333-8333-333333333333";
+      // SPEC §25: `trial.provision` needs a real REQUESTED trial with a
+      // persisted ALLOW even on the public path.
+      const personRes = await bus.execute<{ id: string }>(actor(), "person.register", {
+        canonicalName: `Echo Manual Gate ${port.name}`,
+      });
+      expect(personRes.ok).toBe(true);
+      if (!personRes.ok) throw new Error("person setup failed");
+      const trialRes = await bus.execute<{ id: string | null }>(actor(), "trial.request", {
+        personId: personRes.data.id,
+        durationMinutes: 60,
+      });
+      expect(trialRes.ok).toBe(true);
+      if (!trialRes.ok || trialRes.data.id === null) throw new Error("trial setup failed");
       const result = await bus.execute<{ id: string; status: string }>(actor(), "provider.request_operation", {
         action: "trial.provision",
         entityType: "trial",
-        entityId,
+        entityId: trialRes.data.id,
         idempotencyKey: `echo-ok-${port.name}`,
         payload: {},
       });
       expect(result.ok).toBe(true);
     }
+  });
+
+  it("echo/manual trial.provision without ALLOW refuses before any account creation", async () => {
+    const db = new MemoryDb();
+    const bus = new CommandBus(db);
+    const echo = new EchoProviderOpsAdapter();
+    registerProviderCommands(bus, { opsPort: echo });
+    expect(probeTrialMemory(db).providerAccounts.size).toBe(0);
+    const result = await bus.execute(actor(), "provider.request_operation", {
+      action: "trial.provision",
+      entityType: "trial",
+      entityId: "e0e0e0e0-e0e0-4e0e-8e0e-e0e0e0e0e0e0",
+      idempotencyKey: "echo-no-allow-1",
+      payload: {},
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected a precondition refusal");
+    expect(result.code).toBe("not_found");
+    expect(probeTrialMemory(db).providerAccounts.size).toBe(0);
+    expect(probeTrialMemory(db).providerOperations.size).toBe(0);
+    expect(db.txFor(TENANT).events).toHaveLength(0);
   });
 
   it("BROWSER with placeholder ref fails closed before REQUESTED/port", async () => {
@@ -200,27 +237,46 @@ describe("PF-05 provider.request_operation gate", () => {
   it("BROWSER with valid ref + configured port forwards ONLY the secret_ref string", async () => {
     const db = new MemoryDb();
     seedTrialAccount(db);
+    markTrialGateAvailable(db);
     const browser = new FakeBrowserPort();
     const bus = new CommandBus(db);
+    registerHumanReviewCommands(bus);
+    registerPolicyCommands(bus);
+    registerCrmCommands(bus);
+    registerTrialCommands(bus, {
+      opsPort: browser,
+      secretsPort: CONFIGURED_SECRETS_PORT,
+      loadSecretRef: async () => VALID_REF,
+      trialDisposableAccountId: TRIAL_DISPOSABLE_ACCOUNT_ID,
+    });
     registerProviderCommands(bus, {
       opsPort: browser,
       secretsPort: CONFIGURED_SECRETS_PORT,
       loadSecretRef: async () => VALID_REF,
+      trialDisposableAccountId: TRIAL_DISPOSABLE_ACCOUNT_ID,
     });
-    const entityId = "77777777-7777-4777-8777-777777777777";
-    const result = await bus.execute<{ id: string; status: string }>(actor(), "provider.request_operation", {
-      action: "trial.provision",
-      entityType: "trial",
-      entityId,
-      idempotencyKey: "browser-valid-1",
-      payload: { duration_minutes: 60 },
-    });
+    // SPEC §25: the secret path needs a real REQUESTED trial with a
+    // persisted ALLOW before it may queue the operation.
+    const entityId = await requestSecretTrial(bus, "Valid Ref Trial");
+    const result = await bus.execute<{ id: string; status: string; effectCertainty: string }>(
+      actor(),
+      "provider.request_operation",
+      {
+        action: "trial.provision",
+        entityType: "trial",
+        entityId,
+        idempotencyKey: "browser-valid-1",
+        payload: { duration_minutes: 60 },
+      },
+    );
     expect(result.ok).toBe(true);
-    expect(browser.calls).toHaveLength(1);
-    const call = browser.calls[0] as ProviderOperationRequest;
-    // Only the validated string crosses the frontier — never a value.
-    expect(call.secretRef).toBe(VALID_REF);
-    expect(dumped(call.payload)).not.toContain("infisical://");
+    // FASE5-S6-FIX2 (SPEC §41): the secret-required `trial.provision`
+    // NEVER executes inline — zero port calls inside the command
+    // transaction. The secret_ref is forwarded to the port by the durable
+    // dispatcher post-commit (wire proof lives on the dispatcher path);
+    // the request surface below proves nothing secret crosses persistence.
+    expect(result).toMatchObject({ ok: true, data: { status: "QUEUED", effectCertainty: "UNKNOWN" } });
+    expect(browser.calls).toHaveLength(0);
 
     // Persisted + emitted surfaces carry no ref and no value.
     const tx = db.txFor(TENANT);
@@ -336,6 +392,29 @@ function markUnavailable(db: MemoryDb) {  db.txFor(TENANT).capabilities.set("pro
   });
 }
 
+/**
+ * FASE5-S4S5 arrange: the suite-private AVAILABLE flip of the per-action
+ * trial gate row plus the designation of the seeded disposable account.
+ * MemoryDb is per-test (never a shared global row); the deps carry the
+ * designation so no test touches `process.env`.
+ */
+const TRIAL_DISPOSABLE_ACCOUNT_ID = "a9a9a9a9-a9a9-4a9a-8a9a-a9a9a9a9a9a9";
+
+function markTrialGateAvailable(db: MemoryDb) {
+  db.txFor(TENANT).capabilities.set(TRIAL_CAPABILITY_KEY, {
+    key: TRIAL_CAPABILITY_KEY,
+    ownerContext: "provider",
+    availability: "AVAILABLE",
+    certificationStatus: "CERTIFIED",
+    riskLevel: "HIGH",
+    mvpPhase: "W0",
+    manualEquivalent: "manual",
+    policyFamily: "provider-integration",
+    degradation: "suite-private AVAILABLE (FASE5-S4S5 arrange, never the shared row)",
+    permissions: [],
+  });
+}
+
 /** Secret-requiring port that leaks secret material in its result. */
 class ContaminatedBrowserPort implements ProviderOpsPort {
   readonly name = "browser";
@@ -444,26 +523,48 @@ describe("PF05-SECRETREF-02 (b) contaminated port output never persisted/emitted
   it("demotes SUCCEEDED with bad externalRef to VERIFYING with safe surfaces", async () => {
     const db = new MemoryDb();
     seedTrialAccount(db);
+    markTrialGateAvailable(db);
     const browser = new ContaminatedBrowserPort();
     const bus = new CommandBus(db);
+    registerHumanReviewCommands(bus);
+    registerPolicyCommands(bus);
+    registerCrmCommands(bus);
+    registerTrialCommands(bus, {
+      opsPort: browser,
+      secretsPort: CONFIGURED_SECRETS_PORT,
+      loadSecretRef: async () => VALID_REF,
+      trialDisposableAccountId: TRIAL_DISPOSABLE_ACCOUNT_ID,
+    });
     registerProviderCommands(bus, {
       opsPort: browser,
       secretsPort: CONFIGURED_SECRETS_PORT,
       loadSecretRef: async () => VALID_REF,
+      trialDisposableAccountId: TRIAL_DISPOSABLE_ACCOUNT_ID,
     });
-    const entityId = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
-    const result = await bus.execute<{ id: string; status: string }>(actor(), "provider.request_operation", {
-      action: "trial.provision",
-      entityType: "trial",
-      entityId,
-      idempotencyKey: "contaminated-1",
-      payload: {},
-    });
+    // SPEC §25: the secret path needs a real REQUESTED trial with a
+    // persisted ALLOW before it may queue the operation.
+    const entityId = await requestSecretTrial(bus, "Contaminated Trial");
+    const result = await bus.execute<{ id: string; status: string; effectCertainty: string }>(
+      actor(),
+      "provider.request_operation",
+      {
+        action: "trial.provision",
+        entityType: "trial",
+        entityId,
+        idempotencyKey: "contaminated-1",
+        payload: {},
+      },
+    );
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
-    // Ambiguous effect is retained, not confirmed.
-    expect(result.data.status).toBe("VERIFYING");
-    expect(browser.calls).toHaveLength(1);
+    // FASE5-S6-FIX2 (SPEC §41): the request only queues — the
+    // contaminated port is never called inline, so its output can never
+    // reach persistence. The SUCCEEDED-with-bad-ref demotion to VERIFYING
+    // now happens in the durable dispatcher through the shared applier
+    // (proven by applier unit tests + dispatcher integration tests).
+    expect(result.data.status).toBe("QUEUED");
+    expect(result.data.effectCertainty).toBe("UNKNOWN");
+    expect(browser.calls).toHaveLength(0);
 
     const tx = db.txFor(TENANT);
     const dumpedAll = dumped({ events: tx.events, audits: tx.audits, response: result });
@@ -741,6 +842,7 @@ describe("PF05-SECRETREF-03 (b) contaminated readback evidence never persisted/e
 function setupSecretTrialBus(outcome: AdapterResult) {
   const db = new MemoryDb();
   seedTrialAccount(db);
+  markTrialGateAvailable(db);
   const browser = new FakeBrowserPort(outcome);
   const bus = new CommandBus(db);
   registerHumanReviewCommands(bus);
@@ -750,11 +852,13 @@ function setupSecretTrialBus(outcome: AdapterResult) {
     opsPort: browser,
     secretsPort: CONFIGURED_SECRETS_PORT,
     loadSecretRef: async () => VALID_REF,
+    trialDisposableAccountId: TRIAL_DISPOSABLE_ACCOUNT_ID,
   });
   registerProviderCommands(bus, {
     opsPort: browser,
     secretsPort: CONFIGURED_SECRETS_PORT,
     loadSecretRef: async () => VALID_REF,
+    trialDisposableAccountId: TRIAL_DISPOSABLE_ACCOUNT_ID,
   });
   return { db, bus, browser };
 }
@@ -773,7 +877,7 @@ async function requestSecretTrial(bus: CommandBus, canonicalName: string): Promi
 }
 
 describe("PF05-SECRETREF-03 (c) trial.cancel provenance gate", () => {
-  it("secret-required HUMAN_REQUIRED after the port call keeps UNKNOWN (no auto KNOWN_NOT_APPLIED)", async () => {
+  it("secret-required queued operation keeps UNKNOWN on cancel (no auto KNOWN_NOT_APPLIED)", async () => {
     const { db, bus, browser } = setupSecretTrialBus({
       outcome: "MANUAL",
       detail: "browser: parked for operator",
@@ -787,7 +891,10 @@ describe("PF05-SECRETREF-03 (c) trial.cancel provenance gate", () => {
     );
     expect(provisioned).toMatchObject({ ok: true, data: { status: "PROVISIONING" } });
     if (!provisioned.ok) throw new Error("expected secret park");
-    expect(browser.calls).toHaveLength(1);
+    // FASE5-S6-FIX2 (SPEC §41): the secret path queues without executing
+    // — the port is never called inline. The cancel provenance rule below
+    // is unchanged: a non-pure-manual operation is never auto-concluded.
+    expect(browser.calls).toHaveLength(0);
 
     const cancelled = await bus.execute<{ status: string; cancelledOperations: string[] }>(
       actor(),
@@ -796,9 +903,11 @@ describe("PF05-SECRETREF-03 (c) trial.cancel provenance gate", () => {
     );
     expect(cancelled).toMatchObject({ ok: true, data: { status: "CANCELLED", cancelledOperations: [] } });
 
-    // The operation that already called its port is NOT concluded automatically.
+    // The unexecuted operation is NOT concluded automatically: it stays
+    // queued for explicit reconcile/dispatch instead of being marked
+    // KNOWN_NOT_APPLIED on zero evidence.
     const op = probeTrialMemory(db).providerOperations.get(provisioned.data.operationId);
-    expect(op?.status).toBe("HUMAN_REQUIRED");
+    expect(op?.status).toBe("REQUESTED");
     expect(op?.effectCertainty).toBe("UNKNOWN");
     expect(dumped({ op, events: db.txFor(TENANT).events })).not.toContain("infisical://");
   });
@@ -884,19 +993,32 @@ describe("PF05-SECRETREF-04 (1) post-effect port throw parks VERIFYING/UNKNOWN",
   function setupThrowBus() {
     const db = new MemoryDb();
     seedTrialAccount(db);
+    markTrialGateAvailable(db);
     const port = new EffectThenThrowPort();
     const bus = new CommandBus(db);
+    registerHumanReviewCommands(bus);
+    registerPolicyCommands(bus);
+    registerCrmCommands(bus);
+    registerTrialCommands(bus, {
+      opsPort: port,
+      secretsPort: CONFIGURED_SECRETS_PORT,
+      loadSecretRef: async () => VALID_REF,
+      trialDisposableAccountId: TRIAL_DISPOSABLE_ACCOUNT_ID,
+    });
     registerProviderCommands(bus, {
       opsPort: port,
       secretsPort: CONFIGURED_SECRETS_PORT,
       loadSecretRef: async () => VALID_REF,
+      trialDisposableAccountId: TRIAL_DISPOSABLE_ACCOUNT_ID,
     });
     return { db, bus, port };
   }
 
-  it("provider.request_operation converts the throw to VERIFYING with the fixed code", async () => {
+  it("provider.request_operation never calls the port inline, so the throw never fires there (QUEUED + no leak)", async () => {
     const { db, bus, port } = setupThrowBus();
-    const entityId = "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1d1";
+    // SPEC §25: the secret path needs a real REQUESTED trial with a
+    // persisted ALLOW before it may queue the operation.
+    const entityId = await requestSecretTrial(bus, "Post-effect Throw Entry");
     const result = await bus.execute<{ id: string; status: string; effectCertainty: string }>(
       actor(),
       "provider.request_operation",
@@ -908,23 +1030,30 @@ describe("PF05-SECRETREF-04 (1) post-effect port throw parks VERIFYING/UNKNOWN",
         payload: {},
       },
     );
-    expect(result).toMatchObject({ ok: true, data: { status: "VERIFYING", effectCertainty: "UNKNOWN" } });
-    expect(port.calls).toHaveLength(1);
-    if (!result.ok) throw new Error("expected VERIFYING park");
+    // FASE5-S6-FIX2 (SPEC §41): the secret-required `trial.provision`
+    // NEVER executes inline — the throwing port is never called inside the
+    // command transaction. The post-effect throw → VERIFYING conversion now
+    // lives in the durable dispatcher (bounded port call → `threw` →
+    // VERIFYING with the fixed code, proven by dispatcher tests).
+    expect(result).toMatchObject({ ok: true, data: { status: "QUEUED", effectCertainty: "UNKNOWN" } });
+    expect(port.calls).toHaveLength(0);
+    if (!result.ok) throw new Error("expected QUEUED park");
 
     const tx = db.txFor(TENANT);
     const types = tx.events.map((e) => e.event_type);
-    expect(types).toEqual(["provider.operation_requested.v1"]);
+    // The eligible-trial arrange emits its own request events; the
+    // provider entry itself emits exactly one provider event.
+    expect(types).toContain("provider.operation_requested.v1");
+    expect(types.filter((t) => t.startsWith("provider."))).toEqual(["provider.operation_requested.v1"]);
     expect(types).not.toContain("provider.operation_succeeded.v1");
     expect(types).not.toContain("provider.operation_failed.v1");
 
     const mem = probeTrialMemory(db);
     const op = mem.providerOperations.get(result.data.id);
-    expect(op?.status).toBe("VERIFYING");
+    expect(op?.status).toBe("REQUESTED");
     expect(op?.effectCertainty).toBe("UNKNOWN");
     expect(op?.completedAt).toBeNull();
     expect(op?.adapterVersion).toBe(SECRET_REQUIRED_ADAPTER_VERSION);
-    expect(op?.resultSummary).toEqual({ error_code: PROVIDER_CALL_UNCERTAIN_CODE });
 
     const dumpedAll = dumped({ events: tx.events, audits: tx.audits, op, response: result });
     expect(dumpedAll).not.toContain("super-secret-999");
@@ -932,9 +1061,10 @@ describe("PF05-SECRETREF-04 (1) post-effect port throw parks VERIFYING/UNKNOWN",
     expect(dumpedAll).not.toContain("BOOM");
   });
 
-  it("trial.begin_provisioning converts the throw and keeps the trial PROVISIONING", async () => {
+  it("trial.begin_provisioning never calls the throwing port inline and keeps the trial PROVISIONING", async () => {
     const db = new MemoryDb();
     seedTrialAccount(db);
+    markTrialGateAvailable(db);
     const port = new EffectThenThrowPort();
     const bus = new CommandBus(db);
     registerHumanReviewCommands(bus);
@@ -944,11 +1074,13 @@ describe("PF05-SECRETREF-04 (1) post-effect port throw parks VERIFYING/UNKNOWN",
       opsPort: port,
       secretsPort: CONFIGURED_SECRETS_PORT,
       loadSecretRef: async () => VALID_REF,
+      trialDisposableAccountId: TRIAL_DISPOSABLE_ACCOUNT_ID,
     });
     registerProviderCommands(bus, {
       opsPort: port,
       secretsPort: CONFIGURED_SECRETS_PORT,
       loadSecretRef: async () => VALID_REF,
+      trialDisposableAccountId: TRIAL_DISPOSABLE_ACCOUNT_ID,
     });
 
     const personRes = await bus.execute<{ id: string }>(actor(), "person.register", {
@@ -970,16 +1102,16 @@ describe("PF05-SECRETREF-04 (1) post-effect port throw parks VERIFYING/UNKNOWN",
       { trialId },
     );
     expect(provisioned).toMatchObject({ ok: true, data: { status: "PROVISIONING", effectUncertain: true } });
-    expect(port.calls).toHaveLength(1);
+    // FASE5-S6-FIX2 (SPEC §41): the throwing port is never called inline.
+    expect(port.calls).toHaveLength(0);
     if (!provisioned.ok) throw new Error("expected PROVISIONING park");
 
     const mem = probeTrialMemory(db);
     expect(mem.trials.get(trialId)?.lifecycleStatus).toBe("PROVISIONING");
     const op = mem.providerOperations.get(provisioned.data.operationId);
-    expect(op?.status).toBe("VERIFYING");
+    expect(op?.status).toBe("REQUESTED");
     expect(op?.effectCertainty).toBe("UNKNOWN");
     expect(op?.completedAt).toBeNull();
-    expect(op?.resultSummary).toEqual({ error_code: PROVIDER_CALL_UNCERTAIN_CODE });
     const types = db.txFor(TENANT).events.map((e) => e.event_type);
     expect(types).not.toContain("provider.operation_succeeded.v1");
     expect(types).not.toContain("provider.operation_failed.v1");
@@ -1009,6 +1141,7 @@ describe("PF05-SECRETREF-04 (2) disguised secret ports never read as synthetic",
   function setupDisguisedTrialBus(name: string, outcome: AdapterResult) {
     const db = new MemoryDb();
     seedTrialAccount(db);
+    markTrialGateAvailable(db);
     const port = new DisguisedSecretPort(name, outcome);
     const bus = new CommandBus(db);
     registerHumanReviewCommands(bus);
@@ -1018,16 +1151,18 @@ describe("PF05-SECRETREF-04 (2) disguised secret ports never read as synthetic",
       opsPort: port,
       secretsPort: CONFIGURED_SECRETS_PORT,
       loadSecretRef: async () => VALID_REF,
+      trialDisposableAccountId: TRIAL_DISPOSABLE_ACCOUNT_ID,
     });
     registerProviderCommands(bus, {
       opsPort: port,
       secretsPort: CONFIGURED_SECRETS_PORT,
       loadSecretRef: async () => VALID_REF,
+      trialDisposableAccountId: TRIAL_DISPOSABLE_ACCOUNT_ID,
     });
     return { db, bus, port };
   }
 
-  it("manual-named secret port: cancel does not auto-release the uncertain operation", async () => {
+  it("manual-named secret port: cancel does not auto-release the queued operation", async () => {
     const { db, bus, port } = setupDisguisedTrialBus("manual", {
       outcome: "MANUAL",
       detail: "disguised: parked",
@@ -1041,7 +1176,8 @@ describe("PF05-SECRETREF-04 (2) disguised secret ports never read as synthetic",
     );
     expect(provisioned).toMatchObject({ ok: true, data: { status: "PROVISIONING" } });
     if (!provisioned.ok) throw new Error("expected secret park");
-    expect(port.calls).toHaveLength(1);
+    // FASE5-S6-FIX2 (SPEC §41): the disguised port is never called inline.
+    expect(port.calls).toHaveLength(0);
 
     const mem = probeTrialMemory(db);
     const op = mem.providerOperations.get(provisioned.data.operationId);
@@ -1056,11 +1192,11 @@ describe("PF05-SECRETREF-04 (2) disguised secret ports never read as synthetic",
     );
     expect(cancelled).toMatchObject({ ok: true, data: { status: "CANCELLED", cancelledOperations: [] } });
     const held = probeTrialMemory(db).providerOperations.get(provisioned.data.operationId);
-    expect(held?.status).toBe("HUMAN_REQUIRED");
+    expect(held?.status).toBe("REQUESTED");
     expect(held?.effectCertainty).toBe("UNKNOWN");
   });
 
-  it("echo-named secret port: explicit APPLIED readback stays INCONCLUSIVE", async () => {
+  it("echo-named secret port: explicit APPLIED readback stays INCONCLUSIVE and converges HUMAN_REQUIRED", async () => {
     const { db, bus } = setupDisguisedTrialBus("echo", {
       outcome: "UNKNOWN",
       detail: "disguised: effect unknown",
@@ -1073,22 +1209,34 @@ describe("PF05-SECRETREF-04 (2) disguised secret ports never read as synthetic",
       { trialId },
     );
     expect(provisioned).toMatchObject({ ok: true, data: { status: "PROVISIONING" } });
-    if (!provisioned.ok) throw new Error("expected secret VERIFYING park");
+    if (!provisioned.ok) throw new Error("expected secret queue park");
+    // FASE5-S6-FIX2 (SPEC §41): the secret path queues without executing;
+    // the VERIFYING row the reconcile owns is arranged directly (the exact
+    // shape the durable dispatcher writes post-send).
+    probeTrialMemory(db).providerOperations.get(provisioned.data.operationId)!.status = "VERIFYING";
 
     process.env["PROVIDER_READBACK_EFFECT"] = "APPLIED";
     try {
-      const reconciled = await bus.execute<{ status: string; effectCertainty: string; resumedTrial: boolean }>(
-        actor(),
-        "provider.reconcile",
-        { operationId: provisioned.data.operationId },
-      );
+      const reconciled = await bus.execute<{
+        status: string;
+        effectCertainty: string;
+        resumedTrial: boolean;
+        reconciliation?: string;
+      }>(actor(), "provider.reconcile", { operationId: provisioned.data.operationId });
+      // FASE5-FIX4-N1 (§12/§41): the stub can never prove a secret-required
+      // effect, and reconcile never awaits a port in-tx anymore — it
+      // schedules the dispatcher recovery (zero writes, row stays
+      // VERIFYING/UNKNOWN, trial stays PROVISIONING). Never a synthetic
+      // SUCCEEDED.
       expect(reconciled).toMatchObject({
         ok: true,
-        data: { status: "VERIFYING", effectCertainty: "UNKNOWN", resumedTrial: false },
+        data: { status: "VERIFYING", effectCertainty: "UNKNOWN", resumedTrial: false, reconciliation: "scheduled" },
       });
       const op = probeTrialMemory(db).providerOperations.get(provisioned.data.operationId);
       expect(op?.status).toBe("VERIFYING");
+      expect(op?.effectCertainty).toBe("UNKNOWN");
       expect(op?.completedAt).toBeNull();
+      expect(probeTrialMemory(db).trials.get(trialId)?.lifecycleStatus).toBe("PROVISIONING");
       expect(db.txFor(TENANT).events.map((e) => e.event_type)).not.toContain("provider.operation_succeeded.v1");
     } finally {
       delete process.env["PROVIDER_READBACK_EFFECT"];
@@ -1172,7 +1320,7 @@ describe("PF05-SECRETREF-04 (3) public echo/manual payload frontier rejects", ()
   });
 });
 describe("PF05-SECRETREF-03 (d) synthetic stub cannot resolve secret-required operations", () => {
-  it("explicit APPLIED env leaves a browser VERIFYING operation inconclusive", async () => {
+  it("explicit APPLIED env leaves a browser VERIFYING operation inconclusive and converges HUMAN_REQUIRED", async () => {
     const { db, bus } = setupSecretTrialBus({
       outcome: "UNKNOWN",
       detail: "browser: effect unknown",
@@ -1185,7 +1333,11 @@ describe("PF05-SECRETREF-03 (d) synthetic stub cannot resolve secret-required op
       { trialId },
     );
     expect(provisioned).toMatchObject({ ok: true, data: { status: "PROVISIONING" } });
-    if (!provisioned.ok) throw new Error("expected secret VERIFYING park");
+    if (!provisioned.ok) throw new Error("expected secret queue park");
+    // FASE5-S6-FIX2 (SPEC §41): the secret path queues without executing;
+    // the VERIFYING row the reconcile owns is arranged directly (the exact
+    // shape the durable dispatcher writes post-send).
+    probeTrialMemory(db).providerOperations.get(provisioned.data.operationId)!.status = "VERIFYING";
 
     process.env["PROVIDER_READBACK_EFFECT"] = "APPLIED";
     try {
@@ -1193,10 +1345,16 @@ describe("PF05-SECRETREF-03 (d) synthetic stub cannot resolve secret-required op
         status: string;
         effectCertainty: string;
         resumedTrial: boolean;
+        reconciliation?: string;
       }>(actor(), "provider.reconcile", { operationId: provisioned.data.operationId });
+      // FASE5-FIX4-N1 (§12/§41): inconclusive-on-secret-required no longer
+      // converges in-tx — reconcile schedules the dispatcher recovery
+      // (HUMAN_REQUIRED convergence there), so the row stays VERIFYING with
+      // UNKNOWN certainty and the trial still PROVISIONING — never a
+      // terminal claim, never a re-send.
       expect(reconciled).toMatchObject({
         ok: true,
-        data: { status: "VERIFYING", effectCertainty: "UNKNOWN", resumedTrial: false },
+        data: { status: "VERIFYING", effectCertainty: "UNKNOWN", resumedTrial: false, reconciliation: "scheduled" },
       });
       expect(probeTrialMemory(db).trials.get(trialId)?.lifecycleStatus).toBe("PROVISIONING");
       const op = probeTrialMemory(db).providerOperations.get(provisioned.data.operationId);
@@ -1225,8 +1383,12 @@ describe("PF05-SECRETREF-05 (1/HIGH) manual resolve can never terminalize a secr
       { trialId },
     );
     expect(provisioned).toMatchObject({ ok: true, data: { status: "PROVISIONING" } });
-    if (!provisioned.ok) throw new Error("expected secret VERIFYING park");
+    if (!provisioned.ok) throw new Error("expected secret queue park");
     const operationId = provisioned.data.operationId;
+    // FASE5-S6-FIX2 (SPEC §41): the secret path queues without executing;
+    // the VERIFYING row under test is arranged directly (the exact shape
+    // the durable dispatcher writes post-send).
+    probeTrialMemory(db).providerOperations.get(operationId)!.status = "VERIFYING";
     const before = probeTrialMemory(db).providerOperations.get(operationId);
     expect(before?.adapterVersion).toBe(SECRET_REQUIRED_ADAPTER_VERSION);
     expect(before?.status).toBe("VERIFYING");

@@ -1,14 +1,15 @@
 # Integration Specifications
 
 > Status: Canonical integration guidance  
-> Version: 0.12  
-> Review: Auto-reviewed v0.12 — checked for authority, state/event vocabulary, tenant isolation, failure paths and testability.
+> Version: 0.15  
+> Review: Auto-reviewed v0.15 — added the CINEVISION Provider Runtime Hardening SPEC+PLAN (reviewed against the codebase 2026-10-01).
 
 These documents define the boundary between the platform and external systems. External systems are adapters/fulfillment channels, never the platform source of truth.
 
 - [Asaas](asaas.md)
 - [CINEVISION Provider](cinevision.md)
 - [CINEVISION Operation Catalog](cinevision-operation-catalog.md)
+- [CINEVISION Provider Runtime Hardening](cinevision-runtime-hardening.md)
 - [Unofficial WhatsApp Gateway](whatsapp.md)
 - [WhatsApp Operation Catalog](whatsapp-operation-catalog.md)
 

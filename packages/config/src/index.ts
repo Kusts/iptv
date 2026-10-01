@@ -38,6 +38,13 @@ const envSchema = z.object({
   // Unset means: local default (`http://localhost:3000`) outside
   // production, empty allowlist (deny all cross-origin) in production.
   CORS_ALLOWED_ORIGINS: z.string().optional(),
+  // FASE5-S4S5: designated disposable provider account for controlled
+  // CREATE_TRIAL writes only. Absent by default (no designation =
+  // fail-closed for real trial dispatches); when the per-action
+  // `provider.cinevision.trial` gate is AVAILABLE it must name an ACTIVE
+  // provider account of the trial's tenant, and the trial dispatch must
+  // target exactly that account. Never a secret value — just the account id.
+  PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID: z.string().uuid().optional(),
 });
 
 export type AppConfig = Omit<z.infer<typeof envSchema>, "CORS_ALLOWED_ORIGINS"> & {
@@ -127,6 +134,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     INFISICAL_CLIENT_ID: emptyToUndefined(env.INFISICAL_CLIENT_ID),
     INFISICAL_CLIENT_SECRET: emptyToUndefined(env.INFISICAL_CLIENT_SECRET),
     INFISICAL_ENVIRONMENT: emptyToUndefined(env.INFISICAL_ENVIRONMENT),
+    PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID: emptyToUndefined(env.PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID),
     CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
   });
   if (!parsed.success) {

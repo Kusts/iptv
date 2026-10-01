@@ -271,6 +271,17 @@ describe.skipIf(!hasDb)("Scheduler tick end-to-end (requires TEST_DATABASE_URL)"
 
   beforeAll(async () => {
     await applyMigrations(connectionString as string, { migrationsDir: MIGRATIONS_DIR });
+    // The W0 fail-closed gate (migration 044) registers `provider.cinevision`
+    // as UNAVAILABLE, which forces every begin_provisioning onto the manual
+    // path. This suite owns its arrange AVAILABLE (same pattern as the
+    // dispatch suites) instead of free-riding on another suite's flip, so
+    // the echo seeds below stay deterministic in any parallel schedule.
+    // Production stays fail-closed until real certification.
+    await db
+      .updateTable("platform.capabilities")
+      .set({ availability: "AVAILABLE", certification_status: "CERTIFIED" })
+      .where("key", "=", "provider.cinevision")
+      .execute();
     process.env["DATABASE_URL"] = connectionString as string;
     process.env["BETTER_AUTH_SECRET"] = "integration-test-secret-0123456789";
     delete process.env["API_SCHEDULER_ENABLED"];
@@ -299,9 +310,19 @@ describe.skipIf(!hasDb)("Scheduler tick end-to-end (requires TEST_DATABASE_URL)"
   });
 
   afterAll(async () => {
+    // FASE5-S6-FIX2: bounded hygiene drain — `drain(limit)` takes a row
+    // COUNT, not a time budget, and publishes serially, so an unbounded
+    // teardown drain overruns the hook timeout. Capped at ~6s wall-clock
+    // so budget-capped oldest-first drains (scheduler tick, loop-drains)
+    // keep converging on the shared table. No assertion observes drained
+    // delivery; outbox assertions are tenant-scoped.
     if (hasDb && drainer !== undefined) {
-      // Leave no PENDING outbox rows behind for sibling suites.
-      await drainer.drain(1000).catch(() => undefined);
+      const drainBudgetUntil = Date.now() + 6000;
+      for (;;) {
+        if (Date.now() >= drainBudgetUntil) break;
+        const drained = await drainer.drain(50).catch(() => undefined);
+        if (drained === undefined || drained.claimed === 0) break;
+      }
     }
     await app?.close().catch(() => undefined);
     await db.destroy().catch(() => undefined);

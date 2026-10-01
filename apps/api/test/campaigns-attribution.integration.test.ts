@@ -226,8 +226,19 @@ describe.skipIf(!hasDb)("Wave 11 Campaigns/Attribution (requires TEST_DATABASE_U
   });
 
   afterAll(async () => {
+    // FASE5-S6-FIX2: bounded hygiene drain — `drain(limit)` takes a row
+    // COUNT, not a time budget, and publishes serially, so an unbounded
+    // teardown drain overruns the hook timeout. Capped at ~6s wall-clock
+    // so budget-capped oldest-first drains (scheduler tick, loop-drains)
+    // keep converging on the shared table. No assertion observes drained
+    // delivery; outbox assertions are tenant-scoped.
     if (hasDb && drainer !== undefined) {
-      await drainer.drain(1000).catch(() => undefined);
+      const drainBudgetUntil = Date.now() + 6000;
+      for (;;) {
+        if (Date.now() >= drainBudgetUntil) break;
+        const drained = await drainer.drain(50).catch(() => undefined);
+        if (drained === undefined || drained.claimed === 0) break;
+      }
     }
     await app?.close().catch(() => undefined);
     await (db as unknown as { destroy: () => Promise<void> }).destroy?.().catch(() => undefined);

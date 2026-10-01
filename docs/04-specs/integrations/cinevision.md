@@ -1,9 +1,9 @@
 # Integration SPEC — CINEVISION Provider Adapter
 
 > Status: Draft based on collected panel documentation and project decisions  
-> Version: 1.0  
-> Known panel documentation baseline: CINEVISION ONE v3.92, collected 2026-09-19.  
-> Review: Auto-reviewed v0.11 — checked for authority, state/event vocabulary, tenant isolation, failure paths and testability.
+> Version: 1.1  
+> Known panel documentation baseline: CINEVISION ONE v3.92, collected 2026-09-19; v3.93 observed 2026-09-30 (provider compatibility pin, not a domain rule).  
+> Review: Auto-reviewed v0.15 — added the Runtime Hardening cross-reference; capability semantics unchanged.
 
 ## Purpose
 
@@ -140,6 +140,10 @@ Compare our intended/authoritative state to provider observations. Provider obse
 - provider shows renewal with no matching internal command.
 
 Ambiguous drift goes to HITL; it never causes silent history rewrite.
+
+## Runtime hardening
+
+Operational hardening of this integration (post-commit durable dispatch, `API_IN_BROWSER` strategy, conclusive readback, per-capability certification, crash semantics, no blind retries) is specified in [CINEVISION Provider Runtime Hardening](cinevision-runtime-hardening.md). No real write is enabled until that plan releases the corresponding phase.
 
 ## Outstanding implementation discovery
 

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Real Playwright driver (thin glue, NOT unit-tested live here).
  *
  * - `chromium.launchPersistentContext(profileDir, â€¦)` with an exclusive
@@ -11,6 +11,8 @@
  *   at most ONE POST, only from the MAIN frame to the exact configured
  *   `CINEVISION_LOGIN_PATH` while the MAIN page is on the EXACT
  *   `#/sign-in` route AND inside the single `submitLogin` click window;
+ *   plus exactly ONE bounded reauth POST per command armed explicitly
+ *   via `armReauthWindow` with the same guarantees (re-arming refused);
  *   block PUT/PATCH/DELETE and every other POST (popups, iframes,
  *   arbitrary forms, second POST, off-window, off-path).
  * - Every popup is closed on sight (same-origin included): only the main
@@ -28,9 +30,16 @@
  */
 
 import { chromium, type BrowserContext, type Page } from "playwright";
-import type { ReadIdentityBrowser, ReadIdentityPage } from "./operations/readIdentity.js";
+import type { BrowserOpenOptions, ReadIdentityBrowser, ReadIdentityPage } from "./operations/readIdentity.js";
 import { READ_IDENTITY_PATH } from "./constants.js";
 import {
+  fetchProjectedInPage,
+  type InPageRequest,
+  type InPageResult,
+} from "./providers/cinevision/api-client.js";
+import {
+  armReauthWindow,
+  consumeLoginPost,
   decideRoutedRequest,
   initialPolicyState,
   isSignInRoute,
@@ -80,7 +89,60 @@ export function isCrossOriginRedirect(allowedOrigin: string, requestUrl: string,
   return target === null || target !== allowedOrigin;
 }
 
-/** Minimal submit steps, injectable so the window timing is unit-testable. */
+/**
+ * Budget abort during the login submit: thrown at step boundaries so
+ * late-resolving fills perform NO further step (no click, no POST
+ * window, no settle wait). Never surfaced past the command runner: it
+ * maps to the same fail-closed timeout outcome.
+ */
+export class SubmitAbortedError extends Error {
+  constructor() {
+    super("browser-worker submit: budget exceeded");
+    this.name = "SubmitAbortedError";
+  }
+}
+
+/**
+ * Default bounded wait for a canceled launch to settle + its tardy
+ * context to close (F1). Overridable per-call (`launchSettleMs`) and via
+ * `BROWSER_WORKER_LAUNCH_SETTLE_MS` (see `config.ts`).
+ */
+export const LAUNCH_QUIESCE_DEFAULT_MS = 3000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Bounded close: never lets a wedged context outlive cleanup. */
+async function closeBounded(closable: { close(): Promise<void> }, timeoutMs: number): Promise<void> {
+  try {
+    await Promise.race([closable.close(), sleep(timeoutMs)]);
+  } catch {
+    // ignore
+  }
+}
+
+/** Bounded quiescence wait: true when settled within the bound. */
+async function settleBounded(quiescence: Promise<void>, timeoutMs: number): Promise<boolean> {
+  // `quiescence` never rejects (launch failures map to undefined and
+  // `closeBounded` swallows close errors); the flag records whether it
+  // settled before the bound expired.
+  let settled = false;
+  void quiescence.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  await Promise.race([quiescence, sleep(timeoutMs)]);
+  return settled;
+}
+
+function throwIfSubmitAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) throw new SubmitAbortedError();
+}
 export interface SubmitLoginSteps {
   fillEmail(): Promise<void>;
   fillPassword(): Promise<void>;
@@ -93,14 +155,25 @@ export interface SubmitLoginSteps {
  * Fills execute with the window closed (a page input/change handler firing
  * a POST during fill is blocked by the route); the route consumes the
  * exception (`loginPostUsed`) and the window closes in `finally`, even
- * when the click throws.
+ * when the click throws. The budget `signal` is checked BEFORE every
+ * step, so a late-resolving fill after abort performs no click and
+ * arms no window.
  */
-export async function performSubmitLogin(state: PolicyState, steps: SubmitLoginSteps): Promise<void> {
+export async function performSubmitLogin(
+  state: PolicyState,
+  steps: SubmitLoginSteps,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfSubmitAborted(signal);
   await steps.fillEmail();
+  throwIfSubmitAborted(signal);
   await steps.fillPassword();
+  throwIfSubmitAborted(signal);
   state.loginWindowOpen = true;
   try {
+    throwIfSubmitAborted(signal);
     await steps.clickSubmit();
+    throwIfSubmitAborted(signal);
     await steps.waitSettled();
   } finally {
     state.loginWindowOpen = false;
@@ -183,7 +256,7 @@ export class PlaywrightPage implements ReadIdentityPage {
     return markers > 0;
   }
 
-  async submitLogin(email: string, password: string): Promise<boolean> {
+  async submitLogin(email: string, password: string, signal?: AbortSignal): Promise<boolean> {
     // Fail closed BEFORE any fill/click: exactly one form, exact route,
     // configured login path, unique controls scoped to that form.
     if (this.loginPath.length === 0) return false;
@@ -211,7 +284,7 @@ export class PlaywrightPage implements ReadIdentityPage {
       waitSettled: async () => {
         await this.page.waitForLoadState("domcontentloaded").catch(() => undefined);
       },
-    });
+    }, signal);
     // Success heuristic: no login form remains and no challenge visible.
     const formNow = await this.probeLoginForm();
     if (formNow !== null) return false;
@@ -244,67 +317,180 @@ export class PlaywrightPage implements ReadIdentityPage {
   async close(): Promise<void> {
     await this.context.close();
   }
+
+  /**
+   * Arm the single bounded reauth login POST window (F4). Returns false
+   * when the reauth window was already armed/consumed — at most one
+   * reauth POST per command lifetime, with unchanged guarantees.
+   */
+  armReauthWindow(): boolean {
+    return armReauthWindow(this.state);
+  }
+
+  /**
+   * Run one Fase-1 capability read inside the page. The in-page closure
+   * is ALWAYS `fetchProjectedInPage` (imported, never duplicated): it
+   * validates origin + exact path BEFORE touching the session token and
+   * projects allowlisted primitive fields in-page. Same `evaluate` entry
+   * `fetchCapability` uses, with the same gates.
+   */
+  async evaluateCapability(req: InPageRequest): Promise<InPageResult> {
+    return await this.page.evaluate(fetchProjectedInPage, req);
+  }
 }
 
 export class PlaywrightBrowser implements ReadIdentityBrowser {
   private readonly config: WorkerConfig;
+  private readonly launcher: (
+    profileDir: string,
+    options: {
+      headless: boolean;
+      serviceWorkers: "block";
+      acceptDownloads: false;
+    },
+  ) => Promise<BrowserContext>;
 
-  constructor(config: WorkerConfig) {
+  constructor(
+    config: WorkerConfig,
+    launcher: (
+      profileDir: string,
+      options: {
+        headless: boolean;
+        serviceWorkers: "block";
+        acceptDownloads: false;
+      },
+    ) => Promise<BrowserContext> = (dir, options) =>
+      chromium.launchPersistentContext(dir, options),
+  ) {
     this.config = config;
+    this.launcher = launcher;
+  }
+
+  /** Bounded launch-quiescence (F1): default 3s, env/test override. */
+  private launchSettleMs(opts?: BrowserOpenOptions): number {
+    const candidate = opts?.launchSettleMs ?? this.config.launchSettleMs;
+    if (candidate === undefined) return LAUNCH_QUIESCE_DEFAULT_MS;
+    if (!Number.isInteger(candidate)) return LAUNCH_QUIESCE_DEFAULT_MS;
+    return Math.min(15_000, Math.max(500, candidate));
   }
 
   async open(
     profileDir: string,
     allowedOrigin: string,
     loginPath: string,
-  ): Promise<ReadIdentityPage> {
+    opts?: BrowserOpenOptions,
+  ): Promise<PlaywrightPage> {
+    const signal = opts?.signal;
+    const onContext = opts?.onContext;
+    const onPendingLaunch = opts?.onPendingLaunch;
+    const settleMs = this.launchSettleMs(opts);
+    throwIfSubmitAborted(signal);
     const state = initialPolicyState();
-    const context = await chromium.launchPersistentContext(profileDir, {
+    // Claimed once the winner takes ownership; a tardy launch that loses
+    // the abort race closes itself instead of leaking a live context.
+    let claimed: BrowserContext | null = null;
+    const launch = this.launcher(profileDir, {
       headless: this.config.headless,
       serviceWorkers: "block",
       acceptDownloads: false,
       // No video/HAR/tracing/storageState by construction.
     });
-    // Every popup is closed on sight â€” only the main page may request.
-    context.on("page", (popup) => {
-      void (async () => {
-        try {
-          await popup.close();
-        } catch {
-          // ignore
-        }
-      })();
-    });
-    // Main page first (about:blank, no network) so the route below binds
-    // the login exception to its main frame by identity â€” never by URL.
-    const mainPage = context.pages()[0] ?? (await context.newPage());
-    await context.route("**", (route) => {
-      const request = route.request();
-      const frame = request.frame();
-      // Frame identity (not URL hash): subframes/popups can never match,
-      // even when their own URL carries the sign-in hash. The route check
-      // always reads the MAIN page URL, never a frame URL.
-      const decision = decideRoutedRequest({
-        method: request.method(),
-        url: request.url(),
-        allowedOrigin,
-        mainPageUrl: mainPage.url(),
-        isMainFrame: frame !== null && frame === mainPage.mainFrame(),
-        loginWindowOpen: state.loginWindowOpen,
-        loginPath,
-        loginPostUsed: state.loginPostUsed,
+    // F1 quiescence: settles when the pending launch settles AND any
+    // tardy (unclaimed) context has been closed boundedly. Registered
+    // with the lock owner synchronously so the profile lock is never
+    // released while Chromium may still be starting on the profile.
+    // Only an aborted-while-pending launch is tardy: the signal state
+    // at settle time decides (not the `claimed` write, which races the
+    // `await launch` continuation). An owned context — including one
+    // that later fails setup or aborts mid-setup — is closed exactly
+    // once by the setup `catch` below, never here.
+    const quiescence: Promise<void> = launch.then(
+      (ctx) => {
+        if (signal?.aborted === true && ctx !== claimed) return closeBounded(ctx, settleMs);
+        return undefined;
+      },
+      () => undefined,
+    );
+    onPendingLaunch?.(quiescence);
+    let context: BrowserContext;
+    if (signal === undefined) {
+      context = await launch;
+    } else {
+      try {
+        context = await Promise.race([
+          launch,
+          new Promise<never>((_, reject) => {
+            signal.addEventListener("abort", () => reject(new SubmitAbortedError()), { once: true });
+          }),
+        ]);
+      } catch (err) {
+        // Abort (or launch failure) before ownership: wait BOUNDED for
+        // the pending launch to settle and the tardy context to close
+        // BEFORE rejecting — the caller releases the profile lock only
+        // after this returns, so the lock is never freed while a launch
+        // is still pending (F1). A still-pending launch after the bound
+        // keeps closing in the background via `quiescence`.
+        await settleBounded(quiescence, settleMs);
+        throw err;
+      }
+    }
+    claimed = context;
+    // Expose the resource to the shared registry BEFORE any further
+    // setup, so the timeout owner can close it while setup pends.
+    onContext?.({ close: () => context.close() });
+    try {
+      throwIfSubmitAborted(signal);
+      // Every popup is closed on sight — only the main page may request.
+      context.on("page", (popup) => {
+        void (async () => {
+          try {
+            await popup.close();
+          } catch {
+            // ignore
+          }
+        })();
       });
-      if (decision === "allow") {
-        void route.continue();
-        return;
-      }
-      if (decision === "allow-login-post") {
-        state.loginPostUsed = true;
-        void route.continue();
-        return;
-      }
-      void route.abort();
-    });
-    return new PlaywrightPage(mainPage, context, allowedOrigin, state, loginPath);
+      // Main page first (about:blank, no network) so the route below binds
+      // the login exception to its main frame by identity — never by URL.
+      const mainPage = context.pages()[0] ?? (await context.newPage());
+      throwIfSubmitAborted(signal);
+      await context.route("**", (route) => {
+        const request = route.request();
+        const frame = request.frame();
+        // Frame identity (not URL hash): subframes/popups can never match,
+        // even when their own URL carries the sign-in hash. The route check
+        // always reads the MAIN page URL, never a frame URL.
+        const decision = decideRoutedRequest({
+          method: request.method(),
+          url: request.url(),
+          allowedOrigin,
+          mainPageUrl: mainPage.url(),
+          isMainFrame: frame !== null && frame === mainPage.mainFrame(),
+          loginWindowOpen: state.loginWindowOpen,
+          loginPath,
+          loginPostUsed: state.loginPostUsed,
+          reauthArmed: state.reauthArmed,
+          reauthLoginPostUsed: state.reauthLoginPostUsed,
+        });
+        if (decision === "allow") {
+          void route.continue();
+          return;
+        }
+        if (decision === "allow-login-post") {
+          consumeLoginPost(state);
+          void route.continue();
+          return;
+        }
+        void route.abort();
+      });
+      throwIfSubmitAborted(signal);
+      return new PlaywrightPage(mainPage, context, allowedOrigin, state, loginPath);
+    } catch (err) {
+      // Abort (or setup failure) after ownership: BOUNDED close BEFORE
+      // rejecting — never hand out a page the owner already cleaned up,
+      // and never let a wedged close outlive cleanup (F1).
+      await closeBounded(context, settleMs);
+      throw err;
+    }
   }
 }

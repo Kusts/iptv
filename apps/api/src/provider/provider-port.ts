@@ -103,6 +103,52 @@ export function adapterNameFromEnv(): "echo" | "manual" {
   return process.env["PROVIDER_OPS_ADAPTER"] === "echo" ? "echo" : "manual";
 }
 
+/**
+ * Durable post-commit dispatch mode (CV-DSP-01, migration 045).
+ *
+ * - `durable`: the secret-required `provider.request_operation` path commits
+ *   the REQUESTED operation + `operation_requested` event and returns QUEUED
+ *   WITHOUT calling the port; `ProviderDispatcherService.drainOnce` claims
+ *   it later (SKIP LOCKED + lease), marks the send frontier
+ *   (`dispatch_started_at`) and only then calls the port.
+ * - anything else (unset included) = `inline`: the current behavior —
+ *   the port call happens inside the request transaction.
+ *
+ * Read at call time (like `adapterNameFromEnv`) so tests flip it per case.
+ */
+export type ProviderDispatchMode = "durable" | "inline";
+
+export function providerDispatchModeFromEnv(env: NodeJS.ProcessEnv = process.env): ProviderDispatchMode {
+  return env["PROVIDER_DISPATCH_MODE"] === "durable" ? "durable" : "inline";
+}
+
+/**
+ * Dispatch send timeout in milliseconds (CV-DSP-01). A port call that
+ * outlives this budget AFTER `dispatch_started_at` was persisted parks the
+ * operation in VERIFYING/UNKNOWN for readback — never FAILED. Read at call
+ * time; falls back to 30000 on missing/garbage input.
+ */
+export function providerDispatchTimeoutMsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env["PROVIDER_DISPATCH_TIMEOUT_MS"]);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return 30_000;
+  }
+  return Math.min(Math.floor(raw), 300_000);
+}
+
+/**
+ * Dispatch claim lease in milliseconds (CV-DSP-01): how long a claimed
+ * operation stays owned before `recoverOnce` may release (pre-send) or park
+ * it (post-send). Read at call time; defaults to 300000 (5 minutes).
+ */
+export function providerDispatchLeaseMsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env["PROVIDER_DISPATCH_LEASE_MS"]);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return 300_000;
+  }
+  return Math.min(Math.floor(raw), 3_600_000);
+}
+
 export function resolveOpsPort(name: "echo" | "manual"): ProviderOpsPort {
   return name === "echo" ? new EchoProviderOpsAdapter() : new ManualProviderOpsAdapter();
 }
@@ -249,4 +295,53 @@ export class StubProviderReadback implements ProviderReadbackPort {
     }
     return { effectApplied: false, evidence: `stub:INCONCLUSIVE:op=${query.operationId}`, conclusive: false };
   }
+}
+
+/** Default generic effect-readback budget in milliseconds (SPEC §35). */
+export const DEFAULT_GENERIC_READBACK_TIMEOUT_MS = 30_000;
+
+/**
+ * Generic effect-readback budget in milliseconds (SPEC §35: every external
+ * operation has a finite budget; a timeout after a potential effect means
+ * UNKNOWN, never a terminal claim). Same shape as the sibling budgets
+ * (`providerDispatchTimeoutMsFromEnv`, `trialReadbackTimeoutMsFromEnv`):
+ * read at call time, falls back to 30s on missing/garbage input, capped at
+ * 300s.
+ */
+export function genericReadbackTimeoutMsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env["PROVIDER_GENERIC_READBACK_TIMEOUT_MS"]);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return DEFAULT_GENERIC_READBACK_TIMEOUT_MS;
+  }
+  return Math.min(Math.floor(raw), 300_000);
+}
+
+/**
+ * Bounded generic effect-readback consult (SPEC §35, same pattern as
+ * `racePortCall`/`raceTrialReadback`). Resolves `null` (INCONCLUSIVE →
+ * HUMAN_REQUIRED downstream via the shared reconcile decision) when the
+ * budget lapses AND when the port throws — a hanging verify can never wedge
+ * the caller (scheduler tick, admin drain), and the throw never propagates.
+ * Never rejects.
+ */
+export function raceGenericReadback(
+  port: ProviderReadbackPort,
+  query: ReadbackQuery,
+  timeoutMs: number,
+): Promise<ReadbackResult | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), Math.max(Math.floor(timeoutMs), 1));
+    void Promise.resolve()
+      .then(() => port.verify(query))
+      .then(
+        (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        () => {
+          clearTimeout(timer);
+          resolve(null);
+        },
+      );
+  });
 }

@@ -75,4 +75,17 @@ describe("loadConfig", () => {
       );
     }
   });
+
+  it("leaves the disposable trial account undesignated by default", () => {
+    expect(loadConfig({}).PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID).toBeUndefined();
+    expect(loadConfig({ PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID: "" }).PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID).toBeUndefined();
+  });
+
+  it("accepts a uuid disposable trial account and rejects anything else", () => {
+    const id = "a9a9a9a9-a9a9-4a9a-8a9a-a9a9a9a9a9a9";
+    expect(loadConfig({ PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID: id }).PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID).toBe(id);
+    expect(() => loadConfig({ PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID: "not-a-uuid" })).toThrow(
+      /invalid environment configuration/,
+    );
+  });
 });

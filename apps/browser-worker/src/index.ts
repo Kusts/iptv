@@ -14,4 +14,11 @@ export * from "./secrets.js";
 export * from "./profileLock.js";
 export { runReadIdentity, ensureProfileDir, extractIdentityField, identityEquals } from "./operations/readIdentity.js";
 export type { ReadIdentityBrowser, ReadIdentityPage, ReadIdentityDeps } from "./operations/readIdentity.js";
+export { runCinevisionCommand, mapReaderError } from "./operations/cinevisionCommand.js";
+export type {
+  CinevisionCommandBrowser,
+  CinevisionCommandDeps,
+  CinevisionCommandPage,
+  CommandArgs,
+} from "./operations/cinevisionCommand.js";
 export { buildIdentityUrl, isCrossOriginRedirect, redirectTargetOrigin } from "./browser.js";

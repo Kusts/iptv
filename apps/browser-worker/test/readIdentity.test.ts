@@ -1,15 +1,17 @@
-﻿import { mkdtempSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { BINDING_PROVIDER, FIXED_OPERATION, FIXED_SECRET_REFS } from "../src/constants.js";
 import { formatResult } from "../src/output.js";
 import { acquireProfileLock } from "../src/profileLock.js";
+import type { CinevisionCommandBrowser, CinevisionCommandPage } from "../src/operations/cinevisionCommand.js";
 import {
   runReadIdentity,
   type ReadIdentityBrowser,
   type ReadIdentityPage,
 } from "../src/operations/readIdentity.js";
+import type { InPageResult } from "../src/providers/cinevision/api-client.js";
 import type { WorkerConfig } from "../src/config.js";
 import type { SecretsPort } from "@iptv/secrets";
 
@@ -37,6 +39,7 @@ function config(): WorkerConfig {
     infisicalClientSecret: "secret-1",
     headless: true,
     challengeWaitSeconds: 0,
+    commandTimeoutMs: 60_000,
     profileRoot: root,
     profileDir: dir,
   };
@@ -59,14 +62,15 @@ interface PageScript {
   form: { forms: number; emailInputs: number; passwordInputs: number; submitButtons: number } | null;
   challenge: boolean;
   loginResult: boolean;
+  /** Projected Fase-1 identity payloads served to `evaluateCapability`. */
   reads: unknown[];
 }
 
 function fakeBrowser(
   script: PageScript,
   calls: { opened: string[]; submitted: number; reads: number; closed: number },
-): ReadIdentityBrowser {
-  const page: ReadIdentityPage = {
+): CinevisionCommandBrowser {
+  const page: CinevisionCommandPage = {
     currentUrl: () => `${ALLOWED}/#/dashboard`,
     goto: async () => undefined,
     probeLoginForm: async () => script.form,
@@ -75,11 +79,16 @@ function fakeBrowser(
       calls.submitted += 1;
       return script.loginResult;
     },
+    // Legacy probe never reauthorizes: the reauth window stays unarmed.
+    armReauthWindow: () => false,
     fetchIdentity: async () => {
+      throw new Error("legacy fetchIdentity is not used by the V2 path");
+    },
+    evaluateCapability: async (): Promise<InPageResult> => {
       calls.reads += 1;
       const next = script.reads.shift();
       if (next === undefined) throw new Error("no more reads");
-      return next;
+      return { kind: "ok", status: 200, contentType: "application/json", data: next };
     },
     close: async () => {
       calls.closed += 1;
@@ -102,6 +111,10 @@ function secretValues(overrides: Record<string, string> = {}): Record<string, st
   };
 }
 
+function identityPayload(username: string): unknown {
+  return { id: "u-1", username, credits: 2 };
+}
+
 describe("fixed operation + refs", () => {
   it("exposes exactly one fixed operation, one binding provider and three fixed refs", () => {
     expect(FIXED_OPERATION).toBe("cinevision.readIdentity");
@@ -114,7 +127,7 @@ describe("fixed operation + refs", () => {
   });
 });
 
-describe("runReadIdentity (fully mocked)", () => {
+describe("runReadIdentity (fully mocked, V2 reader path)", () => {
   it("confirms identity on an existing session with two matching reads", async () => {
     const requested: string[] = [];
     const calls = { opened: [] as string[], submitted: 0, reads: 0, closed: 0 };
@@ -122,7 +135,12 @@ describe("runReadIdentity (fully mocked)", () => {
     const result = await runReadIdentity(cfg, {
       secrets: fakeSecrets(secretValues(), requested),
       browser: fakeBrowser(
-        { form: null, challenge: false, loginResult: false, reads: [{ email: EMAIL }, { email: EMAIL }] },
+        {
+          form: null,
+          challenge: false,
+          loginResult: false,
+          reads: [identityPayload(EMAIL), identityPayload(EMAIL)],
+        },
         calls,
       ),
     });
@@ -131,6 +149,11 @@ describe("runReadIdentity (fully mocked)", () => {
     expect(result.readbackMatched).toBe(true);
     expect(result.errorCode).toBe("NONE");
     expect(result.needsHuman).toBe(false);
+    expect(result.command).toBe("cinevision.readIdentity");
+    expect(result.executionChannel).toBe("BROWSER");
+    expect(result.strategy).toBe("API_IN_BROWSER");
+    expect(result.adapterVersion).toBe("cinevision-browser-v2");
+    expect(result.reauthenticated).toBe(false);
     // Only the fixed refs were requested, each exactly once.
     expect(requested).toEqual([...FIXED_SECRET_REFS]);
     expect(calls.opened).toEqual([cfg.profileDir]);
@@ -147,7 +170,7 @@ describe("runReadIdentity (fully mocked)", () => {
           form: { forms: 1, emailInputs: 1, passwordInputs: 1, submitButtons: 1 },
           challenge: false,
           loginResult: true,
-          reads: [{ email: EMAIL }, { email: EMAIL }],
+          reads: [identityPayload(EMAIL), identityPayload(EMAIL)],
         },
         calls,
       ),
@@ -166,7 +189,7 @@ describe("runReadIdentity (fully mocked)", () => {
           form: { forms: 1, emailInputs: 2, passwordInputs: 1, submitButtons: 1 },
           challenge: false,
           loginResult: true,
-          reads: [{ email: EMAIL }],
+          reads: [identityPayload(EMAIL)],
         },
         calls,
       ),
@@ -187,7 +210,7 @@ describe("runReadIdentity (fully mocked)", () => {
           form: { forms: 2, emailInputs: 1, passwordInputs: 1, submitButtons: 1 },
           challenge: false,
           loginResult: true,
-          reads: [{ email: EMAIL }],
+          reads: [identityPayload(EMAIL)],
         },
         calls,
       ),
@@ -208,7 +231,7 @@ describe("runReadIdentity (fully mocked)", () => {
             form: { forms: 1, emailInputs: 1, passwordInputs: 1, submitButtons },
             challenge: false,
             loginResult: true,
-            reads: [{ email: EMAIL }, { email: EMAIL }],
+            reads: [identityPayload(EMAIL), identityPayload(EMAIL)],
           },
           calls,
         ),
@@ -284,10 +307,7 @@ describe("runReadIdentity (fully mocked)", () => {
         form: { forms: 1, emailInputs: 1, passwordInputs: 1, submitButtons: 1 },
         challenge: false,
         loginResult: true,
-        reads: [
-          { email: EMAIL },
-          { email: EMAIL },
-        ],
+        reads: [identityPayload(EMAIL), identityPayload(EMAIL)],
       },
       calls,
     );
@@ -321,7 +341,7 @@ describe("runReadIdentity (fully mocked)", () => {
           form: { forms: 1, emailInputs: 1, passwordInputs: 1, submitButtons: 1 },
           challenge: false,
           loginResult: false,
-          reads: [{ email: EMAIL }],
+          reads: [identityPayload(EMAIL)],
         },
         calls,
       ),
@@ -337,7 +357,12 @@ describe("runReadIdentity (fully mocked)", () => {
     const result = await runReadIdentity(config(), {
       secrets: fakeSecrets(secretValues(), requested),
       browser: fakeBrowser(
-        { form: null, challenge: false, loginResult: false, reads: [{ email: "other@example.test" }, { email: "other@example.test" }] },
+        {
+          form: null,
+          challenge: false,
+          loginResult: false,
+          reads: [identityPayload("other@example.test"), identityPayload("other@example.test")],
+        },
         calls,
       ),
     });
@@ -352,7 +377,12 @@ describe("runReadIdentity (fully mocked)", () => {
     const result = await runReadIdentity(config(), {
       secrets: fakeSecrets(secretValues(), requested),
       browser: fakeBrowser(
-        { form: null, challenge: false, loginResult: false, reads: [{ email: EMAIL }, { email: "other@example.test" }] },
+        {
+          form: null,
+          challenge: false,
+          loginResult: false,
+          reads: [identityPayload(EMAIL), identityPayload("other@example.test")],
+        },
         calls,
       ),
     });
@@ -396,24 +426,57 @@ describe("runReadIdentity (fully mocked)", () => {
 });
 
 describe("output safety", () => {
-  it("emits only booleans + fixed code words, never raw secret/profile data", async () => {
+  it("emits only booleans + fixed code words + V2 metadata, never raw secret/profile data", async () => {
     const requested: string[] = [];
     const calls = { opened: [] as string[], submitted: 0, reads: 0, closed: 0 };
     const result = await runReadIdentity(config(), {
       secrets: fakeSecrets(secretValues(), requested),
       browser: fakeBrowser(
-        { form: null, challenge: false, loginResult: false, reads: [{ email: EMAIL }, { email: EMAIL }] },
+        {
+          form: null,
+          challenge: false,
+          loginResult: false,
+          reads: [identityPayload(EMAIL), identityPayload(EMAIL)],
+        },
         calls,
       ),
     });
     const line = formatResult(result);
     const parsed = JSON.parse(line) as Record<string, unknown>;
     expect(Object.keys(parsed).sort()).toEqual(
-      ["correlationId", "errorCode", "identityMatched", "needsHuman", "providerAccountId", "readbackMatched", "status"].sort(),
+      [
+        "correlationId",
+        "errorCode",
+        "identityMatched",
+        "needsHuman",
+        "providerAccountId",
+        "readbackMatched",
+        "status",
+        "command",
+        "executionChannel",
+        "strategy",
+        "adapterVersion",
+        "reauthenticated",
+        "evidence",
+      ].sort(),
     );
     expect(line).not.toContain(EMAIL);
     expect(line).not.toContain("pw-123");
     expect(line).not.toContain(SECRET_URL);
     expect(line).not.toContain("panel.example.test");
+    expect(parsed["executionChannel"]).toBe("BROWSER");
+    expect(parsed["strategy"]).toBe("API_IN_BROWSER");
+    expect(parsed["adapterVersion"]).toBe("cinevision-browser-v2");
+  });
+});
+
+describe("legacy surface compat", () => {
+  it("keeps the legacy page/browser types structurally compatible", () => {
+    const checkPage = (page: CinevisionCommandPage): ReadIdentityPage => page;
+    void checkPage;
+    const checkBrowser = (browser: CinevisionCommandBrowser): ReadIdentityBrowser => ({
+      open: (...args) => browser.open(...args),
+    });
+    void checkBrowser;
   });
 });

@@ -198,6 +198,15 @@ export function stripSecretKeysFromPayload(payload: Record<string, unknown>): Re
  * behind a secret-requiring port. No aliases are invented here:
  * - `trial.provision` (entity_type `trial`) — see `trial.begin_provisioning`.
  * - `subscription.provision` (entity_type `subscription`) — see fulfillment.
+ *
+ * FASE5-S4S5 scoping note: flipping the GLOBAL `provider.cinevision` row to
+ * AVAILABLE releases BOTH actions above at the global seam. Controlled trial
+ * writes additionally require the per-action `provider.cinevision.trial`
+ * capability (AVAILABLE) plus the designated disposable account (see
+ * `decideTrialDispatchGate`) — but NO per-action gate exists for
+ * `subscription.provision` in this slice: its certification comes in its own
+ * phase (Fase 7+). No surface added here releases `subscription.provision`
+ * beyond what the global row already governs.
  */
 export const SECRET_REQUIRED_ALLOWED_ACTIONS = ["trial.provision", "subscription.provision"] as const;
 export type SecretRequiredAction = (typeof SECRET_REQUIRED_ALLOWED_ACTIONS)[number];
@@ -410,6 +419,67 @@ export function validateSecretRequestShape(input: {
 }
 
 /**
+ * CV-DSP-02-FIX F1: shared external-port payload projection per certified
+ * action. The persisted `requested_payload_json` carries domain routing
+ * metadata (`trial_kind` on `trial.provision`, `customer_id` on
+ * `subscription.provision`) plus dispatcher bookkeeping (`adapter`,
+ * `capability`); the PORT frontier carries ONLY the certified fields (the
+ * same shapes `validateSecretRequestShape` enforces). Both the inline
+ * secret-branch handlers and `ProviderDispatcherService` build the port
+ * payload through these helpers — never by ad-hoc stripping — so the
+ * payload sent inline always equals the payload sent durable. Domain
+ * metadata stays on the persisted operation row, never on the wire.
+ */
+export function buildTrialProvisionExternalPayload(
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (source["duration_minutes"] !== undefined) {
+    out["duration_minutes"] = source["duration_minutes"];
+  }
+  if (source["adult_content_enabled"] !== undefined) {
+    out["adult_content_enabled"] = source["adult_content_enabled"];
+  }
+  return out;
+}
+
+export function buildSubscriptionProvisionExternalPayload(
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (source["plan_id"] !== undefined) {
+    out["plan_id"] = source["plan_id"];
+  }
+  if (source["plan_key"] !== undefined) {
+    out["plan_key"] = source["plan_key"];
+  }
+  return out;
+}
+
+/**
+ * CV-DSP-02-FIX F1: dispatcher-side port payload. Drops dispatcher
+ * bookkeeping (`adapter`/`capability`) AND domain metadata (`trial_kind`,
+ * `customer_id`, …) for the certified actions via the shared allowlists
+ * above; unknown actions keep the legacy secret-strip (owning context for
+ * `provider.request_operation` rows).
+ */
+export function buildDispatchPortPayload(
+  action: string,
+  persistedPayload: Record<string, unknown>,
+): Record<string, unknown> {
+  const { adapter: _adapter, capability: _capability, ...rest } = persistedPayload;
+  void _adapter;
+  void _capability;
+  if (action === "trial.provision") {
+    return buildTrialProvisionExternalPayload(rest);
+  }
+  if (action === "subscription.provision") {
+    return buildSubscriptionProvisionExternalPayload(rest);
+  }
+  return stripSecretKeysFromPayload(rest);
+}
+
+/**
  * PF-05 (MVP-PF05-SECRETREF-04): fixed outcome code persisted when a
  * secret-required port call throws AFTER its effect may have happened. The
  * operation parks in VERIFYING/UNKNOWN with this code — the reservation is
@@ -421,6 +491,130 @@ export const PROVIDER_CALL_UNCERTAIN_CODE = "PROVIDER_CALL_UNCERTAIN";
 /** UNAVAILABLE always wins over an injected secret-requiring port. */
 export function isCapabilityUnavailable(capability: { availability: string } | null): boolean {
   return capability !== null && capability.availability === "UNAVAILABLE";
+}
+
+/**
+ * FASE5-S4S5 per-action trial gate (SPEC cinevision-runtime-hardening §24/§25,
+ * slice S4+S5): the controlled environment for CREATE_TRIAL only.
+ *
+ * - `TRIAL_CAPABILITY_KEY` (`provider.cinevision.trial`) is a SECOND
+ *   capability row beside the global `provider.cinevision` row (migration
+ *   046, fail-closed UNAVAILABLE/UNCERTIFIED). A real (secret-required)
+ *   `trial.provision` dispatch requires this row AVAILABLE — strictly
+ *   `AVAILABLE`, not merely "not UNAVAILABLE": missing, UNAVAILABLE,
+ *   DEGRADED or any other state blocks the send. Synthetic echo/manual
+ *   flows never consult this gate.
+ * - `PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID` designates the single disposable
+ *   provider account controlled trials may execute against. Absent by
+ *   default; when the trial gate is AVAILABLE the designation must name an
+ *   ACTIVE account of this tenant AND the dispatch must target exactly that
+ *   account — anything else (missing designation, another account, an
+ *   inactive account) fails closed. The "first ACTIVE account" resolution
+ *   (`findExistingTrialProviderAccountId`) is never a fallback for a real
+ *   write: it only supplies the candidate that the designation must match.
+ */
+
+/** Per-action capability row a real `trial.provision` dispatch requires. */
+export const TRIAL_CAPABILITY_KEY = "provider.cinevision.trial";
+
+/**
+ * Strict trial-capability check: only an explicit AVAILABLE row satisfies
+ * the gate. Missing rows and every non-AVAILABLE state (UNAVAILABLE,
+ * DEGRADED, …) fail closed — stricter than the global seam on purpose, so
+ * flipping the GLOBAL row alone can never release trial writes.
+ */
+export function isTrialCapabilitySatisfied(capability: { availability: string } | null): boolean {
+  return capability !== null && capability.availability === "AVAILABLE";
+}
+
+/**
+ * Read the designated disposable trial account (call time, like
+ * `adapterNameFromEnv`, so tests isolate via deps instead). Blank/missing
+ * means "no designation" (undefined) — never a default account.
+ */
+export function trialDisposableAccountIdFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env["PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID"];
+  if (raw === undefined) {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+export type TrialDispatchGate = "allow" | "blocked_capability" | "blocked_designation";
+
+/**
+ * Pure per-action trial gate for the REAL dispatch seams (inline secret
+ * handlers + `ProviderDispatcherService` Phase 0b2). Non-trial actions
+ * (notably `subscription.provision`) are NOT governed here — they keep
+ * whatever the global seam decides (see the `SECRET_REQUIRED_ALLOWED_ACTIONS`
+ * scoping note). For `trial.provision`:
+ * - trial capability not AVAILABLE → `blocked_capability` (even when the
+ *   global row is AVAILABLE);
+ * - no designation, or the dispatch targets any account but the designated
+ *   one → `blocked_designation`.
+ * Callers map both blocks to their surface's honest refusal
+ * (`precondition_failed` on the request handlers, HUMAN_REQUIRED park in the
+ * dispatcher). Account ACTIVITY is checked separately
+ * (`isProviderAccountActive`) because it needs the store.
+ */
+export function decideTrialDispatchGate(input: {
+  action: string;
+  trialCapability: { availability: string } | null;
+  designatedAccountId: string | undefined;
+  providerAccountId: string;
+}): TrialDispatchGate {
+  if (input.action !== "trial.provision") {
+    return "allow";
+  }
+  if (!isTrialCapabilitySatisfied(input.trialCapability)) {
+    return "blocked_capability";
+  }
+  if (input.designatedAccountId === undefined || input.designatedAccountId !== input.providerAccountId) {
+    return "blocked_designation";
+  }
+  return "allow";
+}
+
+/** Honest refusal messages for the trial gate (generic: never echo ids). */
+export const TRIAL_GATE_MESSAGES = {
+  blocked_capability: "trial capability unavailable; secret-required trial operations are blocked",
+  blocked_designation: "trial writes require the designated disposable provider account",
+  account_inactive: "trial writes require the designated disposable provider account",
+} as const;
+
+/**
+ * Tenant-scoped ACTIVE check for the designated disposable account. Kysely
+ * path requires `status = ACTIVE` strictly. Memory path (unit-test fake,
+ * whose seeds predate this gate and carry no status) treats a missing
+ * status as active and only rejects an explicitly non-ACTIVE one — the
+ * designation match itself is still exact on both paths.
+ */
+export async function isProviderAccountActive(
+  ctx: CommandHandlerContext,
+  providerAccountId: string,
+): Promise<boolean> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx !== null) {
+    const row = await trx
+      .selectFrom("provider.provider_accounts")
+      .select(["id"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("id", "=", providerAccountId)
+      .where("status", "=", "ACTIVE")
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+  const mem = trialMemoryOf(ctx);
+  if (mem === null) {
+    throw new Error("no Wave 4 store available");
+  }
+  const account = mem.providerAccounts.get(providerAccountId);
+  if (account === undefined || account.tenantId !== ctx.tenantId) {
+    return false;
+  }
+  const status = (account as { status?: unknown }).status;
+  return status === undefined || status === "ACTIVE";
 }
 
 /**

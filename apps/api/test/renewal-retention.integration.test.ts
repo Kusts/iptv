@@ -280,6 +280,38 @@ describe.skipIf(!hasDb)("Wave 9 Renewal + Retention (requires TEST_DATABASE_URL)
     process.env["DATABASE_URL"] = connectionString as string;
     process.env["BETTER_AUTH_SECRET"] = "integration-test-secret-0123456789";
     delete process.env["PROVIDER_OPS_ADAPTER"];
+    // The fulfillment echo flow below presupposes a certified sandbox gate:
+    // upsert the global row AVAILABLE (production stays fail-closed until
+    // real certification). platform.capabilities is GLOBAL and test files
+    // share one TEST_DATABASE_URL, so each suite owns its arrange (same
+    // pattern as trial-compat/subscription-fulfillment integration).
+    await db
+      .insertInto("platform.capabilities")
+      .values({
+        id: newId(),
+        key: "provider.cinevision",
+        owner_context: "provider",
+        availability: "AVAILABLE",
+        certification_status: "SANDBOX_CERTIFIED",
+        risk_level: "HIGH",
+        mvp_phase: "W0",
+        manual_equivalent:
+          "Provider operator fulfills the operation manually (HITL) via provider.resolve_operation",
+        policy_family: "provider-integration",
+        degradation:
+          "Forced MANUAL: every operation parks in HUMAN_REQUIRED until durable post-commit dispatch with certified readback",
+        permissions: [],
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .onConflict((oc) =>
+        oc.column("key").doUpdateSet({
+          availability: "AVAILABLE",
+          certification_status: "SANDBOX_CERTIFIED",
+          updated_at: new Date(),
+        }),
+      )
+      .execute();
     app = await NestFactory.create<NestFastifyApplication>(AppModule, createFastifyAdapter());
     registerRequestIdHook(app);
     await app.init();
@@ -327,11 +359,27 @@ describe.skipIf(!hasDb)("Wave 9 Renewal + Retention (requires TEST_DATABASE_URL)
   });
 
   afterAll(async () => {
+    // FASE5-S6-FIX2: bounded hygiene drain — `drain(limit)` takes a row
+    // COUNT, not a time budget, and publishes serially, so an unbounded
+    // teardown drain overruns the hook timeout (the S6 root cause). This
+    // loop caps the teardown contribution at ~6s wall-clock (leaving hook
+    // budget for app.close) while still draining shared-table residue, so
+    // budget-capped oldest-first drains (scheduler tick drain(25),
+    // test loop-drains) keep converging instead of starving. No assertion
+    // observes drained delivery; outbox assertions are tenant-scoped.
     if (hasDb && drainer !== undefined) {
-      await drainer.drain(1000).catch(() => undefined);
+      const drainBudgetUntil = Date.now() + 6000;
+      for (;;) {
+        if (Date.now() >= drainBudgetUntil) break;
+        const drained = await drainer.drain(50).catch(() => undefined);
+        if (drained === undefined || drained.claimed === 0) break;
+      }
     }
-    await app?.close().catch(() => undefined);
-    await db.destroy().catch(() => undefined);
+    try {
+      await app?.close().catch(() => undefined);
+    } finally {
+      await db.destroy().catch(() => undefined);
+    }
   });
 
   it("full renewal happy path: quote → charge → webhook → renew → new OPEN cycle", async () => {

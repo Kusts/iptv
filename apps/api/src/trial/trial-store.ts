@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { newId, now } from "@iptv/domain";
 import type { CommandHandlerContext } from "../commands/command-bus.js";
 import { kyselyTrxOf } from "../crm/wave2-store.js";
@@ -167,6 +168,28 @@ export interface TrialMemoryState {
     status: string;
     errorCode: string | null;
   }>;
+  /**
+   * FASE5-S6 (SPEC §30/§31): trial `provider_bindings` mirror + sanitized
+   * readback evidence for the memory path (unit tests). The Kysely path
+   * uses the real `provider.provider_bindings` / `provider.provider_evidence`
+   * tables; both paths expose the same idempotent semantics.
+   */
+  providerBindings: Array<{
+    id: string;
+    tenantId: string;
+    providerAccountId: string;
+    entityType: string;
+    entityId: string;
+    externalId: string;
+  }>;
+  providerEvidence: Array<{
+    id: string;
+    tenantId: string;
+    operationId: string;
+    evidenceType: string;
+    objectRef: string | null;
+    structured: Record<string, unknown>;
+  }>;
 }
 
 const trialMemoryStates = new WeakMap<object, TrialMemoryState>();
@@ -185,6 +208,8 @@ function emptyTrialState(): TrialMemoryState {
     providerAccounts: new Map(),
     providerOperations: new Map(),
     providerAttempts: [],
+    providerBindings: [],
+    providerEvidence: [],
   };
 }
 
@@ -433,6 +458,7 @@ export async function updateTrial(
       | "lifecycleStatus"
       | "technicalOutcome"
       | "providerAccountId"
+      | "providerBindingId"
       | "activatedAt"
       | "expiresAt"
       | "endedAt"
@@ -448,6 +474,7 @@ export async function updateTrial(
         ...(patch.lifecycleStatus !== undefined ? { lifecycle_status: patch.lifecycleStatus } : {}),
         ...(patch.technicalOutcome !== undefined ? { technical_outcome: patch.technicalOutcome } : {}),
         ...(patch.providerAccountId !== undefined ? { provider_account_id: patch.providerAccountId } : {}),
+        ...(patch.providerBindingId !== undefined ? { provider_binding_id: patch.providerBindingId } : {}),
         ...(patch.activatedAt !== undefined ? { activated_at: patch.activatedAt } : {}),
         ...(patch.expiresAt !== undefined ? { expires_at: patch.expiresAt } : {}),
         ...(patch.endedAt !== undefined ? { ended_at: patch.endedAt } : {}),
@@ -491,6 +518,9 @@ export async function updateTrial(
   }
   if (patch.providerAccountId !== undefined) {
     row.providerAccountId = patch.providerAccountId;
+  }
+  if (patch.providerBindingId !== undefined) {
+    row.providerBindingId = patch.providerBindingId;
   }
   if (patch.activatedAt !== undefined) {
     row.activatedAt = patch.activatedAt;
@@ -587,8 +617,49 @@ export async function listTrialsForPerson(
   );
 }
 
-export async function insertEligibilityDecision(
+/**
+ * SPEC §25 (eligibility before dispatch): the most recent eligibility
+ * decision anchored to a trial. Decisions carry no `trial_id` column — the
+ * link is `evidence_json.trial_id`, written by `trial.request` (ALLOW) and
+ * `trial.request_retrial` (ALLOW_RETRIAL, including human-approved) at
+ * materialization. DENY/REVIEW rows never reference a materialized trial
+ * (no trial exists yet, or they anchor on `open_trial_id`), so in practice
+ * the latest row for a trial is its ALLOW — anything else, or nothing at
+ * all, is fail-closed by the caller.
+ */
+export async function latestEligibilityDecisionForTrial(
   ctx: CommandHandlerContext,
+  trialId: string,
+): Promise<{ outcome: string } | null> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx !== null) {
+    const row = await trx
+      .selectFrom("trial.trial_eligibility_decisions")
+      .select(["outcome"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where(sql`evidence_json ->> 'trial_id'`, "=", trialId)
+      .orderBy("created_at", "desc")
+      .executeTakeFirst();
+    return row === undefined ? null : { outcome: row.outcome };
+  }
+  const mem = trialMemoryOf(ctx);
+  if (mem === null) {
+    throw new Error("no Wave 4 store available");
+  }
+  let latest: { outcome: string } | null = null;
+  for (const decision of mem.decisions) {
+    if (decision.tenantId !== ctx.tenantId) {
+      continue;
+    }
+    if ((decision.evidenceJson as Record<string, unknown>)["trial_id"] !== trialId) {
+      continue;
+    }
+    latest = { outcome: decision.outcome };
+  }
+  return latest;
+}
+
+export async function insertEligibilityDecision(  ctx: CommandHandlerContext,
   input: {
     personId: string;
     outcome: string;
@@ -1005,6 +1076,178 @@ export async function latestProviderOperationForEntity(
   return latest;
 }
 
+/**
+ * FASE5-FIX4-N3 (SPEC §25): latest operation for an entity FILTERED by
+ * action. `resumeLinkedTrial` resolves against the latest
+ * `action=trial.provision` operation — an arbitrary newer operation with
+ * another action (spoof, unrelated intent) can neither resume a trial nor
+ * block the legitimate provision operation from resuming it. Same
+ * `requested_at` ordering and dual-store shape as
+ * `latestProviderOperationForEntity`; no migration, no new enum.
+ */
+export async function latestProviderOperationForEntityAction(
+  ctx: CommandHandlerContext,
+  entityType: string,
+  entityId: string,
+  action: string,
+): Promise<ProviderOperationRow | null> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx !== null) {
+    const row = await trx
+      .selectFrom("provider.provider_operations")
+      .select(OPERATION_COLUMNS)
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("entity_type", "=", entityType)
+      .where("entity_id", "=", entityId)
+      .where("action", "=", action)
+      .orderBy("requested_at", "desc")
+      .executeTakeFirst();
+    return row === undefined ? null : toOperationRow(ctx.tenantId, row);
+  }
+  const mem = trialMemoryOf(ctx);
+  if (mem === null) {
+    throw new Error("no Wave 4 store available");
+  }
+  let latest: ProviderOperationRow | null = null;
+  for (const row of mem.providerOperations.values()) {
+    if (
+      row.tenantId === ctx.tenantId &&
+      row.entityType === entityType &&
+      row.entityId === entityId &&
+      row.action === action
+    ) {
+      if (latest === null || row.requestedAt.getTime() >= latest.requestedAt.getTime()) {
+        latest = row;
+      }
+    }
+  }
+  return latest;
+}
+
+/**
+ * SPEC §26 (CREATE_TRIAL idempotency): the idempotency key belongs to the
+ * semantic intent — `trial-provision:{trialId}` — never
+ * `trial-provision:{trialId}:{attemptIndex}`. The attempt index belongs to
+ * `provider_operation_attempts.attempt_no` (and the trial_attempts ledger),
+ * not to the business operation identity. Design (a): retries after a
+ * conclusive failure (FAILED/KNOWN_NOT_APPLIED) REOPEN the same
+ * ProviderOperation row (conditional FAILED→REQUESTED) instead of inserting
+ * a new row, so the existing full unique
+ * `(tenant_id, provider_account_id, idempotency_key)` is never violated and
+ * no migration is needed; history stays append-only via the attempts tables.
+ */
+export function trialProvisionBusinessKey(trialId: string): string {
+  return `trial-provision:${trialId}`;
+}
+
+/**
+ * Lookup a trial provision operation by its business key (entity + key
+ * within the tenant, ignoring `provider_account_id` so a retry that
+ * resolves a different account row can still reuse the single intent row
+ * and have its account pointer updated by the reopen).
+ */
+export async function findProviderOperationByBusinessKey(
+  ctx: CommandHandlerContext,
+  entityType: string,
+  entityId: string,
+  idempotencyKey: string,
+): Promise<ProviderOperationRow | null> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx !== null) {
+    const row = await trx
+      .selectFrom("provider.provider_operations")
+      .select(OPERATION_COLUMNS)
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("entity_type", "=", entityType)
+      .where("entity_id", "=", entityId)
+      .where("idempotency_key", "=", idempotencyKey)
+      .executeTakeFirst();
+    return row === undefined ? null : toOperationRow(ctx.tenantId, row);
+  }
+  const mem = trialMemoryOf(ctx);
+  if (mem === null) {
+    throw new Error("no Wave 4 store available");
+  }
+  for (const op of mem.providerOperations.values()) {
+    if (
+      op.tenantId === ctx.tenantId &&
+      op.entityType === entityType &&
+      op.entityId === entityId &&
+      op.idempotencyKey === idempotencyKey
+    ) {
+      return op;
+    }
+  }
+  return null;
+}
+
+/**
+ * Conditional FAILED→REQUESTED reopen of a conclusively-failed provision
+ * row for a retry of the same intent. The WHERE revalidates `status =
+ * 'FAILED'`: zero affected rows means a concurrent retry already reopened
+ * (or terminalized) the row — the caller must map that to
+ * `precondition_failed`, never to a second insert. Clears the result,
+ * timings and the durable-dispatch lease/frontier (migration 045) so the
+ * row is indistinguishable from a fresh REQUESTED intent; per-attempt
+ * history continues in `provider_operation_attempts` + `trial_attempts`.
+ */
+export async function reopenFailedProviderOperationForRetry(
+  ctx: CommandHandlerContext,
+  operationId: string,
+  input: {
+    providerAccountId: string;
+    adapterVersion: string;
+    requestedPayload: Record<string, unknown>;
+  },
+): Promise<ProviderOperationRow | null> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx !== null) {
+    const row = await trx
+      .updateTable("provider.provider_operations")
+      .set({
+        provider_account_id: input.providerAccountId,
+        adapter_version: input.adapterVersion,
+        requested_payload_json: input.requestedPayload,
+        status: "REQUESTED",
+        effect_certainty: "UNKNOWN",
+        execution_channel: null,
+        result_summary_json: null,
+        requested_at: now(),
+        started_at: null,
+        completed_at: null,
+        claimed_by: null,
+        claimed_at: null,
+        lease_expires_at: null,
+        dispatch_started_at: null,
+      })
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("id", "=", operationId)
+      .where("status", "=", "FAILED")
+      .returning(OPERATION_COLUMNS)
+      .executeTakeFirst();
+    return row === undefined ? null : toOperationRow(ctx.tenantId, row);
+  }
+  const mem = trialMemoryOf(ctx);
+  if (mem === null) {
+    throw new Error("no Wave 4 store available");
+  }
+  const op = mem.providerOperations.get(operationId);
+  if (op === undefined || op.tenantId !== ctx.tenantId || op.status !== "FAILED") {
+    return null;
+  }
+  op.providerAccountId = input.providerAccountId;
+  op.adapterVersion = input.adapterVersion;
+  op.requestedPayload = input.requestedPayload;
+  op.status = "REQUESTED";
+  op.effectCertainty = "UNKNOWN";
+  op.executionChannel = null;
+  op.resultSummary = null;
+  op.requestedAt = new Date();
+  op.startedAt = null;
+  op.completedAt = null;
+  return op;
+}
+
 export async function countProviderOperationsForEntity(
   ctx: CommandHandlerContext,
   entityType: string,
@@ -1142,11 +1385,19 @@ export async function insertProviderAttempt(
  * Whether the linked trial may resume from a provider terminal outcome.
  * Only a trial still waiting in PROVISIONING resumes; anything else means
  * the trial moved on (cancelled/ended) while the operation was pending.
+ *
+ * FASE5-FIX3-R5 (SPEC §25/§29): on the REAL dispatch path the activation
+ * uses the OBSERVED `expiresAt` from the conclusive READ_CUSTOMER readback
+ * (passed by `applyTrialProvisionOutcome` from the postcondition verdict) —
+ * the observed expiry wins over the local now+duration computation.
+ * Synthetic (echo/manual) flows pass no observed expiry and keep the local
+ * computation untouched.
  */
 export async function applyProviderTerminalOutcome(
   ctx: CommandHandlerContext,
   trialId: string,
   terminal: "SUCCEEDED" | "FAILED",
+  observedExpiresAt?: Date | null,
 ): Promise<{ resumed: boolean; trial: TrialRow | null }> {
   const trial = await getTrial(ctx, trialId);
   if (trial === null || trial.lifecycleStatus !== "PROVISIONING") {
@@ -1154,12 +1405,80 @@ export async function applyProviderTerminalOutcome(
   }
   if (terminal === "SUCCEEDED") {
     const activatedAt = new Date();
-    const expiresAt = new Date(activatedAt.getTime() + trial.requestedDurationMinutes * 60_000);
+    const expiresAt =
+      observedExpiresAt instanceof Date && !Number.isNaN(observedExpiresAt.getTime())
+        ? new Date(observedExpiresAt.getTime())
+        : new Date(activatedAt.getTime() + trial.requestedDurationMinutes * 60_000);
     const updated = await updateTrial(ctx, trialId, { lifecycleStatus: "ACTIVE", activatedAt, expiresAt });
     return { resumed: true, trial: updated };
   }
   const updated = await updateTrial(ctx, trialId, { lifecycleStatus: "REQUESTED" });
   return { resumed: true, trial: updated };
+}
+
+/**
+ * FASE5-FIX3-R4 (SPEC §16): conditional provider-operation write for the
+ * S3 reconcile convergence (and any other loser-must-vanish path).
+ * `UPDATE ... WHERE tenant/id AND status=<expected>`: zero affected rows
+ * means a concurrent resolution already moved the row — the caller must
+ * exit silently with NO attempt/event/resume writes. Both stores enforce
+ * the predicate (Kysely via WHERE, memory via a status pre-check).
+ */
+export async function compareAndSetProviderOperation(
+  ctx: CommandHandlerContext,
+  operationId: string,
+  expectedStatus: string,
+  patch: {
+    status: string;
+    effectCertainty: string;
+    executionChannel?: string | null;
+    resultSummary?: Record<string, unknown> | null;
+    started?: boolean;
+    completed?: boolean;
+  },
+): Promise<ProviderOperationRow | null> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx !== null) {
+    const row = await trx
+      .updateTable("provider.provider_operations")
+      .set({
+        status: patch.status,
+        effect_certainty: patch.effectCertainty,
+        ...(patch.executionChannel !== undefined ? { execution_channel: patch.executionChannel } : {}),
+        ...(patch.resultSummary !== undefined ? { result_summary_json: patch.resultSummary } : {}),
+        ...(patch.started === true ? { started_at: now() } : {}),
+        ...(patch.completed === true ? { completed_at: now() } : {}),
+      })
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("id", "=", operationId)
+      .where("status", "=", expectedStatus)
+      .returning(OPERATION_COLUMNS)
+      .executeTakeFirst();
+    return row === undefined ? null : toOperationRow(ctx.tenantId, row);
+  }
+  const mem = trialMemoryOf(ctx);
+  if (mem === null) {
+    throw new Error("no Wave 4 store available");
+  }
+  const row = mem.providerOperations.get(operationId);
+  if (row === undefined || row.tenantId !== ctx.tenantId || row.status !== expectedStatus) {
+    return null;
+  }
+  row.status = patch.status;
+  row.effectCertainty = patch.effectCertainty;
+  if (patch.executionChannel !== undefined) {
+    row.executionChannel = patch.executionChannel;
+  }
+  if (patch.resultSummary !== undefined) {
+    row.resultSummary = patch.resultSummary;
+  }
+  if (patch.started === true && row.startedAt === null) {
+    row.startedAt = new Date();
+  }
+  if (patch.completed === true) {
+    row.completedAt = new Date();
+  }
+  return row;
 }
 
 /**
@@ -1200,4 +1519,121 @@ export async function reviewApprovedByHuman(
     return false;
   }
   return (inner?.actions ?? []).some((a) => a.requestId === requestId && a.actionType === "APPROVE");
+}
+
+/**
+ * FASE5-S6 (SPEC §30): trial `provider_bindings` record — the existing
+ * `provider.provider_bindings` row (`entity_type=trial`,
+ * `entity_id=<trial>`), written once the readback gate is satisfied with
+ * the provider-stable external id. Insert-on-conflict-do-nothing keeps
+ * replays and double resolutions idempotent (mirrors the fulfillment
+ * `upsertSubscriptionBinding`); the row id is returned so the caller can
+ * fill `trial.provider_binding_id`.
+ */
+export async function upsertTrialBinding(
+  ctx: CommandHandlerContext,
+  input: { providerAccountId: string; trialId: string; externalId: string },
+): Promise<{ id: string }> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx !== null) {
+    await trx
+      .insertInto("provider.provider_bindings")
+      .values({
+        id: newId(),
+        tenant_id: ctx.tenantId,
+        provider_account_id: input.providerAccountId,
+        entity_type: "trial",
+        entity_id: input.trialId,
+        external_id: input.externalId,
+        external_secondary_id: null,
+        status: "ACTIVE",
+        metadata_json: { via: "trial.provision-readback", postcondition: "satisfied" },
+        last_verified_at: now(),
+        created_at: now(),
+        updated_at: now(),
+      })
+      .onConflict((oc) =>
+        oc.columns(["tenant_id", "provider_account_id", "entity_type", "entity_id"]).doNothing(),
+      )
+      .execute();
+    const row = await trx
+      .selectFrom("provider.provider_bindings")
+      .select(["id"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("provider_account_id", "=", input.providerAccountId)
+      .where("entity_type", "=", "trial")
+      .where("entity_id", "=", input.trialId)
+      .executeTakeFirstOrThrow();
+    return { id: row.id };
+  }
+  const mem = trialMemoryOf(ctx);
+  if (mem === null) {
+    throw new Error("no Wave 4 store available");
+  }
+  const existing = mem.providerBindings.find(
+    (b) =>
+      b.tenantId === ctx.tenantId &&
+      b.providerAccountId === input.providerAccountId &&
+      b.entityType === "trial" &&
+      b.entityId === input.trialId,
+  );
+  if (existing !== undefined) {
+    return { id: existing.id };
+  }
+  const id = newId();
+  mem.providerBindings.push({
+    id,
+    tenantId: ctx.tenantId,
+    providerAccountId: input.providerAccountId,
+    entityType: "trial",
+    entityId: input.trialId,
+    externalId: input.externalId,
+  });
+  return { id };
+}
+
+/**
+ * FASE5-S6 (SPEC §31): sanitized per-attempt readback evidence for the
+ * trial postcondition gate. The caller builds `structured` from fixed
+ * codes/booleans/ids only — bearer/cookie/PII/raw payloads never reach
+ * this writer on either path.
+ */
+export async function insertTrialProviderEvidence(
+  ctx: CommandHandlerContext,
+  input: {
+    operationId: string;
+    evidenceType: string;
+    objectRef?: string | null;
+    structured: Record<string, unknown>;
+  },
+): Promise<void> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx !== null) {
+    await trx
+      .insertInto("provider.provider_evidence")
+      .values({
+        id: newId(),
+        tenant_id: ctx.tenantId,
+        provider_operation_id: input.operationId,
+        evidence_type: input.evidenceType,
+        object_ref: input.objectRef ?? null,
+        structured_json: input.structured,
+        captured_at: now(),
+        classification: "C2",
+      })
+      .execute();
+    return;
+  }
+  const mem = trialMemoryOf(ctx);
+  if (mem === null) {
+    throw new Error("no Wave 4 store available");
+  }
+  mem.providerEvidence.push({
+    id: newId(),
+    tenantId: ctx.tenantId,
+    operationId: input.operationId,
+    evidenceType: input.evidenceType,
+    objectRef: input.objectRef ?? null,
+    structured: input.structured,
+  });
 }

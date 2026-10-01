@@ -140,12 +140,17 @@ describe.skipIf(!hasDb)("Wave 2 CRM + Communications (requires TEST_DATABASE_URL
 
   afterAll(async () => {
     resetGatewayForTests();
-    // Hygiene: leave no PENDING outbox rows behind for other files that
-    // assert on global outbox state.
-    try {
-      await drainer.drain(500);
-    } catch {
-      // Best effort; app close still runs below.
+    // FASE5-S6-FIX2: bounded hygiene drain — `drain(limit)` takes a row
+    // COUNT, not a time budget, and publishes serially, so an unbounded
+    // teardown drain overruns the hook timeout. Capped at ~6s wall-clock
+    // so budget-capped oldest-first drains (scheduler tick, loop-drains)
+    // keep converging on the shared table. No assertion observes drained
+    // delivery; outbox assertions are tenant-scoped.
+    const drainBudgetUntil = Date.now() + 6000;
+    for (;;) {
+      if (Date.now() >= drainBudgetUntil) break;
+      const drained = await drainer.drain(50).catch(() => undefined);
+      if (drained === undefined || drained.claimed === 0) break;
     }
     await app.close();
     await db.destroy();

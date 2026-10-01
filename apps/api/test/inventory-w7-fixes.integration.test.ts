@@ -288,6 +288,40 @@ describe.skipIf(!hasDb)("Wave 7 review fixes iptv-w7-fixes (requires TEST_DATABA
 
   beforeAll(async () => {
     await applyMigrations(connectionString as string, { migrationsDir: MIGRATIONS_DIR });
+    // The W0 fail-closed gate (migration 044) registers `provider.cinevision`
+    // as UNAVAILABLE, which forces every license charge to MANUAL. The Echo
+    // flows below presuppose a certified sandbox gate, so upsert the global
+    // row to AVAILABLE — production stays fail-closed until real
+    // certification. Files run sequentially sharing one TEST_DATABASE_URL and
+    // `platform.capabilities` is GLOBAL (no tenant), so each suite owns its
+    // arrange (same pattern as provider-dispatch.integration).
+    await db
+      .insertInto("platform.capabilities")
+      .values({
+        id: newId(),
+        key: "provider.cinevision",
+        owner_context: "provider",
+        availability: "AVAILABLE",
+        certification_status: "SANDBOX_CERTIFIED",
+        risk_level: "HIGH",
+        mvp_phase: "W0",
+        manual_equivalent:
+          "Provider operator fulfills the operation manually (HITL) via provider.resolve_operation",
+        policy_family: "provider-integration",
+        degradation:
+          "Forced MANUAL: every operation parks in HUMAN_REQUIRED until durable post-commit dispatch with certified readback",
+        permissions: [],
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .onConflict((oc) =>
+        oc.column("key").doUpdateSet({
+          availability: "AVAILABLE",
+          certification_status: "SANDBOX_CERTIFIED",
+          updated_at: new Date(),
+        }),
+      )
+      .execute();
     await db
       .insertInto("provider.providers")
       .values({

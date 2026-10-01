@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Worker config â€” fail-closed env resolution.
  *
  * SINGLE-BINDING operator smoke (see `constants.ts`): identity comes ONLY
@@ -49,6 +49,15 @@ export interface WorkerConfig {
   profileDir: string;
   /** Bounded wait for a managed challenge to auto-clear (seconds). */
   challengeWaitSeconds: number;
+  /** Total per-command budget (ms). Exceeded → INCONCLUSIVE/TRANSPORT. */
+  commandTimeoutMs: number;
+  /**
+   * Bounded wait for a canceled launch to settle + its tardy context to
+   * close before the profile lock may be released (ms, F1). Optional so
+   * existing programmatic configs keep compiling; resolved configs
+   * always carry the value.
+   */
+  launchSettleMs?: number;
 }
 
 export class ConfigError extends Error {
@@ -66,6 +75,38 @@ function parseChallengeWaitSeconds(raw: string | undefined): number {
   if (value.length === 0) return 45;
   const n = Number(value);
   if (!Number.isInteger(n) || n < 0 || n > 300) return 45;
+  return n;
+}
+
+/**
+ * Total per-command budget from `BROWSER_WORKER_COMMAND_TIMEOUT_MS`.
+ * Default 60s, clamped to 5s–300s; invalid values fall back to 60s.
+ * Exceeding the budget fails closed (INCONCLUSIVE/TRANSPORT) — no
+ * unbounded command execution, no infinite loops.
+ */
+export function parseCommandTimeoutMs(raw: string | undefined): number {
+  const value = (raw ?? "").trim();
+  if (value.length === 0) return 60_000;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 5_000 || n > 300_000) return 60_000;
+  return n;
+}
+
+/**
+ * Bounded launch-quiescence wait from
+ * `BROWSER_WORKER_LAUNCH_SETTLE_MS` (F1): how long an abort/timeout path
+ * waits for a pending `launchPersistentContext` to settle and its tardy
+ * context to close before the profile lock may be released. Default
+ * 3000ms, clamped to 500ms–15000ms; invalid values fall back to 3000ms.
+ * Exceeding the bound fails closed by HOLDING the lock (stale-PID
+ * recovery frees it once this process exits) — never by announcing the
+ * profile as available while Chromium may still be starting on it.
+ */
+export function parseLaunchSettleMs(raw: string | undefined): number {
+  const value = (raw ?? "").trim();
+  if (value.length === 0) return 3000;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 500 || n > 15_000) return 3000;
   return n;
 }
 
@@ -275,6 +316,8 @@ export function resolveWorkerConfig(env: NodeJS.ProcessEnv = process.env): Worke
     infisicalClientSecret,
     headless: env["BROWSER_WORKER_HEADLESS"] !== "0",
     challengeWaitSeconds: parseChallengeWaitSeconds(env["BROWSER_WORKER_CHALLENGE_WAIT_SECONDS"]),
+    commandTimeoutMs: parseCommandTimeoutMs(env["BROWSER_WORKER_COMMAND_TIMEOUT_MS"]),
+    launchSettleMs: parseLaunchSettleMs(env["BROWSER_WORKER_LAUNCH_SETTLE_MS"]),
     profileRoot,
     profileDir: profileDirFor(profileRoot, tenantId, providerAccountId),
   };

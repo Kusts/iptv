@@ -17,6 +17,12 @@
  *      `CINEVISION_LOGIN_PATH` (relative `/api/...`, no query/fragment/
  *      traversal — validated by `normalizeLoginPath`);
  *   4. the single exception was not consumed yet (`loginPostUsed`).
+ * - Exactly ONE bounded reauth POST per command (`armReauthWindow` +
+ *   `reauthLoginPostUsed`): armed explicitly on the single reauth path,
+ *   with every guarantee above re-applied. Arming retires the initial
+ *   slot (slots are per-phase: only the current-phase slot is
+ *   eligible), so at most one POST is authorized after arming.
+ *   Re-arming is refused, so the limit is never lifted.
  * - Block PUT/PATCH/DELETE and every other POST (popups, arbitrary
  *   forms, second POST, off-window, off-path, off-hash).
  *
@@ -43,11 +49,22 @@ export interface PolicyInput {
   loginPath: string;
   /** True after the single login POST exception was consumed. */
   loginPostUsed: boolean;
+  /**
+   * True after the bounded reauth window was armed (exactly one reauth
+   * POST is authorized per command; arming is explicit, never implicit).
+   */
+  reauthArmed?: boolean;
+  /** True after the single reauth login POST exception was consumed. */
+  reauthLoginPostUsed?: boolean;
 }
 
 export interface PolicyState {
   loginWindowOpen: boolean;
   loginPostUsed: boolean;
+  /** Armed exactly once per command, on the bounded reauth path. */
+  reauthArmed: boolean;
+  /** Consumed by the single authorized reauth login POST. */
+  reauthLoginPostUsed: boolean;
 }
 
 const LOGIN_PATH_RE = /^\/api\/[A-Za-z0-9._/-]{1,160}$/;
@@ -108,9 +125,18 @@ export function decideRequest(input: PolicyInput): PolicyDecision {
     return "allow";
   }
   if (method === "POST") {
+    // Exactly one login POST slot is eligible per PHASE: the initial
+    // slot (`loginPostUsed`) until reauth is armed, then ONLY the
+    // bounded reauth slot (`reauthArmed` + `reauthLoginPostUsed`).
+    // Arming retires the initial slot, so at most ONE POST is ever
+    // authorized after arming. Every other guarantee (main-frame,
+    // exact route, exact path, open window) applies to both phases.
+    const reauthPhase = input.reauthArmed ?? false;
+    const initialAvailable = !reauthPhase && !input.loginPostUsed;
+    const reauthAvailable = reauthPhase && !(input.reauthLoginPostUsed ?? false);
     if (
       input.loginWindowOpen &&
-      !input.loginPostUsed &&
+      (initialAvailable || reauthAvailable) &&
       input.onSignInRoute &&
       input.loginPath.length > 0 &&
       path === input.loginPath
@@ -138,6 +164,10 @@ export interface RoutedRequestInput {
   loginPath: string;
   /** True after the single login POST exception was consumed. */
   loginPostUsed: boolean;
+  /** True after the bounded reauth window was armed (one reauth POST). */
+  reauthArmed?: boolean;
+  /** True after the single reauth login POST exception was consumed. */
+  reauthLoginPostUsed?: boolean;
 }
 
 /**
@@ -156,6 +186,8 @@ export function decideRoutedRequest(input: RoutedRequestInput): PolicyDecision {
     loginWindowOpen: input.loginWindowOpen,
     loginPath: input.loginPath,
     loginPostUsed: input.loginPostUsed,
+    reauthArmed: input.reauthArmed ?? false,
+    reauthLoginPostUsed: input.reauthLoginPostUsed ?? false,
   });
 }
 
@@ -177,5 +209,38 @@ export function isSignInHash(pageUrl: string): boolean {
 }
 
 export function initialPolicyState(): PolicyState {
-  return { loginWindowOpen: false, loginPostUsed: false };
+  return { loginWindowOpen: false, loginPostUsed: false, reauthArmed: false, reauthLoginPostUsed: false };
+}
+
+/**
+ * Arm the single bounded reauth window: authorizes exactly ONE more
+ * login POST with the same guarantees (main-frame, exact route, exact
+ * path, one POST per window) and RETIRES the initial slot — only the
+ * reauth-phase slot stays eligible, so at most one POST is authorized
+ * after arming. Returns false when the reauth window was
+ * already armed/consumed — the limit is never lifted, only rearmed once.
+ */
+export function armReauthWindow(state: PolicyState): boolean {
+  if (state.reauthArmed) return false;
+  state.reauthArmed = true;
+  state.reauthLoginPostUsed = false;
+  return true;
+}
+
+/**
+ * Consume the authorized login POST slot the route decision granted:
+ * the armed reauth slot while the reauth phase is active, otherwise
+ * the initial slot. Call ONLY after `decideRoutedRequest` returned
+ * `"allow-login-post"`.
+ */
+export function consumeLoginPost(state: PolicyState): void {
+  if (state.reauthArmed) {
+    state.reauthLoginPostUsed = true;
+    return;
+  }
+  if (!state.loginPostUsed) {
+    state.loginPostUsed = true;
+    return;
+  }
+  state.reauthLoginPostUsed = true;
 }

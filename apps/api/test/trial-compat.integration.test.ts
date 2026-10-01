@@ -101,6 +101,40 @@ describe.skipIf(!hasDb)("Wave 4 Trials + Compatibility (requires TEST_DATABASE_U
 
   beforeAll(async () => {
     await applyMigrations(connectionString as string, { migrationsDir: MIGRATIONS_DIR });
+    // The W0 fail-closed gate (migration 044) registers `provider.cinevision`
+    // as UNAVAILABLE, which forces every provisioning request to MANUAL. The
+    // echo flows below presuppose a certified sandbox gate, so upsert the
+    // global row to AVAILABLE — production stays fail-closed until real
+    // certification. Files run sequentially sharing one TEST_DATABASE_URL and
+    // `platform.capabilities` is GLOBAL (no tenant), so each suite owns its
+    // arrange (same pattern as provider-dispatch.integration).
+    await db
+      .insertInto("platform.capabilities")
+      .values({
+        id: newId(),
+        key: "provider.cinevision",
+        owner_context: "provider",
+        availability: "AVAILABLE",
+        certification_status: "SANDBOX_CERTIFIED",
+        risk_level: "HIGH",
+        mvp_phase: "W0",
+        manual_equivalent:
+          "Provider operator fulfills the operation manually (HITL) via provider.resolve_operation",
+        policy_family: "provider-integration",
+        degradation:
+          "Forced MANUAL: every operation parks in HUMAN_REQUIRED until durable post-commit dispatch with certified readback",
+        permissions: [],
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .onConflict((oc) =>
+        oc.column("key").doUpdateSet({
+          availability: "AVAILABLE",
+          certification_status: "SANDBOX_CERTIFIED",
+          updated_at: new Date(),
+        }),
+      )
+      .execute();
     process.env["DATABASE_URL"] = connectionString as string;
     process.env["BETTER_AUTH_SECRET"] = "integration-test-secret-0123456789";
     delete process.env["PROVIDER_OPS_ADAPTER"];
@@ -126,9 +160,21 @@ describe.skipIf(!hasDb)("Wave 4 Trials + Compatibility (requires TEST_DATABASE_U
 
   afterAll(async () => {
     delete process.env["PROVIDER_READBACK_EFFECT"];
+    // FASE5-S6-FIX2: bounded hygiene drain — `drain(limit)` takes a row
+    // COUNT, not a time budget, and publishes serially, so an unbounded
+    // teardown drain overruns the hook timeout. Capped at ~6s wall-clock
+    // so budget-capped oldest-first drains (scheduler tick, loop-drains)
+    // keep converging on the shared table. No assertion observes drained
+    // delivery, so teardown only closes what it owns.
+    // (Outbox assertions elsewhere are tenant-scoped; no suite depends on
+    // another suite's teardown drain.)
     if (hasDb && drainer !== undefined) {
-      // Leave no PENDING outbox rows behind for sibling suites.
-      await drainer.drain(1000).catch(() => undefined);
+      const drainBudgetUntil = Date.now() + 6000;
+      for (;;) {
+        if (Date.now() >= drainBudgetUntil) break;
+        const drained = await drainer.drain(50).catch(() => undefined);
+        if (drained === undefined || drained.claimed === 0) break;
+      }
     }
     await app?.close().catch(() => undefined);
     await db.destroy().catch(() => undefined);

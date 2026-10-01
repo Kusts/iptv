@@ -654,7 +654,7 @@ export interface ProviderBindingsTable {
   updated_at: Date;
 }
 
-/** Mirrors `provider.provider_operations` (migrations 007 + 017). */
+/** Mirrors `provider.provider_operations` (migrations 007 + 017 + 045). */
 export interface ProviderOperationsTable {
   id: string;
   tenant_id: string;
@@ -673,9 +673,19 @@ export interface ProviderOperationsTable {
   completed_at: Date | null;
   correlation_id: string;
   effect_certainty: string;
+  /** Durable dispatch lease (migration 045, NULL = unclaimed / never dispatched). */
+  claimed_by: string | null;
+  claimed_at: Date | null;
+  lease_expires_at: Date | null;
+  /**
+   * Crash-frontier marker (migration 045): set when the dispatcher actually
+   * starts the external port call. NULL = safe to release back to REQUESTED;
+   * NOT NULL + expired lease = VERIFYING/UNKNOWN for readback, never re-executed.
+   */
+  dispatch_started_at: Date | null;
 }
 
-/** Mirrors `provider.provider_operation_attempts` (migration 007, append-only). */
+/** Mirrors `provider.provider_operation_attempts` (migration 007 + 045, append-only). */
 export interface ProviderOperationAttemptsTable {
   id: string;
   tenant_id: string;
@@ -687,6 +697,8 @@ export interface ProviderOperationAttemptsTable {
   error_class: string | null;
   error_code: string | null;
   trace_ref: string | null;
+  /** Crash-frontier marker mirrored from the dispatch send (migration 045). */
+  dispatch_started_at: Date | null;
 }
 
 /** Mirrors `provider.provider_evidence` (migration 007, postcondition readbacks). */

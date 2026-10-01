@@ -305,8 +305,19 @@ describe.skipIf(!hasDb)("Wave 10 Finance/Unit-Economics (requires TEST_DATABASE_
     delete process.env["ASAAS_ECHO_RECONCILE"];
     delete process.env["ASAAS_ECHO_REFUND"];
     delete process.env["ASAAS_ECHO_REFUND_RECONCILE"];
+    // FASE5-S6-FIX2: bounded hygiene drain — `drain(limit)` takes a row
+    // COUNT, not a time budget, and publishes serially, so an unbounded
+    // teardown drain overruns the hook timeout. Capped at ~6s wall-clock
+    // so budget-capped oldest-first drains (scheduler tick, loop-drains)
+    // keep converging on the shared table. No assertion observes drained
+    // delivery; outbox assertions are tenant-scoped.
     if (hasDb && drainer !== undefined) {
-      await drainer.drain(1000).catch(() => undefined);
+      const drainBudgetUntil = Date.now() + 6000;
+      for (;;) {
+        if (Date.now() >= drainBudgetUntil) break;
+        const drained = await drainer.drain(50).catch(() => undefined);
+        if (drained === undefined || drained.claimed === 0) break;
+      }
     }
     await app?.close().catch(() => undefined);
     await (db as unknown as { destroy: () => Promise<void> }).destroy?.().catch(() => undefined);
@@ -389,6 +400,10 @@ describe.skipIf(!hasDb)("Wave 10 Finance/Unit-Economics (requires TEST_DATABASE_
     expect(touch.statusCode).toBe(201);
 
     // Active subscription + cycle with provider cost for C1.
+    // Cycle starts at "now" (not now-1d): PROVIDER_COGS occurred_at =
+    // cycle.starts_at and the overview sums occurred_at >= monthStart, so a
+    // now-1d start falls in the previous month when the suite runs on the
+    // 1st and drops the 900 provider cost from monthCost (1950 -> 1050).
     const subscriptionId = newId();
     await db
       .insertInto("subscription.subscriptions")
@@ -399,8 +414,8 @@ describe.skipIf(!hasDb)("Wave 10 Finance/Unit-Economics (requires TEST_DATABASE_
         plan_id: planMonthly,
         originating_order_id: orderP1,
         status: "ACTIVE",
-        started_at: new Date(Date.now() - 86_400_000),
-        current_period_start: new Date(Date.now() - 86_400_000),
+        started_at: new Date(),
+        current_period_start: new Date(),
         current_period_end: new Date(Date.now() + 29 * 86_400_000),
         cancel_at_period_end: false,
         cancelled_at: null,
@@ -416,7 +431,7 @@ describe.skipIf(!hasDb)("Wave 10 Finance/Unit-Economics (requires TEST_DATABASE_
         tenant_id: tenantA,
         subscription_id: subscriptionId,
         cycle_no: 1,
-        starts_at: new Date(Date.now() - 86_400_000),
+        starts_at: new Date(),
         ends_at: new Date(Date.now() + 29 * 86_400_000),
         renewal_order_id: null,
         status: "ACTIVE",
