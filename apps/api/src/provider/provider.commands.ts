@@ -1085,11 +1085,32 @@ async function handleResolve(
     };
   }
   if (input.outcome === "UNKNOWN") {
-    const updated = await updateProviderOperation(ctx, operation.id, {
-      status: "VERIFYING",
-      effectCertainty: "UNKNOWN",
-      resultSummary: { ...(operation.resultSummary ?? {}), resolve_note: input.note ?? null },
-    });
+    // FASE5-FIX4-N4 (SPEC §16): the park is fenced on the status observed
+    // at read time — a concurrent `reconcileOnce` convergence (CAS-fenced
+    // on VERIFYING) that terminalized the row between the read and this
+    // write makes the fenced write lose (null) instead of overwriting
+    // convergence back to VERIFYING with a stale merged resultSummary.
+    // Snapshot the observation BEFORE the write: on the memory store
+    // `operation` is a live row reference, so a concurrent move would
+    // otherwise rewrite both the fence predicate and the loser message.
+    const observedStatus = operation.status;
+    const updated = await updateProviderOperation(
+      ctx,
+      operation.id,
+      {
+        status: "VERIFYING",
+        effectCertainty: "UNKNOWN",
+        resultSummary: { ...(operation.resultSummary ?? {}), resolve_note: input.note ?? null },
+      },
+      { expectedStatuses: [observedStatus] },
+    );
+    if (updated === null) {
+      return {
+        ok: false,
+        code: "precondition_failed",
+        message: `operation changed concurrently (observed ${observedStatus}); retry against current state`,
+      };
+    }
     await insertProviderAttempt(ctx, { operationId: operation.id, status: "VERIFYING", errorCode: "EFFECT_UNKNOWN" });
     // No `verification_required` public event exists (known catalog gap):
     // audit-only by design.

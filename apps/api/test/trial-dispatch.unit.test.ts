@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommandActor } from "@iptv/domain";
 import { CommandBus, type CommandHandlerContext } from "../src/commands/command-bus.js";
 import { registerCrmCommands } from "../src/crm/crm.commands.js";
@@ -14,7 +14,8 @@ import type { ProviderReadbackPort } from "../src/provider/provider-port.js";
 import { buildDispatchPortPayload, TRIAL_CAPABILITY_KEY } from "../src/provider/provider-secret-gate.js";
 import { SECRET_REQUIRED_ADAPTER_VERSION } from "../src/provider/provider-port.js";
 import type { AdapterResult, ProviderOperationRequest, ProviderOpsPort } from "../src/provider/provider-port.js";
-import { trialMemoryOf, insertProviderOperation } from "../src/trial/trial-store.js";
+import { trialMemoryOf, insertProviderOperation, updateProviderOperation } from "../src/trial/trial-store.js";
+import * as trialStore from "../src/trial/trial-store.js";
 import { MemoryDb } from "./fakes/memory-fakes.js";
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
@@ -1734,5 +1735,142 @@ describe("FASE5-FIX4-N3 an arbitrary newer op never blocks the provision op reso
     expect(resolved).toMatchObject({ ok: true, data: { status: "FAILED", resumedTrial: false } });
     expect(mem.trials.get(trialId)?.lifecycleStatus).toBe("PROVISIONING");
     expect(db.txFor(TENANT).events.map((e) => e.event_type)).not.toContain("trial.activated.v1");
+  });
+});
+
+describe("FASE5-FIX4-N4 resolve UNKNOWN is fenced on the observed status (loser never overwrites convergence)", () => {
+  function setupEchoBus(): { db: MemoryDb; bus: CommandBus } {
+    const db = new MemoryDb();
+    const bus = new CommandBus(db);
+    registerHumanReviewCommands(bus);
+    registerPolicyCommands(bus);
+    registerCrmCommands(bus);
+    registerTrialCommands(bus, { opsPort: new EchoProviderOpsAdapter() });
+    registerProviderCommands(bus, { opsPort: new EchoProviderOpsAdapter() });
+    return { db, bus };
+  }
+
+  async function parkEchoProvision(bus: CommandBus, canonicalName: string): Promise<{ trialId: string; operationId: string }> {
+    const personRes = await bus.execute<{ id: string }>(actor(), "person.register", { canonicalName });
+    if (!personRes.ok) throw new Error("person setup failed");
+    const trialRes = await bus.execute<{ id: string | null }>(actor(), "trial.request", {
+      personId: personRes.data.id,
+      durationMinutes: 60,
+    });
+    if (!trialRes.ok || trialRes.data.id === null) throw new Error("trial setup failed");
+    const parked = await bus.execute<{ operationId: string }>(actor(), "trial.begin_provisioning", {
+      trialId: trialRes.data.id,
+      echoOutcome: "unknown",
+    });
+    if (!parked.ok) throw new Error(`expected VERIFYING park: ${dumped(parked)}`);
+    return { trialId: trialRes.data.id, operationId: parked.data.operationId };
+  }
+
+  it("fenced updateProviderOperation returns null and writes nothing when the row status moved", async () => {
+    const { db, bus } = setupEchoBus();
+    const { operationId } = await parkEchoProvision(bus, "N4 Fence Store Trial");
+    const { mem, ctx } = probeTrialMemory(db);
+    expect(mem.providerOperations.get(operationId)?.status).toBe("VERIFYING");
+    // A matching fence still writes (sanity: fenced winners proceed).
+    const winner = await updateProviderOperation(
+      ctx,
+      operationId,
+      { status: "VERIFYING", effectCertainty: "UNKNOWN", resultSummary: { resolve_note: "n4-winner" } },
+      { expectedStatuses: ["VERIFYING"] },
+    );
+    expect(winner?.status).toBe("VERIFYING");
+    expect(winner?.resultSummary).toEqual({ resolve_note: "n4-winner" });
+    // The row converges elsewhere (reconcile terminalizes VERIFYING).
+    const converged = await updateProviderOperation(ctx, operationId, {
+      status: "SUCCEEDED",
+      effectCertainty: "KNOWN_APPLIED",
+      completed: true,
+    });
+    expect(converged?.status).toBe("SUCCEEDED");
+    const rowBefore = dumped(mem.providerOperations.get(operationId));
+    // A stale writer fenced on the old VERIFYING observation loses: null,
+    // zero mutation of any kind.
+    const loser = await updateProviderOperation(
+      ctx,
+      operationId,
+      { status: "VERIFYING", effectCertainty: "UNKNOWN", resultSummary: { resolve_note: "n4-stale" } },
+      { expectedStatuses: ["VERIFYING"] },
+    );
+    expect(loser).toBeNull();
+    expect(dumped(mem.providerOperations.get(operationId))).toBe(rowBefore);
+    // An unfenced writer keeps the historical unconditional semantics.
+    const unfenced = await updateProviderOperation(ctx, operationId, {
+      status: "VERIFYING",
+      effectCertainty: "UNKNOWN",
+    });
+    expect(unfenced?.status).toBe("VERIFYING");
+  });
+
+  it("resolve UNKNOWN loses the race instead of overwriting convergence: precondition_failed, no attempt, row untouched", async () => {
+    const { db, bus } = setupEchoBus();
+    const { operationId } = await parkEchoProvision(bus, "N4 Resolve Race Trial");
+    const { mem } = probeTrialMemory(db);
+    const attemptsBefore = mem.providerAttempts.filter((a) => a.operationId === operationId).length;
+    const eventsBefore = db.txFor(TENANT).events.length;
+    // Interleave a concurrent `reconcileOnce` convergence (VERIFYING →
+    // SUCCEEDED) between the resolve's read and its fenced write — the
+    // same race the CAS-fenced R4 convergence test drives, from the other
+    // side of the interleaving.
+    const original = trialStore.updateProviderOperation;
+    const spy = vi.spyOn(trialStore, "updateProviderOperation").mockImplementationOnce(async (ctx, opId, patch, fence) => {
+      const raced = mem.providerOperations.get(opId);
+      if (raced !== undefined) {
+        raced.status = "SUCCEEDED";
+        raced.effectCertainty = "KNOWN_APPLIED";
+        raced.completedAt = new Date();
+        raced.resultSummary = { reconcile_outcome: "APPLIED", effect_applied: true };
+      }
+      return original(ctx, opId, patch, fence);
+    });
+    try {
+      const resolved = await bus.execute(actor(), "provider.resolve_operation", {
+        operationId,
+        outcome: "UNKNOWN",
+        note: "n4-stale-resolve",
+      });
+      expect(resolved).toMatchObject({
+        ok: false,
+        code: "precondition_failed",
+      });
+      if (resolved.ok) throw new Error("expected the stale resolve to lose");
+      expect(resolved.message).toContain("operation changed concurrently (observed VERIFYING)");
+    } finally {
+      spy.mockRestore();
+    }
+    // The convergence survived: no VERIFYING overwrite, no stale merged
+    // resolve_note, no attempt, no event.
+    expect(mem.providerOperations.get(operationId)?.status).toBe("SUCCEEDED");
+    expect(mem.providerOperations.get(operationId)?.resultSummary).toEqual({
+      reconcile_outcome: "APPLIED",
+      effect_applied: true,
+    });
+    expect(mem.providerAttempts.filter((a) => a.operationId === operationId)).toHaveLength(attemptsBefore);
+    expect(db.txFor(TENANT).events).toHaveLength(eventsBefore);
+  });
+
+  it("resolve UNKNOWN happy path still parks VERIFYING and returns resumedTrial:false", async () => {
+    const { db, bus } = setupEchoBus();
+    const { operationId } = await parkEchoProvision(bus, "N4 Resolve Happy Trial");
+    const { mem } = probeTrialMemory(db);
+    const attemptsBefore = mem.providerAttempts.filter((a) => a.operationId === operationId).length;
+    const resolved = await bus.execute<{ status: string; effectCertainty: string; resumedTrial: boolean }>(
+      actor(),
+      "provider.resolve_operation",
+      { operationId, outcome: "UNKNOWN", note: "n4-park" },
+    );
+    expect(resolved).toMatchObject({
+      ok: true,
+      data: { status: "VERIFYING", effectCertainty: "UNKNOWN", resumedTrial: false },
+    });
+    expect(mem.providerOperations.get(operationId)?.status).toBe("VERIFYING");
+    expect(mem.providerOperations.get(operationId)?.resultSummary).toMatchObject({ resolve_note: "n4-park" });
+    const attempts = mem.providerAttempts.filter((a) => a.operationId === operationId);
+    expect(attempts).toHaveLength(attemptsBefore + 1);
+    expect(attempts[attempts.length - 1]).toMatchObject({ status: "VERIFYING", errorCode: "EFFECT_UNKNOWN" });
   });
 });

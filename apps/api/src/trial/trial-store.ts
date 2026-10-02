@@ -1277,6 +1277,17 @@ export async function countProviderOperationsForEntity(
   ).length;
 }
 
+/**
+ * Unconditional provider-operation write — EXCEPT when the caller passes
+ * `fence.expectedStatuses`, which turns this into a conditional write.
+ *
+ * FASE5-FIX4-N4 (SPEC §16): a fenced writer revalidates the row status it
+ * observed at read time (`UPDATE ... WHERE tenant/id AND status IN (...)`
+ * on Kysely; a status pre-check on memory). Zero affected rows / a moved
+ * row returns null WITHOUT mutating, so a stale writer (e.g. a resolve
+ * racing a reconcile convergence) loses instead of overwriting convergence.
+ * Unfenced callers keep the historical unconditional semantics.
+ */
 export async function updateProviderOperation(
   ctx: CommandHandlerContext,
   operationId: string,
@@ -1288,10 +1299,11 @@ export async function updateProviderOperation(
     started?: boolean;
     completed?: boolean;
   },
+  fence?: { expectedStatuses: readonly string[] },
 ): Promise<ProviderOperationRow | null> {
   const trx = kyselyTrxOf(ctx);
   if (trx !== null) {
-    const row = await trx
+    let query = trx
       .updateTable("provider.provider_operations")
       .set({
         status: patch.status,
@@ -1302,9 +1314,11 @@ export async function updateProviderOperation(
         ...(patch.completed === true ? { completed_at: now() } : {}),
       })
       .where("tenant_id", "=", ctx.tenantId)
-      .where("id", "=", operationId)
-      .returning(OPERATION_COLUMNS)
-      .executeTakeFirst();
+      .where("id", "=", operationId);
+    if (fence !== undefined) {
+      query = query.where("status", "in", [...fence.expectedStatuses]);
+    }
+    const row = await query.returning(OPERATION_COLUMNS).executeTakeFirst();
     return row === undefined ? null : toOperationRow(ctx.tenantId, row);
   }
   const mem = trialMemoryOf(ctx);
@@ -1313,6 +1327,9 @@ export async function updateProviderOperation(
   }
   const row = mem.providerOperations.get(operationId);
   if (row === undefined || row.tenantId !== ctx.tenantId) {
+    return null;
+  }
+  if (fence !== undefined && !fence.expectedStatuses.includes(row.status)) {
     return null;
   }
   row.status = patch.status;
