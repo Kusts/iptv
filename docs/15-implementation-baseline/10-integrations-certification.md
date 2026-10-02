@@ -67,14 +67,14 @@ The [CINEVISION Provider Runtime Hardening](../04-specs/integrations/cinevision-
 
 Closure state: CI green (path-semantics fix in the browser-worker profile isolation tests; ubuntu-latest now validates Windows deployment paths via explicit `pathSemantics`), API hardening FIX4-N5 landed (reconcile may only re-arm a trial from a readback anchored by a persisted `external_ref`; anchorless uncertainty converges `HUMAN_REQUIRED`). Review round added a RUNTIME BOUNDARY: `resolveWorkerConfig`/`defaultProfileRoot` fail closed when the profile-root namespace does not match the host platform (on posix a windows path is a relative filename to the native fs and could land inside the checkout); pure cross-host policy validation remains available for tests. No live CINEVISION credentials or session were available in this round — no evidence was fabricated and nothing was marked certified. Worker remains GET-only; the `createTrial` real write stays gated.
 
-Agreed execution order (2026-10-02 operator decision): the remaining closure-round LOW findings do NOT trigger another engineering round before Fase 6. Two of them are registered as post-certification hardening backlog in `19-open-items-and-validation.md` (HITL surfacing of `HUMAN_REQUIRED` provider operations; `PROVIDER_DISPATCH_MODE` production fail-fast) and certification gates change ONLY in the final step below, after every evidence field is filled from live observation.
+Agreed execution order (2026-10-02 operator decision): the remaining closure-round LOW findings do NOT trigger another engineering round before Fase 6. Two of them are registered as post-certification hardening backlog in `19-open-items-and-validation.md` (HITL surfacing of `HUMAN_REQUIRED` provider operations; `PROVIDER_DISPATCH_MODE` production fail-fast) and certification gates change ONLY in the final step below, after every evidence field is filled from live observation. Additionally: NO disposable CINEVISION panel account exists (2026-10-02 operator decision) — the canary runs against the operator's MAIN panel account as the designated account, with the compensating controls and cleanup step below; the account-level fence in code is unchanged.
 
-#### Fase 6 canary — exact operator procedure (run only on the disposable account)
+#### Fase 6 canary — exact operator procedure (run only against the designated account)
 
 Prerequisites (all mandatory, fail-closed if missing):
 
 1. W0-09 unblock path resolved (rested/clean IP + interactive challenge solved inside the bounded window, or real-Chrome channel, or a different network); the operator then obtains a legitimate panel session manually. Re-run the read-identity CLI probe first and require JSON (a 403 HTML challenge aborts the procedure).
-2. Disposable CINEVISION account designated: `PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID` pointing at an ACTIVE account of the test tenant; the account balance and any plan/charge page noted BEFORE the canary.
+2. Designated account: no disposable panel account exists, so `PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID` names the operator's MAIN CINEVISION account (ACTIVE) — env name kept for compatibility; semantics: the designated canary account. The fence is unchanged in code: only that account may receive the real trial dispatch. Compensating controls: account balance and any plan/charge page noted BEFORE the canary; the canary customer is identifiable by its readback external id (plus an explicit `canary-fase6` username marker in the payload when the wired adapter allows it), deleted from the panel in the cleanup step, and the trial self-expires in ≤6h if deletion is ever missed.
 3. `provider.cinevision.trial` capability flipped `AVAILABLE` ONLY for the canary window (migration/seed path records the event), reverted immediately after; the row stays `UNCERTIFIED` until the final step. Record the state of BOTH gate rows before the flip — the global `provider.cinevision` row (migration 044, read by the domain seams) and the per-action `provider.cinevision.trial` row (migration 046, the strict per-action gate).
 4. `PROVIDER_DISPATCH_MODE=durable` (the dispatcher is the only certified executor), fresh `TEST_DATABASE_URL`-equivalent staging DB, API logs captured to file.
 
@@ -104,7 +104,8 @@ Step 5 — real executor wiring (engineering gate BEFORE the canary):
 Step 6 — controlled canary trial (single operation):
 
 - Record the panel customer count as the pre-canary baseline (the Step 3 observation customer is included in it).
-- Trigger exactly ONE `trial.provision` through the staging API against the disposable account; watch the dispatcher drain it (platform-admin `POST /v1/admin/provider-dispatch/drain` — default limit 25, so one queued op drains in a single call — then `/reconcile`; `/recover` exists for crash-window/lease recovery and applies only if a lease is abandoned).
+- The trial customer IS the canary customer: record its panel username marker (`canary-fase6-…`) when the payload carries one, and its external id from the readback — the cleanup step deletes exactly this entry.
+- Trigger exactly ONE `trial.provision` through the staging API against the designated account; watch the dispatcher drain it (platform-admin `POST /v1/admin/provider-dispatch/drain` — default limit 25, so one queued op drains in a single call — then `/reconcile`; `/recover` exists for crash-window/lease recovery and applies only if a lease is abandoned).
 - Record, per operation: provider result outcome, readback snapshot (customer found? trial flag? expiration observed?), postcondition verdict, and the financial effect (account balance before/after, any charge line created — expected: none for a trial). A bare HTTP 200 must never terminalize the operation.
 
 Step 7 — confirm postconditions and internal state (readback + PostgreSQL):
@@ -120,6 +121,12 @@ Step 9 — uncertainty drill (only if it can be done without a second real write
 
 - Induce one timeout/UNKNOWN (e.g., command budget below the panel's response time) and verify the operation parks `VERIFYING/UNKNOWN`, reconcile converges `HUMAN_REQUIRED`, and NO second POST is sent (worker/proxy request count must stay at 1).
 - Note: resolving a parked operation is manual today (`POST /v1/provider/operations/:id/resolve`); surfacing these in the HITL center is registered hardening backlog, not a Fase 6 blocker.
+
+Cleanup step — close the canary window (before or together with the final step):
+
+- Delete the canary customer from the panel (UI, by its recorded external id / `canary-fase6` marker) and confirm via a customer list read that the count is back to the pre-canary baseline.
+- Re-check the account balance/charge page: still no charge line attributable to the canary.
+- Revert the `provider.cinevision.trial` flip (records the event). Any deletion failure is recorded as a limitation with the natural ≤6h trial expiry noted.
 
 Final step — certification gate changes, only now:
 
@@ -144,6 +151,7 @@ Evidence template (fill every field, attach raw captures without secrets):
 - pre-canary panel customer baseline: ____
 - idempotency evidence (replay 409 / post-SUCCEEDED refusal / one additional customer vs baseline): ____
 - UNKNOWN drill result (park → reconcile → HUMAN_REQUIRED, single send) or recorded limitation: ____
+- cleanup (canary customer deleted, count back to baseline, balance re-checked, gate flip reverted): ____
 
 ## MK Ativador gate
 

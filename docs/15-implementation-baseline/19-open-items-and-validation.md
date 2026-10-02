@@ -40,6 +40,7 @@ Registered 2026-10-02 as an operator decision: neither item blocks the Fase 6 li
 
 - `HUMAN_REQUIRED` provider operations are invisible to the HITL center: its read model aggregates only `human_review`, `comm_exception`, `billing_exception` and `recovery_task` (`apps/api/src/human-review/human-review.controller.ts`), so resolution depends on technical polling plus the per-id `POST /v1/provider/operations/:id/resolve`. Backlog: surface provider operations parked in `HUMAN_REQUIRED` in the HITL center so a problem operation reaches the operator without polling.
 - `PROVIDER_DISPATCH_MODE` silently falls back to `inline` (`apps/api/src/provider/provider-port.ts` treats anything other than `durable` as inline, including empty or mistyped values), while the durable dispatcher is the only certified executor for real writes. Backlog before broad production: a startup/readiness check or explicit production configuration that fails fast when the expected mode is not set.
+- No disposable CINEVISION panel account exists (2026-10-02 operator decision): the Fase 6 canary runs against the operator's main account under the designated-account fence (`PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID`, code unchanged) with compensating controls — marked + deleted canary customer, short 046 gate window, balance before/after. Before broad production: obtain a test sub-account from the panel owner or an equivalent isolation improvement.
 
 ## Business validation during pilot
 
