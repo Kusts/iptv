@@ -1411,17 +1411,31 @@ describe("FASE5-FIX4-N1 reconcile of secret-required trial.provision schedules d
 describe("FASE5-FIX4-N1/N2 decideVerifyingTrialReconcile: pure R3 branch contract (no I/O)", () => {
   it("generic inconclusive → converge-human-required (never a re-send, never VERIFYING rewrite)", () => {
     expect(
-      decideVerifyingTrialReconcile({ conclusive: false, effectApplied: false }, null),
+      decideVerifyingTrialReconcile({ conclusive: false, effectApplied: false }, null, { externalRef: "ext-any" }),
     ).toEqual({ kind: "converge-human-required" });
   });
 
-  it("generic conclusive NOT_APPLIED → fail-not-applied (trial readback never consulted)", () => {
+  it("generic conclusive NOT_APPLIED WITH an external_ref anchor → fail-not-applied (trial readback never consulted)", () => {
     expect(
       decideVerifyingTrialReconcile(
         { conclusive: true, effectApplied: false },
         satisfiedReadback("ext-not-applied"),
+        { externalRef: "ext-persisted" },
       ),
     ).toEqual({ kind: "fail-not-applied" });
+  });
+
+  it("FIX4-N5: generic conclusive NOT_APPLIED WITHOUT an anchor → converge-human-required (never an automatic re-arm)", () => {
+    // Uncertainty parks persist result_summary WITHOUT external_ref: a
+    // conclusive "not applied" there is not proof - it must NOT re-arm the
+    // trial (REQUESTED) for a second real write.
+    expect(
+      decideVerifyingTrialReconcile(
+        { conclusive: true, effectApplied: false },
+        satisfiedReadback("ext-unanchored"),
+        { externalRef: null },
+      ),
+    ).toEqual({ kind: "converge-human-required" });
   });
 
   it("generic conclusive APPLIED + inconclusive trial readback → converge-human-required", () => {
@@ -1430,7 +1444,7 @@ describe("FASE5-FIX4-N1/N2 decideVerifyingTrialReconcile: pure R3 branch contrac
         conclusive: false,
         customer: null,
         evidence: "test:inconclusive",
-      }),
+      }, { externalRef: "ext-any" }),
     ).toEqual({ kind: "converge-human-required" });
   });
 
@@ -1440,16 +1454,18 @@ describe("FASE5-FIX4-N1/N2 decideVerifyingTrialReconcile: pure R3 branch contrac
         conclusive: true,
         customer: null,
         evidence: "test:null-customer",
-      }),
+      }, { externalRef: "ext-any" }),
     ).toEqual({ kind: "converge-human-required" });
     expect(
-      decideVerifyingTrialReconcile({ conclusive: true, effectApplied: true }, null),
+      decideVerifyingTrialReconcile({ conclusive: true, effectApplied: true }, null, { externalRef: "ext-any" }),
     ).toEqual({ kind: "converge-human-required" });
   });
 
   it("generic conclusive APPLIED + conclusive trial readback WITH customer → gate-succeeded (applier owns postconditions)", () => {
     const trialReadback = satisfiedReadback("ext-gate");
-    expect(decideVerifyingTrialReconcile({ conclusive: true, effectApplied: true }, trialReadback)).toEqual({
+    expect(
+      decideVerifyingTrialReconcile({ conclusive: true, effectApplied: true }, trialReadback, { externalRef: "ext-gate" }),
+    ).toEqual({
       kind: "gate-succeeded",
       trialReadback,
     });

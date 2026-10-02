@@ -716,7 +716,7 @@ export class ProviderDispatcherService {
           trialReadbackTimeoutMs,
         );
       }
-      const decision = decideVerifyingTrialReconcile(observed, trialReadback);
+      const decision = decideVerifyingTrialReconcile(observed, trialReadback, { externalRef });
       // ---- Phase B (short tx): CAS-fenced outcome application. ----------
       const outcome = await commandDb
         .withTransaction(row.tenantId, async (tx) => {

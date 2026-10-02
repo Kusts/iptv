@@ -1188,8 +1188,16 @@ function isSecretRequiredRow(operation: { adapterVersion: string | null }): bool
  *
  * - generic readback inconclusive → `converge-human-required` (S3, never a
  *   re-send, certainty stays UNKNOWN);
- * - generic conclusive NOT_APPLIED → `fail-not-applied` (FAILED/REQUESTED,
- *   no effect proven, trial readback never consulted);
+ * - generic conclusive NOT_APPLIED WITH a persisted `external_ref` anchor
+ *   → `fail-not-applied` (FAILED/REQUESTED, no effect proven, trial
+ *   readback never consulted);
+ * - generic conclusive NOT_APPLIED WITHOUT an anchor →
+ *   `converge-human-required` (FIX4-N5: the timeout/uncertainty parks
+ *   persist `result_summary_json` WITHOUT `external_ref` - a "not applied"
+ *   answer on such a row is indistinguishable from having observed the
+ *   wrong resource or stale provider state. Treating it as proof would
+ *   re-arm the trial (REQUESTED) and authorize a SECOND real write from
+ *   uncertainty (SPEC §16/§39). Without the anchor only a human decides);
  * - generic conclusive APPLIED + conclusive trial readback WITH a customer
  *   → `gate-succeeded` (postcondition + binding owned by the applier);
  * - generic conclusive APPLIED but trial readback absent/inconclusive OR
@@ -1203,14 +1211,27 @@ export type VerifyingTrialReconcileDecision =
   | { kind: "fail-not-applied" }
   | { kind: "gate-succeeded"; trialReadback: TrialReadbackResult };
 
+/**
+ * `anchor.externalRef` is the provider-acknowledged reference persisted in
+ * `result_summary_json.external_ref`. It is REQUIRED (not optional) so a
+ * future caller cannot "forget" it: without an anchor the NOT_APPLIED
+ * branch is unreachable and the decision fails closed to HITL.
+ */
 export function decideVerifyingTrialReconcile(
   observed: { conclusive: boolean; effectApplied: boolean },
   trialReadback: TrialReadbackResult | null,
+  anchor: { externalRef: string | null },
 ): VerifyingTrialReconcileDecision {
   if (observed.conclusive !== true) {
     return { kind: "converge-human-required" };
   }
   if (!observed.effectApplied) {
+    // FIX4-N5: no identity anchor → the readback cannot be tied to THIS
+    // operation's external effect; "not applied" is not proof. Converge to
+    // HUMAN_REQUIRED - never an automatic re-arm for a second real write.
+    if (anchor.externalRef === null) {
+      return { kind: "converge-human-required" };
+    }
     return { kind: "fail-not-applied" };
   }
   if (trialReadback === null || trialReadback.conclusive !== true || trialReadback.customer === null) {

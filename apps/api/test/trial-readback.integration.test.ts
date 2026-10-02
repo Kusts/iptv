@@ -11,6 +11,7 @@ import { registerPolicyCommands } from "../src/policy/policy.commands.js";
 import { registerTrialCommands } from "../src/trial/trial.commands.js";
 import { registerProviderCommands } from "../src/provider/provider.commands.js";
 import { ProviderDispatcherService } from "../src/provider/provider-dispatcher.service.js";
+import { PROVIDER_CALL_UNCERTAIN_CODE } from "../src/provider/provider-secret-gate.js";
 import type {
   AdapterResult,
   ProviderOperationRequest,
@@ -484,11 +485,23 @@ describe.skipIf(!hasDb)("FASE5-S6 trial readback postcondition gate on Postgres 
     expect(await getBindings(tenantId, trialId)).toHaveLength(0);
   });
 
-  it("FIX4-R3: reconcileOnce conclusive NOT_APPLIED → FAILED with the trial back in REQUESTED", async () => {
+  it("FIX4-R3: reconcileOnce conclusive NOT_APPLIED WITH an external_ref anchor → FAILED with the trial back in REQUESTED", async () => {
     readback.mode = "inconclusive";
     const callsBefore = browser.calls.length;
     const { tenantId, accountId, trialId, operationId } = await parkTrialProvision(`rec-na-${suffix}`);
     expect((await dispatcher.drainOnce(10, drainOverrides(accountId))).verifying).toBe(1);
+    // FIX4-N5: the re-arm (FAILED → REQUESTED) is only licensed by a
+    // persisted provider-acknowledged anchor. No park persists one today
+    // (deliberate fail-closed default while the real readback port is not
+    // live), so this test pins the ANCHORED contract explicitly: when a
+    // future port persists `external_ref` in the park, a conclusive
+    // NOT_APPLIED tied to that anchor is actionable evidence.
+    await db
+      .updateTable("provider.provider_operations")
+      .set({ result_summary_json: { external_ref: "op-anchor-itest" } })
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", operationId)
+      .execute();
 
     const reconciled = await dispatcher.reconcileOnce(100, {
       ...drainOverrides(accountId),
@@ -501,6 +514,41 @@ describe.skipIf(!hasDb)("FASE5-S6 trial readback postcondition gate on Postgres 
     expect(op.status).toBe("FAILED");
     expect(op.effect_certainty).toBe("KNOWN_NOT_APPLIED");
     expect((await getTrial(tenantId, trialId)).lifecycle_status).toBe("REQUESTED");
+  });
+
+  it("FIX4-N5: uncertainty park WITHOUT external_ref + conclusive NOT_APPLIED readback → HUMAN_REQUIRED (never FAILED, never a re-arm)", async () => {
+    readback.mode = "inconclusive";
+    const callsBefore = browser.calls.length;
+    const { tenantId, accountId, trialId, operationId } = await parkTrialProvision(`rec-n5-${suffix}`);
+    expect((await dispatcher.drainOnce(10, drainOverrides(accountId))).verifying).toBe(1);
+
+    // Rewrite the row into the SHAPE the timeout/crash parks persist:
+    // result_summary_json carries only the uncertainty code - no
+    // `external_ref` anchor. A "not applied" readback on this row cannot
+    // be tied to THIS operation's external effect.
+    await db
+      .updateTable("provider.provider_operations")
+      .set({ result_summary_json: { error_code: PROVIDER_CALL_UNCERTAIN_CODE } })
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", operationId)
+      .execute();
+
+    const reconciled = await dispatcher.reconcileOnce(100, {
+      ...drainOverrides(accountId),
+      readbackPort: new ConclusiveGenericReadback(false),
+    });
+    expect(reconciled.operationIds).toContain(operationId);
+    expect(reconciled.humanRequired).toBeGreaterThanOrEqual(1);
+    expect(browser.calls).toHaveLength(callsBefore + 1);
+    const op = await getOp(tenantId, operationId);
+    // FIX4-N5: without an identity anchor the decision fails closed to
+    // HITL - the trial is NOT re-armed for a possible second real write.
+    expect(op.status).toBe("HUMAN_REQUIRED");
+    expect(op.status).not.toBe("FAILED");
+    expect(op.effect_certainty).toBe("UNKNOWN");
+    const trial = await getTrial(tenantId, trialId);
+    expect(trial.lifecycle_status).toBe("PROVISIONING");
+    expect(await getBindings(tenantId, trialId)).toHaveLength(0);
   });
 
   it("FIX5: hanging generic verify converges HUMAN_REQUIRED inside the budget (never wedges recovery)", async () => {
