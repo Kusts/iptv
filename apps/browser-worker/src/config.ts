@@ -19,13 +19,28 @@
  * hatch (tests, unusual layouts): it must be absolute and is validated
  * like the default (inside the user container on Windows, never inside
  * the repo checkout, never a dangerous ancestor).
+ *
+ * Path policy is decided by the SEMANTICS OF THE PATH, not by the host OS
+ * (`./pathSemantics.js`): a Windows deployment path (`D:/...`, UNC) is
+ * validated with the win32 rules on every host, so the same config is
+ * accepted in CI and in production. Host-fs comparisons (repo checkout,
+ * home dir) apply only when the path semantics matches the host namespace.
+ * Every fail-closed guarantee is preserved and errors never echo the value.
  */
 
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { isAbsolute, join, parse, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { BINDING_PROVIDER } from "./constants.js";
+import {
+  detectPathSemantics,
+  hasWindowsPathMarker,
+  pathApiFor,
+  pathApiForPath,
+  type PathApi,
+  type PathSemantics,
+} from "./pathSemantics.js";
 import { normalizeLoginPath } from "./policy.js";
 
 export interface WorkerConfig {
@@ -124,17 +139,50 @@ export function isWorkerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env["BROWSER_WORKER_ENABLED"] === "1";
 }
 
-/** User container whose ACLs isolate the profile on this platform. */
-export function userContainerDir(env: NodeJS.ProcessEnv = process.env): string {
-  if (platform() === "win32") {
-    const base = env["LOCALAPPDATA"] ?? join(homedir(), "AppData", "Local");
-    return resolve(base);
+/** Host namespace: win32 on Windows, posix elsewhere. */
+function hostPathSemantics(): PathSemantics {
+  return platform() === "win32" ? "windows" : "posix";
+}
+
+/**
+ * Container semantics inferred from env alone (no host fallback for the
+ * Windows variables): `LOCALAPPDATA` (or `XDG_STATE_HOME`) carrying an
+ * unambiguous Windows marker selects windows; otherwise the host default.
+ * This is what makes `defaultProfileRoot({ LOCALAPPDATA: "D:/..." })`
+ * deterministic on Linux as well as on Windows.
+ */
+function containerSemanticsFromEnv(env: NodeJS.ProcessEnv): PathSemantics {
+  for (const name of ["LOCALAPPDATA", "XDG_STATE_HOME"] as const) {
+    const raw = env[name];
+    if (raw !== undefined && hasWindowsPathMarker(raw.trim())) return "windows";
   }
+  return hostPathSemantics();
+}
+
+/**
+ * User container whose ACLs isolate the profile. Explicit `semantics` wins
+ * (windows container = `%LOCALAPPDATA%` or `~/AppData/Local`; posix
+ * container = `$XDG_STATE_HOME` or `~/.local/state`), joined and resolved
+ * with that namespace's api. When omitted, semantics come from
+ * `containerSemanticsFromEnv` so the Windows deployment layout stays
+ * deterministic on a posix host.
+ */
+export function userContainerDir(
+  env: NodeJS.ProcessEnv = process.env,
+  semantics: PathSemantics = containerSemanticsFromEnv(env),
+): string {
+  if (semantics === "windows") {
+    const api = pathApiFor("windows");
+    const raw = env["LOCALAPPDATA"];
+    const base = raw !== undefined && raw.trim().length > 0 ? raw.trim() : api.join(homedir(), "AppData", "Local");
+    return api.resolve(base);
+  }
+  const api = pathApiFor("posix");
   const xdg = env["XDG_STATE_HOME"];
   if (xdg !== undefined && xdg.trim().length > 0) {
-    return resolve(xdg.trim());
+    return api.resolve(xdg.trim());
   }
-  return resolve(join(homedir(), ".local", "state"));
+  return api.resolve(api.join(homedir(), ".local", "state"));
 }
 
 /** Walk up from `startDir` looking for the repo checkout root. */
@@ -150,35 +198,50 @@ export function findRepoRoot(startDir: string = process.cwd()): string | null {
   }
 }
 
-/** True when `candidate` is `base` or nested inside it. */
-function isInsideOrEqual(base: string, candidate: string): boolean {
-  const rel = relative(base, candidate);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+/** True when `candidate` is `base` or nested inside it (namespace-aware). */
+function isInsideOrEqual(api: PathApi, base: string, candidate: string): boolean {
+  const rel = api.relative(base, candidate);
+  return rel === "" || (!rel.startsWith("..") && !api.isAbsolute(rel));
 }
 
 /**
  * Validate a profile root: absolute, not a dangerous ancestor (fs root,
- * home dir itself), never inside the repo checkout, and â€” on Windows â€”
- * inside the `%LOCALAPPDATA%` user container. Returns the resolved path.
- * Throws `ConfigError` with fixed words (never echoes the value).
+ * home dir itself), never inside the repo checkout, and â€” in the Windows
+ * namespace â€” strictly inside the `%LOCALAPPDATA%` user container. Returns
+ * the resolved path (in the path's own semantics). Throws `ConfigError` with
+ * fixed words (never echoes the value).
+ *
+ * `opts.semantics` pins the namespace; otherwise it is detected from the
+ * path itself, so a Windows deployment path validates identically on a
+ * posix host. Host-fs guards (repo checkout, home dir) only apply when the
+ * host namespace matches the path namespace.
  */
-export function validateProfileRoot(root: string, env: NodeJS.ProcessEnv = process.env): string {
+export function validateProfileRoot(
+  root: string,
+  env: NodeJS.ProcessEnv = process.env,
+  opts: { semantics?: PathSemantics } = {},
+): string {
   const trimmed = root.trim();
-  if (trimmed.length === 0 || !isAbsolute(trimmed)) {
+  const api = opts.semantics !== undefined ? pathApiFor(opts.semantics) : pathApiForPath(trimmed);
+  if (trimmed.length === 0 || !api.isAbsolute(trimmed)) {
     throw new ConfigError("PROFILE_ROOT must be an absolute path");
   }
-  const resolved = resolve(trimmed);
-  const fsRoot = parse(resolved).root;
-  if (resolved === fsRoot || resolved === resolve(homedir())) {
+  const resolved = api.resolve(trimmed);
+  if (resolved === api.parse(resolved).root) {
+    throw new ConfigError("PROFILE_ROOT must not be a filesystem or home root");
+  }
+  if (api.semantics === hostPathSemantics() && resolved === pathApiFor(api.semantics).resolve(homedir())) {
     throw new ConfigError("PROFILE_ROOT must not be a filesystem or home root");
   }
   const repoRoot = findRepoRoot();
-  if (repoRoot !== null && isInsideOrEqual(repoRoot, resolved)) {
-    throw new ConfigError("PROFILE_ROOT must stay outside the repo checkout");
+  if (repoRoot !== null && detectPathSemantics(repoRoot) === api.semantics) {
+    if (isInsideOrEqual(api, repoRoot, resolved)) {
+      throw new ConfigError("PROFILE_ROOT must stay outside the repo checkout");
+    }
   }
-  if (platform() === "win32") {
-    const container = userContainerDir(env);
-    if (!isInsideOrEqual(container, resolved) || resolved === container) {
+  if (api.semantics === "windows") {
+    const container = userContainerDir(env, "windows");
+    if (!isInsideOrEqual(api, container, resolved) || resolved === container) {
       throw new ConfigError("PROFILE_ROOT_OUTSIDE_USER_CONTAINER");
     }
   }
@@ -231,22 +294,30 @@ export function assertSecretUrlAllowed(secretUrl: string, allowedOrigin: string)
 /**
  * Platform profile root OUTSIDE the repo. `BROWSER_WORKER_PROFILE_ROOT`
  * is a restricted override: when set it must still pass
- * `validateProfileRoot`.
+ * `validateProfileRoot`. The namespace is inferred (override markers, else
+ * env markers, else the host), so a Windows deployment layout resolves to
+ * the same Windows path on Linux CI and in production.
  */
 export function defaultProfileRoot(env: NodeJS.ProcessEnv = process.env): string {
   const override = env["BROWSER_WORKER_PROFILE_ROOT"];
   if (override !== undefined && override.trim().length > 0) {
-    return validateProfileRoot(override, env);
+    return validateProfileRoot(override, env, { semantics: detectPathSemantics(override.trim()) });
   }
-  if (platform() === "win32") {
-    return validateProfileRoot(join(userContainerDir(env), "iptv", "browser-worker", "profiles"), env);
-  }
-  return validateProfileRoot(join(userContainerDir(env), "iptv-browser-worker", "profiles"), env);
+  const semantics = containerSemanticsFromEnv(env);
+  const api = pathApiFor(semantics);
+  const base = userContainerDir(env, semantics);
+  const leaf =
+    semantics === "windows"
+      ? api.join(base, "iptv", "browser-worker", "profiles")
+      : api.join(base, "iptv-browser-worker", "profiles");
+  return validateProfileRoot(leaf, env, { semantics });
 }
 
 /**
  * Tenant/account-isolated profile dir: `sha256(tenantId + NUL +
- * providerAccountId)` hex. Raw ids never appear in the path.
+ * providerAccountId)` hex. Raw ids never appear in the path. Joined with
+ * the root's own semantics so a Windows root keeps win32 separators on any
+ * host.
  */
 export function profileDirFor(root: string, tenantId: string, providerAccountId: string): string {
   const digest = createHash("sha256")
@@ -254,7 +325,7 @@ export function profileDirFor(root: string, tenantId: string, providerAccountId:
     .update("\0", "utf8")
     .update(providerAccountId, "utf8")
     .digest("hex");
-  return join(root, `p-${digest.slice(0, 32)}`);
+  return pathApiForPath(root).join(root, `p-${digest.slice(0, 32)}`);
 }
 
 /** Resolve the fixed single-binding provider tag. Fail closed. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import {
   assertSecretUrlAllowed,
   defaultProfileRoot,
@@ -146,6 +146,76 @@ describe("profile isolation", () => {
     expect(() => validateProfileRoot("D:/tmp/outside-container", { LOCALAPPDATA: CONTAINER })).toThrowError(
       /PROFILE_ROOT_OUTSIDE_USER_CONTAINER/,
     );
+  });
+});
+
+/**
+ * Path policy follows the SEMANTICS OF THE PATH, not the host OS: these
+ * cases pin the same result on Windows and on Linux CI (the Windows cases
+ * used to pass only because the test host was win32).
+ */
+describe("path semantics", () => {
+  it("accepts a Windows path inside the user container on any host", () => {
+    const resolved = validateProfileRoot("D:/tmp/bw-localappdata/custom/profiles", { LOCALAPPDATA: CONTAINER });
+    expect(normalizeSep(resolved)).toBe(normalizeSep(win32.resolve("D:/tmp/bw-localappdata/custom/profiles")));
+    expect(normalizeSep(resolved).startsWith(normalizeSep(CONTAINER))).toBe(true);
+  });
+
+  it("fails closed for a Windows path outside the user container on any host", () => {
+    expect(() => validateProfileRoot("D:/tmp/outside-container", { LOCALAPPDATA: CONTAINER })).toThrowError(
+      /PROFILE_ROOT_OUTSIDE_USER_CONTAINER/,
+    );
+  });
+
+  it("rejects a Windows drive root as a dangerous ancestor", () => {
+    // Not the absolute-path error: a drive root IS absolute in the win32
+    // namespace, so it must fail on the fs-root guard.
+    expect(() => validateProfileRoot("D:/", { LOCALAPPDATA: CONTAINER })).toThrowError(
+      /must not be a filesystem or home root/,
+    );
+    expect(() => validateProfileRoot("C:\\", { LOCALAPPDATA: CONTAINER })).toThrowError(
+      /must not be a filesystem or home root/,
+    );
+    // Sanity: the UNC share root resolves to its own namespace root.
+    expect(win32.parse(win32.resolve("\\\\server\\share")).root).toBe(win32.resolve("\\\\server\\share"));
+  });
+
+  it("rejects a Windows drive-relative path as non-absolute", () => {
+    expect(() => validateProfileRoot("D:relative", { LOCALAPPDATA: CONTAINER })).toThrowError(
+      /must be an absolute path/,
+    );
+  });
+
+  it("accepts a POSIX path with explicit posix semantics on any host", () => {
+    expect(validateProfileRoot("/tmp/bw-profiles-check", {}, { semantics: "posix" })).toBe(
+      "/tmp/bw-profiles-check",
+    );
+  });
+
+  it("rejects a POSIX relative path", () => {
+    expect(() => validateProfileRoot("tmp/profiles", {}, { semantics: "posix" })).toThrowError(/absolute/);
+  });
+
+  it("rejects a root inside the repo checkout (host namespace)", () => {
+    const repo = findRepoRoot();
+    expect(repo).not.toBeNull();
+    expect(() =>
+      validateProfileRoot(join(repo as string, "tmp-bw-profiles-test"), { LOCALAPPDATA: CONTAINER }),
+    ).toThrowError(/repo/);
+  });
+
+  it("resolves a complete config with Windows paths deterministically", () => {
+    const config = resolveWorkerConfig(baseEnv());
+    expect(config.provider).toBe("CINEVISION");
+    expect(config.allowedOrigin).toBe("https://panel.example.test");
+    expect(config.loginPath).toBe("/api/auth/login");
+    expect(config.headless).toBe(true);
+    const expectedRoot = normalizeSep(`${CONTAINER}/iptv-test/profiles`);
+    expect(normalizeSep(config.profileRoot).startsWith(expectedRoot)).toBe(true);
+    expect(normalizeSep(config.profileDir).startsWith(expectedRoot)).toBe(true);
+    expect(config.profileDir).toContain("p-");
+    expect(config.profileDir).not.toContain("tenant-a");
+    expect(config.profileDir).not.toContain("acct-1");
   });
 });
 
