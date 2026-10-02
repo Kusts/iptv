@@ -122,10 +122,18 @@ describe("profile isolation", () => {
   });
 
   it("accepts an override inside the user container, derives the default there", () => {
-    expect(defaultProfileRoot({ ...baseEnv(), BROWSER_WORKER_PROFILE_ROOT: `${CONTAINER}/custom` })).toBe(
-      validateProfileRoot(`${CONTAINER}/custom`, { LOCALAPPDATA: CONTAINER }),
-    );
-    const root = defaultProfileRoot({ LOCALAPPDATA: CONTAINER } as NodeJS.ProcessEnv);
+    // Runtime resolution (defaultProfileRoot) pins the HOST namespace; the
+    // explicit `hostSemantics: "windows"` exercises a Windows deployment
+    // host deterministically on any test host.
+    expect(
+      defaultProfileRoot(
+        { ...baseEnv(), BROWSER_WORKER_PROFILE_ROOT: `${CONTAINER}/custom` },
+        { hostSemantics: "windows" },
+      ),
+    ).toBe(validateProfileRoot(`${CONTAINER}/custom`, { LOCALAPPDATA: CONTAINER }));
+    const root = defaultProfileRoot({ LOCALAPPDATA: CONTAINER } as NodeJS.ProcessEnv, {
+      hostSemantics: "windows",
+    });
     expect(normalizeSep(root).startsWith(normalizeSep(CONTAINER))).toBe(true);
     expect(root).toContain("browser-worker");
   });
@@ -146,6 +154,21 @@ describe("profile isolation", () => {
     expect(() => validateProfileRoot("D:/tmp/outside-container", { LOCALAPPDATA: CONTAINER })).toThrowError(
       /PROFILE_ROOT_OUTSIDE_USER_CONTAINER/,
     );
+  });
+
+  it("rejects a case-variant spelling of the container itself (strictly-inside rule)", () => {
+    // win32 comparisons are case-insensitive: relative() === "" must reject
+    // the container itself however it is cased, not just exact equality.
+    const containerCaseVariant = CONTAINER.toUpperCase().replace("D:", "d:");
+    expect(containerCaseVariant.toLowerCase()).toBe(CONTAINER.toLowerCase());
+    expect(containerCaseVariant).not.toBe(CONTAINER);
+    expect(() =>
+      validateProfileRoot(containerCaseVariant, { LOCALAPPDATA: CONTAINER }),
+    ).toThrowError(/PROFILE_ROOT_OUTSIDE_USER_CONTAINER/);
+    // A case-variant path STRICTLY INSIDE the container still passes.
+    expect(() =>
+      validateProfileRoot(`${containerCaseVariant}/custom/profiles`, { LOCALAPPDATA: CONTAINER }),
+    ).not.toThrow();
   });
 });
 
@@ -205,7 +228,9 @@ describe("path semantics", () => {
   });
 
   it("resolves a complete config with Windows paths deterministically", () => {
-    const config = resolveWorkerConfig(baseEnv());
+    // `hostSemantics: "windows"` pins the runtime boundary to a Windows
+    // deployment host, so the same env resolves identically on Linux CI.
+    const config = resolveWorkerConfig(baseEnv(), { hostSemantics: "windows" });
     expect(config.provider).toBe("CINEVISION");
     expect(config.allowedOrigin).toBe("https://panel.example.test");
     expect(config.loginPath).toBe("/api/auth/login");
@@ -216,6 +241,33 @@ describe("path semantics", () => {
     expect(config.profileDir).toContain("p-");
     expect(config.profileDir).not.toContain("tenant-a");
     expect(config.profileDir).not.toContain("acct-1");
+  });
+
+  it("runtime boundary rejects a foreign-namespace profile root (host-ns only)", () => {
+    // The RESOLVED profile path is handed to the native filesystem and
+    // Playwright. On posix a windows path is a RELATIVE filename there —
+    // it could land inside the checkout — so runtime resolution fails
+    // closed on a namespace mismatch. On a windows host nothing foreign
+    // is ever inferred (marker-less paths keep the host table, exactly as
+    // before this refactor), so only the posix direction can hit the
+    // boundary; the windows-host direction must stay fail-closed anyway.
+    const windowsEnv = baseEnv();
+    const posixEnv: NodeJS.ProcessEnv = {
+      ...baseEnv(),
+      XDG_STATE_HOME: "/tmp/bw-xdg-state",
+      BROWSER_WORKER_PROFILE_ROOT: "/tmp/bw-xdg-state/profiles",
+    };
+    delete posixEnv["LOCALAPPDATA"];
+    if (process.platform === "win32") {
+      expect(resolveWorkerConfig(windowsEnv, { hostSemantics: "windows" })).toBeTruthy();
+      // Still fail-closed: the marker-less posix path follows the host
+      // (win32) table and cannot satisfy the user-container rule.
+      expect(() => resolveWorkerConfig(posixEnv)).toThrowError(/PROFILE_ROOT/);
+      expect(() => resolveWorkerConfig(posixEnv)).not.toThrowError(/must match the host platform/);
+    } else {
+      expect(() => resolveWorkerConfig(windowsEnv)).toThrowError(/must match the host platform/);
+      expect(resolveWorkerConfig(posixEnv)).toBeTruthy();
+    }
   });
 });
 
@@ -229,7 +281,7 @@ describe("config validation", () => {
   });
 
   it("resolves a complete config", () => {
-    const config = resolveWorkerConfig(baseEnv());
+    const config = resolveWorkerConfig(baseEnv(), { hostSemantics: "windows" });
     expect(config.provider).toBe("CINEVISION");
     expect(config.allowedOrigin).toBe("https://panel.example.test");
     expect(config.loginPath).toBe("/api/auth/login");

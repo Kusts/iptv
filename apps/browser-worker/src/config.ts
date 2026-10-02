@@ -214,7 +214,13 @@ function isInsideOrEqual(api: PathApi, base: string, candidate: string): boolean
  * `opts.semantics` pins the namespace; otherwise it is detected from the
  * path itself, so a Windows deployment path validates identically on a
  * posix host. Host-fs guards (repo checkout, home dir) only apply when the
- * host namespace matches the path namespace.
+ * host namespace matches the path namespace. This function is the PURE
+ * policy engine: for a foreign-namespace path it reasons in that path's
+ * own namespace, and the resolved result must never be handed to the HOST
+ * filesystem (on posix a windows path is a relative filename there) —
+ * runtime consumers go through `defaultProfileRoot`, which enforces the
+ * host-namespace boundary. Throws `ConfigError` with fixed words (never
+ * echoes the value).
  */
 export function validateProfileRoot(
   root: string,
@@ -241,7 +247,12 @@ export function validateProfileRoot(
   }
   if (api.semantics === "windows") {
     const container = userContainerDir(env, "windows");
-    if (!isInsideOrEqual(api, container, resolved) || resolved === container) {
+    // STRICTLY inside: `relative()` is the comparison (win32 is
+    // case-insensitive), so a case-variant spelling of the container itself
+    // is rejected too — raw string equality would let `d:\x` slip past a
+    // `D:\X` container.
+    const rel = api.relative(container, resolved);
+    if (rel === "" || rel.startsWith("..") || api.isAbsolute(rel)) {
       throw new ConfigError("PROFILE_ROOT_OUTSIDE_USER_CONTAINER");
     }
   }
@@ -292,18 +303,36 @@ export function assertSecretUrlAllowed(secretUrl: string, allowedOrigin: string)
 }
 
 /**
- * Platform profile root OUTSIDE the repo. `BROWSER_WORKER_PROFILE_ROOT`
+ * Runtime platform profile root OUTSIDE the repo. `BROWSER_WORKER_PROFILE_ROOT`
  * is a restricted override: when set it must still pass
  * `validateProfileRoot`. The namespace is inferred (override markers, else
- * env markers, else the host), so a Windows deployment layout resolves to
- * the same Windows path on Linux CI and in production.
+ * env markers, else the host), and — RUNTIME BOUNDARY — the result must
+ * carry the HOST namespace: this path is handed to the native filesystem
+ * and Playwright, where a foreign-namespace path would be reinterpreted
+ * (on posix, `D:\x` is a relative filename that could land inside the
+ * checkout — fail-open vs the outside-repo guarantee). Cross-host policy
+ * validation lives in the pure `validateProfileRoot`/tests; runtime
+ * resolution fails closed on a namespace mismatch. `opts.hostSemantics`
+ * overrides the host for tests (a Windows deployment resolution can then
+ * be exercised deterministically on any host).
  */
-export function defaultProfileRoot(env: NodeJS.ProcessEnv = process.env): string {
+export function defaultProfileRoot(
+  env: NodeJS.ProcessEnv = process.env,
+  opts: { hostSemantics?: PathSemantics } = {},
+): string {
+  const hostSemantics = opts.hostSemantics ?? hostPathSemantics();
   const override = env["BROWSER_WORKER_PROFILE_ROOT"];
   if (override !== undefined && override.trim().length > 0) {
-    return validateProfileRoot(override, env, { semantics: detectPathSemantics(override.trim()) });
+    const semantics = detectPathSemantics(override.trim());
+    if (semantics !== hostSemantics) {
+      throw new ConfigError("PROFILE_ROOT semantics must match the host platform");
+    }
+    return validateProfileRoot(override, env, { semantics });
   }
   const semantics = containerSemanticsFromEnv(env);
+  if (semantics !== hostSemantics) {
+    throw new ConfigError("PROFILE_ROOT semantics must match the host platform");
+  }
   const api = pathApiFor(semantics);
   const base = userContainerDir(env, semantics);
   const leaf =
@@ -338,8 +367,15 @@ export function resolveBindingProvider(env: NodeJS.ProcessEnv = process.env): ty
   return BINDING_PROVIDER;
 }
 
-/** Resolve and validate the full worker config. Throws `ConfigError`. */
-export function resolveWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
+/**
+ * Resolve and validate the full worker config. Throws `ConfigError`.
+ * `opts.hostSemantics` overrides the host namespace for the profile-root
+ * runtime boundary (test seam — see `defaultProfileRoot`).
+ */
+export function resolveWorkerConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  opts: { hostSemantics?: PathSemantics } = {},
+): WorkerConfig {
   if (!isWorkerEnabled(env)) {
     throw new ConfigError("DISABLED (BROWSER_WORKER_ENABLED must be 1)");
   }
@@ -374,7 +410,7 @@ export function resolveWorkerConfig(env: NodeJS.ProcessEnv = process.env): Worke
     if (err instanceof ConfigError) throw err;
     throw new ConfigError("BROWSER_INFISICAL_SITE_URL must be an absolute https:// url");
   }
-  const profileRoot = defaultProfileRoot(env);
+  const profileRoot = defaultProfileRoot(env, opts);
   return {
     provider,
     tenantId,
