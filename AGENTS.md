@@ -6,20 +6,75 @@ Monorepo TypeScript (`pnpm` + Turborepo) para uma plataforma IPTV multi-tenant,
 com API NestJS/Fastify, Next.js, PostgreSQL/Kysely e integrações atrás de ports.
 O contrato canônico atual está em `docs/15-implementation-baseline/`;
 consulte-o antes de alterar comportamento de domínio ou integrações.
+O registro autoritativo de entrega é o `CHANGELOG.md` (anexe toda entrega em
+`## Unreleased`).
 
 ## Desenvolvimento local
 
-- Requisitos: Node.js 22+ e pnpm 10.
+- Requisitos: Node.js 22+ e pnpm 10.15.0; Python 3 + PyYAML para os gates de
+  docs/contratos.
 - Instalar dependências: `pnpm install`.
 - PostgreSQL local: `docker compose up -d postgres`.
-- Subir aplicações: `pnpm dev`.
-- Checks estáticos/documentais: `python scripts/validate_docs.py`,
-  `python tests/contracts/test_contracts.py` e
-  `python tests/contracts/test_seed_contract.py`.
-- `pnpm test`, `pnpm lint`, `pnpm typecheck` e `pnpm build` são os checks de
-  runtime e podem depender de `TEST_DATABASE_URL` descartável.
+- Subir aplicações: `pnpm dev` (web em :3000, API em :3001).
+- Para workers de vencimento (outbox/webhook/renewal drains) em dev:
+  `API_SCHEDULER_ENABLED=1` no `.env`.
+- Seed de dados piloto: após aplicar TODAS as migrations (46), seguir
+  `db/seeds/README.md`.
+- Checks, na ordem da CI (`.github/workflows/ci.yml`): `pnpm lint`,
+  `pnpm typecheck`, `pnpm test`, `pnpm build` e os gates Python
+  (`python scripts/validate_docs.py`,
+  `python tests/contracts/test_contracts.py`,
+  `python tests/contracts/test_seed_contract.py`).
+- `TEST_DATABASE_URL` deve apontar para um banco PostgreSQL **descartável e
+  VAZIO**: os testes de integração aplicam as 46 migrations eles mesmos via
+  `applyMigrations` no `beforeAll`. Turbo NÃO carrega o `.env` — exporte a
+  variável no shell antes de `pnpm test`.
+- Runs com escopo: `pnpm --filter @iptv/<pkg> <script>` — o nome sempre tem o
+  scope `@iptv/` (ex.: `@iptv/api`, `@iptv/web`, `@iptv/browser-worker`).
+- No Windows, `scripts/*.sh` exigem bash + psql (Git Bash/WSL).
 - Migrations são append-only; nunca apague ou recrie volumes/bancos para obter
-  um estado conveniente.
+  um estado conveniente. Alterar `POSTGRES_*` no `.env` não reconfigura um
+  volume já inicializado.
+
+## Convenções de commit
+
+- Conventional Commits: `<type>: <descrição lowercase, sem ponto final>`
+  com os IDs de tarefa entre parênteses quando aplicável —
+  `feat: tenant copilot widget, workspace and approved command execution (W14-COPILOT, G18)`.
+- Types em uso: `feat`, `fix`, `docs`, `chore`, `test`.
+- Scope opcional, quando localizar o pacote ajuda: `fix(api):`,
+  `fix(browser-worker):`.
+
+## Armadilhas conhecidas
+
+- Valor de env opcional vazio (`KEY=`) é tratado como AUSENTE pelo loader
+  (`packages/config`); prefira omitir a linha a deixá-la vazia.
+- `noUncheckedIndexedAccess` está estrito: indexação de array/registro exige
+  narrowing explícito.
+- Fixtures com `newId().slice(0,8)` colidem: a cabeça do UUIDv7 é timestamp.
+  Use contadores/refs determinísticas.
+- O scheduler em dev pode convergir em múltiplos ticks; flaky tests de outbox
+  costumam ser causa de convergência, não timing arbitrário.
+- Chaves de API do Asaas começam com `$` (ex.: Sandbox `$aact_...`): no
+  `.env`, envolver o valor em aspas simples, senão a interpolação do
+  docker compose corrói o valor e emite warnings.
+- `scripts/validate_doc_reviews.py` é não-gate e vermelho de propósito
+  (marcadores históricos v0.14); não o "conserte" nem adicione claims de
+  review para ficá-lo verde.
+- Mudanças em `docs/`, contratos (`docs/05-contracts/`) ou `db/migrations/`
+  exigem os 3 gates Python verdes; o bloco de registry de eventos existe em
+  duas cópias que precisam permanecer idênticas
+  (`docs/02-domain/event-model.md` e
+  `docs/15-implementation-baseline/04-event-catalog.md`).
+
+## Documentação viva
+
+- `CHANGELOG.md` — anexe toda entrega em `## Unreleased`.
+- `docs/15-implementation-baseline/` — contrato canônico de implementação.
+- `docs/02-domain/event-model.md` — registry canônico de eventos; novos
+  eventos precisam de entrada no registry + canal AsyncAPI + SPEC.
+- `README.md` — descreve o repositório como está hoje; status cronológico
+  mora no CHANGELOG, não no README.
 
 ## Orquestração OpenCode
 
@@ -41,16 +96,19 @@ consulte-o antes de alterar comportamento de domínio ou integrações.
   `OPENAI_API_KEY` recebe a chave do OpenCode Go; `OPENAI_BASE_URL` e
   `AGENT_MODEL` selecionam endpoint/modelo. Não troque Sandbox por produção sem
   autorização explícita.
-- As credenciais CINEVISION e MK Ativador ainda não são lidas pelo runtime.
-  O ADR-0014 de Infisical está proposto, não implantado. Até haver um gerenciador
-  de segredos aprovado e integração do Browser Worker, mantenha essas credenciais
-  no cofre seguro do operador; não as adicione ao `.env` deste repositório.
+- Infisical está implementado (ADR-0014 aceito): `packages/secrets` resolve
+  refs `infisical://` em runtime (API via `INFISICAL_*`, Browser Worker via
+  `BROWSER_INFISICAL_*`; ver `packages/secrets/README.md`). Credenciais
+  CINEVISION/MK Ativador vivem como referências de segredo no Infisical —
+  mantenha os valores crus no cofre do operador e fora do `.env` deste
+  repositório.
 - Hatchet é opcional: fornece execução durável de workflows/jobs. O modo local
   em memória continua sendo o default; `HATCHET_API_TOKEN` só é necessário se
   Hatchet for adotado e certificado.
-- O webhook Asaas é `POST /v1/webhooks/asaas/:tenantKey`. Só configure após haver
-  URL HTTPS pública, canal/tenant ativo e compatibilidade entre o cabeçalho de
-  autenticação enviado pelo Asaas e o esperado pela API.
+- O webhook Asaas é `POST /v1/webhooks/asaas/:tenantKey`; autenticação por
+  canal (`billing.tenant_channels`), sem fallback global — detalhes em
+  `apps/api/README.md`. Só configure com URL HTTPS pública, canal/tenant
+  ativo e compatibilidade de cabeçalho com a API.
 
 ## Referências locais de credenciais de deploy
 

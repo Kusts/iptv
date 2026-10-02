@@ -2,6 +2,10 @@
 
 This backlog is the executable decomposition of `18-implementation-plan.md`. A work package may be split into agent-sized tasks but its acceptance gate must not be weakened.
 
+## Status note (2026-10-02)
+
+Waves 1–16 and the W0 CINEVISION provider runtime hardening (Fases 0–5) are implemented, with migration 046 applied. `CHANGELOG.md` (`## Unreleased`) is the authoritative delivery record. The wave sections below are preserved verbatim as the **original specification** and are no longer a statement of current progress.
+
 ## Wave 0 — Architecture Proof
 
 - **W0-00 Contract reconciliation** — for the first vertical slice, align baseline states/events with SQL/OpenAPI/AsyncAPI and focused contract checks; retain a decision record for deliberate deviations. Scaffolds for later Waves are reconciled before implementation, not treated as shipped interfaces.

@@ -1,6 +1,6 @@
 # Canonical Event Catalog
 
-> Status: provisional pre-implementation v1 contract — all `.v1` public IDs below are registered as declared intent from SPEC operational sections and the AsyncAPI scaffold, pending implementation. No public ID is renamed or removed to force tests green.
+> Status: living canonical contract — all `.v1` public IDs below are registered from SPEC operational sections and AsyncAPI, and are frozen: no public ID is renamed or removed to force tests green. Status is tracked per row, not globally: the experiment, growth, knowledge and partner families are already `implemented/active` (21 of 144 rows); the remaining 123 are `planned/pre-implementation`.
 
 ## Conventions
 
@@ -90,9 +90,11 @@ These names are the stable domain vocabulary used in SPEC prose. They are NOT pu
 - `platform.subscription.activated|past_due|suspended|cancelled`
 - `platform.release.deployed`
 
-## Registered public events (provisional pre-implementation v1 contract)
+## Registered public events (living canonical contract)
 
-Class `domain` = authoritative fact that may mutate an aggregate or drive a workflow. Class `observational` = registered signal/telemetry that MUST NOT mutate authoritative aggregates by itself; workflows may react to it only through explicit policy. Status `planned/pre-implementation` applies to every row: the IDs are frozen as declared intent so `scripts/validate_docs.py` can verify SPEC and AsyncAPI references, not as a claim of shipped implementation.
+Class `domain` = authoritative fact that may mutate an aggregate or drive a workflow. Class `observational` = registered signal/telemetry that MUST NOT mutate authoritative aggregates by itself; workflows may react to it only through explicit policy.
+
+Status is per-row, not global. The experiment (×6), growth (×4), knowledge (×5) and partner (×6) families — 21 rows — are already `implemented/active`; the remaining 123 rows stay `planned/pre-implementation`. All IDs are frozen regardless of status, so `scripts/validate_docs.py` can verify SPEC and AsyncAPI references; `planned/pre-implementation` is declared intent, not a claim of shipped implementation.
 
 <!-- event-registry:start -->
 | Public ID | Class | Status | Declared in | Semantic correspondence |

@@ -5,7 +5,9 @@
 
 ## Purpose
 
-`001_pilot_baseline.sql` creates a deterministic, synthetic pilot dataset after migrations `001–011` have been applied.
+`001_pilot_baseline.sql` creates a deterministic, synthetic pilot dataset and
+must be applied only after **all** migrations in `db/migrations/` (46 files)
+have run. `db/migrations/README.md` is the canonical ordered list.
 
 It exists for:
 
@@ -30,7 +32,7 @@ It exists for:
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/seeds/001_pilot_baseline.sql
 ```
 
-Apply only after all MVP migrations.
+Apply only after all migrations in `db/migrations/` (46 files).
 
 ## Deterministic fixture cases
 

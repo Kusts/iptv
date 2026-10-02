@@ -1,167 +1,156 @@
-# AI Revenue & Operations Platform — Implementation Documentation v1.0.1
+# AI Revenue & Operations Platform
 
-> Status: **PLANNING BASELINE — WAVE 0 READY; LATER WAVES CERTIFICATION-GATED**  
-> Date: 2026-09-26  
-> Scope: Modules 1–25 + planning closure + implementation gates  
-> Review: v1.0.1 incorporates the agent hardening plus canonical-domain corrections in ADR-0025 and a fresh full auto-review.
+Multi-tenant IPTV SaaS: sales, fulfillment, billing, renewal and support
+operations automated around a human-in-the-loop agent runtime.
 
-## Start here
+> **Status: in active development.** Implementation baseline v1.0.1 is the
+> canonical contract; Waves 1–16 plus W0 CINEVISION runtime hardening
+> (Fases 0–5, migration 046) are implemented and covered by the test suite.
+> `CHANGELOG.md` is the authoritative delivery record — this README describes
+> the repository as it is today, not a wave-by-wave history.
+
+## What this is
+
+- TypeScript monorepo (`pnpm` + Turborepo): a **modular monolith** API, a
+  Next.js tenant console, and an isolated browser worker for private provider
+  operations — all behind explicit ports/adapters.
+- **PostgreSQL is the source of truth** (Kysely, append-only SQL migrations,
+  double-entry ledgers, RLS tenant isolation with a dedicated app role).
+- Domain communication flows through tenant-scoped **commands** that commit
+  state + domain event + outbox + audit in ONE transaction; events follow a
+  canonical registry (`docs/02-domain/event-model.md`) mirrored into
+  OpenAPI/AsyncAPI contracts enforced by CI gates.
+- Safety posture: echo/manual adapters by default, capability gates with
+  downgrade-only autonomy, human review for refunds and sensitive operations,
+  Asaas Sandbox only unless explicitly authorized.
+
+## Stack
+
+pnpm 10.15.0 · Turborepo · Node 22+ · TypeScript 5.9 · NestJS + Fastify ·
+Next.js (App Router) · Kysely · PostgreSQL 17 · Zod · Vitest · Playwright
+(browser worker) · OTel (optional, noop default) · Hatchet (optional, local
+in-memory default) · Infisical (secrets, ADR-0014) · Python 3 + PyYAML (doc
+gates).
+
+## Repository layout
+
+```
+apps/
+  api/             NestJS + Fastify API (/v1, port 3001)
+  web/             Next.js tenant console (port 3000)
+  browser-worker/  isolated Playwright CLI worker (read-only provider ops)
+packages/
+  domain/          pure primitives: UUIDv7 ids, exact minor-unit money, UTC time, event envelope
+  database/        Kysely bootstrap + migration runner (advisory lock + history table)
+  config/          Zod-validated env (all keys optional with defaults; empty value = absent)
+  auth/            auth/session primitives (custom adapter; BETTER_AUTH_* env)
+  secrets/         Infisical secrets port (universal auth; infisical:// refs)
+  ai-runtime/      OpenAI-compatible model gateway + deterministic echo fallback
+  observability/   OTel tracing/metrics (noop by default)
+  workflows/       Hatchet durable workflows adapter (optional)
+db/                migrations (46, append-only), seeds, SQL integration tests
+deploy/            Infisical self-host stack, PgBouncer (opt-in compose profile)
+docs/              canonical documentation (authority map below)
+scripts/           validation and test scripts
+tests/contracts/   contract gates (Python)
+```
+
+Each app and package has its own `README.md` with specifics.
+
+## Quick start
+
+Prerequisites: Node.js 22+, pnpm 10.15.0, Docker. For the doc/contract gates:
+Python 3 with PyYAML. `scripts/*.sh` additionally need bash + psql (Git
+Bash/WSL on Windows).
+
+1. `pnpm install`
+2. Copy `.env.example` to `.env` and adjust locally (never commit secrets).
+   The API loads it via `node --env-file-if-exists` (repo root or
+   `apps/api/.env`). Do this BEFORE starting Postgres: compose reads
+   `POSTGRES_*` from `.env` on first init, and an already-initialized volume
+   is not reconfigured by later edits. Caution: values starting with `$`
+   (e.g. Asaas Sandbox API keys) must be single-quoted in `.env`, or docker
+   compose interpolation mangles them.
+3. `docker compose up -d postgres` (local-dev defaults `iptv`/`iptv`; keep
+   `DATABASE_URL` in sync with any `POSTGRES_*` override)
+4. Provision the schema — the API does NOT apply migrations at boot. Apply
+   all 46 in filename order, e.g. with psql:
+   `for f in db/migrations/*.sql; do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"; done`
+   (`packages/database` also exposes the programmatic runner
+   `applyMigrations`; the test suite always applies migrations itself on a
+   disposable database). Then optionally seed pilot data
+   (`db/seeds/README.md`).
+5. `pnpm dev` — web on <http://localhost:3000>, API on
+   <http://localhost:3001>. Set `API_SCHEDULER_ENABLED=1` in `.env` when you
+   need due-workers (webhook/outbox/subscription/renewal drains) in dev.
+
+## Checks (CI order)
+
+| Check | Command | Requires |
+|---|---|---|
+| Lint | `pnpm lint` | — |
+| Typecheck | `pnpm typecheck` | — |
+| Tests | `pnpm test` | `TEST_DATABASE_URL` pointing to a **disposable, EMPTY** database (integration tests apply all 46 migrations themselves via `applyMigrations`; turbo does **not** load `.env` — export the variable in the shell) |
+| Build | `pnpm build` | — |
+| Docs gate | `python scripts/validate_docs.py` | PyYAML |
+| Contract gates | `python tests/contracts/test_contracts.py` · `python tests/contracts/test_seed_contract.py` | PyYAML |
+
+`scripts/validate_doc_reviews.py` checks historical v0.14 review markers on a
+fixed file list; it is **not** a gate and is expected to stay red — do not
+"fix" it by adding review claims.
+
+Scoped runs: `pnpm --filter @iptv/api test`, `pnpm --filter @iptv/web lint`,
+etc. (always with the `@iptv/` scope).
+
+RLS note: local development runs with the owner `DATABASE_URL`. The
+restricted app role connects via `APP_DATABASE_URL` only after the cutover
+checklist (`docs/10-operations/runbooks/rls-role-split-cutover.md`).
+
+## Documentation
+
+Authority hierarchy: Vision/Principles → v1.0 Implementation Baseline →
+Domain → Architecture/Accepted ADRs → SPECs → Contracts → Roadmap/Tasks →
+Code/Tests/Evals → Runbooks/User Docs. The v1.0.1 baseline supersedes
+conflicting pre-v1.0 planning text.
+
+Start here:
 
 1. [`docs/15-implementation-baseline/README.md`](docs/15-implementation-baseline/README.md) — final authority map.
-2. [`docs/15-implementation-baseline/18-implementation-plan.md`](docs/15-implementation-baseline/18-implementation-plan.md) — Wave 0 → MVP-SAAS execution order.
-3. [`docs/15-implementation-baseline/15-definition-of-done.md`](docs/15-implementation-baseline/15-definition-of-done.md) — mandatory completion criteria.
+2. [`docs/15-implementation-baseline/18-implementation-plan.md`](docs/15-implementation-baseline/18-implementation-plan.md) — execution order.
+3. [`docs/15-implementation-baseline/15-definition-of-done.md`](docs/15-implementation-baseline/15-definition-of-done.md) — completion criteria.
 4. [`docs/00-meta/development-agent-handbook.md`](docs/00-meta/development-agent-handbook.md) — development-agent behavior.
-5. [`docs/06-decisions/ADR-0025-canonical-domain-authority.md`](docs/06-decisions/ADR-0025-canonical-domain-authority.md) — canonical authority/correction decision.
-6. [`docs/00-meta/auto-review-v1.0.1.md`](docs/00-meta/auto-review-v1.0.1.md) — full review of this revision.
+5. [`docs/00-meta/agent-documentation-loading-order.md`](docs/00-meta/agent-documentation-loading-order.md) — what an agent reads, in order.
+6. [`docs/06-decisions/README.md`](docs/06-decisions/README.md) — ADR index.
 
-## Authority hierarchy
+Areas under `docs/`: `00-vision`, `01-product`, `02-domain` (canonical event
+registry), `03-architecture`, `04-specs` (25 capability SPECs +
+`integrations/`), `05-contracts` (OpenAPI/AsyncAPI), `06-decisions` (ADRs),
+`07-agent`, `08-data-analytics`, `09-security-compliance`, `10-operations`
+(runbooks), `11-research` (non-authoritative), `12-roadmap`, `13-product-design`,
+`14-user-docs`, `15-implementation-baseline` (canonical implementation
+contract), `00-meta` (doc governance), `spikes`.
 
-Vision/Principles → v1.0 Implementation Baseline → Domain → Architecture/Accepted ADRs → SPECs → Contracts → Roadmap/Tasks → Code/Tests/Evals → Runbooks/User Docs.
+Agents: read [`AGENTS.md`](AGENTS.md) before working in this repository.
 
-The v1.0.1 implementation baseline supersedes conflicting pre-v1.0 planning text. Older detail files remain supporting material only where they do not conflict with the baseline.
-This repository contains planning, draft migrations/contracts and static checks, not a running application. PostgreSQL runtime and live integration gates remain pending; a green static check is not runtime certification.
-
-Current static checks: `python scripts/validate_docs.py`, `python tests/contracts/test_contracts.py`, and `python tests/contracts/test_seed_contract.py`. `scripts/validate_doc_reviews.py` checks historical v0.14 review markers on a fixed file list; it is not the current v1.0 contract/readiness gate and must not be made green by adding review claims to files that were not reviewed in v0.14.
-
-Runtime checks (require `TEST_DATABASE_URL` on a disposable PostgreSQL): `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm build`. Wave 3 adds the agent offline eval set (`POST /v1/agent/evals/run`, always through the deterministic echo gateway — no credentials needed) and the shadow → approval → send chain covered by `apps/api/test/agent-shadow-approval.integration.test.ts`. Wave 4 adds Trials + Compatibility (`apps/api/src/trial/`, `apps/api/src/provider/`, commands `trial.*`, `compatibility.*`, `provider.*`) with provisioning behind echo/manual adapters only — no real CINEVISION calls — covered by `apps/api/test/trial-compat.unit.test.ts` and `apps/api/test/trial-compat.integration.test.ts`.
-
-## Key final decisions
+## Key decisions
 
 - multi-tenant modular monolith, ports/adapters, PostgreSQL source of truth;
 - Next.js + NestJS/Fastify + Kysely;
-- Neon São Paulo recommended pilot PostgreSQL deployment;
-- Hatchet durable workflows subject to Wave 0 certification, with Inngest as fallback candidate;
-- WAHA messaging gateway, GOWS preferred subject to certification;
-- CINEVISION and MK private operations through authenticated isolated Playwright workers;
+- WAHA messaging gateway (GOWS preferred, certification-gated);
+- CINEVISION and MK private operations through authenticated isolated
+  Playwright workers;
 - Asaas official Sandbox → production canary;
+- provider credentials resolved at runtime via `infisical://` secret
+  references (ADR-0014) — never raw values in `.env`;
+- Hatchet durable workflows subject to certification, local in-memory mode by
+  default;
 - OpenAI Agents SDK TypeScript as harness inside an owned Agent Runtime;
-- automation-first operation with capability-scoped safety/degradation and human exception handling;
-- hierarchical reseller network: ancestor visibility, direct-child management only; resellers may become SaaS tenants and later SaaS resellers;
-- SaaS pricing/package determined from real pilot cost/value telemetry.
-- first-value checkpoint after the core sales loop, separate from full MVP-PILOT readiness; live milestones have operation-specific gates.
+- hierarchical reseller network: ancestor visibility, direct-child management
+  only; resellers may become SaaS tenants and later SaaS resellers;
+- automation-first operation with capability-scoped safety/degradation and
+  human exception handling.
 
-## Repository areas
+## Changelog
 
-- `00-vision` — product principles;
-- `01-product` — PRD/journeys/scope;
-- `02-domain` — detailed domain support documents;
-- `03-architecture` — technical architecture;
-- `04-specs` — capability specifications (now includes Modules 20–25);
-- `05-contracts` — OpenAPI/AsyncAPI contracts;
-- `06-decisions` — ADRs;
-- `07-agent` — agent runtime supporting docs;
-- `08-data-analytics` — metrics/tracking/experimentation;
-- `09-security-compliance` — supporting security/privacy docs;
-- `10-operations` — runbooks/operations;
-- `11-research` — non-authoritative research;
-- `12-roadmap` — plans/tasks;
-- `13-product-design` — design system/screen specs;
-- `14-user-docs` — user/admin docs;
-- `15-implementation-baseline` — **canonical v1.0 implementation contract**.
-
-## Implementation status: W1-01/W1-02 bootstrapped + Control Center shell (W1-13/W1-14)
-
-Control Center (`apps/web`, ver seu README): shell autenticado do tenant (login, sidebar,
-tenant switcher, logout) + superfícies Conversas, Assinaturas, Pedidos, Suporte e Centro HITL
-consumindo somente HTTP `/v1` — sem imports servidor, sem Tailwind/TanStack (desvio MVP
-documentado com upgrade path).
-
-TypeScript monorepo skeleton is in place (pnpm + Turborepo): `apps/web`
-(Next.js App Router), `apps/api` (NestJS + Fastify, `GET /v1/health`),
-`packages/domain` (pure primitives: UUIDv7 ids, exact money, UTC time),
-`packages/database` (Kysely bootstrap + SQL migration runner over the
-canonical `db/migrations/*.sql`), `packages/config` (Zod-validated env).
-
-How to run:
-
-1. `pnpm install`
-2. `docker compose up -d` (local PostgreSQL `iptv`/`iptv`, local-dev defaults only)
-3. Copy `.env.example` to `.env` and adjust locally (never commit secrets).
-   The API loads `.env` via `node --env-file-if-exists` (repo root or
-   `apps/api/.env`); no dotenv dependency required.
-4. `pnpm dev` (the API builds once, then watches `dist`; or `pnpm build`,
-   `pnpm test`, `pnpm lint`, `pnpm typecheck`)
-
-Auth flow (W1-03/04/05): `POST /v1/auth/register` (with `tenantName` to
-bootstrap a tenant as `tenant_owner`) → `POST /v1/auth/login` → Bearer token
-(`Authorization: Bearer` or `iptv_session` cookie) → `GET /v1/tenants` →
-`POST /v1/tenants/:id/switch` → `GET /v1/me` (active tenant + roles +
-permissions). Permissions are enforced server-side per route
-(`GET /v1/settings` requires `settings.manage`); auth mutations append to
-`platform.audit_log` with the request id as correlation id.
-
-Commands/events/HITL (W1-06/07/07a): explicit tenant-scoped commands run
-through `CommandBus` (`human_review.request|approve|reject` first;
-`agent.review.request|decide` permissions, migration `013`), each executing
-authz → Zod input → idempotency claim → ONE transaction (state change +
-`platform.domain_events` + `platform.outbox_messages` + audit). Envelopes
-match AsyncAPI `EventEnvelopeBase` (`schema_version: 1`, public ids
-`<domain>.<noun>_<verb>.v1`). `POST /v1/admin/outbox/drain`
-(platform-admin-only) publishes via the `TransportPort` (`LocalTransport` in
-Wave 1); `InboxProcessor` dedupes by `(tenant, provider, external_event_id)`.
-HumanReview queue: `GET /v1/human-reviews?status=PENDING`; decisions
-revalidate under current state (stale approvals → `409 precondition_failed`,
-request stays open). Full chain (incl. idempotency replay, stale approval,
-parallel-drain safety) is covered by `TEST_DATABASE_URL` integration tests.
-
-Policy/capability (W1-09/10): generic versioned policy documents
-(`platform.policy_documents`, `PLATFORM_INVARIANT > PLATFORM_POLICY >
-TENANT_POLICY > PARTNER_POLICY`, published rows immutable, publish = new
-row version+1) resolved with higher-class-wins merge and provenance;
-downgrade-only autonomy (`AUTO|APPROVAL|MANUAL|DENY`, never silent upgrade).
-`POST /v1/policies/publish` (`policy.publish`, `settings.manage`; tenant
-admins publish TENANT, platform admins PLATFORM/PARTNER). Global capability
-catalog (`platform.capabilities` + append-only `platform.capability_events`)
-gated by `ActionGate` (available? → permitted? → policy? → preconditions? →
-autonomy clamped by the invariant max): `GET /v1/capabilities` (per-actor
-overview) and `GET /v1/capabilities/:key/resolve` (dry-run); platform-only
-`capability.register|set_availability`. Migration `014`.
-
-Commerce/billing (Wave 5): catalog→order flow (`POST /v1/orders/quote`
-builds a DRAFT order from ACTIVE catalog prices with an immutable
-`price_snapshots` copy per line, integer quantities, exact minor-unit
-`bigint` money — never floats; `POST /v1/orders/:id/submit|cancel`,
-`POST /v1/orders/expire-due` worker seam; reads `GET /v1/orders[/:id]`).
-Charges via the Asaas port (`POST /v1/charges`: PENDING → provider
-`createPixCharge` → PROCESSING with binding + attempt; `EchoAsaasAdapter`
-default, env-gated `RealAsaasAdapter` stub behind
-`ASAAS_API_KEY`/`ASAAS_BASE_URL` mapping timeouts to UNKNOWN, never
-auto-retrying creates). Webhook `POST /v1/webhooks/asaas/:tenantKey`
-(tenant from `billing.tenant_channels`, timing-safe secret, inbox
-insert-once dedupe, 202 fast ack, `?defer=1` + `drainPending`): PAID
-deliveries validate amount+currency against the internal charge row
-(mismatch → `billing.exceptions`, never a confirmation) and confirm
-idempotently (charge PAID + CONFIRMED payment + balanced Dr-cash/Cr-receivable
-posting + all-or-nothing settlement → order SETTLED + idempotent
-`crm.customers` conversion + registry-listed events). Human-gated refunds:
-`POST /v1/refund-requests` (creates the request + HumanReview, never
-executes) → `human_review.approve|reject` (requester cannot approve; stale
-revalidation under per-payment advisory lock) → `POST
-/v1/refund-requests/:id/execute` (reserve-first; KNOWN_APPLIED posts the
-contra-revenue reversal + PARTIALLY_REFUNDED/REFUNDED, KNOWN_NOT_APPLIED
-releases, UNKNOWN parks in RECONCILING + exception for `POST
-/v1/refunds/:id/reconcile`). Chargebacks ingest on a distinct path
-(`payment.record_chargeback` → CHARGEBACK + loss posting + review
-exception). Migration `018` (`billing.tenant_channels`,
-`billing.exceptions`, Wave 5 permission seeds).
-
-Renewal/retention (Wave 9): renewal windows on top of the Wave 6
-subscription engine (`POST /v1/renewals/quote` creates one OPEN
-subscription-shaped RENEWAL order per subscription inside
-`[cycle_end - window_days, cycle_end]` — early only when
-`subscription.renewal` allows it — priced from the CURRENT catalog price;
-`POST /v1/renewals/renew` runs only on the SETTLED order, closing the prior
-cycle at period end and opening the NEXT cycle of the SAME subscription +
-entitlement refresh with a RENEWAL grant; `POST /v1/renewals/reminders-due`
-writes one INTERNAL/SYSTEM reminder record per cycle, never outbound;
-`POST /v1/renewals/trust-renew` grants a bounded paymentless extension,
-policy-gated (`subscription.trust_renewal`, +3d/remaining≤3/reviewed by
-default) with requester≠approver and a single grant per cycle; `POST
-/v1/renewals/expire-overdue-due` ENDs past-grace subscriptions at cycle end
-(SUSPENDED only under an explicit suspension policy, `cancel_at_period_end`
-rows stay with the Wave 6 worker) and opens a human-worked recovery task
-(`GET /v1/recovery-tasks`, `POST /v1/recovery-tasks/:id/resolve` with
-WON_BACK/LOST/DISMISSED — no campaign automation). Events are
-registry-listed only (`order.created.v1`, `subscription.renewed.v1`);
-migration `020` (`renewal.recovery_tasks`,
-`subscription.trust_renewal_grants`).
+See [`CHANGELOG.md`](CHANGELOG.md) — one entry per delivered work package,
+newest under `## Unreleased`.

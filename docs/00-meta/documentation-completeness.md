@@ -1,6 +1,6 @@
 # Documentation Completeness — v1.0
 
-Status: **implementation-ready**.
+Status: **implemented and under continuous maintenance**.
 
 Conceptual/product planning is closed for Modules 1–25. The implementation baseline includes canonical domain ownership, states/events/policies/capabilities, final stack/harness decisions, security, integration certification, MVP freeze, critical path, E2E/DoD, NFR/DR, risk register and future capability registry.
 

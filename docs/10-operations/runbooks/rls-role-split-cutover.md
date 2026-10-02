@@ -192,8 +192,8 @@ until their domain rollout — `iptv_app` has no grants there by design):
 
 `pnpm --filter @iptv/database test` on fresh `iptv_rls_vitest`
 (`TEST_DATABASE_URL`, disposable): **3 files, 16/16 PASS** — including
-`migrate.integration` applying all 43 canonical migrations (041+042
-included) through the real `applyMigrations` runner with idempotent re-run,
+`migrate.integration` applying all 46 canonical migrations (through 046)
+through the real `applyMigrations` runner with idempotent re-run,
 and the `withTenantTransaction` app-role isolation test on the 042 surface.
 
 ### Step 4a — cutover rehearsal (disposable `iptv_rls_cutover` only)

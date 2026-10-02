@@ -1,8 +1,9 @@
 # Implementation Baseline v1.0.1
 
-> Status: **WAVE 0 READY — DEPENDENT WAVES REQUIRE CONTRACT/INTEGRATION GATES**  
-> Baseline date: 2026-09-26  
-> Scope: consolidation of Modules 1–25 + planning closure  
+> Status: **IMPLEMENTED THROUGH WAVE 16 + W0 CINEVISION RUNTIME HARDENING (FASES 0–5)** — migration 046 applied  
+> Baseline date: 2026-10-02  
+> Delivery record of truth: `CHANGELOG.md` (`## Unreleased`)  
+> Scope: consolidation of Modules 1–25 + planning closure + implementation delivery to Wave 16  
 > Authority: this directory is the implementation baseline. If an older supporting document conflicts with this baseline, **this baseline wins**.
 
 ## Purpose

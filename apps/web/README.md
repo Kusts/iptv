@@ -7,7 +7,7 @@ Fronteira dura: este app **nunca** importa `packages/database` nem qualquer mód
 
 ```sh
 pnpm install
-pnpm --filter web dev      # http://localhost:3000
+pnpm --filter @iptv/web dev      # http://localhost:3000
 ```
 
 Variáveis:
@@ -25,7 +25,27 @@ explícita(s) da web (separadas por vírgula, sem wildcard); sem isso, o
 cross-origin é negado. CORS não substitui autenticação Bearer/sessão nem as
 guards de tenant/revisão.
 
-Comandos: `pnpm --filter web test|typecheck|lint|build`.
+Comandos: `pnpm --filter @iptv/web test|typecheck|lint|build`.
+
+## Rotas (App Router em `app/`)
+
+Uma página por diretório; a navegação do `components/Shell.tsx` usa exatamente
+esta lista.
+
+| Rota | Tela | Superfície da API |
+| --- | ---- | ----------------- |
+| `/login` | Login (fora do shell autenticado) | `POST /v1/auth/login` |
+| `/` | Painel + "Needs attention" | `GET /v1/health`, `GET /v1/human-reviews/center` |
+| `/conversations` | Conversas | `GET /v1/communications/conversations`, mensagens + `assign`/`release`/`send-manual` |
+| `/subscriptions` | Assinaturas | `GET /v1/subscriptions[/:id]`, `resume`, `cancel-at-period-end` |
+| `/orders` | Pedidos | `GET /v1/orders`, `GET /v1/orders/:id` |
+| `/support` | Suporte (tickets) | `GET /v1/tickets`, `/v1/tickets/my-work`, `/v1/tickets/:id`, `resolve` |
+| `/conhecimento` | Conhecimento (filas de itens) | `GET /v1/knowledge/items`, `/corrections`, `/gaps`, `freshness/refresh`, `verify`/`apply`/`reject`/`close` |
+| `/hitl` | Centro HITL | `GET /v1/human-reviews/center[?source=]`, `POST /v1/human-reviews/:id/claim` + decisão |
+| `/copilot` | Copilot | `POST /v1/agent/copilot/ask`, `/execute`, contexto via `lib/api.ts` |
+
+`app/layout.tsx` monta `AuthProvider` + `ToastProvider`; `app/lib.ts` e
+`app/page.tsx` são a raiz do App Router.
 
 ## Auth / token (tradeoff documentado)
 

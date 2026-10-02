@@ -4,9 +4,9 @@ This is the v1.0 physical-model contract. Migrations are delivered per Wave; tab
 
 ## Physical organization
 
-Recommended PostgreSQL schemas:
+PostgreSQL schemas as actually created (`CREATE SCHEMA` across `db/migrations/`), in creation order:
 
-`control, identity, crm, communications, commerce, billing, subscription, provider, inventory, support, content, referral, growth, finance, analytics, knowledge, automation, partners, platform, audit`
+`control, platform, security, identity, crm, trial, catalog, commerce, billing, finance, subscription, entitlement, provider, inventory, communication, support, knowledge, agent, referral, loyalty, renewal, growth, partners, analytics, experiments`
 
 Schema boundaries improve ownership but do not replace tenant isolation.
 

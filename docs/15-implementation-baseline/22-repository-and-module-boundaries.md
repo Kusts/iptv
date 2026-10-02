@@ -23,7 +23,7 @@ packages/
   testkit/            # fixtures/builders/assertions used across test suites
 ```
 
-Bounded-context application code should primarily live under `apps/api/src/modules/<context>` or an equivalent explicit context package structure. Do not create dozens of tiny packages before independent version/deployment boundaries are justified.
+Bounded-context application code lives under `apps/api/src/<context>` (e.g. `apps/api/src/crm/`, `apps/api/src/billing/`); there is no `apps/api/src/modules/` directory. Do not create dozens of tiny packages before independent version/deployment boundaries are justified.
 
 ## API module layout
 
