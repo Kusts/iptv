@@ -34,6 +34,13 @@ Use synthetic/sandbox fixtures while a live gate remains unresolved; a productio
 - Asaas uses official Sandbox first, production canary before final certification.
 - WAHA session/restriction/media behavior requires pinned-version certification.
 
+## CINEVISION post-Fase-6 hardening backlog (from the Fase 5 closure review)
+
+Registered 2026-10-02 as an operator decision: neither item blocks the Fase 6 live canary; both should land before broad production operation.
+
+- `HUMAN_REQUIRED` provider operations are invisible to the HITL center: its read model aggregates only `human_review`, `comm_exception`, `billing_exception` and `recovery_task` (`apps/api/src/human-review/human-review.controller.ts`), so resolution depends on technical polling plus the per-id `POST /v1/provider/operations/:id/resolve`. Backlog: surface provider operations parked in `HUMAN_REQUIRED` in the HITL center so a problem operation reaches the operator without polling.
+- `PROVIDER_DISPATCH_MODE` silently falls back to `inline` (`apps/api/src/provider/provider-port.ts` treats anything other than `durable` as inline, including empty or mistyped values), while the durable dispatcher is the only certified executor for real writes. Backlog before broad production: a startup/readiness check or explicit production configuration that fails fast when the expected mode is not set.
+
 ## Business validation during pilot
 
 - longer IPTV package prices;

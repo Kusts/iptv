@@ -67,47 +67,83 @@ The [CINEVISION Provider Runtime Hardening](../04-specs/integrations/cinevision-
 
 Closure state: CI green (path-semantics fix in the browser-worker profile isolation tests; ubuntu-latest now validates Windows deployment paths via explicit `pathSemantics`), API hardening FIX4-N5 landed (reconcile may only re-arm a trial from a readback anchored by a persisted `external_ref`; anchorless uncertainty converges `HUMAN_REQUIRED`). Review round added a RUNTIME BOUNDARY: `resolveWorkerConfig`/`defaultProfileRoot` fail closed when the profile-root namespace does not match the host platform (on posix a windows path is a relative filename to the native fs and could land inside the checkout); pure cross-host policy validation remains available for tests. No live CINEVISION credentials or session were available in this round — no evidence was fabricated and nothing was marked certified. Worker remains GET-only; the `createTrial` real write stays gated.
 
+Agreed execution order (2026-10-02 operator decision): the remaining closure-round LOW findings do NOT trigger another engineering round before Fase 6. Two of them are registered as post-certification hardening backlog in `19-open-items-and-validation.md` (HITL surfacing of `HUMAN_REQUIRED` provider operations; `PROVIDER_DISPATCH_MODE` production fail-fast) and certification gates change ONLY in the final step below, after every evidence field is filled from live observation.
+
 #### Fase 6 canary — exact operator procedure (run only on the disposable account)
 
 Prerequisites (all mandatory, fail-closed if missing):
 
-1. W0-09 unblock path resolved (rested/clean IP + interactive challenge solved inside the bounded window, or real-Chrome channel, or a different network); re-run the read-identity CLI probe first and require JSON (a 403 HTML challenge aborts the procedure).
+1. W0-09 unblock path resolved (rested/clean IP + interactive challenge solved inside the bounded window, or real-Chrome channel, or a different network); the operator then obtains a legitimate panel session manually. Re-run the read-identity CLI probe first and require JSON (a 403 HTML challenge aborts the procedure).
 2. Disposable CINEVISION account designated: `PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID` pointing at an ACTIVE account of the test tenant; the account balance and any plan/charge page noted BEFORE the canary.
-3. `provider.cinevision.trial` capability flipped `AVAILABLE` ONLY for the canary window (migration/seed path records the event), reverted immediately after.
+3. `provider.cinevision.trial` capability flipped `AVAILABLE` ONLY for the canary window (migration/seed path records the event), reverted immediately after; the row stays `UNCERTIFIED` until the final step. Record the state of BOTH gate rows before the flip — the global `provider.cinevision` row (migration 044, read by the domain seams) and the per-action `provider.cinevision.trial` row (migration 046, the strict per-action gate).
 4. `PROVIDER_DISPATCH_MODE=durable` (the dispatcher is the only certified executor), fresh `TEST_DATABASE_URL`-equivalent staging DB, API logs captured to file.
 
-Step 1 — revalidate the `POST /api/customers` contract (observed against the live panel, disposable account):
+Step 1 — operator session + panel build registration:
 
-- In the browser devtools (manual, human-operated session), create one customer through the panel UI and record: observed panel version/build (footer or bundle version), request method, exact endpoint path, request headers (REDACT `Authorization`/`Cookie` — record only their presence and shape), full body schema (field names, types, required/optional, server-side defaults), response schema and status, and the resulting external customer id.
-- Compare field-by-field against `apps/browser-worker/src/providers/cinevision/schemas.ts` + the W1 dossier. Any drift ⇒ STOP, update schemas + contract tests first, re-run the suite.
+- With the unblocked session confirmed by the read-identity probe (JSON), record the observed panel version/build (footer or bundle version) as the new compatibility pin candidate.
 
-Step 2 — controlled canary trial (single operation):
+Step 2 — revalidate the current reads (GET-only, no write):
 
-- Trigger exactly ONE `trial.provision` through the staging API against the disposable account; watch the dispatcher drain it (admin `POST /v1/admin/provider-dispatch/drain` then `/reconcile`).
-- Record, per operation: provider result outcome, readback snapshot (customer found? trial flag? expiration observed), postcondition verdict, binding external id, and the trial's internal state (`ACTIVE` requires conclusive readback + satisfied postconditions — a bare HTTP 200 must never terminalize).
-- Record financial effect: account balance before/after, any charge line created (expected: none for a trial).
-- Idempotency evidence: replay the same `trial-provision:{trialId}` intent (409 expected); attempt a second provision for the same trial after `SUCCEEDED` (must be refused; no second panel-side trial).
+- Run the read-only CLI subcommands (kebab-case: `read-identity`, `read-credit-balance`, `list-customers`, `read-customer`, `read-customer-status`, `read-connections`, `list-servers`, `read-server-status`, `list-package-prices`, `read-live-connections`, `list-integrations`) against the live panel and record the JSON evidence.
+- Compare observed payloads against the read validators in `apps/browser-worker/src/providers/cinevision/schemas.ts`. Any drift ⇒ STOP, update validators + contract tests first, re-run the suite. This is also the live evidence the Fase 1/2 readers still lack; gate promotion remains deferred to the final step.
 
-Step 3 — uncertainty drill (only if it can be done without a second real write):
+Step 3 — observe the real `POST /api/customers` contract (manual, human-operated session):
+
+- In the browser devtools, create one customer through the panel UI and record: request method, exact endpoint path, request headers (REDACT `Authorization`/`Cookie` — record only their presence and shape), full body schema (field names, types, required/optional, server-side defaults), response schema and status, and the resulting external customer id.
+- Known baseline BEFORE this step: the W1 dossier (`docs/11-research/cinevision-api-investigation-2026-09-30.md`) lists the body fields as OBSERVED/frontend-sourced with the response schema `unknown` and the runtime path UNCONFIRMED. `schemas.ts` pins READ contracts only — the write contract does not exist in code yet; this observation is what lands it.
+
+Step 4 — compare the real contract against the expected one, field-by-field:
+
+- Observed method/path/headers/body/response vs the W1 dossier fields and the read-validator conventions. Any drift, or a response shape that contradicts the readback assumptions ⇒ STOP, update schemas + contract tests first, re-run the suite, then resume at Step 5.
+
+Step 5 — real executor wiring (engineering gate BEFORE the canary):
+
+- TODAY the API runtime resolves only `echo`/`manual` ops ports (`adapterNameFromEnv`/`resolveOpsPort`) and defaults the trial readback to `StubTrialReadback` (fail-closed INCONCLUSIVE): a secret-required `trial.provision` dispatched in this state parks `HUMAN_REQUIRED` by design. The canary therefore requires that the Step 3/4 observed write contract first be implemented as the real port adapter plus the real trial readback, contract-tested and wired into the runtime registration — replacing the synthetic defaults ONLY for the real branch, never by relaxing provenance enforcement.
+- Record the wiring commit/PR and its test evidence before proceeding. If the real executor is not wired, STOP — do not run the canary against a synthetic port.
+
+Step 6 — controlled canary trial (single operation):
+
+- Record the panel customer count as the pre-canary baseline (the Step 3 observation customer is included in it).
+- Trigger exactly ONE `trial.provision` through the staging API against the disposable account; watch the dispatcher drain it (platform-admin `POST /v1/admin/provider-dispatch/drain` — default limit 25, so one queued op drains in a single call — then `/reconcile`; `/recover` exists for crash-window/lease recovery and applies only if a lease is abandoned).
+- Record, per operation: provider result outcome, readback snapshot (customer found? trial flag? expiration observed?), postcondition verdict, and the financial effect (account balance before/after, any charge line created — expected: none for a trial). A bare HTTP 200 must never terminalize the operation.
+
+Step 7 — confirm postconditions and internal state (readback + PostgreSQL):
+
+- Readback: external customer id, `is_trial`, and the observed expiration beating the locally computed `expires_at`.
+- PostgreSQL evidence: `provider.provider_bindings` row for the trial (`entity_type='trial'`, `external_id`, `status='ACTIVE'`, metadata postcondition satisfied), `trial.trials.provider_binding_id` set, `trial.trials.lifecycle_status='ACTIVE'`, `trial.trials.expires_at` matching the observed value, and the `provider.provider_operations` row `SUCCEEDED` with `effect_certainty='KNOWN_APPLIED'` (attempt row `SUCCEEDED`).
+
+Step 8 — idempotency evidence (no duplicate customer/trial may exist):
+
+- Replay the same `trial-provision:{trialId}` intent (409 expected); attempt a second provision for the same trial after `SUCCEEDED` (must be refused); confirm panel-side via a customer list read that exactly ONE additional customer exists versus the pre-canary baseline, attributable to the canary operation.
+
+Step 9 — uncertainty drill (only if it can be done without a second real write):
 
 - Induce one timeout/UNKNOWN (e.g., command budget below the panel's response time) and verify the operation parks `VERIFYING/UNKNOWN`, reconcile converges `HUMAN_REQUIRED`, and NO second POST is sent (worker/proxy request count must stay at 1).
+- Note: resolving a parked operation is manual today (`POST /v1/provider/operations/:id/resolve`); surfacing these in the HITL center is registered hardening backlog, not a Fase 6 blocker.
+
+Final step — certification gate changes, only now:
+
+- Only after every evidence field below is filled from live observation AND the panel version is recorded as the new compatibility pin may the certification gates change: the write capability leaves `UNCERTIFIED` (runtime enums `UNCERTIFIED | SANDBOX_CERTIFIED | CERTIFIED` are the vocabulary authority; the plan ladder at the top of this file stays plan-level until the Fase 19 reconciliation) and Step 2 read evidence is recorded for read-capability promotion. If Step 9 could not be executed without a second real write, record `UNKNOWN drill: not executed (<reason>)` as an explicit limitation — promotion is then capped at `SANDBOX_CERTIFIED`, with the drill as the recorded recertification trigger before `CERTIFIED`. Any systemic challenge/bad-response/drift/unknown/postcondition-mismatch pattern ⇒ abort to `DEGRADED` + manual, per SPEC Fase 6, and nothing is promoted.
 
 Evidence template (fill every field, attach raw captures without secrets):
 
 - panel version/build observed: ____
+- read revalidation evidence (Step 2 commands + JSON): ____
 - request method + endpoint: ____
 - headers (shapes only, no values): ____
-- body schema (customer): ____
+- body schema (customer) vs W1 dossier: ____
 - response schema + status: ____
 - observed effects (customer/trial created): ____
 - external customer id: ____
 - trial flag + expiration observed in readback: ____
 - readback verdict + postconditions: ____
+- provider_bindings row + trial.provider_binding_id (PostgreSQL): ____
+- trial lifecycle_status + expires_at (local vs observed): ____
+- provider_operations final state + effect_certainty: ____
 - financial effect (balance before/after): ____
-- idempotency evidence (replay 409 / post-SUCCEEDED refusal): ____
-- UNKNOWN drill result (park → reconcile → HITL, single send): ____
-
-Certification: only after every field above is filled from live observation AND the panel version is recorded as the new compatibility pin may the write capability leave `UNCERTIFIED`. Any systemic challenge/bad-response/drift/unknown/postcondition-mismatch pattern ⇒ abort to `DEGRADED` + manual, per SPEC Fase 6.
+- pre-canary panel customer baseline: ____
+- idempotency evidence (replay 409 / post-SUCCEEDED refusal / one additional customer vs baseline): ____
+- UNKNOWN drill result (park → reconcile → HUMAN_REQUIRED, single send) or recorded limitation: ____
 
 ## MK Ativador gate
 
