@@ -364,25 +364,50 @@ describe.skipIf(!hasDb)("Scheduler tick end-to-end (requires TEST_DATABASE_URL)"
       .execute();
     expect(recovery.length).toBeGreaterThanOrEqual(1);
 
-    // Outbox drained by the same tick: nothing claimable left behind FOR THIS
-    // TENANT (the shared integration DB legitimately holds residue from other
-    // suites' tenants).
-    const leftover = await db
-      .selectFrom("platform.outbox_messages")
-      .select(["id"])
-      .where("tenant_id", "=", tenantId)
-      .where("state", "in", ["PENDING", "FAILED"])
-      .where("next_attempt_at", "<=", new Date())
-      .execute();
+    // Outbox drained by the same tick — CONVERGENCE within bounded ticks
+    // FOR THIS TENANT. The tick's outbox drain is a GLOBAL, budget-capped
+    // (25 rows) oldest-first pass shared with every other suite on the
+    // integration DB, so under contention a single tick can spend its
+    // whole budget on older rows from other tenants before reaching this
+    // tenant's fresh rows (observed as CI-only flake). The documented
+    // contract is multi-tick convergence ("repeated ticks are safe"),
+    // which is also how production converges — the tick repeats on its
+    // interval. Loop bounded REAL ticks (never a blind sleep) until our
+    // tenant has no claimable rows left; each tick must stay error-free.
+    const leftoverForTenant = async () =>
+      db
+        .selectFrom("platform.outbox_messages")
+        .select(["id"])
+        .where("tenant_id", "=", tenantId)
+        .where("state", "in", ["PENDING", "FAILED"])
+        .where("next_attempt_at", "<=", new Date())
+        .execute();
+    let leftover = await leftoverForTenant();
+    for (let extraTicks = 0; leftover.length > 0 && extraTicks < 20; extraTicks += 1) {
+      const next = await scheduler.tick();
+      expect(next.errors).toEqual([]);
+      leftover = await leftoverForTenant();
+    }
     expect(leftover).toHaveLength(0);
 
-    // Idempotent second tick: no new transitions, nothing to drain.
+    // Idempotent second tick: no NEW transitions for this tenant and the
+    // tenant stays converged. (`outbox.claimed` is GLOBAL by design — on a
+    // contended shared DB any tick may legitimately claim other tenants'
+    // rows — so only the tenant-scoped fixed point is assertable here.)
     const second = await scheduler.tick();
     expect(second.errors).toEqual([]);
-    expect(second.outbox.claimed).toBe(0);
     for (const counts of Object.values(second.commands)) {
       expect(counts.failed).toBe(0);
     }
+    expect(await leftoverForTenant()).toHaveLength(0);
+    expect(
+      (await db
+        .selectFrom("trial.trials")
+        .select(["lifecycle_status"])
+        .where("tenant_id", "=", tenantId)
+        .where("id", "=", trialId)
+        .executeTakeFirstOrThrow()).lifecycle_status,
+    ).toBe("ENDED");
     // The tick scans every tenant with due rows on the shared integration DB —
     // it can exceed the vitest default on accumulated data.
   }, 180_000);
