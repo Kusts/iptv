@@ -27,3 +27,5 @@ Each runbook follows: detect → contain → preserve state → communicate → 
 - [migration-failure.md](migration-failure.md)
 - [hitl-backlog.md](hitl-backlog.md)
 - [rls-role-split-cutover.md](rls-role-split-cutover.md)
+- [staging-deploy.md](staging-deploy.md)
+- [backup-restore.md](backup-restore.md)
