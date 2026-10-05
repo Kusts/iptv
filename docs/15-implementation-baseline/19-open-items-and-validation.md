@@ -33,6 +33,43 @@ Use synthetic/sandbox fixtures while a live gate remains unresolved; a productio
 - MK private purchase/balance/activation needs authenticated browser certification.
 - Asaas uses official Sandbox first, production canary before final certification.
 - WAHA session/restriction/media behavior requires pinned-version certification.
+- Per-capability status (never a global product status; only operator-recorded evidence promotes a row): [Integrations Capability Status](../10-operations/integrations-capability-status.md).
+
+### CINEVISION engineering items closed in software (NOT certification)
+
+Status 2026-10-05 (engineering only; no live evidence, nothing promoted):
+
+- **Cross-boundary `is_trial` representation divergence — CLOSED.** The
+  browser-worker's read parser accepts EXACTLY `"true"|"false"|"YES"|"NO"`
+  (`apps/browser-worker/src/providers/cinevision/schemas.ts`, `normalizeIsTrial`;
+  the `"YES"`/`"NO"` arm is backed by the live 2026-10-05 observation: panel
+  v3.94, customers `total = 18`, `is_trial` `YES: 7` / `NO: 11`), but the API
+  postcondition normalizer returned `null` for `"YES"`/`"NO"` — so a real
+  readback adapter forwarding the observed representation would have evaluated
+  postcondition `not_trial` and fail-closed on a CORRECT trial. The normalizer
+  now accepts the same two exact representations
+  (`apps/api/src/trial/trial-readback.ts`, `normalizeTrialIsTrial`), keeping
+  every existing rejection (no trimming, no case folding, no lowercase `"yes"`,
+  no `1`/`0`, no booleans on the worker side) and the documented legacy/dev arm;
+  the strict allowlist table is pinned in
+  `apps/api/test/trial-readback.unit.test.ts`. This closes a representation bug
+  only. It does **not** satisfy Fase 6 Step 2/3, does not license any write, and
+  changes no capability row.
+- **Trial readback wiring — STILL OPEN (operator/engineering, live-gated).**
+  Both dispatcher seams default to `StubTrialReadback` (fail-closed
+  INCONCLUSIVE): `apps/api/src/provider/provider-dispatcher.service.ts:995`
+  (drain) and `:678` (reconcile). Until a real `TrialReadbackPort` is wired
+  together with the real ops adapter, a SUCCEEDED secret-required
+  `trial.provision` parks VERIFYING/UNKNOWN by design and no canary can run.
+  The complete, point-by-point wiring list (ops-port union, `adapterNameFromEnv`
+  + the zod `adapter` enums, the dispatcher's `resolvePort` mirror, the two
+  readback injections, and the `adapter_version` literal that MUST NOT change)
+  is now recorded in Fase 6 Step 5 of
+  [Live Integration Certification](10-integrations-certification.md), so the next
+  implementer needs no archaeology.
+- The `POST /api/customers` write contract remains **unobserved** and marked
+  `OPERATOR/LIVE EVIDENCE REQUIRED` at Fase 6 Step 3. No adapter, transport or
+  contract for it exists in this repository, by design.
 
 ## CINEVISION post-Fase-6 hardening backlog (from the Fase 5 closure review)
 

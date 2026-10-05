@@ -17,6 +17,7 @@
 - [Operational Dashboard Catalog](operational-dashboard-catalog.md)
 - [Cost Governance](cost-governance.md)
 - [Production Readiness Checklist](production-readiness-checklist.md)
+- [Integrations Capability Status](integrations-capability-status.md) — per-capability readiness for every external integration (CINEVISION, WAHA, Asaas, MK, Infisical, Hatchet, AI gateway); never a global product status
 
 
 Future operational documents extend this area with detailed SLO values, backup/restore drills, incident response and on-call procedures as the pilot environment is provisioned.

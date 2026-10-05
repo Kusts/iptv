@@ -96,11 +96,34 @@ export class StubTrialReadback implements TrialReadbackPort {
  * strict: anything outside it normalizes to `null` (unexpected schema →
  * postcondition mismatch, never silent coercion).
  *
- * - `true`: boolean `true`, string `"true"`/`"1"` (trimmed,
- *   case-insensitive), number `1`.
- * - `false`: boolean `false`, string `"false"`/`"0"`, number `0`.
- * - `null`: everything else (including `"yes"`, `"sim"`, objects,
- *   arrays, blanks — strictness is deliberate).
+ * CANONICAL CONTRACT — the provider-facing string representations are
+ * shared EXACTLY with the browser-worker's own parser `normalizeIsTrial`
+ * (`apps/browser-worker/src/providers/cinevision/schemas.ts`), which is the
+ * authority for what a real readback port forwards: the provider serializes
+ * the flag as an exact uppercase enum on the current panel build (live
+ * authenticated GET observation 2026-10-05, panel v3.94, customers
+ * `total = 18`, `is_trial` distribution `YES: 7` / `NO: 11`), while
+ * `"true"`/`"false"` were observed on 2026-09-30. Both sides MUST stay
+ * aligned: the readback port forwards the worker's observed representation,
+ * so a real adapter must not fail-close on a CORRECT trial. For those
+ * shared representations the comparison is EXACT — no trimming, no case
+ * folding, so lowercase `"yes"`/`"no"` and whitespace-padded `" YES"`/
+ * `"YES "` are rejected, exactly as the worker rejects them.
+ *
+ * - `true`: the exact string `"YES"` (canonical) or `"true"`/`"1"`
+ *   (trimmed, case-insensitive — the non-provider/dev representations),
+ *   boolean `true`, number `1`.
+ * - `false`: the exact string `"NO"` (canonical) or `"false"`/`"0"`
+ *   (trimmed, case-insensitive — the non-provider/dev representations),
+ *   boolean `false`, number `0`.
+ * - `null`: everything else (including `"yes"`, `"no"`, `"y"`, `"sim"`,
+ *   `"2"`, objects, arrays, blanks, `null`/`undefined` — strictness is
+ *   deliberate).
+ *
+ * FASE5-CINE-READBACK: adding `"YES"`/`"NO"` is an ALLOWLIST EXTENSION
+ * of two evidence-backed representations, never a loosening: no other
+ * input that previously normalized to `null` does so now, and the
+ * legacy `"true"`/`"false"`/`"1"`/`"0"` arm is unchanged.
  */
 export function normalizeTrialIsTrial(raw: unknown): boolean | null {
   if (typeof raw === "boolean") {
@@ -116,6 +139,13 @@ export function normalizeTrialIsTrial(raw: unknown): boolean | null {
     return null;
   }
   if (typeof raw === "string") {
+    // Canonical provider representations: exact match, no trim/case fold.
+    if (raw === "YES") {
+      return true;
+    }
+    if (raw === "NO") {
+      return false;
+    }
     const lowered = raw.trim().toLowerCase();
     if (lowered === "true" || lowered === "1") {
       return true;
