@@ -3,12 +3,18 @@
 > Status: Steps 1 (role split) + 2 (`SET LOCAL` plumbing) shipped behind the
 > current connection string. Steps 3 (per-domain rollout crm/communication)
 > + 4 (cutover rehearsal + pooler cert) EXECUTED 2026-09-29 against disposable
-> databases only — see execution log below. The app still connects as the
+> databases only — see execution log below. Control + identity enrolled
+> 2026-10-05 (migration `047`, SQL proof `db/tests/012`, integration test
+> `rls-control-identity.integration.test.ts`) — also disposable DBs only; see
+> the second execution log. The app still connects as the
 > owner/superuser (`iptv`), which bypasses RLS — the policy is currently inert
 > in production. Do NOT treat RLS as enforced until the cutover checklist is
-> complete AND the app is pointed at `APP_DATABASE_URL`.
-> Source: `docs/spikes/rls-pooling-spike.md`, migrations `041`/`042`/`043`,
-> `db/tests/006`/`007`/`008`/`009`.
+> complete AND the app is pointed at `APP_DATABASE_URL`. Since 2026-10-05 a
+> production boot without `APP_DATABASE_URL` logs a loud `RLS BYPASSED`
+> warning at startup (`warnOnOwnerFallback`, `apps/api/src/app.module.ts`) so
+> the inert state cannot pass unnoticed.
+> Source: `docs/spikes/rls-pooling-spike.md`, migrations `041`/`042`/`043`/`047`,
+> `db/tests/006`/`007`/`008`/`009`/`012`.
 
 ## Current state
 
@@ -49,22 +55,29 @@ Get-Content -Raw "db\tests\007_rls_app_role_pilot.sql" `
 
 ## Cutover checklist (step 3 gate, all required before switching)
 
-> ⛔ GLOBAL CUTOVER IS BLOCKED. Only `crm` + `communication` are
-> RLS-enrolled (migrations 041/042: 13 tenant-scoped tables, grants + RLS +
-> `tenant_isolation`). Every other domain (`platform`, `billing`, `finance`,
-> `identity`, `control`, …) has NO grants/policies for `iptv_app` yet, so a
-> global switch to `APP_DATABASE_URL` today means fail-closed reads (0 rows)
-> or `permission denied` writes on all of those tables — total outage
-> outside the two enrolled domains. Do NOT cut over globally until the
-> per-domain sequence below is complete for EVERY domain the app touches:
-> per-domain inventory (tenant-scoped vs global tables) → grants + RLS
-> policies (append-only migration) → SQL proof test (`db/tests/0NN`) →
+> ⛔ GLOBAL CUTOVER IS BLOCKED. `crm`, `communication` (041/042: 13
+> tenant-scoped tables) and `control` + `identity` (047: 3 identity tables +
+> `feature_flags` hybrid + global grants) are RLS-enrolled or granted. Every
+> other domain (`platform`, `billing`, `finance`, `trial`, `subscription`,
+> `commerce`, `catalog`, `inventory`, `support`, `knowledge`, `agent`,
+> `referral`, `loyalty`, `renewal`, `growth`, `partners`, `analytics`,
+> `experiments`, `security`, `entitlement`, `provider`) has NO grants/policies
+> for `iptv_app` yet, so a global switch to `APP_DATABASE_URL` today means
+> fail-closed reads (0 rows) or `permission denied` writes on all of those
+> tables — total outage outside the enrolled domains. Do NOT cut over globally
+> until the per-domain sequence below is complete for EVERY domain the app
+> touches: per-domain inventory (tenant-scoped vs global tables) → grants +
+> RLS policies (append-only migration) → SQL proof test (`db/tests/0NN`) →
 > rehearsal through the real app path (tenant A/B isolation, fail-closed,
 > cross-tenant write blocked, owner bypass) → then, and only then, cutover.
 > Domain rollouts land one migration + one SQL test at a time; this runbook
 > tracks which domains are enrolled.
 
-Enrolled domains: `crm`, `communication` (041/042 + pre-context resolver 043).
+Enrolled domains: `crm`, `communication` (041/042 + pre-context resolver 043);
+`control` + `identity` (047 — identity fully enrolled; `control` partially:
+global tables granted without RLS, `feature_flags` hybrid policy,
+`tenant_memberships`/`membership_roles` granted but NOT enrolled pending a
+pre-context resolver, see the 047 log below).
 
 1. [DONE 2026-09-29] Per-domain policy + `GRANT` rollout beyond
    `crm.customers`: migration `042` enforces all 12 remaining tenant-scoped
@@ -240,3 +253,65 @@ and the `withTenantTransaction` app-role isolation test on the 042 surface.
   enrolled domains under the `SET LOCAL`-per-transaction discipline.
 - Session left stopped (`docker compose --profile pooling stop pgbouncer`);
   disposable DBs retained for re-verification (contain only test fixtures).
+
+## Control + identity enrollment log (2026-10-05, hardening closure round)
+
+`db/migrations/202610050000_047_rls_control_identity_rollout.sql` (append-only;
+executed against disposable databases only) + `db/tests/012` +
+`apps/api/test/rls-control-identity.integration.test.ts`:
+
+- **identity fully enrolled** (tenant template from 042):
+  `identity.persons`, `identity.identities`, `identity.identity_merge_reviews`
+  — RLS + `tenant_isolation` (`USING`/`WITH CHECK` on `app.tenant_id`,
+  fail-closed) + full DML grants to `iptv_app`.
+- **`control.feature_flags` hybrid policy** (nullable `tenant_id`): `USING`
+  sees `tenant_id IS NULL` (global defaults) OR the caller's tenant;
+  `WITH CHECK` only allows the caller's tenant, so the app role can never
+  create/overwrite a GLOBAL flag row.
+- **Global control tables granted WITHOUT RLS** (deliberate — nothing to
+  isolate): `control.tenants/users/auth_credentials/auth_sessions` (DML —
+  the pre-context auth surface) and
+  `control.roles/permissions/role_permissions` (SELECT — owner-seeded RBAC
+  catalogs; isolation lives in the assignments, not the catalogs).
+- **Pre-context caveat — cutover blocker NOT solved by 047**:
+  `control.tenant_memberships` + `control.membership_roles` carry
+  `tenant_id NOT NULL` but are read BEFORE any tenant context exists
+  (`auth.listMemberships`, `PermissionsGuard.findActiveMembership` run on the
+  raw pool). They receive DML grants but are deliberately NOT RLS-enrolled;
+  enrolling them today would fail-close every login (0 memberships → 403).
+  Unblock path (choose at their enrollment): a `043`-shaped
+  `SECURITY DEFINER` membership resolver, or moving the membership read
+  inside a tenant transaction. `db/tests/012` asserts this exception
+  explicitly so it cannot silently grow.
+- Safety rails added in the same round: `APP_DATABASE_URL` is now a validated
+  config key (`packages/config`), and a production boot that resolves the API
+  pool to the owner connection logs the `RLS BYPASSED` warning
+  (`warnOnOwnerFallback` in `apps/api/src/app.module.ts`). The SQL proof
+  suite (`db/tests/*.sql`) now runs in CI against a disposable database
+  (`.github/workflows/ci.yml`).
+
+## Platform enrollment design decision (OPEN — blocks cutover with billing/finance)
+
+`platform` carries the cross-tenant system spine
+(`idempotency_keys`, `audit_log`, `domain_events`, `outbox_messages`,
+`inbox_messages`) plus global catalogs (`capabilities`, `capability_events`,
+`policy_documents` with nullable `tenant_id`). Tenant-scoped spine tables are
+mechanically enrollable, but the **cross-tenant workers are not**: the
+outbox drain (`OutboxDrainer`/dispatcher) claims `PENDING` rows across ALL
+tenants with no `app.tenant_id` set — under `iptv_app` that claim
+fail-closes to 0 rows and the outbox never drains. Candidate patterns,
+decision deferred to the platform rollout slice:
+
+1. Narrow `SECURITY DEFINER` claim/complete functions (043 shape): the
+   drain claims a bounded batch through an owner-held, `search_path`-pinned,
+   `PUBLIC`-revoked function; per-row handler work still runs inside
+   `withTenantTransaction`.
+2. Dedicated owner-pool connection for system workers only (outbox/inbox/
+   scheduler), keeping all request-path DML on `iptv_app` — operationally
+   simpler, but widens the bypass surface to worker code.
+
+Pattern 1 is the default candidate (smaller bypass surface, matches the
+certified 043/009 discipline). The known index gap also lands with this
+slice: `outbox_pending_idx` lacks a `tenant_id` prefix (finding from
+2026-09-29, above). Until platform + billing (+ `billing.tenant_channels`
+043-shaped resolver) + finance enroll, the global cutover stays BLOCKED.

@@ -43,6 +43,19 @@ jobs:
           # themselves and skip when this is unset.
           TEST_DATABASE_URL: postgresql://iptv:iptv@localhost:5432/iptv_test
       - run: pnpm build
+      - name: PostgreSQL proof tests (psql)
+        # Same postgres:17-alpine service and credentials as TEST_DATABASE_URL,
+        # on a SEPARATE disposable database: this runner applies every
+        # migration + seed from scratch and needs an EMPTY database (the
+        # vitest suites already migrated `iptv_test`).
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+          psql "postgresql://iptv:iptv@localhost:5432/iptv_test" \
+            -v ON_ERROR_STOP=1 \
+            -c "CREATE DATABASE iptv_pgtests"
+          DATABASE_URL="postgresql://iptv:iptv@localhost:5432/iptv_pgtests" \
+            bash scripts/run_pg_fixture_tests.sh
       - run: python scripts/validate_docs.py
       - run: python tests/contracts/test_contracts.py
       - run: python tests/contracts/test_seed_contract.py

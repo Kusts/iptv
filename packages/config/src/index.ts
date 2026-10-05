@@ -4,6 +4,14 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(3001),
   DATABASE_URL: z.string().min(1).optional(),
+  // RLS cutover path (`docs/10-operations/runbooks/rls-role-split-cutover.md`):
+  // connection string for the application pool as role `iptv_app`
+  // (`NOBYPASSRLS`). Optional UNTIL the cutover — when it is absent (or an
+  // empty placeholder) the API pool falls back to `DATABASE_URL`, i.e. the
+  // owner role that BYPASSES RLS, so every policy is inert. Declaring it here
+  // makes a typo'd value fail at boot validation instead of silently
+  // downgrading the pool to the owner connection.
+  APP_DATABASE_URL: z.string().min(1).optional(),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   // Session-token pepper (owns `control.auth_sessions.token_hash`).
   // Dev-only default so tests/boot work without env; override in production.
@@ -135,6 +143,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     NODE_ENV: env.NODE_ENV,
     PORT: env.PORT,
     DATABASE_URL: env.DATABASE_URL,
+    // Empty placeholder (`APP_DATABASE_URL=`) means ABSENT, not invalid — the
+    // same convention as every other optional key, and the exact case that
+    // silently downgrades the API pool to the owner connection.
+    APP_DATABASE_URL: emptyToUndefined(env.APP_DATABASE_URL),
     LOG_LEVEL: env.LOG_LEVEL,
     BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET,
     BETTER_AUTH_URL: env.BETTER_AUTH_URL,

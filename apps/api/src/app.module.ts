@@ -1,4 +1,4 @@
-import { Module } from "@nestjs/common";
+import { Logger, Module } from "@nestjs/common";
 import { createDb } from "@iptv/database";
 import type { Database } from "@iptv/database";
 import { createAuth, type AuthInstance } from "@iptv/auth";
@@ -86,7 +86,55 @@ export function resolveAppConnectionString(
   return null;
 }
 
+/**
+ * Loud signal that the RLS cutover has NOT happened: a production boot
+ * without `APP_DATABASE_URL` resolves the API pool to the owner connection
+ * (`DATABASE_URL`), and the owner role BYPASSES row-level security — so every
+ * `tenant_isolation` policy shipped so far (`crm`, `communication`, `identity`,
+ * `control`) is inert in production. This is a WARNING, never a boot failure:
+ * the cutover checklist in
+ * `docs/10-operations/runbooks/rls-role-split-cutover.md` is still blocked on
+ * the remaining domains (`platform`, `billing`, `finance`), so refusing to boot
+ * would take production down before the policies exist everywhere.
+ *
+ * An empty `APP_DATABASE_URL` counts as unset (the config loader treats empty
+ * env values as absent) — a typo'd or blank value must not look like a
+ * completed cutover.
+ */
+export function ownerFallbackWarning(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (env["NODE_ENV"] !== "production") {
+    return null;
+  }
+  const app = env["APP_DATABASE_URL"];
+  if (typeof app === "string" && app.length > 0) {
+    return null;
+  }
+  return (
+    "RLS BYPASSED: APP_DATABASE_URL is unset, so the API pool connects as the " +
+    "owner role (DATABASE_URL) which has BYPASSRLS. Row-level security is " +
+    "INERT in production until the role split cutover completes — do not treat " +
+    "tenant isolation as enforced. See " +
+    "docs/10-operations/runbooks/rls-role-split-cutover.md"
+  );
+}
+
+/** Emit the owner-fallback warning (when due) once at boot. */
+export function warnOnOwnerFallback(
+  env: NodeJS.ProcessEnv = process.env,
+  logger: Pick<Logger, "warn"> = new Logger("RlsRoleSplit"),
+): boolean {
+  const message = ownerFallbackWarning(env);
+  if (message === null) {
+    return false;
+  }
+  logger.warn(message);
+  return true;
+}
+
 function dbFactory(): Kysely<Database> | null {
+  warnOnOwnerFallback();
   const connectionString = resolveAppConnectionString();
   if (connectionString === null) {
     return null;
