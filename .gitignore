@@ -2,8 +2,9 @@
 .env
 .env.*
 !.env.example
-# Placeholder-only staging template (committed; no real values ever).
+# Placeholder-only staging templates (committed; no real values ever).
 !deploy/staging/.env.staging.example
+!deploy/staging/.env.staging.worker.example
 *.pem
 *.key
 *.p12

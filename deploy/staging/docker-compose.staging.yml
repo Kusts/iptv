@@ -60,6 +60,11 @@ services:
     image: iptv-staging-migrate:local
     container_name: iptv-staging-migrate
     restart: "no"
+    # Explicit: without it the service inherits the api image's CMD
+    # (`node apps/api/dist/main.js`) and would BOOT THE API instead of
+    # migrating — and never exit, hanging `service_completed_successfully`.
+    # `packages/database/dist` ships in the api runtime image.
+    command: ["node", "packages/database/dist/bin/iptv-migrate.js"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -144,11 +149,12 @@ services:
     image: iptv-staging-browser-worker:local
     profiles: ["worker"]
     restart: "no"
-    # Same file as the API: the BROWSER_WORKER_* / BROWSER_INFISICAL_* keys stay
-    # commented out there until a worker run is actually authorized, and they are
-    # read by the WORKER process only (never by the API container).
+    # DEDICATED env file (NOT the API's .env.staging): BROWSER_WORKER_* /
+    # BROWSER_INFISICAL_* credentials must exist only in the worker process.
+    # Sharing one file would inject them into the API container's environment
+    # too — secret sprawl with no operational benefit.
     env_file:
-      - .env.staging
+      - .env.staging.worker
     environment:
       # Profile dir lives on the volume below so it can be inspected between
       # runs; it is per-binding state and must never be committed.

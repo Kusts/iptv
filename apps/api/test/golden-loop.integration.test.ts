@@ -752,6 +752,17 @@ describe.skipIf(!hasDb)("Golden Loop E2E (requires TEST_DATABASE_URL)", () => {
         .execute();
       expect(charges).toHaveLength(1);
       expect(charges[0]?.status).toBe("PAID");
+      // Financial proof: exactly ONE settlement transaction posted per order
+      // (a PAID charge alone cannot distinguish double posting).
+      const settlements = await db
+        .selectFrom("finance.financial_transactions")
+        .select(["id", "idempotency_key"])
+        .where("tenant_id", "=", tenantId)
+        .where("transaction_type", "=", "ORDER_SETTLEMENT")
+        .where("reference_id", "=", orderId)
+        .execute();
+      expect(settlements).toHaveLength(1);
+      expect(settlements[0]?.idempotency_key).toBe(`order-settlement:${orderId}`);
     }
 
     // Subscription/entitlement state after renewal.

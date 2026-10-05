@@ -150,9 +150,11 @@ function ProviderOperationDetailPanel({
   if (data === null) return <EmptyState title="Operação não encontrada" hint="Ela pode ter sido removida deste tenant." />;
 
   const synthetic = isSyntheticProviderOperation(data);
-  // SUCCEEDED manual só existe para adapters sintéticos;proveniência real é
-  // recusada pelo servidor (fail-closed nos dois lados).
-  const outcomes: ProviderResolveOutcome[] = synthetic ? ["SUCCEEDED", "FAILED", "UNKNOWN"] : ["FAILED", "UNKNOWN"];
+  // SUCCEEDED/FAILED manuais só existem para adapters sintéticos; proveniência
+  // real (`secret-required-v1`) é recusada pelo servidor PARA AMBOS — o efeito
+  // só pode ser concluído por readback conclusivo do dispatcher. Sobra UNKNOWN,
+  // que apenas mantém a operação em verificação (sem alegação de efeito).
+  const outcomes: ProviderResolveOutcome[] = synthetic ? ["SUCCEEDED", "FAILED", "UNKNOWN"] : ["UNKNOWN"];
 
   const afterChange = (): void => {
     reload();
@@ -267,7 +269,10 @@ function ProviderOperationDetailPanel({
           </Select>
         </Field>
         {!synthetic ? (
-          <p className="cc-muted">SUCCEEDED exige readback conclusivo pelo dispatcher.</p>
+          <p className="cc-muted">
+            Desfechos terminais (SUCCEEDED/FAILED) exigem readback conclusivo pelo dispatcher; o operador só pode
+            manter a operação em verificação (UNKNOWN).
+          </p>
         ) : null}
         <Field label="Nota do operador (opcional)">
           <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} />

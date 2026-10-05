@@ -100,9 +100,16 @@ function sanitizeProviderOperation(row: ProviderOperationSanitizedRow) {
 
 /** Paginação da fila: default 20, teto 50 (toda linha é sanitizada). */
 function pagination(query: { limit?: string; offset?: string }): { limit: number; offset: number } {
-  const limit = Math.min(Math.max(Number(query.limit ?? 20) || 20, 1), 50);
-  const offset = Math.max(Number(query.offset ?? 0) || 0, 0);
-  return { limit, offset };
+  // Strict integer parse: `Number("2.7")`/`Number("1e3")`/`Number("")` would
+  // otherwise sneak fractional or exponential values past the bounds.
+  const parseBounded = (raw: string | undefined, fallback: number, min: number, max: number): number => {
+    if (raw === undefined || !/^\d+$/.test(raw)) return fallback;
+    return Math.min(Math.max(Number(raw), min), max);
+  };
+  return {
+    limit: parseBounded(query.limit, 20, 1, 50),
+    offset: parseBounded(query.offset, 0, 0, Number.MAX_SAFE_INTEGER),
+  };
 }
 
 function idempotencyKeyOf(req: FastifyRequest): string | undefined {

@@ -4603,11 +4603,12 @@ describe("Operações de provider (fila + detalhe sanitizado)", () => {
     await waitFor(() => expect(screen.getByText(SECRET_ROW.id)).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Resolver" }));
     const dialog = await screen.findByRole("dialog");
-    expect(dialog.textContent).toContain("SUCCEEDED exige readback conclusivo pelo dispatcher.");
+    expect(dialog.textContent).toContain("Desfechos terminais (SUCCEEDED/FAILED) exigem readback conclusivo");
     // As opções vivem no select do dialog; fora dele o filtro de status tem
-    // opções de mesmo nome (SUCCEEDED/FAILED/...).
+    // opções de mesmo nome (SUCCEEDED/FAILED/...). Para proveniência real o
+    // servidor recusa SUCCEEDED E FAILED: sobra somente UNKNOWN.
     expect(within(dialog).queryByRole("option", { name: "SUCCEEDED" })).toBeNull();
-    expect(within(dialog).getByRole("option", { name: "FAILED" })).toBeTruthy();
+    expect(within(dialog).queryByRole("option", { name: "FAILED" })).toBeNull();
     expect(within(dialog).getByRole("option", { name: "UNKNOWN" })).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Fechar" }));
 

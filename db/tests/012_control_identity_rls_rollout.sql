@@ -45,6 +45,13 @@ DECLARE
         'control.role_permissions'
     ];
     t text;
+    n_policy text;
+    split_policies text[] := ARRAY[
+        'feature_flags_select',
+        'feature_flags_insert',
+        'feature_flags_update',
+        'feature_flags_delete'
+    ];
 BEGIN
     IF (SELECT rolbypassrls FROM pg_roles WHERE rolname = 'iptv_app') IS DISTINCT FROM false THEN
         RAISE EXCEPTION 'app role iptv_app must exist with NOBYPASSRLS';
@@ -53,13 +60,29 @@ BEGIN
         IF (SELECT relrowsecurity FROM pg_class WHERE oid = t::regclass) IS DISTINCT FROM true THEN
             RAISE EXCEPTION 'RLS is not enabled on %', t;
         END IF;
-        IF NOT EXISTS (
-            SELECT 1 FROM pg_policies
-            WHERE schemaname = split_part(t, '.', 1)
-              AND tablename = split_part(t, '.', 2)
-              AND policyname = 'tenant_isolation'
-        ) THEN
-            RAISE EXCEPTION 'tenant_isolation policy missing on %', t;
+        IF t = 'control.feature_flags' THEN
+            -- 048 split the single all-command policy into per-command
+            -- policies (adversarial review: one USING admitting NULL tenant
+            -- let the app role steal/delete global rows). Assert the split.
+            FOREACH n_policy IN ARRAY split_policies LOOP
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_policies
+                    WHERE schemaname = 'control'
+                      AND tablename = 'feature_flags'
+                      AND policyname = n_policy
+                ) THEN
+                    RAISE EXCEPTION 'feature_flags split policy missing: %', n_policy;
+                END IF;
+            END LOOP;
+        ELSE
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_policies
+                WHERE schemaname = split_part(t, '.', 1)
+                  AND tablename = split_part(t, '.', 2)
+                  AND policyname = 'tenant_isolation'
+            ) THEN
+                RAISE EXCEPTION 'tenant_isolation policy missing on %', t;
+            END IF;
         END IF;
     END LOOP;
     FOREACH t IN ARRAY granted_full_dml LOOP
@@ -293,11 +316,15 @@ DECLARE
     tb uuid;
     pb uuid;
     fb uuid;
+    gf uuid;
+    fa uuid;
     n integer;
 BEGIN
     RESET ROLE;
     RESET app.tenant_id;
-    SELECT s.ta, s.tb, s.pb, s.fb INTO ta, tb, pb, fb FROM ci_ids s LIMIT 1;
+    SELECT s.ta, s.tb, s.pb, s.fb, s.global_flag, s.fa
+      INTO ta, tb, pb, fb, gf, fa
+      FROM ci_ids s LIMIT 1;
     EXECUTE format('SET LOCAL app.tenant_id = %L', ta::text);
     SET LOCAL ROLE iptv_app;
     INSERT INTO identity.persons (tenant_id) VALUES (ta);
@@ -336,6 +363,26 @@ BEGIN
     GET DIAGNOSTICS n = ROW_COUNT;
     IF n <> 0 THEN
         RAISE EXCEPTION 'cross-tenant feature flag UPDATE must touch 0 rows, touched %', n;
+    END IF;
+    -- REGRESSION (048 policy split): 047's single all-command policy let the
+    -- app role STEAL a global row via UPDATE (WITH CHECK validated only the
+    -- new row) and DELETE global rows (USING admitted NULL tenant; DELETE has
+    -- no WITH CHECK). Both must touch 0 rows under the split policy.
+    UPDATE control.feature_flags SET tenant_id = ta WHERE id = gf;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n <> 0 THEN
+        RAISE EXCEPTION 'global feature flag must NOT be claimable via UPDATE, touched %', n;
+    END IF;
+    DELETE FROM control.feature_flags WHERE id = gf;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n <> 0 THEN
+        RAISE EXCEPTION 'global feature flag must NOT be deletable by the app role, deleted %', n;
+    END IF;
+    -- Own-tenant UPDATE stays legitimate under the split policy.
+    UPDATE control.feature_flags SET enabled = false WHERE id = fa;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n <> 1 THEN
+        RAISE EXCEPTION 'own-tenant feature flag UPDATE must touch exactly 1 row, touched %', n;
     END IF;
     RAISE NOTICE 'write path OK: own-tenant insert visible; cross-tenant + GLOBAL writes blocked (WITH CHECK => insufficient_privilege)';
 END $$;

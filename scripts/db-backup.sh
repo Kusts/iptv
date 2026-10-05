@@ -26,6 +26,10 @@
 # default user), matching how the dev/staging containers authenticate.
 set -euo pipefail
 
+# Archive contents are sensitive (tenant data, session rows). Restrictive
+# umask before anything is created; dump + manifest get explicit 0600 below.
+umask 077
+
 # Git Bash on Windows mangles leading-slash arguments ("/tmp/x.dump" becomes
 # "C:/…/Temp/x.dump") before they reach docker exec — disable that conversion.
 # Both vars are no-ops on Linux/macOS.
@@ -43,6 +47,7 @@ command -v sha256sum >/dev/null 2>&1 || { echo "ERROR: sha256sum not available (
 docker container inspect "$CONTAINER" >/dev/null 2>&1 || { echo "ERROR: container '$CONTAINER' not found/running" >&2; exit 1; }
 
 mkdir -p "$OUTPUT_DIR"
+chmod 700 "$OUTPUT_DIR" 2>/dev/null || true
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 DUMP_PATH="${OUTPUT_DIR%/}/${DB_NAME}-${TIMESTAMP}.dump"
 MANIFEST_PATH="${DUMP_PATH}.manifest.json"
@@ -58,6 +63,7 @@ docker exec "$CONTAINER" rm -f "/tmp/${DB_NAME}-${TIMESTAMP}.dump"
 
 BYTES="$(wc -c < "$DUMP_PATH" | tr -d ' ')"
 SHA256="$(sha256sum "$DUMP_PATH" | awk '{print $1}')"
+chmod 600 "$DUMP_PATH" 2>/dev/null || true
 
 # Manifest is the drill's trust anchor: wrong hash = archive rejected before
 # any restore is attempted.
@@ -76,10 +82,22 @@ EOF
 echo "BACKUP OK: ${DUMP_PATH}"
 echo "MANIFEST:  ${MANIFEST_PATH}"
 
-# Retention: newest N <db>-*.dump survive (manifests follow their dump).
+# Retention: newest N of THIS database's timestamped archives survive
+# (manifests follow their dump). Matching is by exact `<db>-<ts>.dump` SHAPE,
+# not a loose `${DB}-*` glob: a loose glob would let `iptv` retention prune
+# `iptv-staging-<ts>.dump` (shared-prefix databases) and arbitrary files that
+# merely start with the db name.
 if [ "$KEEP" -ge 1 ] 2>/dev/null; then
-  ls -1t "${OUTPUT_DIR%/}/${DB_NAME}"-*.dump 2>/dev/null | tail -n +"$((KEEP + 1))" | while IFS= read -r old; do
-    rm -f "$old" "${old}.manifest.json"
-    echo "RETENTION: pruned $(basename "$old")"
-  done
+  ls -1t "${OUTPUT_DIR%/}/"*.dump 2>/dev/null | awk -v prefix="${DB_NAME}-" '
+    {
+      base = $0
+      sub(/.*\//, "", base)
+      if (index(base, prefix) != 1) next
+      rest = substr(base, length(prefix) + 1)
+      if (rest !~ /^[0-9]{8}T[0-9]{6}Z\.dump$/) next
+      print $0
+    }' | tail -n +"$((KEEP + 1))" | while IFS= read -r old; do
+      rm -f -- "$old" "${old}.manifest.json"
+      echo "RETENTION: pruned $(basename "$old")"
+    done
 fi

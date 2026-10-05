@@ -19,6 +19,12 @@ export interface ReadinessBody {
   checks: { database: "ok" | "error" };
 }
 
+/**
+ * In-flight readiness probe (module scope: one per process). Concurrent
+ * requests share the same database check; the slot frees when it settles.
+ */
+let readinessProbe: Promise<ReadinessBody> | null = null;
+
 @Controller("v1")
 export class HealthController {
   constructor(
@@ -59,9 +65,28 @@ export class HealthController {
    * blip must NOT make the container look dead and get it restarted. This
    * endpoint answers `503` while the database is unreachable, which keeps the
    * container running but out of the load balancer until it recovers.
+   *
+   * Single-flight: concurrent probes share ONE in-flight database check.
+   * The probe is public, so unthrottled callers must not multiply database
+   * work while the database is degraded (the `Promise.race` timeout below
+   * bounds the HTTP answer, but a wedged driver call itself can linger in
+   * the pool until it resolves).
    */
   @Get("health/ready")
-  async ready(): Promise<ReadinessBody> {
+  ready(): Promise<ReadinessBody> {
+    if (readinessProbe === null) {
+      readinessProbe = this.probeDatabase().finally(() => {
+        readinessProbe = null;
+      });
+    }
+    return readinessProbe;
+  }
+
+  /**
+   * One bounded `SELECT 1`; throws 503 with a fixed body when unreachable.
+   * All probes that share the in-flight promise share this outcome.
+   */
+  private async probeDatabase(): Promise<ReadinessBody> {
     if (!(await this.databaseReachable())) {
       // Fixed reason only — a driver message can carry host/user/database
       // details that have no business in a public response body.

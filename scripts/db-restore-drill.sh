@@ -33,6 +33,16 @@ command -v docker >/dev/null 2>&1 || { echo "ERROR: docker not available" >&2; e
 command -v sha256sum >/dev/null 2>&1 || { echo "ERROR: sha256sum not available (use Git Bash/WSL)" >&2; exit 1; }
 [ -f "$BACKUP" ] || { echo "ERROR: backup file not found: $BACKUP" >&2; exit 1; }
 
+# Identifiers are interpolated into SQL strings below; they must be plain
+# PostgreSQL identifiers (operator-controlled inputs, but fail loudly on
+# anything that could break out of the quotes).
+for IDENT in "$TARGET_DB" ${DRILL_ROLES:-iptv iptv_app}; do
+  if ! printf '%s' "$IDENT" | grep -Eq '^[a-z_][a-z0-9_]{0,62}$'; then
+    echo "ERROR: '$IDENT' is not a valid lowercase PostgreSQL identifier" >&2
+    exit 1
+  fi
+done
+
 # --- integrity gate: verify sha256 BEFORE restoring -------------------------
 MANIFEST="${BACKUP}.manifest.json"
 if [ -f "$MANIFEST" ]; then
