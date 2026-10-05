@@ -1,5 +1,7 @@
 # Product Contract and MVP Freeze
 
+> **SUPERSEDED — não use este arquivo como referência canônica.** Duplicata histórica preservada apenas por compatibilidade de links antigos. A versão canônica e mantida é [`docs/15-implementation-baseline/01-product-and-mvp.md`](../15-implementation-baseline/01-product-and-mvp.md). Em caso de divergência, o canônico prevalece.
+
 ## Product definition
 
 The product is a multi-tenant **AI Revenue & Operations Platform** for recurring businesses. It combines CRM, conversations, commerce, billing, subscriptions, fulfillment, support, growth, finance, analytics, knowledge and autonomous operations around an authoritative backend.

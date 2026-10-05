@@ -36,10 +36,54 @@ Use synthetic/sandbox fixtures while a live gate remains unresolved; a productio
 
 ## CINEVISION post-Fase-6 hardening backlog (from the Fase 5 closure review)
 
-Registered 2026-10-02 as an operator decision: neither item blocks the Fase 6 live canary; both should land before broad production operation.
+Registered 2026-10-02 as an operator decision: the two engineering hardening items did not block the Fase 6 live canary and were intended before broad production operation. Their current status is recorded individually below; the account-isolation item remains operator/external.
 
-- `HUMAN_REQUIRED` provider operations are invisible to the HITL center: its read model aggregates only `human_review`, `comm_exception`, `billing_exception` and `recovery_task` (`apps/api/src/human-review/human-review.controller.ts`), so resolution depends on technical polling plus the per-id `POST /v1/provider/operations/:id/resolve`. Backlog: surface provider operations parked in `HUMAN_REQUIRED` in the HITL center so a problem operation reaches the operator without polling.
-- `PROVIDER_DISPATCH_MODE` silently falls back to `inline` (`apps/api/src/provider/provider-port.ts` treats anything other than `durable` as inline, including empty or mistyped values), while the durable dispatcher is the only certified executor for real writes. Backlog before broad production: a startup/readiness check or explicit production configuration that fails fast when the expected mode is not set.
+Status 2026-10-05: both engineering hardening items below are CLOSED (engineering only); the CINEVISION test-subaccount/isolation item remains OPEN and requires operator/external action.
+
+- `HUMAN_REQUIRED` provider operations were invisible to the HITL center: its
+  read model aggregated only `human_review`, `comm_exception`,
+  `billing_exception` and `recovery_task`, so resolution depended on technical
+  polling plus the per-id `POST /v1/provider/operations/:id/resolve`. Closed by
+  a fifth read-model source, `provider_operation`, in
+  `apps/api/src/human-review/{center-policy.ts,human-review.controller.ts}`: it
+  aggregates only `provider.provider_operations` rows of the caller's own
+  tenant with exact `status = 'HUMAN_REQUIRED'` (the `tenant_id` comes from the
+  authenticated request context, never from input), normalized by
+  `providerOperationCenterItem` into the shared center item shape with
+  `deepLink = /v1/provider/operations/:id` (the implemented read endpoint — not
+  the resolve command and not a stale OpenAPI route). No table was restructured,
+  no new queue exists, and the four existing sources are unchanged.
+  Permission boundary (the security review's requirement, preserved exactly):
+  admission is `planCenterSources(wanted, canReadProviderOperations)` against
+  the PermissionsGuard-resolved set — `provider.operation.read` and nothing
+  else. `support.ticket.read` is NOT widened and no role mapping changed. A
+  caller WITH the permission gets the rows in an unfiltered center and
+  `?source=provider_operation` narrows to that source; a caller WITHOUT it gets
+  200 with provider rows omitted on an unfiltered request (never a 403 for the
+  other four sources), and a 403 `missing permission: provider.operation.read`
+  on an explicit `?source=provider_operation`, thrown before any provider
+  query. Unknown sources stay 400 regardless of permissions. Payload
+  minimization: the query selects only `id`, `action` and `requested_at` —
+  `requested_payload_json`, `result_summary_json`, secret refs,
+  provider-account/customer identifiers, `entity_id`, `correlation_id`,
+  evidence, traces and raw adapter errors are never selected nor exposed, and
+  the summary is the fixed constant `provider operation awaiting human
+  resolution`. The source is read-model only: no claim/approve/reject control
+  was added, and the web center hides the option AND the rows without
+  `hasPermission('provider.operation.read')`, including against a stale or
+  cached response. Coverage: pure policy unit tests plus API integration tests
+  (authorized owner sees only its own parked op; `SUCCEEDED`/`RUNNING` and
+  cross-tenant ops stay absent; payload/result sentinels absent from the whole
+  serialized response; support-only `tenant_operator` unfiltered omits provider
+  rows; explicit source 403s; authorized filter returns exactly the source;
+  unknown 400) and web flow tests for the permission gate. Pure/API typecheck,
+  API HITL unit tests and web flow tests passed on 2026-10-05; the PostgreSQL
+  API integration test was added but not executed because no verified
+  disposable EMPTY `TEST_DATABASE_URL` was available. This closes the
+  surfacing gap only — it is NOT provider/live certification and the remaining
+  live gates above are unchanged.
+
+- **CLOSED — production fail-fast for `PROVIDER_DISPATCH_MODE` (2026-10-05; engineering only).** `packages/config/src/index.ts` now rejects production startup unless the raw value is exactly `durable`; unset, empty, inline, mistyped, uppercase and padded values fail in `loadConfig()` before Nest bootstrap. Development/test retain the historical inline fallback, and `providerDispatchModeFromEnv` is unchanged. Evidence: config regression tests, provider-dispatch unit tests, and the docs/contracts/seeds gates recorded in `CHANGELOG.md`. This closes the silent-inline-misconfiguration item only; it does not certify a provider adapter or live write path.
 - No disposable CINEVISION panel account exists (2026-10-02 operator decision): the Fase 6 canary runs against the operator's main account under the designated-account fence (`PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID`, code unchanged) with compensating controls — marked + deleted canary customer, short 046 gate window, balance before/after. Before broad production: obtain a test sub-account from the panel owner or an equivalent isolation improvement.
 
 ## Business validation during pilot

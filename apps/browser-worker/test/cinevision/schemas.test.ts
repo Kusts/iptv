@@ -35,8 +35,35 @@ describe("normalizeIsTrial", () => {
     expect(normalizeIsTrial("false")).toBe(false);
   });
 
+  it("maps the live-observed exact uppercase enum to boolean", () => {
+    expect(normalizeIsTrial("YES")).toBe(true);
+    expect(normalizeIsTrial("NO")).toBe(false);
+  });
+
   it("fails closed on any other value (no silent coercion)", () => {
-    for (const bad of ["1", "0", "TRUE", true, false, 1, null, undefined, ""]) {
+    for (const bad of [
+      "1",
+      "0",
+      "TRUE",
+      "yes",
+      "no",
+      "Yes",
+      "yEs",
+      "nO",
+      "Y",
+      "N",
+      " YES",
+      "YES ",
+      " yes ",
+      "YES\n",
+      true,
+      false,
+      1,
+      0,
+      null,
+      undefined,
+      "",
+    ]) {
       expect(() => normalizeIsTrial(bad), JSON.stringify(bad)).toThrowError();
     }
   });
@@ -61,6 +88,17 @@ describe("parseCustomer", () => {
       planPrice: 10,
     });
     expect(parseCustomer({ ...customer(), injected: "x" }).ok).toBe(false);
+  });
+
+  it("normalizes the live-observed exact uppercase is_trial enum", () => {
+    const yes = parseCustomer(customer({ is_trial: "YES" }));
+    expect(yes.ok).toBe(true);
+    if (!yes.ok) return;
+    expect(yes.value.isTrial).toBe(true);
+    const no = parseCustomer(customer({ is_trial: "NO" }));
+    expect(no.ok).toBe(true);
+    if (!no.ok) return;
+    expect(no.value.isTrial).toBe(false);
   });
 
   it("fails on drift: missing id/status/is_trial or wrong types", () => {
@@ -97,6 +135,16 @@ describe("parseCustomerPage", () => {
     expect(tolerated.ok).toBe(true);
     const leaked = parseCustomerPage({ data: [customer()], meta: { ...META, token: "secret" } });
     expect(leaked.ok).toBe(false);
+  });
+
+  it("normalizes the observed uppercase is_trial mix across the page", () => {
+    const parsed = parseCustomerPage({
+      data: [customer({ id: "cust-a", is_trial: "YES" }), customer({ id: "cust-b", is_trial: "NO" })],
+      meta: { ...META, total: 2 },
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.items.map((item) => item.isTrial)).toEqual([true, false]);
   });
 
   it("fails when data is not an array or an item drifts", () => {
@@ -156,6 +204,21 @@ describe("parsePackagePriceList / parseIntegrationList", () => {
     expect(parsePackagePriceList({ data: [{ is_trial: "1" }] }).ok).toBe(false);
     expect(parsePackagePriceList({ data: [{ id: "p-1", extra: 1 }] }).ok).toBe(false);
     expect(parsePackagePriceList({ data: [{}] }).ok).toBe(false);
+  });
+
+  it("shares the uppercase is_trial normalization with the customer parsers", () => {
+    const parsed = parsePackagePriceList({
+      data: [
+        { id: "p-1", is_trial: "YES" },
+        { id: "p-2", is_trial: "NO" },
+        { id: "p-3", is_trial: "true" },
+        { id: "p-4", is_trial: "false" },
+      ],
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.map((entry) => entry.isTrial)).toEqual([true, false, true, false]);
+    expect(parsePackagePriceList({ data: [{ id: "p-1", is_trial: "yes" }] }).ok).toBe(false);
   });
 
   it("parses integration summaries", () => {

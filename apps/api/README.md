@@ -63,12 +63,28 @@ directly at the point of use and is safe to leave unset.
 | `PROVIDER_OPS_ADAPTER` | `manual` | `echo` resolves provider operations deterministically in-process. |
 | `PROVIDER_ECHO_OUTCOME` | `success` | `success`/`failed`/`unknown` for the echo ops adapter. |
 | `PROVIDER_READBACK_EFFECT` | `NOT_APPLIED` | Stub readback answer for `provider.reconcile`. |
-| `PROVIDER_DISPATCH_MODE` | `inline` | `durable` enables the leased provider dispatch drained by the scheduler. |
+| `PROVIDER_DISPATCH_MODE` | `inline` | `durable` enables the leased provider dispatch drained by the scheduler. **Required with exactly `durable` when `NODE_ENV=production`** — any other value fails `loadConfig` at boot. |
 | `PROVIDER_DISPATCH_TIMEOUT_MS` / `PROVIDER_DISPATCH_LEASE_MS` / `PROVIDER_GENERIC_READBACK_TIMEOUT_MS` | built-in defaults | Provider dispatch/readback budgets. |
 | `PROVIDER_TRIAL_READBACK_TIMEOUT_MS` / `PROVIDER_TRIAL_READBACK_MIN_FUTURE_MS` | built-in defaults | Trial readback budgets. |
 | `SUPPLIER_BALANCE_ADAPTER` | `manual` | `echo` returns a stub supplier balance. |
 | `SUPPLIER_BALANCE_ECHO_MINOR` / `SUPPLIER_BALANCE_ECHO_CURRENCY` | `100000` / `BRL` | Stub balance values. |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `AGENT_MODEL` | unset | Agent model gateway; without a key the deterministic Echo gateway is used. |
+
+### Production configuration fail-fast
+
+`loadConfig()` (`@iptv/config`) runs in `main.ts` before the Nest app is created,
+so an invalid production env is a boot failure, never a silently-degraded
+runtime. With `NODE_ENV=production` two keys are mandatory:
+
+- `BETTER_AUTH_SECRET` — the dev-only default is rejected.
+- `PROVIDER_DISPATCH_MODE` — must be exactly `durable` (no case folding, no
+  trimming). Unset, empty (empty means absent), `inline`, typo, `DURABLE` or
+  `durable ` all throw `invalid environment configuration: PROVIDER_DISPATCH_MODE
+  must be exactly "durable" …`, naming the variable and the value seen. The
+  durable dispatcher is the only certified executor for real provider writes, so
+  the historical silent `inline` fallback must never reach production.
+  Outside production the key is unvalidated and
+  `providerDispatchModeFromEnv()` keeps its inline fallback.
 
 ### Browser CORS
 
@@ -204,13 +220,28 @@ factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
   `/v1/knowledge/suggest-for-ticket/:ticketId` (labeled token-overlap
   heuristic, never a verified answer).
 - **HITL center** (`src/human-review/`): `GET /v1/human-reviews/center`
-  aggregates OPEN work from the four existing queues (human reviews, comm
+  aggregates OPEN work from the existing queues (human reviews, comm
   exceptions, billing exceptions, recovery tasks) into normalized
   `{source, id, kind, summary, ageMinutes, sla, deepLink}` — read-model only,
   no table restructured. `POST /v1/human-reviews/:id/claim` assigns +
   `ACKNOWLEDGE`s (same-user idempotent, stealing rejected). Staleness follows
   the `hitl.sla` policy family (defaults warn ≥4h, breach ≥24h; explicit
   `sla_due_at` breaches on deadline).
+  A fifth source, `provider_operation`, surfaces this tenant's
+  `provider_operations` parked in exact `status = 'HUMAN_REQUIRED'` (so a
+  problem operation reaches the operator without polling). It is admitted by a
+  SEPARATE permission, `provider.operation.read` — `support.ticket.read` (the
+  route permission) is NOT widened and no role mapping changed: with the
+  permission the rows join the unfiltered center and
+  `?source=provider_operation` narrows to them; without it, an unfiltered
+  request omits provider rows entirely (200) and an explicit
+  `?source=provider_operation` is a 403 thrown before any provider read
+  (unknown sources remain 400). Rows are minimal — `id`, `action`
+  (as `kind`), `requested_at` and a fixed generic summary, with `deepLink`
+  pointing at `GET /v1/provider/operations/:id`. No
+  `requested_payload_json`/`result_summary_json`, secret ref,
+  account/customer identifier, evidence, trace or raw adapter error is ever
+  selected or exposed, and the center adds no resolve control for this source.
 - Migration `202609262100_021_support_hitl_center.sql` (only the genuinely
   missing pieces: `support_tickets.assignee_user_id` + membership FK and
   `support.ticket.read` / `support.incident.write` / `knowledge.read|write`

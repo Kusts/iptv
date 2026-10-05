@@ -19,7 +19,15 @@ import { RequirePermission, PermissionsGuard } from "../auth/permissions.guard.j
 import { CommandBus, commandActorFromRequestParts } from "../commands/command-bus.js";
 import type { CommandActor, CommandResult } from "@iptv/domain";
 import { OPEN_REVIEW_STATUSES } from "./human-review.commands.js";
-import { normalizeCenterItem, resolveSlaPolicy, type CenterItemInput } from "./center-policy.js";
+import {
+  PROVIDER_OPERATION_CENTER_PERMISSION,
+  PROVIDER_OPERATION_HUMAN_REQUIRED_STATUS,
+  normalizeCenterItem,
+  planCenterSources,
+  providerOperationCenterItem,
+  resolveSlaPolicy,
+  type CenterItemInput,
+} from "./center-policy.js";
 import { HITL_SLA_POLICY_FAMILY } from "../support/support-policy.js";
 import { PolicyResolver } from "../policy/policy-resolver.js";
 
@@ -174,13 +182,22 @@ export class HumanReviewController {
   }
 
   /**
-   * HITL center: read-model aggregation of OPEN work across the four
-   * existing queues (human reviews, communications exceptions, billing
-   * exceptions, recovery tasks). No queue table is restructured — each
-   * row below is a tenant-scoped select normalized to
+   * HITL center: read-model aggregation of OPEN work across the existing
+   * queues (human reviews, communications exceptions, billing exceptions,
+   * recovery tasks) plus — permission-gated — provider operations parked in
+   * `HUMAN_REQUIRED`. No queue table is restructured — each row below is a
+   * tenant-scoped select normalized to
    * `{source, id, kind, summary, ageMinutes, sla, deepLink}`. Staleness
    * follows the `hitl.sla` policy family (safe defaults: warn ≥4h,
    * breach ≥24h).
+   *
+   * `provider_operation` is the security-sensitive source: it is admitted by
+   * `provider.operation.read` (NOT by the `support.ticket.read` this route
+   * requires), so a caller without it never sees provider rows in an
+   * unfiltered center and gets a 403 when asking for that source explicitly.
+   * Its rows carry only id/action/requested_at plus a fixed generic summary —
+   * never payloads, results, secrets, account/customer identifiers, evidence,
+   * traces or raw adapter errors.
    */
   @Get("center")
   @UseGuards(AuthGuard, PermissionsGuard)
@@ -200,10 +217,18 @@ export class HumanReviewController {
     slaPolicy: { warnAfterHours: number; breachAfterHours: number; ref: string };
   }> {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const wanted = source === undefined ? null : source;
-    if (wanted !== null && !["human_review", "comm_exception", "billing_exception", "recovery_task"].includes(wanted)) {
-      throw new HttpException({ code: "INVALID_SOURCE", message: `unknown center source: ${wanted}` }, 400);
+    // `req.tenant.permissions` is the PermissionsGuard-resolved set for the
+    // authenticated caller (platform admins resolve to the full catalog),
+    // so a plain membership check is the whole admission — no second actor
+    // resolution and no widening of this route's `support.ticket.read`.
+    const canReadProviderOperations = tenant.permissions.includes(PROVIDER_OPERATION_CENTER_PERMISSION);
+    // Admission before ANY provider read: unknown source → 400; explicit
+    // `provider_operation` without the permission → 403.
+    const plan = planCenterSources(source, canReadProviderOperations);
+    if (plan.kind === "error") {
+      throw new HttpException({ code: plan.code, message: plan.message }, plan.status);
     }
+    const wanted = plan.wanted;
     const db = this.requireDb();
     const at = new Date();
     const decision = await this.policies.resolve(HITL_SLA_POLICY_FAMILY, { tenantId: tenant.id });
@@ -292,6 +317,23 @@ export class HumanReviewController {
           createdAt: r.created_at,
           deepLink: `/v1/recovery-tasks/${r.id}`,
         });
+      }
+    }
+    if (plan.includeProviderOperations) {
+      // Minimal select on purpose: `requested_payload_json`,
+      // `result_summary_json`, `provider_account_id`, `entity_id`,
+      // `correlation_id` and any adapter error text are never read here.
+      const rows = await db
+        .selectFrom("provider.provider_operations")
+        .select(["id", "action", "requested_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("status", "=", PROVIDER_OPERATION_HUMAN_REQUIRED_STATUS)
+        .orderBy("requested_at", "asc")
+        .execute();
+      for (const r of rows) {
+        collected.push(
+          providerOperationCenterItem({ id: r.id, action: r.action, requestedAt: r.requested_at }),
+        );
       }
     }
     collected.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
-import type { CenterItem, CenterResponse } from "../lib/api";
+import { PROVIDER_OPERATION_SOURCE, PROVIDER_OPERATION_READ_PERMISSION, type CenterItem, type CenterResponse } from "../lib/api";
+import { useOptionalHasPermission } from "../lib/auth";
 import { formatDateTime } from "../lib/money";
 import { slaLabel } from "../lib/status";
 import { useApi } from "../lib/useApi";
@@ -15,6 +16,7 @@ const SOURCE_LABELS: Record<string, string> = {
   comm_exception: "Exceção de comunicação",
   billing_exception: "Exceção de cobrança",
   recovery_task: "Recuperação",
+  [PROVIDER_OPERATION_SOURCE]: "Operação de provedor",
 };
 
 const PREVIEW_LIMIT = 5;
@@ -64,6 +66,19 @@ function slaText(sla: string): string {
 
 export function NeedsAttention(): React.JSX.Element {
   const { data, error, loading, reload, refresh, refreshError } = useApi<CenterResponse>("/v1/human-reviews/center");
+  const hasPermission = useOptionalHasPermission();
+  const canReadProvider = hasPermission(PROVIDER_OPERATION_READ_PERMISSION);
+  /**
+   * Mesma fronteira de permissão do centro: linhas `provider_operation`
+   * (operações de provedor em `HUMAN_REQUIRED`) só aparecem para caller com
+   * `provider.operation.read`, inclusive quando o payload veio de cache.
+   */
+  const visibleItems = useMemo(() => {
+    if (data === null) return null;
+    return canReadProvider
+      ? data.items
+      : data.items.filter((i) => i.source !== PROVIDER_OPERATION_SOURCE);
+  }, [data, canReadProvider]);
 
   // Frescor do preview sem skeleton: revalida o cache no mount/retorno,
   // no foco/visibilidade e em intervalo limitado (60s visível). O
@@ -99,8 +114,8 @@ export function NeedsAttention(): React.JSX.Element {
       </Card>
     );
   }
-  if (data === null) return <EmptyState title="Sem dados de trabalho" />;
-  if (data.items.length === 0) {
+  if (data === null || visibleItems === null) return <EmptyState title="Sem dados de trabalho" />;
+  if (visibleItems.length === 0) {
     return (
       <Card title="Precisa de você">
         {refreshError !== null ? (
@@ -116,14 +131,14 @@ export function NeedsAttention(): React.JSX.Element {
     );
   }
 
-  const sorted = [...data.items].sort(comparePreview);
+  const sorted = [...visibleItems].sort(comparePreview);
   const preview = sorted.slice(0, PREVIEW_LIMIT);
-  const remaining = data.items.length - preview.length;
+  const remaining = visibleItems.length - preview.length;
   // Exatamente as linhas fora do preview ordenado (sem colisão por id).
   const hiddenBreaches = sorted.slice(PREVIEW_LIMIT).filter((item) => item.sla === "BREACH").length;
 
   return (
-    <Card title={`Precisa de você (${data.items.length})`}>
+    <Card title={`Precisa de você (${visibleItems.length})`}>
       {refreshError !== null ? (
         <div role="alert" className="cc-row" style={{ marginBottom: "0.75rem" }}>
           <span className="cc-muted">Dados possivelmente desatualizados: {refreshError}</span>

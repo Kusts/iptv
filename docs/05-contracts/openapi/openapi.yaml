@@ -1916,18 +1916,44 @@ paths:
       operationId: getHumanReviewCenter
       summary: Aggregated HITL center of open work
       description: >-
-        Tenant-scoped read-model aggregation of OPEN work across the four
-        existing queues (human reviews, communications exceptions, billing
-        exceptions, recovery tasks). Requires the `support.ticket.read`
-        permission. Items are normalized to `{source, id, kind, summary,
-        priority, ageMinutes, sla, deepLink, createdAt}` ordered by creation
-        ascending; staleness follows the `hitl.sla` policy family (safe
-        defaults warn 4h, breach 24h).
+        Tenant-scoped read-model aggregation of OPEN work across the existing
+        queues (human reviews, communications exceptions, billing exceptions,
+        recovery tasks) plus provider operations parked in `HUMAN_REQUIRED`.
+        Requires the `support.ticket.read` permission. Items are normalized to
+        `{source, id, kind, summary, priority, ageMinutes, sla, deepLink,
+        createdAt}` ordered by creation ascending; staleness follows the
+        `hitl.sla` policy family (safe defaults warn 4h, breach 24h).
+
+
+        The `provider_operation` source is gated by a SECOND, separate
+        permission: `provider.operation.read` (the route permission above is
+        never widened to reach it). For a caller holding it, an unfiltered
+        request includes its own tenant's `provider_operations` rows with
+        `status = 'HUMAN_REQUIRED'` and `?source=provider_operation` narrows to
+        exactly that source. For a caller WITHOUT it, an unfiltered request
+        omits provider rows entirely (never a 403 — the other four sources are
+        unaffected), and an explicit `?source=provider_operation` returns 403
+        BEFORE any provider data is read. Unknown sources remain 400,
+        independent of permissions.
+
+
+        Provider items are minimal and carry no provider payload: only the
+        operation `id`, its `action` (as `kind`), `requested_at` (as
+        `createdAt`) and a fixed generic `summary`. `requested_payload_json`,
+        `result_summary_json`, secret refs, provider-account/customer
+        identifiers, evidence, traces and raw adapter errors are never read nor
+        exposed. `deepLink` points at the read endpoint
+        `GET /v1/provider/operations/:id`; the center adds no claim/approve/
+        reject control for this source (resolution stays on
+        `POST /v1/provider/operations/:id/resolve`).
       parameters:
       - name: source
         in: query
         required: false
-        description: Restrict the aggregation to one queue; omitted aggregates all four.
+        description: >-
+          Restrict the aggregation to one queue; omitted aggregates every
+          source the caller is authorized for (all five with
+          `provider.operation.read`, otherwise the first four).
         schema:
           type: string
           enum:
@@ -1935,6 +1961,7 @@ paths:
           - comm_exception
           - billing_exception
           - recovery_task
+          - provider_operation
       - $ref: '#/components/parameters/CorrelationId'
       responses:
         '200':
@@ -1956,7 +1983,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Missing support.ticket.read permission or no active membership (FORBIDDEN / TENANT_FORBIDDEN)
+          description: >-
+            Missing support.ticket.read permission or no active membership
+            (FORBIDDEN / TENANT_FORBIDDEN); or an explicit
+            `source=provider_operation` from a caller without
+            `provider.operation.read` (FORBIDDEN `missing permission:
+            provider.operation.read`, returned before any provider read).
+            An UNFILTERED request from such a caller is NOT a 403 — it returns
+            200 with the provider rows omitted.
           content:
             application/json:
               schema:
@@ -7567,11 +7601,17 @@ components:
       properties:
         source:
           type: string
+          description: >-
+            Queue the item came from. `provider_operation` appears only for a
+            caller with `provider.operation.read` and always carries the fixed
+            generic summary `provider operation awaiting human resolution`
+            (no provider payload is ever exposed).
           enum:
           - human_review
           - comm_exception
           - billing_exception
           - recovery_task
+          - provider_operation
         id:
           type: string
           format: uuid

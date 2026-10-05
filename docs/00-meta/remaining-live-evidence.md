@@ -1,5 +1,7 @@
 # Remaining Open Items and Validation Register
 
+> **SUPERSEDED — não use este arquivo como referência canônica.** Duplicata histórica preservada apenas por compatibilidade de links antigos. A versão canônica e mantida é [`docs/15-implementation-baseline/19-open-items-and-validation.md`](../15-implementation-baseline/19-open-items-and-validation.md) — ela carrega o estado atual dos itens (incluindo o backlog de hardening pós-certificação e os gates live ainda abertos). Em caso de divergência, o canônico prevalece.
+
 No item below blocks beginning Wave 0 unless explicitly stated. Unknowns are isolated instead of silently guessed.
 
 ## Technical spikes required in Wave 0

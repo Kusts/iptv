@@ -114,6 +114,21 @@ function emptyToUndefined(value: string | undefined): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/**
+ * CV-DSP-01 production fail-fast: the leased durable dispatcher is the only
+ * certified executor for real provider writes, so a production boot must set
+ * this EXACTLY (no trimming, no case folding) instead of relying on the
+ * historical inline fallback of `providerDispatchModeFromEnv`. Outside
+ * production this key is validated nowhere and every value keeps the inline
+ * fallback — the resolver itself is unchanged.
+ */
+const PRODUCTION_PROVIDER_DISPATCH_MODE = "durable";
+
+/** Human-readable echo of the seen value for the boot error (a non-secret enum-like flag). */
+function describeEnvValue(value: string | undefined): string {
+  return value === undefined || value.trim() === "" ? "unset" : JSON.stringify(value);
+}
+
 /** Validate env (defaults to `process.env`) and return typed config. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = envSchema.safeParse({
@@ -158,6 +173,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   ) {
     throw new Error(
       "invalid environment configuration: BETTER_AUTH_SECRET must be overridden in production",
+    );
+  }
+  // Deliberately NOT a schema field: the value is read straight from env so an
+  // inline/typo value stays legal outside production, and `AppConfig` keeps no
+  // copy that could drift from the call-time resolver in `provider-port.ts`.
+  if (
+    parsed.data.NODE_ENV === "production" &&
+    env.PROVIDER_DISPATCH_MODE !== PRODUCTION_PROVIDER_DISPATCH_MODE
+  ) {
+    throw new Error(
+      `invalid environment configuration: PROVIDER_DISPATCH_MODE must be exactly "${PRODUCTION_PROVIDER_DISPATCH_MODE}" when NODE_ENV=production (the durable dispatcher is the only certified executor for real provider writes); received ${describeEnvValue(env.PROVIDER_DISPATCH_MODE)}`,
     );
   }
   return { ...parsed.data, CORS_ALLOWED_ORIGINS: corsAllowedOrigins };

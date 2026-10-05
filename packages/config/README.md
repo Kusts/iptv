@@ -23,8 +23,10 @@ Called once in `apps/api/src/main.ts` before the Nest app is created.
 
 ## Env
 
-**Every key is optional.** Each has a default (or is genuinely optional), so
-a missing variable never breaks boot on its own:
+**Every key is optional outside production.** Each has a default (or is
+genuinely optional), so a missing variable never breaks boot on its own; with
+`NODE_ENV=production` two values are mandatory (`BETTER_AUTH_SECRET`,
+`PROVIDER_DISPATCH_MODE`):
 
 | Var | Default |
 | --- | --- |
@@ -60,3 +62,10 @@ a missing variable never breaks boot on its own:
   cross-origin** (never an implicit localhost fallback).
 - Keys not in this schema (WAHA, Asaas, provider adapters, OpenAI gateway)
   are validated at their point of use, not here.
+- **`PROVIDER_DISPATCH_MODE` is deliberately not a schema field** — it is read
+  straight from env so unvalidated values stay legal in development/test, where
+  `providerDispatchModeFromEnv` keeps its `inline` fallback. In production it
+  must be exactly `durable` (no case folding, no trimming): unset, empty
+  (empty means absent), `inline`, typo, `DURABLE` or padded values throw before
+  the API starts, because the durable dispatcher is the only certified executor
+  for real provider writes.

@@ -48,6 +48,12 @@ describe.skipIf(!hasDb)("Wave 8 Support + HITL center (requires TEST_DATABASE_UR
   let userId = "";
   let otherToken = "";
   let otherTenantId = "";
+  /**
+   * A member of THIS tenant holding only `tenant_operator` (support-capable,
+   * no `provider.operation.read`) — the caller whose unfiltered center must
+   * omit provider rows and whose explicit provider filter must be a 403.
+   */
+  let supportOnlyToken = "";
   let bus: CommandBus;
   let drainer: OutboxDrainer;
 
@@ -193,6 +199,173 @@ describe.skipIf(!hasDb)("Wave 8 Support + HITL center (requires TEST_DATABASE_UR
     return taskId;
   }
 
+  /**
+   * Provider account + operations parked in `HUMAN_REQUIRED` for the center.
+   * `action` is deliberately non-secret; the payload/result JSONs carry
+   * sentinel values that must NEVER appear in any center response.
+   */
+  async function seedProviderOperations(): Promise<{
+    accountId: string;
+    humanRequiredId: string;
+    succeededId: string;
+    runningId: string;
+    otherTenantHumanRequiredId: string;
+    payloadSentinel: string;
+    resultSentinel: string;
+  }> {
+    const nowDate = new Date();
+    const providerId = newId();
+    await db
+      .insertInto("provider.providers")
+      .values({
+        id: providerId,
+        provider_key: `w8-prov-${suffix()}`,
+        name: "Wave8 Provider",
+        provider_type: "IPTV",
+        status: "ACTIVE",
+        created_at: nowDate,
+      })
+      .execute();
+    const accountId = newId();
+    const accountSentinel = `w8-secret-${suffix()}`;
+    await db
+      .insertInto("provider.provider_accounts")
+      .values({
+        id: accountId,
+        tenant_id: tenantId,
+        provider_id: providerId,
+        name: "Wave8 Provider Account",
+        status: "ACTIVE",
+        secret_ref: accountSentinel,
+        settings_json: {},
+        last_recharge_at: null,
+        created_at: nowDate,
+        updated_at: nowDate,
+      })
+      .execute();
+
+    const payloadSentinel = `w8-payload-${suffix()}`;
+    const resultSentinel = `w8-result-${suffix()}`;
+    const sfx = suffix();
+
+    async function insertOperation(input: {
+      tenant: string;
+      status: "HUMAN_REQUIRED" | "SUCCEEDED" | "RUNNING";
+      certainty: "UNKNOWN" | "KNOWN_APPLIED" | "KNOWN_NOT_APPLIED";
+      ageHours: number;
+    }): Promise<string> {
+      const id = newId();
+      await db
+        .insertInto("provider.provider_operations")
+        .values({
+          id,
+          tenant_id: input.tenant,
+          provider_account_id: accountId,
+          action: "CREATE_TRIAL",
+          entity_type: "trial",
+          entity_id: newId(),
+          status: input.status,
+          idempotency_key: `w8-op-${sfx}-${input.status}-${id.slice(-6)}`,
+          execution_channel: "BROWSER",
+          adapter_version: "w8-adapter",
+          requested_payload_json: {
+            customer_reference: payloadSentinel,
+            credential_pin: "998877",
+          },
+          result_summary_json: input.status === "SUCCEEDED" ? { note: "n/a" } : { raw_adapter_error: resultSentinel },
+          requested_at: new Date(Date.now() - input.ageHours * 3_600_000),
+          started_at: null,
+          completed_at: input.status === "SUCCEEDED" ? nowDate : null,
+          correlation_id: newId(),
+          effect_certainty: input.certainty,
+        })
+        .execute();
+      return id;
+    }
+
+    const humanRequiredId = await insertOperation({
+      tenant: tenantId,
+      status: "HUMAN_REQUIRED",
+      certainty: "UNKNOWN",
+      ageHours: 5,
+    });
+    const succeededId = await insertOperation({
+      tenant: tenantId,
+      status: "SUCCEEDED",
+      certainty: "KNOWN_APPLIED",
+      ageHours: 6,
+    });
+    const runningId = await insertOperation({
+      tenant: tenantId,
+      status: "RUNNING",
+      certainty: "UNKNOWN",
+      ageHours: 7,
+    });
+    // Cross-tenant park under the other tenant's own account, so the only
+    // thing keeping it out of our center is the tenant predicate.
+    const otherProviderId = newId();
+    await db
+      .insertInto("provider.providers")
+      .values({
+        id: otherProviderId,
+        provider_key: `w8-other-prov-${suffix()}`,
+        name: "Wave8 Other Provider",
+        provider_type: "IPTV",
+        status: "ACTIVE",
+        created_at: nowDate,
+      })
+      .execute();
+    const otherAccountId = newId();
+    await db
+      .insertInto("provider.provider_accounts")
+      .values({
+        id: otherAccountId,
+        tenant_id: otherTenantId,
+        provider_id: otherProviderId,
+        name: "Wave8 Other Account",
+        status: "ACTIVE",
+        secret_ref: `w8-other-secret-${suffix()}`,
+        settings_json: {},
+        last_recharge_at: null,
+        created_at: nowDate,
+        updated_at: nowDate,
+      })
+      .execute();
+    const otherTenantHumanRequiredId = newId();
+    await db
+      .insertInto("provider.provider_operations")
+      .values({
+        id: otherTenantHumanRequiredId,
+        tenant_id: otherTenantId,
+        provider_account_id: otherAccountId,
+        action: "CREATE_TRIAL",
+        entity_type: "trial",
+        entity_id: newId(),
+        status: "HUMAN_REQUIRED",
+        idempotency_key: `w8-op-${sfx}-other`,
+        execution_channel: "BROWSER",
+        adapter_version: "w8-adapter",
+        requested_payload_json: { customer_reference: payloadSentinel },
+        result_summary_json: { raw_adapter_error: resultSentinel },
+        requested_at: new Date(Date.now() - 8 * 3_600_000),
+        started_at: null,
+        completed_at: null,
+        correlation_id: newId(),
+        effect_certainty: "UNKNOWN",
+      })
+      .execute();
+
+    return {
+      accountId,
+      humanRequiredId,
+      succeededId,
+      runningId,
+      otherTenantHumanRequiredId,
+      payloadSentinel,
+      resultSentinel,
+    };
+  }
+
   beforeAll(async () => {
     await applyMigrations(connectionString as string, { migrationsDir: MIGRATIONS_DIR });
     process.env["DATABASE_URL"] = connectionString as string;
@@ -225,6 +398,39 @@ describe.skipIf(!hasDb)("Wave 8 Support + HITL center (requires TEST_DATABASE_UR
     const otherBody = other.json<{ token: string; activeTenantId: string }>();
     otherToken = otherBody.token;
     otherTenantId = otherBody.activeTenantId;
+
+    // Support-only member of THIS tenant: register without a tenant, attach a
+    // `tenant_operator` membership (no `provider.operation.read` in that role)
+    // and log in so the session's active tenant is ours.
+    const supportEmail = email("w8support");
+    const supportUser = await injectRaw({
+      method: "POST",
+      url: "/v1/auth/register",
+      payload: { email: supportEmail, password: "correct-horse-8" },
+    });
+    expect(supportUser.statusCode).toBe(201);
+    const supportUserId = supportUser.json<{ user: { id: string } }>().user.id;
+    await db
+      .insertInto("control.tenant_memberships")
+      .values({
+        id: newId(),
+        tenant_id: tenantId,
+        user_id: supportUserId,
+        role_key: "tenant_operator",
+        status: "ACTIVE",
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+    const supportLogin = await injectRaw({
+      method: "POST",
+      url: "/v1/auth/login",
+      payload: { email: supportEmail, password: "correct-horse-8" },
+    });
+    expect(supportLogin.statusCode).toBe(200);
+    const supportSession = supportLogin.json<{ token: string; activeTenantId: string | null }>();
+    expect(supportSession.activeTenantId).toBe(tenantId);
+    supportOnlyToken = supportSession.token;
   }, 120_000);
 
   afterAll(async () => {
@@ -580,6 +786,128 @@ describe.skipIf(!hasDb)("Wave 8 Support + HITL center (requires TEST_DATABASE_UR
     );
     expect(otherClaim.ok).toBe(false);
     void otherTenantId;
+  });
+
+  it("surfaces only own HUMAN_REQUIRED provider operations, minimally, behind provider.operation.read", async () => {
+    const fixture = await seedProviderOperations();
+
+    // Authorized owner (tenant_owner holds provider.operation.read) sees the
+    // parked op as a minimal item...
+    const center = await injectRaw({ method: "GET", url: "/v1/human-reviews/center", token });
+    expect(center.statusCode).toBe(200);
+    const centerBody = center.json<{
+      items: Array<{ source: string; id: string; kind: string; summary: string; deepLink: string; createdAt: string }>;
+    }>();
+    const ids = centerBody.items.map((i) => i.id);
+    expect(ids).toContain(fixture.humanRequiredId);
+    // ...and nothing that is not parked, or not ours.
+    expect(ids).not.toContain(fixture.succeededId);
+    expect(ids).not.toContain(fixture.runningId);
+    expect(ids).not.toContain(fixture.otherTenantHumanRequiredId);
+
+    const providerItems = centerBody.items.filter((i) => i.source === "provider_operation");
+    expect(providerItems).toHaveLength(1);
+    expect(providerItems[0]).toMatchObject({
+      id: fixture.humanRequiredId,
+      kind: "provider_operation/CREATE_TRIAL",
+      // Fixed generic summary — no interpolated provider data.
+      summary: "provider operation awaiting human resolution",
+      deepLink: `/v1/provider/operations/${fixture.humanRequiredId}`,
+    });
+    // Only the three source fields plus the shared item shape: no payload,
+    // result summary, secret ref, account id, entity id or correlation id.
+    expect(Object.keys(providerItems[0] ?? {}).sort()).toEqual([
+      "ageMinutes",
+      "createdAt",
+      "deepLink",
+      "id",
+      "kind",
+      "priority",
+      "sla",
+      "source",
+      "summary",
+    ]);
+    const serialized = JSON.stringify(center.json());
+    expect(serialized).not.toContain(fixture.payloadSentinel);
+    expect(serialized).not.toContain(fixture.resultSentinel);
+    expect(serialized).not.toContain("credential_pin");
+    expect(serialized).not.toContain("raw_adapter_error");
+    expect(serialized).not.toContain("customer_reference");
+    expect(serialized).not.toContain(fixture.accountId);
+    expect(serialized).not.toContain(fixture.otherTenantHumanRequiredId);
+
+    // Explicit filter for an authorized caller returns exactly that source.
+    const filtered = await injectRaw({
+      method: "GET",
+      url: "/v1/human-reviews/center?source=provider_operation",
+      token,
+    });
+    expect(filtered.statusCode).toBe(200);
+    const filteredBody = filtered.json<{ items: Array<{ source: string; id: string }> }>();
+    expect(filteredBody.items.map((i) => i.id)).toEqual([fixture.humanRequiredId]);
+    expect(filteredBody.items.every((i) => i.source === "provider_operation")).toBe(true);
+
+    // The other tenant's parked op stays invisible even filtered.
+    const otherCenter = await injectRaw({
+      method: "GET",
+      url: "/v1/human-reviews/center?source=provider_operation",
+      token: otherToken,
+    });
+    expect(otherCenter.statusCode).toBe(200);
+    expect(otherCenter.json<{ items: Array<{ id: string }> }>().items.map((i) => i.id)).toEqual([
+      fixture.otherTenantHumanRequiredId,
+    ]);
+
+    // Unknown source is still 400 for the authorized caller.
+    expect(
+      (await injectRaw({ method: "GET", url: "/v1/human-reviews/center?source=nope", token })).statusCode,
+    ).toBe(400);
+  });
+
+  it("support-only member sees no provider rows unfiltered and is 403 on the explicit source", async () => {
+    const fixture = await seedProviderOperations();
+
+    // Unfiltered: the four support sources still aggregate, provider rows do not.
+    const center = await injectRaw({ method: "GET", url: "/v1/human-reviews/center", token: supportOnlyToken });
+    expect(center.statusCode).toBe(200);
+    const body = center.json<{ items: Array<{ source: string; id: string }> }>();
+    expect(body.items.map((i) => i.source)).not.toContain("provider_operation");
+    expect(body.items.map((i) => i.id)).not.toContain(fixture.humanRequiredId);
+    // Tenant scoping is unchanged for the other sources.
+    expect(body.items.some((i) => i.source === "human_review" || i.source === "billing_exception")).toBe(true);
+
+    // Explicit provider source without the permission: 403, no provider data.
+    const forbidden = await injectRaw({
+      method: "GET",
+      url: "/v1/human-reviews/center?source=provider_operation",
+      token: supportOnlyToken,
+    });
+    expect(forbidden.statusCode).toBe(403);
+    expect(forbidden.json<{ code: string; message: string }>()).toMatchObject({
+      code: "FORBIDDEN",
+      message: "missing permission: provider.operation.read",
+    });
+    const forbiddenBody = JSON.stringify(forbidden.json());
+    expect(forbiddenBody).not.toContain(fixture.humanRequiredId);
+    expect(forbiddenBody).not.toContain(fixture.payloadSentinel);
+    expect(forbiddenBody).not.toContain(fixture.resultSentinel);
+
+    // A legacy explicit filter still works for this caller (no widened source set).
+    const legacy = await injectRaw({
+      method: "GET",
+      url: "/v1/human-reviews/center?source=billing_exception",
+      token: supportOnlyToken,
+    });
+    expect(legacy.statusCode).toBe(200);
+    expect(
+      legacy.json<{ items: Array<{ source: string }> }>().items.every((i) => i.source === "billing_exception"),
+    ).toBe(true);
+
+    // Unknown source stays 400 (not 403) even without the permission.
+    expect(
+      (await injectRaw({ method: "GET", url: "/v1/human-reviews/center?source=nope", token: supportOnlyToken }))
+        .statusCode,
+    ).toBe(400);
   });
 
   it("versions, searches and suggests knowledge without leaking tenants", async () => {

@@ -1083,3 +1083,14 @@ export function useOptionalApiScope(): string | null {
   const ctx = useContext(AuthContext);
   return ctx?.apiScope ?? null;
 }
+
+/**
+ * `hasPermission` sem exigir provider, para componentes que também são
+ * renderizados fora do `AuthProvider` (testes/préviews). Fail-closed: fora
+ * do provider nenhuma permissão é concedida.
+ */
+export function useOptionalHasPermission(): (permission: string) => boolean {
+  const ctx = useContext(AuthContext);
+  const permissions = ctx?.permissions;
+  return (permission: string) => (permissions ?? []).includes(permission);
+}

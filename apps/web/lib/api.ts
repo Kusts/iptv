@@ -432,8 +432,25 @@ export interface TicketDetail {
   conversation: { id: string; status: string; channel: string; controlMode: string } | null;
 }
 
+/**
+ * Fontes do centro HITL. `provider_operation` (operações de provedor
+ * paradas em `HUMAN_REQUIRED`) só chega a um caller com
+ * `provider.operation.read`; a UI esconde a opção e as linhas sem essa
+ * permissão, inclusive quando a resposta vem de cache velho.
+ */
+export const PROVIDER_OPERATION_SOURCE = "provider_operation" as const;
+export const PROVIDER_OPERATION_READ_PERMISSION = "provider.operation.read";
+export const CENTER_SOURCES = [
+  "human_review",
+  "comm_exception",
+  "billing_exception",
+  "recovery_task",
+  PROVIDER_OPERATION_SOURCE,
+] as const;
+export type CenterSource = (typeof CENTER_SOURCES)[number];
+
 export interface CenterItem {
-  source: string;
+  source: CenterSource;
   id: string;
   kind: string;
   summary: string;

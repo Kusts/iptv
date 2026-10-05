@@ -1,7 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { api, userMessage, type CenterResponse } from "../lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  api,
+  userMessage,
+  CENTER_SOURCES,
+  PROVIDER_OPERATION_SOURCE,
+  PROVIDER_OPERATION_READ_PERMISSION,
+  type CenterResponse,
+  type CenterSource,
+} from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { clearApiCache, useApi } from "../lib/useApi";
 import { slaLabel } from "../lib/status";
@@ -13,17 +21,16 @@ import { Select } from "./ui/Input";
 import { useToast } from "./ui/Toast";
 import { formatDateTime } from "../lib/money";
 
-const SOURCES = ["human_review", "comm_exception", "billing_exception", "recovery_task"] as const;
-
 const SOURCE_LABELS: Record<string, string> = {
   human_review: "Revisões humanas",
   comm_exception: "Exceções de comunicação",
   billing_exception: "Exceções de cobrança",
   recovery_task: "Recuperação",
+  [PROVIDER_OPERATION_SOURCE]: "Operações de provedor",
 };
 
 /** Chave estável entre fontes: ids podem colidir cross-source. */
-function rowKey(item: { source: string; id: string }): string {
+function rowKey(item: { source: CenterSource; id: string }): string {
   return `${item.source}:${item.id}`;
 }
 
@@ -42,12 +49,34 @@ function slaText(sla: string): string {
 
 export function HitlCenter(): React.JSX.Element {
   const [source, setSource] = useState<string>("");
-  const query = source === "" ? "/v1/human-reviews/center" : `/v1/human-reviews/center?source=${source}`;
-  const { data, error, loading, reload, refresh, refreshError } = useApi<CenterResponse>(query);
   const { hasPermission } = useAuth();
+  const canReadProvider = hasPermission(PROVIDER_OPERATION_READ_PERMISSION);
+  /**
+   * `provider_operation` exige `provider.operation.read`: a opção some do
+   * filtro e, se o caller escolher sem permissão, o filtro volta para
+   * "todas" — nunca persistindo uma query que a API responde com 403.
+   */
+  const sources = useMemo(
+    () => (canReadProvider ? [...CENTER_SOURCES] : CENTER_SOURCES.filter((s) => s !== PROVIDER_OPERATION_SOURCE)),
+    [canReadProvider],
+  );
+  const activeSource = source === PROVIDER_OPERATION_SOURCE && !canReadProvider ? "" : source;
+  const query =
+    activeSource === "" ? "/v1/human-reviews/center" : `/v1/human-reviews/center?source=${activeSource}`;
+  const { data, error, loading, reload, refresh, refreshError } = useApi<CenterResponse>(query);
   const { push } = useToast();
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  /**
+   * Defesa contra resposta velha/cacheada: mesmo que um payload em cache
+   * (ou um escopo anterior) traga linhas de `provider_operation`, elas não
+   * são renderizadas sem a permissão — a API também as omite, mas a UI não
+   * depende só disso.
+   */
+  const items = useMemo(() => {
+    if (data === null) return null;
+    return canReadProvider ? data.items : data.items.filter((i) => i.source !== PROVIDER_OPERATION_SOURCE);
+  }, [data, canReadProvider]);
 
   // Revalida o cache compartilhado do centro ao montar/voltar para /hitl
   // (navegação a partir do Control Center não trata cache velho como
@@ -81,7 +110,10 @@ export function HitlCenter(): React.JSX.Element {
 
   const canDecide = hasPermission("agent.review.decide");
 
-  const act = async (item: { source: string; id: string }, action: "claim" | "approve" | "reject"): Promise<void> => {
+  const act = async (
+    item: { source: CenterSource; id: string },
+    action: "claim" | "approve" | "reject",
+  ): Promise<void> => {
     setBusyKey(rowKey(item));
     setActionError(null);
     try {
@@ -107,9 +139,14 @@ export function HitlCenter(): React.JSX.Element {
     <div>
       <div className="cc-row" style={{ marginBottom: "1rem" }}>
         <label className="cc-muted" htmlFor="hitl-source">Origem:</label>
-        <Select id="hitl-source" value={source} onChange={(e) => setSource(e.target.value)} style={{ maxWidth: "260px" }}>
+        <Select
+          id="hitl-source"
+          value={activeSource}
+          onChange={(e) => setSource(e.target.value)}
+          style={{ maxWidth: "260px" }}
+        >
           <option value="">Todas</option>
-          {SOURCES.map((s) => (
+          {sources.map((s) => (
             <option key={s} value={s}>
               {SOURCE_LABELS[s]}
             </option>
@@ -127,12 +164,12 @@ export function HitlCenter(): React.JSX.Element {
         </div>
       ) : null}
       {actionError ? <p className="cc-field-error">{actionError}</p> : null}
-      {data && data.items.length === 0 ? (
+      {items !== null && items.length === 0 ? (
         <EmptyState title="Fila vazia" hint="Nenhum item aguardando revisão humana." />
       ) : null}
-      {data
-        ? SOURCES.filter((s) => source === "" || s === source).map((s) => {
-            const group = data.items.filter((i) => i.source === s);
+      {items
+        ? sources.filter((s) => activeSource === "" || s === activeSource).map((s) => {
+            const group = items.filter((i) => i.source === s);
             if (group.length === 0) return null;
             return (
               <Card key={s} title={`${SOURCE_LABELS[s]} (${group.length})`}>

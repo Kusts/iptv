@@ -6,9 +6,9 @@
  * task's write scope. These validators enforce the same contract the Zod
  * schemas would: reject unknown root fields, require the observed minima,
  * and allow exactly one documented normalization — `is_trial:
- * "true"/"false"` (string) to boolean. Any other `is_trial` value,
- * including `"1"` or a boolean, fails closed. Reasons use fixed words
- * (field names only).
+ * "true"/"false"/"YES"/"NO"` (string) to boolean. Any other `is_trial`
+ * value, including `"1"`, lowercase `"yes"` or a boolean, fails closed.
+ * Reasons use fixed words (field names only).
  *
  * The in-page projection already strips unlisted fields, so these
  * validators are the second barrier on the projected shape.
@@ -69,12 +69,16 @@ function reqNumber(record: Record<string, unknown>, key: string): number {
 
 /**
  * Documented normalization: provider sends `is_trial` as a STRING.
- * Only `"true"`/`"false"` are accepted; anything else fails closed.
+ * Accepted exact representations: `"true"`/`"false"` (observed in the
+ * 2026-09-30 investigation) and `"YES"`/`"NO"` (observed live on 2026-10-05 in
+ * an authenticated GET of the customers list — the current panel serializes the
+ * flag as an exact uppercase enum). Comparison is exact: no trimming, no case
+ * folding, no `1`/`0`, no booleans; anything else fails closed.
  */
 export function normalizeIsTrial(value: unknown): boolean {
-  if (value === "true") return true;
-  if (value === "false") return false;
-  throw new SchemaViolation('is_trial: expected "true"|"false" string');
+  if (value === "true" || value === "YES") return true;
+  if (value === "false" || value === "NO") return false;
+  throw new SchemaViolation('is_trial: expected "true"|"false"|"YES"|"NO" string');
 }
 
 function optIsTrial(record: Record<string, unknown>): boolean | null {

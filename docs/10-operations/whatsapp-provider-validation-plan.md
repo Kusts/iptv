@@ -1,5 +1,7 @@
 # Live Integration Certification Plan
 
+> **SUPERSEDED — não use este arquivo como referência canônica.** Duplicata histórica preservada apenas por compatibilidade de links antigos. A versão canônica e mantida é [`docs/15-implementation-baseline/10-integrations-certification.md`](../15-implementation-baseline/10-integrations-certification.md), que contém os blockers W0-09 e o procedimento operacional completo da Fase 6 (canary live ainda **não executado**). Para o status de implementação das Fases 0–5 do CINEVISION, consulte o SPEC/PLAN [`cinevision-runtime-hardening.md`](../04-specs/integrations/cinevision-runtime-hardening.md). Esta cópia não tem os blockers W0-09, o procedimento de canary nem as atualizações datadas; em caso de divergência, os canônicos prevalecem.
+
 ## Certification states
 
 `UNVALIDATED → LAB_VALIDATED → CANARY_VALIDATED → CERTIFIED`

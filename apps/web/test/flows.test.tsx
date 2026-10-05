@@ -4144,6 +4144,127 @@ describe("SLA desconhecido no HitlCenter", () => {
   });
 });
 
+describe("origem provider_operation condicionada a provider.operation.read", () => {
+  const CENTER_PATH = "/v1/human-reviews/center";
+
+  function providerItem(id: string): Record<string, unknown> {
+    return {
+      source: "provider_operation",
+      id,
+      kind: "provider_operation/CREATE_TRIAL",
+      summary: "provider operation awaiting human resolution",
+      priority: null,
+      ageMinutes: 400,
+      sla: "WARN",
+      deepLink: `/v1/provider/operations/${id}`,
+      createdAt: "2026-02-01T10:00:00.000Z",
+    };
+  }
+
+  function reviewItem(id: string): Record<string, unknown> {
+    return {
+      source: "human_review",
+      id,
+      kind: "APPROVAL/manual",
+      summary: `revisão ${id}`,
+      priority: null,
+      ageMinutes: 10,
+      sla: "OK",
+      deepLink: `/v1/human-reviews/${id}`,
+      createdAt: "2026-02-01T10:00:00.000Z",
+    };
+  }
+
+  const centerBody = {
+    items: [providerItem("op-1"), reviewItem("r1")],
+    slaPolicy: { warnAfterHours: 4, breachAfterHours: 24, ref: "default-v1" },
+  };
+
+  /** Sessão autenticada com o conjunto de permissões informado. */
+  function stubFetch(permissions: string[]): { urls: string[] } {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        urls.push(url);
+        if (url.endsWith("/v1/auth/session")) {
+          return jsonResponse(200, {
+            user: { id: "u1", email: "u1@tenant.com", displayName: null },
+            activeTenantId: "t1",
+            memberships: [],
+            tenantContextRevision: "0",
+          });
+        }
+        if (url.endsWith("/v1/me")) {
+          return jsonResponse(200, {
+            user: { id: "u1", email: "u1@tenant.com" },
+            activeTenant: { id: "t1" },
+            roleKeys: [],
+            permissions,
+          });
+        }
+        if (url.includes(CENTER_PATH)) return jsonResponse(200, centerBody);
+        return jsonResponse(404, { code: "NOT_FOUND" });
+      }),
+    );
+    return { urls };
+  }
+
+  it("sem a permissão a opção some e linhas provider_operation não são renderizadas", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    // A resposta traz linhas de provider_operation (payload velho/cachê): a UI
+    // não pode renderizá-las sem `provider.operation.read`.
+    stubFetch(["support.ticket.read"]);
+    render(
+      <AuthProvider>
+        <HitlCenter />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("revisão r1")).toBeTruthy());
+    expect(screen.queryByText("provider operation awaiting human resolution")).toBeNull();
+    const select = screen.getByLabelText("Origem:") as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    expect(options).toEqual(["", "human_review", "comm_exception", "billing_exception", "recovery_task"]);
+    expect(screen.queryByText(/Operações de provedor/)).toBeNull();
+  });
+
+  it("com a permissão a opção aparece, filtra por source=provider_operation e não oferece claim/decidir", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    const { urls } = stubFetch(["support.ticket.read", "provider.operation.read"]);
+    render(
+      <AuthProvider>
+        <HitlCenter />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("provider operation awaiting human resolution")).toBeTruthy());
+    const select = screen.getByLabelText("Origem:") as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toContain("provider_operation");
+    fireEvent.change(select, { target: { value: "provider_operation" } });
+    await waitFor(() =>
+      expect(urls.some((u) => u.includes("/v1/human-reviews/center?source=provider_operation"))).toBe(true),
+    );
+    // Deep link do endpoint IMPLEMENTADO de leitura da operação.
+    expect(screen.getByText(/deep link: \/v1\/provider\/operations\/op-1/)).toBeTruthy();
+    // Read-model only: sem controles de claim/aprovar/rejeitar na origem.
+    expect(screen.queryByRole("button", { name: "Assumir" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Aprovar" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rejeitar" })).toBeNull();
+  });
+
+  it("o preview da home também esconde provider_operation sem a permissão", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    stubFetch(["support.ticket.read"]);
+    render(
+      <AuthProvider>
+        <NeedsAttention />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("Precisa de você (1)")).toBeTruthy());
+    expect(screen.queryByText("provider operation awaiting human resolution")).toBeNull();
+    expect(screen.getByText("revisão r1")).toBeTruthy();
+  });
+});
+
 describe("Tenant Copilot (widget)", () => {
   beforeEach(() => {
     clearCopilotSessionMemory();

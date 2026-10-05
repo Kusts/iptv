@@ -16,8 +16,15 @@ import {
   type TicketStatus,
 } from "../src/support/support-policy.js";
 import {
+  CENTER_SOURCES,
+  PROVIDER_OPERATION_CENTER_PERMISSION,
+  PROVIDER_OPERATION_CENTER_SUMMARY,
+  PROVIDER_OPERATION_HUMAN_REQUIRED_STATUS,
+  PROVIDER_OPERATION_SOURCE,
   classifyCenterSla,
   normalizeCenterItem,
+  planCenterSources,
+  providerOperationCenterItem,
   resolveSlaPolicy,
 } from "../src/human-review/center-policy.js";
 import { rankSuggestions, tokenize } from "../src/knowledge/knowledge-policy.js";
@@ -221,6 +228,94 @@ describe("Wave 8 hitl.sla policy (pure)", () => {
       sla: "WARN",
       deepLink: "/v1/human-reviews/r1",
     });
+  });
+});
+
+describe("HITL center provider_operation source (pure)", () => {
+  it("provider_operation is a real fifth source bound to provider.operation.read + HUMAN_REQUIRED", () => {
+    expect([...CENTER_SOURCES]).toEqual([
+      "human_review",
+      "comm_exception",
+      "billing_exception",
+      "recovery_task",
+      "provider_operation",
+    ]);
+    expect(PROVIDER_OPERATION_SOURCE).toBe("provider_operation");
+    expect(PROVIDER_OPERATION_CENTER_PERMISSION).toBe("provider.operation.read");
+    expect(PROVIDER_OPERATION_HUMAN_REQUIRED_STATUS).toBe("HUMAN_REQUIRED");
+  });
+
+  it("unfiltered plan includes provider rows only for an authorized caller", () => {
+    expect(planCenterSources(undefined, true)).toEqual({
+      kind: "plan",
+      wanted: null,
+      includeProviderOperations: true,
+    });
+    expect(planCenterSources(undefined, false)).toEqual({
+      kind: "plan",
+      wanted: null,
+      includeProviderOperations: false,
+    });
+  });
+
+  it("the four legacy sources behave exactly as before for both callers", () => {
+    for (const legacy of ["human_review", "comm_exception", "billing_exception", "recovery_task"] as const) {
+      expect(planCenterSources(legacy, true)).toEqual({ kind: "plan", wanted: legacy, includeProviderOperations: false });
+      expect(planCenterSources(legacy, false)).toEqual({ kind: "plan", wanted: legacy, includeProviderOperations: false });
+    }
+  });
+
+  it("explicit provider_operation is 403 without the permission (before any provider read)", () => {
+    expect(planCenterSources(PROVIDER_OPERATION_SOURCE, false)).toEqual({
+      kind: "error",
+      status: 403,
+      code: "FORBIDDEN",
+      message: `missing permission: ${PROVIDER_OPERATION_CENTER_PERMISSION}`,
+    });
+    expect(planCenterSources(PROVIDER_OPERATION_SOURCE, true)).toEqual({
+      kind: "plan",
+      wanted: PROVIDER_OPERATION_SOURCE,
+      includeProviderOperations: true,
+    });
+  });
+
+  it("an unknown source stays 400 even when the permission is missing", () => {
+    for (const canRead of [true, false]) {
+      expect(planCenterSources("nope", canRead)).toEqual({
+        kind: "error",
+        status: 400,
+        code: "INVALID_SOURCE",
+        message: "unknown center source: nope",
+      });
+    }
+  });
+
+  it("the provider item exposes only id/action/requested_at with a fixed generic summary", () => {
+    const item = providerOperationCenterItem({
+      id: "11111111-1111-4111-8111-111111111111",
+      action: "trial.provision",
+      requestedAt: new Date("2026-10-02T00:00:00Z"),
+    });
+    expect(item).toEqual({
+      source: "provider_operation",
+      id: "11111111-1111-4111-8111-111111111111",
+      kind: "provider_operation/trial.provision",
+      summary: PROVIDER_OPERATION_CENTER_SUMMARY,
+      priority: null,
+      createdAt: new Date("2026-10-02T00:00:00Z"),
+      deepLink: "/v1/provider/operations/11111111-1111-4111-8111-111111111111",
+    });
+    // O resumo é constante: nenhum campo da operação entra na linha.
+    expect(item.summary).toBe(PROVIDER_OPERATION_CENTER_SUMMARY);
+    expect(Object.keys(item).sort()).toEqual([
+      "createdAt",
+      "deepLink",
+      "id",
+      "kind",
+      "priority",
+      "source",
+      "summary",
+    ]);
   });
 });
 
