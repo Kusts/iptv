@@ -18,6 +18,7 @@ import type {
   ProviderOperationRequest,
   ProviderOpsPort,
 } from "../src/provider/provider-port.js";
+import { SECRET_REQUIRED_ADAPTER_VERSION } from "../src/provider/provider-port.js";
 import { FakeTrialReadback } from "./fakes/trial-readback-fake.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -563,6 +564,84 @@ describe.skipIf(!hasDb)("CV-DSP-01 durable dispatch end-to-end (requires TEST_DA
     const converged = await getOp(tenantA, data.id);
     expect(converged.status).toBe("HUMAN_REQUIRED");
     expect(converged.effect_certainty).toBe("UNKNOWN");
+  });
+
+  it("manual resolve can never fake a conclusive effect on a secret-required VERIFYING op (Postgres)", async () => {
+    browser.mode = "success";
+    const data = await requestDurable(tenantA, "resolve-guard");
+    // Authentic crash-after-send shape → VERIFYING/UNKNOWN by recovery (the
+    // exact state the manual operator finds in the Control Center).
+    await db
+      .updateTable("provider.provider_operations")
+      .set({
+        status: "RUNNING",
+        claimed_by: "crashed-worker",
+        claimed_at: new Date(),
+        lease_expires_at: sql`now() - make_interval(secs => 60)`,
+        dispatch_started_at: new Date(),
+      })
+      .where("tenant_id", "=", tenantA)
+      .where("id", "=", data.id)
+      .execute();
+    const recovered = await dispatcher.recoverOnce(10);
+    expect(recovered.verifying).toBeGreaterThanOrEqual(1);
+    const row = await db
+      .selectFrom("provider.provider_operations")
+      .select(["status", "effect_certainty", "adapter_version", "completed_at", "result_summary_json"])
+      .where("tenant_id", "=", tenantA)
+      .where("id", "=", data.id)
+      .executeTakeFirstOrThrow();
+    expect(row.status).toBe("VERIFYING");
+    expect(row.effect_certainty).toBe("UNKNOWN");
+    expect(row.adapter_version).toBe(SECRET_REQUIRED_ADAPTER_VERSION);
+    const attemptsBefore = (await getAttempts(tenantA, data.id)).length;
+    const callsBefore = browser.calls.length;
+
+    // SUCCEEDED (and FAILED, which also asserts "not applied") are refused
+    // with a generic precondition failure — no status/certainty write, no
+    // completed_at, no attempt, no event, no trial resume. UNKNOWN stays
+    // available for triage (parks VERIFYING, claims no effect).
+    for (const outcome of ["SUCCEEDED", "FAILED"] as const) {
+      const resolved = await bus.execute(actor(tenantA), "provider.resolve_operation", {
+        operationId: data.id,
+        outcome,
+        note: "operator claims a conclusive effect",
+      });
+      expect(resolved.ok).toBe(false);
+      if (resolved.ok) throw new Error(`manual ${outcome} on a secret-required op must be refused`);
+      expect(resolved.code).toBe("precondition_failed");
+    }
+    const after = await db
+      .selectFrom("provider.provider_operations")
+      .select(["status", "effect_certainty", "completed_at", "result_summary_json"])
+      .where("tenant_id", "=", tenantA)
+      .where("id", "=", data.id)
+      .executeTakeFirstOrThrow();
+    expect(after.status).toBe("VERIFYING");
+    expect(after.effect_certainty).toBe("UNKNOWN");
+    expect(after.completed_at).toBeNull();
+    expect(after.result_summary_json).toEqual(row.result_summary_json);
+    expect((await getAttempts(tenantA, data.id)).length).toBe(attemptsBefore);
+    // Nenhum envio externo acontece por uma resolução manual recusada.
+    expect(browser.calls.length).toBe(callsBefore);
+
+    const triage = await bus.execute<{ status: string; effectCertainty: string; resumedTrial: boolean }>(
+      actor(tenantA),
+      "provider.resolve_operation",
+      { operationId: data.id, outcome: "UNKNOWN", note: "aguardando readback conclusivo" },
+    );
+    expect(triage).toMatchObject({
+      ok: true,
+      data: { status: "VERIFYING", effectCertainty: "UNKNOWN", resumedTrial: false },
+    });
+    expect((await getOp(tenantA, data.id)).status).toBe("VERIFYING");
+
+    // The only terminalization path stays the dispatcher's postcondition-
+    // validated readback (`provider.reconcile` → `reconcileOnce`).
+    const scheduled = await bus.execute<{ reconciliation?: string }>(actor(tenantA), "provider.reconcile", {
+      operationId: data.id,
+    });
+    expect(scheduled).toMatchObject({ ok: true, data: { reconciliation: "scheduled" } });
   });
 
   it("a hanging port parks VERIFYING/UNKNOWN via the send timeout (never FAILED)", async () => {

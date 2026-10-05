@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   api,
   userMessage,
@@ -212,6 +213,13 @@ export function HitlCenter(): React.JSX.Element {
                             </Button>
                           </span>
                         </>
+                      ) : item.source === PROVIDER_OPERATION_SOURCE ? (
+                        // `deepLink` da API é um path /v1 (não navegável):
+                        // a fila de provider tem tela própria, então o operador
+                        // segue para ela com a operação pré-selecionada.
+                        <Link href={`/provider-operations?id=${encodeURIComponent(item.id)}`}>
+                          Abrir operações de provider
+                        </Link>
                       ) : (
                         <span className="cc-muted">Tratar na fila de origem (deep link: {item.deepLink}).</span>
                       )}

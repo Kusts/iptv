@@ -347,6 +347,90 @@ export interface SubscriptionDetail extends SubscriptionRow {
   entitlements: { id: string; featureKey: string; status: string; startsAt: string; endsAt: string | null }[];
 }
 
+// ---------------------------------------------------------------------------
+// Operações de provider — tipos espelhados de GET /v1/provider/operations.
+// Espelham EXATAMENTE o allowlist sanitizado da API: nada de payload,
+// resultSummary, segredo, correlação, evidência ou trace chega ao cliente.
+// ---------------------------------------------------------------------------
+
+/** Estados do domínio de operação de provider (mesmo CHECK do banco). */
+export const PROVIDER_OPERATION_STATUSES = [
+  "REQUESTED",
+  "QUEUED",
+  "RUNNING",
+  "VERIFYING",
+  "RETRY_WAIT",
+  "HUMAN_REQUIRED",
+  "SUCCEEDED",
+  "FAILED",
+  "CANCELLED",
+] as const;
+
+/**
+ * Proveniência que indica um adapter REAL (secret-gated): só o dispatcher com
+ * readback conclusivo pode terminalizar essas linhas. `null`/desconhecido é
+ * tratado como não-sintético (fail-closed: a UI não oferece SUCCEEDED).
+ */
+export const SECRET_REQUIRED_ADAPTER_VERSION = "secret-required-v1";
+
+/** Synthetic (echo/manual) é a ÚNICA origem autorizada de SUCCEEDED manual. */
+export function isSyntheticProviderOperation(op: {
+  adapterVersion?: string | null;
+  executionChannel?: string | null;
+}): boolean {
+  const version = op.adapterVersion;
+  if (typeof version !== "string") return false;
+  const v = version.trim().toLowerCase();
+  if (v === SECRET_REQUIRED_ADAPTER_VERSION) return false;
+  return v.endsWith("-v1") && ["echo", "manual"].includes(v.slice(0, -3));
+}
+
+export interface ProviderOperationRow {
+  id: string;
+  providerAccountId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  status: string;
+  effectCertainty: string;
+  executionChannel: string | null;
+  adapterVersion: string | null;
+  requestedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** Contagem de tentativas (lista) — o detalhe traz as linhas. */
+  attempts: number;
+}
+
+export interface ProviderOperationAttempt {
+  attemptNo: number;
+  status: string;
+  errorCode: string | null;
+  startedAt: string;
+}
+
+export interface ProviderOperationDetail extends Omit<ProviderOperationRow, "attempts"> {
+  attempts: ProviderOperationAttempt[];
+}
+
+export interface ListProviderOperationsResponse {
+  operations: ProviderOperationRow[];
+  limit: number;
+  offset: number;
+}
+
+export type ProviderResolveOutcome = "SUCCEEDED" | "FAILED" | "UNKNOWN";
+
+/** Query da fila: status opcional + paginação (a API limita `limit` a 50). */
+export function providerOperationsQuery(filter: { status?: string; limit?: number; offset?: number }): string {
+  const params = new URLSearchParams();
+  if (filter.status !== undefined && filter.status.length > 0) params.set("status", filter.status);
+  if (filter.limit !== undefined) params.set("limit", String(filter.limit));
+  if (filter.offset !== undefined && filter.offset > 0) params.set("offset", String(filter.offset));
+  const qs = params.toString();
+  return `/v1/provider/operations${qs.length > 0 ? `?${qs}` : ""}`;
+}
+
 export interface OrderRow {
   id: string;
   person_id?: string;
@@ -440,6 +524,7 @@ export interface TicketDetail {
  */
 export const PROVIDER_OPERATION_SOURCE = "provider_operation" as const;
 export const PROVIDER_OPERATION_READ_PERMISSION = "provider.operation.read";
+export const PROVIDER_OPERATION_WRITE_PERMISSION = "provider.operation.write";
 export const CENTER_SOURCES = [
   "human_review",
   "comm_exception",

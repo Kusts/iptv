@@ -6,6 +6,7 @@ import {
   Inject,
   Param,
   Post,
+  Query,
   Req,
   UseGuards,
 } from "@nestjs/common";
@@ -40,6 +41,68 @@ function send<T>(result: CommandResult<T>): T {
     { code: result.code.toUpperCase(), message: result.message },
     commandResultHttpStatus(result),
   );
+}
+
+/**
+ * Allowlist única da superfície de leitura de operações de provider
+ * (lista e detalhe compartilham exatamente estas colunas, por construção).
+ * `requested_payload_json`, `result_summary_json`, `secret_ref`,
+ * `correlation_id`, `idempotency_key`, evidência do provider e
+ * `trace_ref` NUNCA são selecionadas nem expostas.
+ */
+const PROVIDER_OPERATION_SANITIZED_COLUMNS = [
+  "id",
+  "provider_account_id",
+  "action",
+  "entity_type",
+  "entity_id",
+  "status",
+  "effect_certainty",
+  "execution_channel",
+  "adapter_version",
+  "requested_at",
+  "started_at",
+  "completed_at",
+] as const;
+
+interface ProviderOperationSanitizedRow {
+  id: string;
+  provider_account_id: string;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  status: string;
+  effect_certainty: string;
+  execution_channel: string | null;
+  adapter_version: string | null;
+  requested_at: Date;
+  started_at: Date | null;
+  completed_at: Date | null;
+}
+
+/** Projeção sanitizada compartilhada por lista e detalhe (paridade exata). */
+function sanitizeProviderOperation(row: ProviderOperationSanitizedRow) {
+  return {
+    id: row.id,
+    providerAccountId: row.provider_account_id,
+    action: row.action,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    status: row.status,
+    effectCertainty: row.effect_certainty,
+    executionChannel: row.execution_channel,
+    adapterVersion: row.adapter_version,
+    requestedAt: row.requested_at.toISOString(),
+    startedAt: row.started_at?.toISOString() ?? null,
+    completedAt: row.completed_at?.toISOString() ?? null,
+  };
+}
+
+/** Paginação da fila: default 20, teto 50 (toda linha é sanitizada). */
+function pagination(query: { limit?: string; offset?: string }): { limit: number; offset: number } {
+  const limit = Math.min(Math.max(Number(query.limit ?? 20) || 20, 1), 50);
+  const offset = Math.max(Number(query.offset ?? 0) || 0, 0);
+  return { limit, offset };
 }
 
 function idempotencyKeyOf(req: FastifyRequest): string | undefined {
@@ -109,6 +172,67 @@ export class ProviderController {
     return send(result);
   }
 
+  /**
+   * Fila autoritativa de operações de provider do tenant corrente
+   * (`provider.operation.read`). Mesmo allowlist e mesma disciplina de
+   * sanitização do detalhe: nada de payload, resumo, segredo, correlação,
+   * evidência ou trace. `tenant_id` vem do contexto autenticado, nunca de
+   * input. `requested_at DESC, id DESC` dá ordem estável entre operações
+   * com o mesmo timestamp.
+   */
+  @Get("operations")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("provider.operation.read")
+  async list(
+    @Query() query: { limit?: string; offset?: string; status?: string },
+    @Req() req: FastifyRequest,
+  ) {
+    const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
+    const db = this.requireDb();
+    const { limit, offset } = pagination(query);
+    let select = db
+      .selectFrom("provider.provider_operations")
+      .select([...PROVIDER_OPERATION_SANITIZED_COLUMNS])
+      .where("tenant_id", "=", tenant.id)
+      .orderBy("requested_at", "desc")
+      .orderBy("id", "desc")
+      .limit(limit)
+      .offset(offset);
+    // Filtro opcional por status exato do domínio; valor desconhecido não é
+    // normalizado — devolve lista vazia em vez de ampliar o filtro.
+    if (typeof query.status === "string" && query.status.length > 0) {
+      select = select.where("status", "=", query.status);
+    }
+    const rows = await select.execute();
+    // Contagem de tentativas da página, tenant-scoped: apenas o número, sem
+    // as linhas de tentativa (o detalhe entrega as attempts sanitizadas).
+    const counts = new Map<string, number>();
+    if (rows.length > 0) {
+      const counted = await db
+        .selectFrom("provider.provider_operation_attempts")
+        .select(["provider_operation_id", (eb) => eb.fn.countAll<number>().as("attempts")])
+        .where("tenant_id", "=", tenant.id)
+        .where(
+          "provider_operation_id",
+          "in",
+          rows.map((r) => r.id),
+        )
+        .groupBy("provider_operation_id")
+        .execute();
+      for (const c of counted) {
+        counts.set(c.provider_operation_id, Number(c.attempts));
+      }
+    }
+    return {
+      operations: rows.map((row) => ({
+        ...sanitizeProviderOperation(row),
+        attempts: counts.get(row.id) ?? 0,
+      })),
+      limit,
+      offset,
+    };
+  }
+
   @Get("operations/:id")
   @UseGuards(AuthGuard, PermissionsGuard)
   @RequirePermission("provider.operation.read")
@@ -117,20 +241,7 @@ export class ProviderController {
     const db = this.requireDb();
     const row = await db
       .selectFrom("provider.provider_operations")
-      .select([
-        "id",
-        "provider_account_id",
-        "action",
-        "entity_type",
-        "entity_id",
-        "status",
-        "effect_certainty",
-        "execution_channel",
-        "adapter_version",
-        "requested_at",
-        "started_at",
-        "completed_at",
-      ])
+      .select([...PROVIDER_OPERATION_SANITIZED_COLUMNS])
       .where("tenant_id", "=", tenant.id)
       .where("id", "=", id)
       .executeTakeFirst();
@@ -145,18 +256,7 @@ export class ProviderController {
       .orderBy("attempt_no", "asc")
       .execute();
     return {
-      id: row.id,
-      providerAccountId: row.provider_account_id,
-      action: row.action,
-      entityType: row.entity_type,
-      entityId: row.entity_id,
-      status: row.status,
-      effectCertainty: row.effect_certainty,
-      executionChannel: row.execution_channel,
-      adapterVersion: row.adapter_version,
-      requestedAt: row.requested_at.toISOString(),
-      startedAt: row.started_at?.toISOString() ?? null,
-      completedAt: row.completed_at?.toISOString() ?? null,
+      ...sanitizeProviderOperation(row),
       attempts: attempts.map((a) => ({
         attemptNo: Number(a.attempt_no),
         status: a.status,

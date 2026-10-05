@@ -918,7 +918,7 @@ paths:
                 $ref: '#/components/schemas/Order'
         '409':
           $ref: '#/components/responses/TenantContextConflict'
-  /v1/provider-operations:
+  /v1/provider/operations:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
     post:
@@ -935,15 +935,51 @@ paths:
             schema:
               $ref: '#/components/schemas/CreateProviderOperationRequest'
       responses:
-        '202':
-          description: Provider operation queued or accepted
+        '201':
+          description: Provider operation accepted (created inline, parked, or queued for the durable dispatcher)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProviderOperation'
+                $ref: '#/components/schemas/ProviderOperationRequestResult'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    get:
+      tags:
+      - Provider Operations
+      operationId: listProviderOperations
+      summary: List provider operations of the caller's own tenant (sanitized projection)
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ProviderOperationStatus'
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Provider operations ordered by requestedAt descending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListProviderOperationsResponse'
         '409':
           $ref: '#/components/responses/TenantContextConflict'
-  /v1/provider-operations/{providerOperationId}:
+  /v1/provider/operations/{providerOperationId}:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
     get:
@@ -955,15 +991,74 @@ paths:
       - $ref: '#/components/parameters/CorrelationId'
       responses:
         '200':
-          description: Provider operation
+          description: Provider operation (sanitized projection, plus its attempts)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProviderOperation'
+                $ref: '#/components/schemas/ProviderOperationDetail'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/TenantContextConflict'
+  /v1/provider/operations/{providerOperationId}/resolve:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Provider Operations
+      operationId: resolveProviderOperation
+      summary: Human provider-operator decision on an operation
+      description: >
+        Terminal resolution of a provider operation. UNKNOWN parks the operation in
+        VERIFYING for readback (never a blind retry). A secret-required operation
+        (persisted `secret-required-v1` provenance) is REFUSED for both SUCCEEDED
+        and FAILED with 409 PRECONDITION_FAILED: only a conclusive readback by the
+        durable dispatcher may terminalize it. Synthetic adapters (echo/manual)
+        keep the historical manual resolution.
+      parameters:
+      - $ref: '#/components/parameters/ProviderOperationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveProviderOperationRequest'
+      responses:
+        '201':
+          description: Operation resolved or parked in VERIFYING
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResolveProviderOperationResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/provider/operations/{providerOperationId}/reconcile:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Provider Operations
+      operationId: reconcileProviderOperation
+      summary: Verify an uncertain operation through readback (never re-executes)
+      parameters:
+      - $ref: '#/components/parameters/ProviderOperationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201':
+          description: Reconciliation applied or scheduled for the durable dispatcher
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReconcileProviderOperationResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /v1/support/tickets:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -5016,48 +5111,93 @@ components:
     CreateProviderOperationRequest:
       type: object
       required:
-      - providerAccountId
       - action
       - entityType
       - entityId
+      - idempotencyKey
       properties:
         providerAccountId:
           type: string
           format: uuid
+          description: Optional provider account; the tenant placeholder account is resolved when absent
         action:
           type: string
-          enum:
-          - CREATE_TRIAL
-          - CREATE_CUSTOMER
-          - RENEW_CUSTOMER
-          - TRUST_RENEWAL
-          - BLOCK_CUSTOMER
-          - UNBLOCK_CUSTOMER
-          - SYNC_CUSTOMER
-          - MIGRATE_SERVER
-          - CHANGE_CONNECTIONS
-          - GET_STATUS
+          minLength: 1
+          maxLength: 120
+          description: Free-form provider action key (e.g. trial.provision, subscription.provision, custom.ping)
         entityType:
           type: string
+          minLength: 1
+          maxLength: 64
         entityId:
           type: string
           format: uuid
-        input:
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+        payload:
           type: object
           additionalProperties: true
+          description: >
+            Allowlisted operational payload. Secret-like keys and reference-like values are
+            rejected (never stripped) before any row is written; the stored projection is
+            never exposed by the read endpoints.
+        adapter:
+          type: string
+          enum:
+          - echo
+          - manual
+          description: Synthetic adapter override (echo/manual only; secret-required adapters are selected by configuration)
+        echoOutcome:
+          type: string
+          enum:
+          - success
+          - failed
+          - unknown
+          description: Echo adapter outcome override for local/dev flows
+    ProviderOperationStatus:
+      type: string
+      description: Provider operation status (mirrors provider_operations_status_check)
+      enum:
+      - REQUESTED
+      - QUEUED
+      - RUNNING
+      - VERIFYING
+      - RETRY_WAIT
+      - HUMAN_REQUIRED
+      - SUCCEEDED
+      - FAILED
+      - CANCELLED
     ProviderOperation:
       type: object
+      description: >
+        Sanitized provider operation projection. Identical allowlist for the list and the
+        detail endpoints: requestedPayload, resultSummary, secret refs, correlationId,
+        idempotencyKey, provider evidence and trace refs are never returned.
       required:
       - id
+      - providerAccountId
       - action
+      - entityType
+      - entityId
       - status
+      - effectCertainty
       - requestedAt
       properties:
         id:
           type: string
           format: uuid
+        providerAccountId:
+          type: string
+          format: uuid
         action:
           type: string
+        entityType:
+          type: string
+        entityId:
+          type: string
+          format: uuid
         status:
           type: string
           enum:
@@ -5070,18 +5210,180 @@ components:
           - SUCCEEDED
           - FAILED
           - CANCELLED
+        effectCertainty:
+          type: string
+          description: Orthogonal effect certainty of the provider-side effect
+          enum:
+          - UNKNOWN
+          - KNOWN_APPLIED
+          - KNOWN_NOT_APPLIED
+        executionChannel:
+          type:
+          - string
+          - 'null'
+          enum:
+          - API
+          - BROWSER
+          - MANUAL
+          - 'null'
+        adapterVersion:
+          type:
+          - string
+          - 'null'
+          description: Persisted adapter provenance; secret-required-v1 identifies a real (secret-gated) adapter
         requestedAt:
           type: string
+          format: date-time
+        startedAt:
+          type:
+          - string
+          - 'null'
           format: date-time
         completedAt:
           type:
           - string
           - 'null'
           format: date-time
+        attempts:
+          type: integer
+          description: Number of recorded attempts of this operation
+          minimum: 0
+    ProviderOperationAttempt:
+      type: object
+      required:
+      - attemptNo
+      - status
+      - startedAt
+      properties:
+        attemptNo:
+          type: integer
+          minimum: 1
+        status:
+          type: string
         errorCode:
           type:
           - string
           - 'null'
+          description: Fixed outcome code only; free-form adapter errors are never persisted nor returned
+        startedAt:
+          type: string
+          format: date-time
+    ProviderOperationDetail:
+      description: Sanitized provider operation with its sanitized attempt log (same allowlist as the list projection).
+      allOf:
+      - $ref: '#/components/schemas/ProviderOperation'
+      - type: object
+        required:
+        - attempts
+        properties:
+          attempts:
+            type: array
+            items:
+              $ref: '#/components/schemas/ProviderOperationAttempt'
+    ListProviderOperationsResponse:
+      type: object
+      required:
+      - operations
+      - limit
+      - offset
+      properties:
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderOperation'
+        limit:
+          type: integer
+          description: Applied page size (default 20, maximum 50)
+        offset:
+          type: integer
+          description: Applied page offset
+    ProviderOperationRequestResult:
+      type: object
+      required:
+      - id
+      - status
+      - effectCertainty
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        effectCertainty:
+          type: string
+          enum:
+          - UNKNOWN
+          - KNOWN_APPLIED
+          - KNOWN_NOT_APPLIED
+    ResolveProviderOperationRequest:
+      type: object
+      required:
+      - outcome
+      properties:
+        outcome:
+          type: string
+          enum:
+          - SUCCEEDED
+          - FAILED
+          - UNKNOWN
+          description: >
+            UNKNOWN parks the operation in VERIFYING for readback. SUCCEEDED/FAILED are
+            refused for secret-required operations (409).
+        note:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Operator note recorded with the decision (never free-form provider evidence)
+    ResolveProviderOperationResponse:
+      type: object
+      required:
+      - id
+      - status
+      - effectCertainty
+      - resumedTrial
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        effectCertainty:
+          type: string
+          enum:
+          - UNKNOWN
+          - KNOWN_APPLIED
+          - KNOWN_NOT_APPLIED
+        resumedTrial:
+          type: boolean
+    ReconcileProviderOperationResponse:
+      type: object
+      required:
+      - id
+      - status
+      - effectCertainty
+      - effectApplied
+      - resumedTrial
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        effectCertainty:
+          type: string
+          enum:
+          - UNKNOWN
+          - KNOWN_APPLIED
+          - KNOWN_NOT_APPLIED
+        effectApplied:
+          type: boolean
+        resumedTrial:
+          type: boolean
+        reconciliation:
+          type: string
+          enum:
+          - scheduled
+          description: Present when the real readback was handed to the durable dispatcher (no writes yet)
     CreateSupportTicketRequest:
       type: object
       required:

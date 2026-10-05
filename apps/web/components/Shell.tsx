@@ -16,6 +16,7 @@ const NAV = [
   { href: "/support", label: "Suporte" },
   { href: "/conhecimento", label: "Conhecimento" },
   { href: "/hitl", label: "Centro HITL" },
+  { href: "/provider-operations", label: "Operações de Provider" },
   { href: "/copilot", label: "Copilot" },
 ];
 

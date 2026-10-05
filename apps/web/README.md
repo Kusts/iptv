@@ -42,6 +42,7 @@ esta lista.
 | `/support` | Suporte (tickets) | `GET /v1/tickets`, `/v1/tickets/my-work`, `/v1/tickets/:id`, `resolve` |
 | `/conhecimento` | Conhecimento (filas de itens) | `GET /v1/knowledge/items`, `/corrections`, `/gaps`, `freshness/refresh`, `verify`/`apply`/`reject`/`close` |
 | `/hitl` | Centro HITL | `GET /v1/human-reviews/center[?source=]`, `POST /v1/human-reviews/:id/claim` + decisão |
+| `/provider-operations` | Operações de Provider (fila + detalhe sanitizado, reconciliação e resolução) | `GET /v1/provider/operations[?status=&limit=&offset=]`, `GET /v1/provider/operations/:id`, `POST .../reconcile`, `POST .../resolve` |
 | `/copilot` | Copilot | `POST /v1/agent/copilot/ask`, `/execute`, contexto via `lib/api.ts` |
 
 `app/layout.tsx` monta `AuthProvider` + `ToastProvider`; `app/lib.ts` e

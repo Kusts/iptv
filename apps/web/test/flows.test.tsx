@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { AuthProvider, useAuth } from "../lib/auth";
@@ -12,6 +12,7 @@ import { clearApiCache, useApi } from "../lib/useApi";
 import { LoginForm } from "../components/LoginForm";
 import { ConversationsPanel } from "../components/ConversationsPanel";
 import { HitlCenter } from "../components/HitlCenter";
+import { ProviderOperations } from "../components/ProviderOperations";
 import { NeedsAttention } from "../components/NeedsAttention";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -4243,8 +4244,10 @@ describe("origem provider_operation condicionada a provider.operation.read", () 
     await waitFor(() =>
       expect(urls.some((u) => u.includes("/v1/human-reviews/center?source=provider_operation"))).toBe(true),
     );
-    // Deep link do endpoint IMPLEMENTADO de leitura da operação.
-    expect(screen.getByText(/deep link: \/v1\/provider\/operations\/op-1/)).toBeTruthy();
+    // Deep link técnico (/v1) não é navegável: a UI leva o operador para a
+    // fila própria com a operação pré-selecionada.
+    const filaLink = screen.getByRole("link", { name: "Abrir operações de provider" });
+    expect(filaLink.getAttribute("href")).toBe("/provider-operations?id=op-1");
     // Read-model only: sem controles de claim/aprovar/rejeitar na origem.
     expect(screen.queryByRole("button", { name: "Assumir" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Aprovar" })).toBeNull();
@@ -4475,5 +4478,260 @@ describe("Tenant Copilot (widget)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copilot" }));
     expect(screen.getByText("Pergunte sobre esta tela")).toBeTruthy();
     expect(screen.queryByText(/Você está em \//)).toBeNull();
+  });
+});
+
+describe("Operações de provider (fila + detalhe sanitizado)", () => {
+  const SECRET_ROW = {
+    id: "11111111-1111-4111-8111-111111111111",
+    providerAccountId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    action: "trial.provision",
+    entityType: "trial",
+    entityId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    status: "VERIFYING",
+    effectCertainty: "UNKNOWN",
+    executionChannel: "MANUAL",
+    adapterVersion: "secret-required-v1",
+    requestedAt: "2026-03-01T10:00:00.000Z",
+    startedAt: "2026-03-01T10:00:05.000Z",
+    completedAt: null,
+    attempts: 2,
+  };
+  const SYNTHETIC_ROW = {
+    ...SECRET_ROW,
+    id: "22222222-2222-4222-8222-222222222222",
+    action: "custom.ping",
+    status: "HUMAN_REQUIRED",
+    adapterVersion: "manual-v1",
+    requestedAt: "2026-03-02T10:00:00.000Z",
+    attempts: 1,
+  };
+  const LIST = { operations: [SECRET_ROW, SYNTHETIC_ROW], limit: 20, offset: 0 };
+
+  function detailOf(row: { id: string }) {
+    return {
+      ...row,
+      attempts:
+        row.id === SECRET_ROW.id
+          ? [
+              { attemptNo: 1, status: "STARTED", errorCode: null, startedAt: "2026-03-01T10:00:05.000Z" },
+              { attemptNo: 2, status: "VERIFYING", errorCode: "PROVIDER_CALL_UNCERTAIN", startedAt: "2026-03-01T10:00:07.000Z" },
+            ]
+          : [{ attemptNo: 1, status: "HUMAN_REQUIRED", errorCode: null, startedAt: "2026-03-02T10:00:05.000Z" }],
+    };
+  }
+
+  function sessionBody(): Record<string, unknown> {
+    return {
+      user: { id: "u1", email: "op@tenant.com", displayName: null },
+      activeTenantId: "t1",
+      memberships: [{ tenantId: "t1", tenantSlug: "t1", tenantName: "Tenant 1", roleKey: "owner", status: "ACTIVE" }],
+    };
+  }
+
+  function meBody(permissions: string[]): Record<string, unknown> {
+    return { user: { id: "u1", email: "op@tenant.com" }, activeTenant: { id: "t1" }, roleKeys: [], permissions };
+  }
+
+  function stubProviderApi(permissions: string[]): { calls: string[] } {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push(`${init?.method ?? "GET"} ${url}`);
+        if (url.endsWith("/v1/auth/session")) return jsonResponse(200, sessionBody());
+        if (url.endsWith("/v1/me")) return jsonResponse(200, meBody(permissions));
+        if (url.includes("/v1/provider/operations/") && url.includes("/reconcile")) return jsonResponse(201, { status: "VERIFYING" });
+        if (url.includes("/v1/provider/operations/") && url.includes("/resolve")) {
+          return jsonResponse(201, { status: "VERIFYING", effectCertainty: "UNKNOWN", resumedTrial: false });
+        }
+        if (url.includes("/v1/provider/operations/")) {
+          // Roteia pelo id da URL: Detalhe[1] é a linha sintética e precisa
+          // receber o próprio detalhe, não o da linha secret-required.
+          const parts = url.split("/v1/provider/operations/");
+          const id = parts[1]?.split(/[/?]/)[0] ?? "";
+          return jsonResponse(200, detailOf(id === SYNTHETIC_ROW.id ? SYNTHETIC_ROW : SECRET_ROW));
+        }
+        if (url.includes("/v1/provider/operations")) return jsonResponse(200, LIST);
+        return jsonResponse(404, { code: "NOT_FOUND" });
+      }),
+    );
+    return { calls };
+  }
+
+  function renderPanel(): void {
+    render(
+      <AuthProvider>
+        <ToastProvider>
+          <ProviderOperations />
+        </ToastProvider>
+      </AuthProvider>,
+    );
+  }
+
+  it("lista e detalhe renderizam só os campos sanitizados, sem payload nem segredo", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    stubProviderApi(["provider.operation.read", "provider.operation.write"]);
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText("trial.provision")).toBeTruthy());
+    // Status/certeza também aparecem como opções do filtro de status; use
+    // getAllByText para afirmar presença sem colidir com essas opções.
+    expect(screen.getAllByText("VERIFYING").length).toBeGreaterThan(0);
+    expect(screen.getByText("custom.ping")).toBeTruthy();
+    expect(screen.getAllByText("HUMAN_REQUIRED").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("UNKNOWN").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Detalhe" })[0]!);
+    await waitFor(() => expect(screen.getByText(SECRET_ROW.id)).toBeTruthy());
+    // Campos sanitizados do detalhe.
+    expect(screen.getByText("secret-required-v1")).toBeTruthy();
+    expect(screen.getByText("PROVIDER_CALL_UNCERTAIN")).toBeTruthy();
+    expect(screen.getByText(/Evidência disponível via reconciliação/)).toBeTruthy();
+    // Nunca há payload, resumo, segredo, correlação ou evidência no DOM.
+    const rendered = document.body.textContent ?? "";
+    expect(rendered).not.toMatch(/payload|resultSummary|secret_ref|secretRef|correlationId|infisical|trace/i);
+  });
+
+  it("resolver só oferece SUCCEEDED em adapter sintético e explica o readback obrigatório", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    stubProviderApi(["provider.operation.read", "provider.operation.write"]);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText("trial.provision")).toBeTruthy());
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Detalhe" })[0]!);
+    await waitFor(() => expect(screen.getByText(SECRET_ROW.id)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Resolver" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("SUCCEEDED exige readback conclusivo pelo dispatcher.");
+    // As opções vivem no select do dialog; fora dele o filtro de status tem
+    // opções de mesmo nome (SUCCEEDED/FAILED/...).
+    expect(within(dialog).queryByRole("option", { name: "SUCCEEDED" })).toBeNull();
+    expect(within(dialog).getByRole("option", { name: "FAILED" })).toBeTruthy();
+    expect(within(dialog).getByRole("option", { name: "UNKNOWN" })).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Fechar" }));
+
+    // Adapter sintético (manual-v1) mantém a resolução manual completa.
+    fireEvent.click(screen.getAllByRole("button", { name: "Detalhe" })[1]!);
+    await waitFor(() => expect(screen.getByText(SYNTHETIC_ROW.id)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Resolver" }));
+    const syntheticDialog = await screen.findByRole("dialog");
+    expect(within(syntheticDialog).getByRole("option", { name: "SUCCEEDED" })).toBeTruthy();
+  });
+
+  it("reconciliação e resolução chamam a API e avisam o operador", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    const { calls } = stubProviderApi(["provider.operation.read", "provider.operation.write"]);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText("trial.provision")).toBeTruthy());
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Detalhe" })[0]!);
+    await waitFor(() => expect(screen.getByText(SECRET_ROW.id)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Solicitar reconciliação" }));
+    await waitFor(() => expect(screen.getByText("Reconciliação solicitada.")).toBeTruthy());
+    expect(calls.some((c) => c.includes("POST") && c.includes("/reconcile"))).toBe(true);
+
+    // O reload pós-ação desmonta o painel (skeleton); espere o botão voltar.
+    fireEvent.click(await screen.findByRole("button", { name: "Resolver" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("combobox"), { target: { value: "UNKNOWN" } });
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "aguardando readback" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirmar resolução" }));
+    await waitFor(() => expect(screen.getByText(/Operação mantida em verificação/)).toBeTruthy());
+    expect(calls.some((c) => c.includes("POST") && c.includes("/resolve"))).toBe(true);
+  });
+
+  it("sem provider.operation.write as ações somem; sem leitura a tela é negada", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    const { calls } = stubProviderApi(["provider.operation.read"]);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText("trial.provision")).toBeTruthy());
+    fireEvent.click(screen.getAllByRole("button", { name: "Detalhe" })[0]!);
+    await waitFor(() => expect(screen.getByText(SECRET_ROW.id)).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Resolver" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Solicitar reconciliação" })).toBeNull();
+    expect(screen.getByText(/provider\.operation\.write/)).toBeTruthy();
+
+    clearApiCache();
+    const denied = stubProviderApi([]);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText(/Sem permissão para operações de provider/)).toBeTruthy());
+    expect(denied.calls.some((c) => c.includes("/v1/provider/operations"))).toBe(false);
+  });
+
+  it("filtro de status vai para a API com o status escolhido", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    const { calls } = stubProviderApi(["provider.operation.read"]);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText("trial.provision")).toBeTruthy());
+    fireEvent.change(screen.getByLabelText("Status:"), { target: { value: "VERIFYING" } });
+    await waitFor(() => expect(calls.some((c) => c.includes("/v1/provider/operations?status=VERIFYING"))).toBe(true));
+  });
+});
+
+describe("deep link de provider_operation no Centro HITL", () => {
+  it("leva para /provider-operations?id=<id> e mantém texto simples nas outras origens", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.endsWith("/v1/auth/session")) {
+          return jsonResponse(200, {
+            user: { id: "u1", email: "op@tenant.com", displayName: null },
+            activeTenantId: "t1",
+            memberships: [{ tenantId: "t1", tenantSlug: "t1", tenantName: "Tenant 1", roleKey: "owner", status: "ACTIVE" }],
+          });
+        }
+        if (url.endsWith("/v1/me")) {
+          return jsonResponse(200, {
+            user: { id: "u1", email: "op@tenant.com" },
+            activeTenant: { id: "t1" },
+            roleKeys: [],
+            permissions: ["provider.operation.read"],
+          });
+        }
+        if (url.includes("/v1/human-reviews/center")) {
+          return jsonResponse(200, {
+            items: [
+              {
+                source: "provider_operation",
+                id: "33333333-3333-4333-8333-333333333333",
+                kind: "provider_operation/trial.provision",
+                summary: "operação de provedor aguardando decisão",
+                priority: null,
+                ageMinutes: 30,
+                sla: "WARN",
+                deepLink: "/v1/provider/operations/33333333-3333-4333-8333-333333333333",
+                createdAt: new Date().toISOString(),
+              },
+              {
+                source: "billing_exception",
+                id: "b7",
+                kind: "CHARGE/failed",
+                summary: "cobrança com falha",
+                priority: null,
+                ageMinutes: 90,
+                sla: "OK",
+                deepLink: "/v1/billing/b7",
+                createdAt: new Date().toISOString(),
+              },
+            ],
+            slaPolicy: { warnAfterHours: 4, breachAfterHours: 24, ref: "default-v1" },
+          });
+        }
+        return jsonResponse(404, { code: "NOT_FOUND" });
+      }),
+    );
+    render(
+      <AuthProvider>
+        <HitlCenter />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("operação de provedor aguardando decisão")).toBeTruthy());
+    const link = screen.getByRole("link", { name: "Abrir operações de provider" });
+    expect(link.getAttribute("href")).toBe("/provider-operations?id=33333333-3333-4333-8333-333333333333");
+    // deepLink cru da API nunca vira href; as outras origens seguem em texto.
+    expect(screen.getByText(/Tratar na fila de origem/)).toBeTruthy();
+    expect(screen.queryByText("/v1/provider/operations/33333333-3333-4333-8333-333333333333")).toBeNull();
   });
 });
