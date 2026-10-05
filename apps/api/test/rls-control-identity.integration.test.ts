@@ -119,20 +119,37 @@ describe.skipIf(!hasDb)("RLS enrollment on control + identity (requires TEST_DAT
   });
 
   it("enforces hybrid global+own isolation on control.feature_flags", async () => {
-    const [state] = await sql<{ rowsecurity: boolean; qual: string | null; with_check: string | null }>`
-      SELECT c.relrowsecurity AS rowsecurity, p.qual, p.with_check
+    // Migration 048 split the single all-command policy (047) into per-command
+    // policies: a global row must be READABLE but never claimable via UPDATE
+    // nor deletable by the app role.
+    const policies = await sql<{ policyname: string; cmd: string; qual: string | null; with_check: string | null }>`
+      SELECT p.policyname, p.cmd, p.qual, p.with_check
       FROM pg_class c
       JOIN pg_namespace n ON n.oid = c.relnamespace
       JOIN pg_policies p ON p.schemaname = n.nspname AND p.tablename = c.relname
-      WHERE n.nspname = 'control' AND c.relname = 'feature_flags' AND p.policyname = 'tenant_isolation'
+      WHERE n.nspname = 'control' AND c.relname = 'feature_flags'
+      ORDER BY p.policyname
     `.execute(db).then((r) => r.rows);
-    expect(state?.rowsecurity).toBe(true);
-    // Reads allow GLOBAL (NULL tenant) + own; writes may only claim own.
-    // Postgres normalizes the stored expression with parentheses.
-    expect(state?.qual ?? "").toMatch(/\(tenant_id IS NULL\) OR \(tenant_id =/);
-    expect(state?.qual ?? "").toMatch(/current_setting\('app\.tenant_id'/);
-    expect(state?.with_check ?? "").not.toMatch(/IS NULL/);
-    expect(state?.with_check ?? "").toMatch(/tenant_id = \(NULLIF\(current_setting\('app\.tenant_id'/);
+    const byName = new Map(policies.map((p) => [p.policyname, p]));
+    // Postgres normalizes the stored expressions with parentheses/uppercase.
+    const ownOnly = /\(tenant_id = \(NULLIF\(current_setting\('app\.tenant_id'/;
+    const selectPolicy = byName.get("feature_flags_select");
+    expect(selectPolicy?.cmd).toBe("SELECT");
+    expect(selectPolicy?.qual ?? "").toMatch(/\(tenant_id IS NULL\) OR \(tenant_id =/);
+    expect(selectPolicy?.with_check).toBeNull();
+    const insertPolicy = byName.get("feature_flags_insert");
+    expect(insertPolicy?.cmd).toBe("INSERT");
+    expect(insertPolicy?.qual).toBeNull();
+    expect(insertPolicy?.with_check ?? "").toMatch(ownOnly);
+    expect(insertPolicy?.with_check ?? "").not.toMatch(/IS NULL/);
+    const updatePolicy = byName.get("feature_flags_update");
+    expect(updatePolicy?.cmd).toBe("UPDATE");
+    expect(updatePolicy?.qual ?? "").toMatch(ownOnly);
+    expect(updatePolicy?.with_check ?? "").toMatch(ownOnly);
+    const deletePolicy = byName.get("feature_flags_delete");
+    expect(deletePolicy?.cmd).toBe("DELETE");
+    expect(deletePolicy?.qual ?? "").toMatch(ownOnly);
+    expect(deletePolicy?.with_check).toBeNull();
 
     const tenantA = await makeTenant();
     const tenantB = await makeTenant();
@@ -195,6 +212,32 @@ describe.skipIf(!hasDb)("RLS enrollment on control + identity (requires TEST_DAT
       [globalKey, false],
       ["rls-ci.own-fixture", true],
     ]);
+
+    // 048 regression (behavioral): a global row can be neither claimed via
+    // UPDATE nor deleted by the app role; own-tenant UPDATE still works.
+    await withTenantTransaction(db, tenantA, async (trx) => {
+      await sql`SET LOCAL ROLE iptv_app`.execute(trx);
+      const claimed = await trx
+        .updateTable("control.feature_flags")
+        .set({ tenant_id: tenantA })
+        .where("flag_key", "=", globalKey)
+        .where("tenant_id", "is", null)
+        .executeTakeFirst();
+      expect(Number(claimed?.numUpdatedRows ?? 0)).toBe(0);
+      const deleted = await trx
+        .deleteFrom("control.feature_flags")
+        .where("flag_key", "=", globalKey)
+        .where("tenant_id", "is", null)
+        .executeTakeFirst();
+      expect(Number(deleted?.numDeletedRows ?? 0)).toBe(0);
+      const ownUpdate = await trx
+        .updateTable("control.feature_flags")
+        .set({ enabled: false })
+        .where("flag_key", "=", "rls-ci.own-fixture")
+        .where("tenant_id", "=", tenantA)
+        .executeTakeFirst();
+      expect(Number(ownUpdate?.numUpdatedRows ?? 0)).toBe(1);
+    });
   });
 
   it("isolates identity.persons per tenant for iptv_app and fails closed without context", async () => {
