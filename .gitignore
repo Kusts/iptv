@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# Placeholder-only staging template (committed; no real values ever).
+!deploy/staging/.env.staging.example
 *.pem
 *.key
 *.p12
@@ -10,9 +12,14 @@ id_*
 
 # Local-dev PgBouncer auth (password hashes for disposable test roles only)
 deploy/pgbouncer/userlist.txt
+# Staging PgBouncer auth (same rule, staging file name)
+deploy/pgbouncer/userlist.staging.txt
 
 # Application builds and dependencies
 node_modules/
+
+# Local backup/restore drill artifacts (dumps + manifests never leave the host)
+artifacts/
 .next/
 out/
 dist/

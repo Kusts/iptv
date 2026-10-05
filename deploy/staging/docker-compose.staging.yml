@@ -1,0 +1,195 @@
+# Staging deployment (single host, containerized).
+#
+# Conventions mirror deploy/infisical/docker-compose.infisical.yml: images are
+# digest-pinned, every long-running service is `restart: unless-stopped` with a
+# healthcheck, ordering is expressed through `depends_on` conditions, and
+# exposure is minimal (everything binds to 127.0.0.1; a reverse proxy /
+# tunnel terminates public TLS outside this file).
+#
+# Secrets: NONE live here. Values come from `.env.staging` (env_file, gitignored
+# — copy `deploy/staging/.env.staging.example`) and from Infisical `infisical://`
+# refs resolved at runtime (ADR-0014). Never add a literal credential here.
+#
+# Deploy order (enforced by depends_on, do not reorder by hand):
+#   postgres (healthy) → migrate (one-shot, exit 0) → api (ready) → web
+#   browser-worker is opt-in (`--profile worker`) and runs on demand.
+#
+#   docker compose -f deploy/staging/docker-compose.staging.yml build
+#   docker compose -f deploy/staging/docker-compose.staging.yml up -d
+#
+# Runbook: docs/10-operations/runbooks/staging-deploy.md
+services:
+  postgres:
+    # Digest pinned (observed 2026-10-05); refresh with
+    # `docker buildx imagetools inspect postgres:17-alpine`.
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    container_name: iptv-staging-postgres
+    restart: unless-stopped
+    environment:
+      # Local placeholders only: the real credentials come from .env.staging
+      # (POSTGRES_* are read by the postgres entrypoint itself).
+      POSTGRES_DB: ${POSTGRES_DB:-iptv}
+      POSTGRES_USER: ${POSTGRES_USER:-iptv_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Internal by default: no published port. Uncomment only for psql access
+    # from the host, bound to loopback.
+    # ports:
+    #   - "127.0.0.1:5433:5432"
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # One-shot migration job. MUST complete (exit 0) before the API starts.
+  # DATABASE_URL below is the OWNER connection string, always: migrations need
+  # DDL rights and must not go through the application role or a pooler. NEVER
+  # point this at APP_DATABASE_URL (see the rls-role-split-cutover runbook);
+  # the CLI additionally refuses to run as `iptv_app`.
+  # There is intentionally NO restart policy here: a failed migration must stop
+  # the rollout, not retry silently against a half-migrated schema.
+  migrate:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    image: iptv-staging-migrate:local
+    container_name: iptv-staging-migrate
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Owner credentials, injected from .env.staging (never from APP_*).
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL (owner) is required}
+      MIGRATIONS_DIR: /app/db/migrations
+    networks:
+      - internal
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    image: iptv-staging-api:local
+    container_name: iptv-staging-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env.staging
+    environment:
+      # LOG_LEVEL has NO default on purpose: the Fastify logger stays disabled
+      # when it is unset, and a silent container is undebuggable. Set it in
+      # .env.staging (info for staging).
+      LOG_LEVEL: ${LOG_LEVEL:?LOG_LEVEL is required}
+    ports:
+      - "127.0.0.1:3001:3001"
+    networks:
+      - internal
+    # Non-swarm resource ceilings (plain compose, not `deploy.resources`).
+    mem_limit: 768m
+    cpus: 1.0
+    healthcheck:
+      # Readiness (not liveness): it proves the database answers too. The
+      # image already declares this HEALTHCHECK; repeating it here keeps the
+      # probe visible next to the resource limits.
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/v1/health/ready').then(function(r){if(!r.ok)process.exit(1)}).catch(function(){process.exit(1)})\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+      # NEXT_PUBLIC_* is inlined at BUILD time: rebuilding the image is the
+      # only way to change the browser-visible API URL.
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-}
+    image: iptv-staging-web:local
+    container_name: iptv-staging-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - internal
+    mem_limit: 512m
+    cpus: 0.5
+
+  # Operator smoke CLI, NOT a service: opt-in profile, run on demand, exits.
+  #   docker compose -f deploy/staging/docker-compose.staging.yml \
+  #     --profile worker run --rm browser-worker read-credit-balance
+  #
+  # LIMITATIONS (honest, do not paper over them): the image ships no browser
+  # binary (no `playwright install`), and headed Chromium needs a display. The
+  # provider-drift/challenge detection was certified against a desktop
+  # browser, so headless Chromium in a container is a NEW, uncertified
+  # execution environment. Treat this image as reproducible packaging and a
+  # reviewed container boundary, not as the certified runtime path — see
+  # apps/browser-worker/Dockerfile and docs/10-operations/runbooks/browser-drift-challenge.md.
+  browser-worker:
+    build:
+      context: ../..
+      dockerfile: apps/browser-worker/Dockerfile
+    image: iptv-staging-browser-worker:local
+    profiles: ["worker"]
+    restart: "no"
+    # Same file as the API: the BROWSER_WORKER_* / BROWSER_INFISICAL_* keys stay
+    # commented out there until a worker run is actually authorized, and they are
+    # read by the WORKER process only (never by the API container).
+    env_file:
+      - .env.staging
+    environment:
+      # Profile dir lives on the volume below so it can be inspected between
+      # runs; it is per-binding state and must never be committed.
+      BROWSER_WORKER_PROFILE_ROOT: /app/profile
+    volumes:
+      - worker_profile:/app/profile
+    networks:
+      - internal
+
+  # Transaction pooler, mirroring the dev docker-compose.yml service: opt-in
+  # profile only, never on the default path. Migrations and owner traffic stay
+  # DIRECT; only `iptv_app` DML may be pooled, and only after the step 4
+  # certification recorded in rls-role-split-cutover.md.
+  # Requires deploy/pgbouncer/pgbouncer.ini + a LOCAL userlist (gitignored,
+  # scram-sha-256 + plaintext dev-only entries — see that runbook).
+  #   docker compose -f deploy/staging/docker-compose.staging.yml \
+  #     --profile pooling up -d pgbouncer
+  pgbouncer:
+    image: edoburu/pgbouncer@sha256:4c1ca296ef525f108f5d3552cc337c0c09587cf8dae7f0067fd93349e47dc1cd
+    container_name: iptv-staging-pgbouncer
+    profiles: ["pooling"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ../pgbouncer/userlist.staging.txt:/etc/pgbouncer/userlist.txt:ro
+    # Loopback only; uncomment to reach it from the host (127.0.0.1:6432).
+    # ports:
+    #   - "127.0.0.1:6432:6432"
+    networks:
+      - internal
+
+networks:
+  # Single internal bridge. Nothing is published except the loopback-bound
+  # api/web ports above, so a compromised container cannot be reached from
+  # outside the host. Put a reverse proxy / tunnel in front for public traffic.
+  internal:
+    driver: bridge
+
+volumes:
+  pgdata:
+  worker_profile:

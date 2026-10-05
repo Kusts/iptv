@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
+  "bin": {
+    "iptv-migrate": "./dist/bin/iptv-migrate.js"
+  },
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
