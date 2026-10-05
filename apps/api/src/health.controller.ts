@@ -19,18 +19,24 @@ export interface ReadinessBody {
   checks: { database: "ok" | "error" };
 }
 
-/**
- * In-flight readiness probe (module scope: one per process). Concurrent
- * requests share the same database check; the slot frees when it settles.
- */
-let readinessProbe: Promise<ReadinessBody> | null = null;
-
 @Controller("v1")
 export class HealthController {
   constructor(
     @Optional() @Inject(SchedulerService) private readonly scheduler?: SchedulerService | null,
     @Optional() @Inject("DB") private readonly db?: Kysely<Database> | null,
   ) {}
+
+  /**
+   * In-flight readiness database probe. Tracks the RAW database call — not
+   * the HTTP-bounded answer: `Promise.race` settles the endpoint's response
+   * after `READINESS_PROBE_TIMEOUT_MS`, but a wedged driver call keeps
+   * occupying pool work. Releasing the slot only when the raw call settles
+   * makes repeated public probes SHARE one outstanding operation instead of
+   * piling a new pending query every tick. The controller is a Nest
+   * singleton, so the instance field is process-wide in production.
+   * Pool-level acquisition/query timeouts remain the structural follow-up.
+   */
+  private inFlightDbProbe: Promise<boolean> | null = null;
 
   @Get("health")
   health(
@@ -65,28 +71,9 @@ export class HealthController {
    * blip must NOT make the container look dead and get it restarted. This
    * endpoint answers `503` while the database is unreachable, which keeps the
    * container running but out of the load balancer until it recovers.
-   *
-   * Single-flight: concurrent probes share ONE in-flight database check.
-   * The probe is public, so unthrottled callers must not multiply database
-   * work while the database is degraded (the `Promise.race` timeout below
-   * bounds the HTTP answer, but a wedged driver call itself can linger in
-   * the pool until it resolves).
    */
   @Get("health/ready")
-  ready(): Promise<ReadinessBody> {
-    if (readinessProbe === null) {
-      readinessProbe = this.probeDatabase().finally(() => {
-        readinessProbe = null;
-      });
-    }
-    return readinessProbe;
-  }
-
-  /**
-   * One bounded `SELECT 1`; throws 503 with a fixed body when unreachable.
-   * All probes that share the in-flight promise share this outcome.
-   */
-  private async probeDatabase(): Promise<ReadinessBody> {
+  async ready(): Promise<ReadinessBody> {
     if (!(await this.databaseReachable())) {
       // Fixed reason only — a driver message can carry host/user/database
       // details that have no business in a public response body.
@@ -95,29 +82,41 @@ export class HealthController {
     return { status: "ok", checks: { database: "ok" } };
   }
 
-  /** `SELECT 1` against the API pool, bounded by `READINESS_PROBE_TIMEOUT_MS`. */
+  /**
+   * Bounded `SELECT 1` against the API pool, deduplicated through the
+   * raw-call slot: the HTTP answer times out at `READINESS_PROBE_TIMEOUT_MS`,
+   * but the slot frees only when the underlying query settles.
+   */
   private async databaseReachable(): Promise<boolean> {
+    if (this.inFlightDbProbe !== null) return this.inFlightDbProbe;
     const db = this.db;
     if (db === undefined || db === null) {
       // No connection string configured (or none resolvable): the API cannot
       // serve traffic, so it is not ready.
       return false;
     }
+    const raw = db.executeQuery(sql`select 1`.compile(db));
     let timer: NodeJS.Timeout | undefined;
-    try {
-      const timeout = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error("readiness probe timeout")),
-          READINESS_PROBE_TIMEOUT_MS,
-        );
+    const attempt = Promise.race([
+      raw.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), READINESS_PROBE_TIMEOUT_MS);
+      }),
+    ])
+      .catch(() => false)
+      .finally(() => {
+        // Always cleared: a pending timer would keep the event loop alive.
+        if (timer !== undefined) clearTimeout(timer);
       });
-      await Promise.race([db.executeQuery(sql`select 1`.compile(db)), timeout]);
-      return true;
-    } catch {
-      return false;
-    } finally {
-      // Always cleared: a pending timer would keep the event loop alive.
-      if (timer !== undefined) clearTimeout(timer);
-    }
+    this.inFlightDbProbe = attempt;
+    // Slot lifecycle follows the RAW call: while it is still outstanding
+    // (e.g. a wedged pool), later probes await this same shared attempt
+    // instead of starting new database work.
+    void raw
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.inFlightDbProbe === attempt) this.inFlightDbProbe = null;
+      });
+    return attempt;
   }
 }

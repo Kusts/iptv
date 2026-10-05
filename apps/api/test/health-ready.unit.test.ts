@@ -82,6 +82,37 @@ describe("GET /v1/health/ready (unit)", () => {
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(READINESS_PROBE_TIMEOUT_MS - 50);
   }, READINESS_PROBE_TIMEOUT_MS + 5000);
 
+  it("does not start a second database operation while a wedged probe is outstanding", async () => {
+    // Reviewer regression (readiness slot lifecycle): the raw `SELECT 1` is
+    // still pending when the HTTP answer times out. A probe issued after the
+    // timeout must SHARE the outstanding operation instead of starting a new
+    // one — otherwise unauthenticated probes pile pool work on a wedged DB.
+    let calls = 0;
+    const wedged = kyselyWithExecute(() => {
+      calls += 1;
+      return new Promise(() => {});
+    });
+    const controller = new HealthController(null, wedged);
+    await controller.ready().catch(() => undefined); // times out -> 503
+    expect(calls).toBe(1);
+    await controller.ready().catch(() => undefined); // shares the pending slot
+    expect(calls).toBe(1);
+  }, READINESS_PROBE_TIMEOUT_MS * 3 + 5000);
+
+  it("starts a fresh probe only after the previous raw call settled", async () => {
+    // After the raw call settles (here: rejects immediately), the slot frees
+    // and the next probe performs a new database operation.
+    let calls = 0;
+    const flapping = kyselyWithExecute(() => {
+      calls += 1;
+      return Promise.reject(new Error("connect ECONNREFUSED"));
+    });
+    const controller = new HealthController(null, flapping);
+    await controller.ready().catch(() => undefined);
+    await controller.ready().catch(() => undefined);
+    expect(calls).toBe(2);
+  });
+
   it("treats an unconfigured database (null DB) as not ready", async () => {
     for (const controller of [new HealthController(null, null), new HealthController(null, undefined)]) {
       const err = await controller.ready().catch((e: unknown) => e);
