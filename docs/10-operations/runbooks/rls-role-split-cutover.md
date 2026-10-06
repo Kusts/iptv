@@ -33,9 +33,67 @@
 `applyMigrations` already takes any connection string — pass the owner URL.
 `resolveAppConnectionString` (`apps/api/src/app.module.ts`) selects the API
 pool string with precedence `APP_DATABASE_URL` → `DATABASE_URL` →
-`TEST_DATABASE_URL`, so cutover = set `APP_DATABASE_URL` + restart, no code
-change. Migrations/DDL MUST keep using `DATABASE_URL` (owner, direct, never
+`TEST_DATABASE_URL` outside production, so a local/pre-cutover setup keeps
+working unchanged; cutover = set `APP_DATABASE_URL` + restart, no code change.
+Migrations/DDL MUST keep using `DATABASE_URL` (owner, direct, never
 pooled) — never point the migration job at `APP_DATABASE_URL`.
+
+> **Boot guard (engineering only, NOT the cutover).** With
+> `NODE_ENV=production` the API process now *requires* `APP_DATABASE_URL` with
+> **no fallback** to `DATABASE_URL`/`TEST_DATABASE_URL`, and it must be a
+> `postgres://`/`postgresql://` URI whose authority username is **exactly
+> `iptv_app`**, with **no `user=`, `role=`, `options=` or `host=`/`port=`/
+> `database=`/`db=`/`dbname=` query parameter** and **no repeated parameter**
+> (`pg://` is accepted alongside `postgres://`/`postgresql://`; query keys must be
+> canonical lowercase because the driver consumes lowercase parameters; TLS
+> settings must not be ambiguous — `ssl=false` is refused because the installed
+> parser leaves it truthy, libpq-compat `verify-ca` needs a non-blank
+> `sslrootcert` parameter while `verify-full` does not, `ssl`/`sslmode` together or
+> `sslnegotiation=direct` with TLS explicitly disabled are refused — while TLS
+> itself is not mandated)
+> Explicit TLS disable (`ssl=0` or `sslmode=disable`) is also refused with
+> nonblank `sslcert`, `sslkey` or `sslrootcert`: certificate options can
+> override `ssl=0`, while the `sslmode=disable` combination remains conflicting
+> and may trigger certificate-file handling.
+> (`user` is the driver identity override; `options` is forwarded to server
+> startup and could request a role change, e.g. `-c role=owner` — whether that
+> succeeds depends on server-side role membership/privileges, which this guard
+> does **not** verify; `role` is denied **by policy**, with no claim about
+> current driver behavior; the target keys would override the target the URI
+> already states). The URI must also state its **target explicitly** — non-empty
+> host and database name — so the driver cannot fall back to ambient
+> `PGHOST`/`PGDATABASE`. The value must also contain no ASCII control
+> characters — tab/LF/CR
+> are stripped by URL parsing and could smuggle a different connection string.
+> The URI username, password, hostname, raw query string and database path must
+> additionally have
+> well-formed percent escapes and must not decode to an ASCII control character
+> (`URLSearchParams` turns `%00`/`%09` into real control characters), URI
+> fragments are forbidden (any literal `#`, including a bare trailing one; an
+> encoded `%23` inside a component stays ordinary data), and
+> `sslnegotiation` must be exactly `postgres` or `direct`. `PGAPPNAME` is allowed
+> but refused when it contains an ASCII control character.
+> The guard also
+> refuses a
+> non-blank `DATABASE_URL`, `DATABASE_OWNER_URL`, `TEST_DATABASE_URL`,
+> `POSTGRES_PASSWORD`, `PGPASSWORD` or `PGOPTIONS` in the API env (`PGOPTIONS`
+> feeds the same driver startup options from outside the URI), plus the
+> driver-consumed target/transport variables `PGHOST`, `PGPORT`, `PGDATABASE`,
+> `PGUSER`, `PGSSLMODE`, `PGSSLNEGOTIATION` — for those, only an empty string
+> counts as absent.
+> `loadConfig` and the pool
+> factory `resolveAppConnectionString` share one implementation
+> (`apps/api/README.md` → "Production configuration fail-fast").
+>
+> This is a fail-closed *precondition* on the **configured** identity only: it
+> changes no grants, policies, migrations or pool mode, does not make the app
+> role RLS-enforced, and does not unblock any checklist item below. It never
+> queries the server, so it does **not** prove the connected role's effective
+> privileges — `iptv_app` could still be a superuser, own tables, hold
+> `BYPASSRLS`/`CREATEROLE` or belong to an owner role. Verifying that is a
+> separate, server-side step. A production API whose env is not yet cut over
+> will now refuse to start — that is intended; do not "fix" it by re-adding
+> `DATABASE_URL` to the API env.
 
 Local cutover rehearsal (disposable DB, never production):
 
@@ -117,9 +175,15 @@ rollout time (migration + SQL test + service switch, same shape as 043/009).
 Switching the app to `iptv_app` before the context plumbing + grants for a
 table ship means fail-closed reads (0 rows = total outage on that table) or
 `permission denied` writes. Switching without step 4 (pooler cert) risks
-tenant-context leak across pooled connections. Either failure reverts by
-pointing the app back at the owner string — record which revision runs where
-before flipping.
+tenant-context leak across pooled connections. The production boot guard in
+this branch deliberately removes the former owner fallback: do not roll back
+to a production API build that uses `DATABASE_URL` as its runtime pool, and do
+not restore owner credentials to the API environment. A production rollback is
+valid only to a previously validated release that also uses `APP_DATABASE_URL`
+with the restricted role and is schema-compatible. If no such release exists,
+hold the deployment before cutover or fail closed and forward-fix; do not bypass
+the guard to regain availability. Record the exact revision and connection role
+for every attempted deployment.
 
 ## Steps 3–4 execution log (2026-09-29, database-engineer MVP-RLS-03)
 
@@ -240,3 +304,199 @@ and the `withTenantTransaction` app-role isolation test on the 042 surface.
   enrolled domains under the `SET LOCAL`-per-transaction discipline.
 - Session left stopped (`docker compose --profile pooling stop pgbouncer`);
   disposable DBs retained for re-verification (contain only test fixtures).
+
+---
+
+# Platform/outbox worker RLS — ACCEPTED DESIGN DIRECTION
+
+> **STATUS: ACCEPTED DESIGN DIRECTION — NOT IMPLEMENTED, NOT CERTIFIED.**
+> No migration, role, function, policy or worker process exists for this
+> decision. Everything below is design recorded for the implementation to follow
+> and prove; none of it has been executed, rehearsed or certified, and none of it
+> advances the cutover checklist above. It is not a separate ADR file because
+> this runbook is the chosen durable record for RLS role-split decisions.
+
+## Scope
+
+Only the **outbox publisher** (`platform.outbox_messages` → transport). See
+"Not in scope" for what this explicitly does **not** solve.
+
+## Current state in code (2026-10-06, read from the repository)
+
+`apps/api/src/outbox/outbox-drainer.ts` + `apps/api/src/scheduler/scheduler.service.ts`:
+
+- The drainer injects `"DB"` — the **API pool**, the same connection the command
+  bus uses. The scheduler calls `this.outbox.drain(25)` in-process, last in the
+  tick.
+- Claim is **global and cross-tenant**: `WHERE state IN ('PENDING','FAILED') AND
+  next_attempt_at <= now() ORDER BY created_at ASC LIMIT <n> FOR UPDATE SKIP
+  LOCKED` — no `tenant_id` predicate and no tenant context set.
+- Inside the claim transaction it commits `state = 'PUBLISHING'`,
+  `attempt_count = attempt_count + 1`, `last_error_code = NULL`.
+- Publish happens **outside** the claim transaction, then a separate
+  `WHERE id = $1` update sets `PUBLISHED` (+ `published_at`) or `FAILED` (+
+  `last_error_code`, `next_attempt_at = now() + 60s`).
+- **There is no lease and no token/CAS fencing**: the completing UPDATE matches
+  on `id` alone, so nothing stops a stale writer from overwriting a newer
+  attempt's outcome.
+- The table (`db/migrations/202609201530_001_platform.sql`) has
+  `state IN ('PENDING','PUBLISHING','PUBLISHED','FAILED')`, `attempt_count`,
+  `next_attempt_at`, `published_at`, `last_error_code`, and **no** lease-expiry
+  or claim-owner column. Consequence today: a worker that dies mid-drain leaves
+  rows in `PUBLISHING`, which the claim query never selects again — those rows
+  are stuck permanently. A real worker design must fix that, not just restrict
+  the role.
+- `platform` is **not** an RLS-enrolled domain (only `crm` + `communication` are;
+  see the checklist above), so the outbox table has no policy for `iptv_app`
+  today, and no existing policy could express "one worker may see every tenant".
+
+## Options considered
+
+| Option | Shape | Verdict |
+| --- | --- | --- |
+| **A** | Narrow `SECURITY DEFINER` lifecycle functions in the existing schema, called by the API pool | **Rejected** — the API process is the thing being isolated, so this keeps its cross-tenant reach and makes the API role a de-facto worker executor. |
+| **B** | Dedicated worker process + role with **direct table grants** (or `BYPASSRLS`) | **Rejected** — a broad grant set or `BYPASSRLS` re-creates the hole the cutover is closing, and grants drift. |
+| **C** | Dedicated worker process + dedicated `LOGIN` role that owns nothing and holds **only `EXECUTE`** on four narrow static functions | **ACCEPTED** (the hybrid below). |
+
+### Why an API DI pool is not isolation
+
+Swapping the `DB` provider for a differently-configured pool inside the same API
+process changes *when/how* connections are created, not *who* they authenticate
+as. Same process, same code, same credentials → the same blast radius. Isolation
+here is a **credential and privilege boundary**, which means a separate process
+with its own `LOGIN` role.
+
+### Why claim-only (a variant of A) fails
+
+A claim-only function still leaves completion and failure as cross-tenant writes:
+after publishing, the worker must set `PUBLISHED`/`FAILED` on a row belonging to
+another tenant. Those updates need the same reach, so claim-only buys nothing —
+it either reopens the hole on the completing UPDATE, or yields a worker that can
+claim rows it cannot finish.
+
+### Why broad worker DML / `BYPASSRLS` is rejected
+
+Direct table grants must be enumerated and re-audited on every migration, and
+`BYPASSRLS` makes the worker's RLS posture permanently invisible to review. Both
+leave the worker able to read/write tenant rows outside the publish path.
+
+### Why per-tenant claim is deferred
+
+A per-tenant claim needs a tenant inventory/discovery query and re-opens
+fairness fan-out (which tenant is served when the queue is contended). That is a
+real design question and it is **deferred**, not dismissed: the implementation
+must measure it before adopting it.
+
+## Accepted design direction
+
+- **Separate worker process.** Not the API process, not the API pool. The
+  scheduler's existing `outbox.drain` call is expected to be removed once the
+  worker exists — while both run they would double-publish.
+- **Two roles.** A `LOGIN` role for the worker, and a `NOLOGIN NOINHERIT
+  NOBYPASSRLS` **function-executor** role that owns the functions.
+- **The worker gets `EXECUTE` only** on four narrow, static functions: claim,
+  renew (heartbeat), complete (published), fail (failed/retry). **No direct table
+  grants, no sequence grants, no `BYPASSRLS`.**
+- **`REVOKE ALL … FROM PUBLIC`** on each function (and schema-level `USAGE`
+  revocation as needed), so only the worker role can execute them.
+- **The API cannot call these functions** — no `EXECUTE` for `iptv_app`, asserted
+  by a proof test.
+- **Fixed safe `search_path`** on every function (schema-qualified, no
+  `pg_temp`/`public` shadowing), **static SQL only**, and a bounded `LIMIT`
+  inside claim using `FOR UPDATE SKIP LOCKED`.
+- **Table-scoped RLS policy for the executor role only.** Because the executor is
+  deliberately `NOBYPASSRLS`, the outbox table needs a policy restricted to that
+  role (`FOR ALL TO <executor>`). The worker is cross-tenant by design, so the
+  policy's scope is exactly this one table and is not a pattern for other domains.
+- **Server-generated lease + token + CAS fencing.** Claim returns a
+  server-generated claim token and `lease_expires_at`; renew extends only while
+  the token matches; complete/fail update `WHERE id = $1 AND claim_token = $2`, so
+  a stale or resurrected worker cannot overwrite a newer attempt.
+- **Append-only audit.** Every claim/renew/complete/fail is recorded, and the audit
+  table is insert-only for the executor role.
+- **At-least-once, explicitly not exactly-once.** A lease expiry means a row may
+  be published twice — a paused sender can resume after its lease was reclaimed
+  and re-published — so consumers must stay idempotent (the inbox already is).
+  What the database *does* fence is the recorded outcome (a stale token cannot
+  overwrite a newer attempt). Exactly-once delivery is **not** claimed and is not
+  achievable here; fencing the external publish itself would require
+  transport-side idempotency.
+
+## Indexes
+
+`outbox_pending_idx` (`next_attempt_at, created_at` WHERE `state IN
+('PENDING','FAILED')`, migration 001) is **preserved unchanged**: the accepted
+claim is still global, so the global partial index remains correct. A lease-expiry
+index (e.g. on `lease_expires_at`, for reclaiming expired `PUBLISHING` rows) is
+**measured and added during implementation** — its necessity and shape must be
+confirmed against real volumes before it is created, not assumed here.
+
+## Not in scope — explicitly unsolved
+
+This decision does **not** cover, and must not be read as covering:
+
+- **`platform.inbox_messages`** (inbound dedupe) — needs its own decision.
+- **The scheduler's tenant-scoped due-command loops** — needs its own decision.
+- **The provider dispatcher** (`provider-dispatcher.service.ts`, leased ops) —
+  needs its own decision.
+- **A full worker inventory.** Before any worker is built, every component that
+  writes outside a tenant transaction must be inventoried; this record covers one
+  component only.
+
+## Acceptance criteria (all required before this is called done)
+
+1. The worker connects as its own `LOGIN` role; a `current_user` proof test shows
+   it is neither table owner nor `BYPASSRLS`.
+2. Privilege-inventory proof test: the worker role holds `EXECUTE` on exactly the
+   four functions and **zero** table/sequence privileges.
+3. Proof test: `iptv_app` receives "permission denied" for every function.
+4. Proof test: `PUBLIC` cannot execute any of them.
+5. Stale-writer proof test: a worker holding an expired token cannot complete or
+   fail a row claimed by another worker (CAS rejects).
+6. Crash proof test: a killed worker leaves rows reclaimable after lease expiry —
+   no permanently stuck `PUBLISHING` rows.
+7. Claim-disjointness proof test: two workers never hold **current** claims on the
+   same row at the same time (disjoint `SKIP LOCKED` claims, one live lease per
+   row). This is the correct claim-level guarantee — it is deliberately **not**
+   phrased as "never publish the same message twice": because leases expire, a
+   paused or slow sender can resume and publish after its lease has already been
+   reclaimed and re-published by another worker. **Duplicate or overlapping
+   external publish across a lease expiry is permitted and expected**
+   (at-least-once). The database-side fencing that *is* guaranteed is that the
+   stale sender cannot record its outcome over the newer attempt (criterion 5).
+   If absolute external-publish fencing is ever required, that is
+   **transport-side** work (idempotency keys the receiver honours, or a
+   transactional outbox at the consumer) and is out of scope here.
+8. Tenant-scope proof test: the worker cannot read tenant tables it was never
+   granted, and the audit trail records every state transition.
+9. At-least-once behaviour documented for consumers, with idempotency asserted.
+
+## Rollback
+
+- Disable the worker process and re-enable the previous drain path (API-side
+  drain) — the only supported rollback, and only while the API still has that
+  capability. Once the API's cross-tenant reach is removed, rollback is
+  **forward-fix only**: fix the worker, do not re-grant the API.
+- Drop the functions/policies/grants in a new append-only migration; never edit
+  or remove migration 001.
+- Any new column/index is additive and stays in place on rollback — it is
+  harmless and needed for a later retry.
+
+## Revocation / rotation
+
+- Revoke and re-grant `EXECUTE` to the worker role without restarting the
+  database; the worker must fail closed on its next call.
+- Rotate the worker role's password via `ALTER ROLE`; the worker must reload
+  credentials without abandoning claimed rows (leases cover that gap).
+- Suspected credential compromise: revoke `EXECUTE` immediately, let leases
+  expire, then re-grant to a fresh role. No row state is repaired by hand — the
+  reclaim path handles it.
+
+## SQL proof tests (planned, not written)
+
+To be added under `db/tests/` during implementation, following the existing
+`0NN` numbering: worker-role privilege inventory, `PUBLIC` revocation,
+API-cannot-execute, stale-token CAS rejection, lease-expiry reclaim,
+concurrent-claim disjointness (current claims only — duplicate external publish
+across a lease expiry is permitted, at-least-once), executor RLS scoping, and
+audit append-only enforcement.

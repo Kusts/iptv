@@ -10,13 +10,16 @@ import { registerObservabilityHook } from "./observability-hook.js";
 import { SchedulerService } from "./scheduler/scheduler.service.js";
 
 async function bootstrap(): Promise<void> {
-  // W1-12 observability first (fail-safe: a throw here never breaks boot).
+  // Production fail-fast FIRST, before any optional subsystem is initialized:
+  // an invalid env (e.g. a production API with no APP_DATABASE_URL) must abort
+  // the boot instead of a half-started process with telemetry attached.
+  const config = loadConfig();
+  // W1-12 observability second (fail-safe: a throw here never breaks boot).
   try {
     await initObservability();
   } catch {
     // Noop path — boot proceeds without telemetry.
   }
-  const config = loadConfig();
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     createFastifyAdapter(config.LOG_LEVEL),
