@@ -1,7 +1,11 @@
 # Runbook — Staging Deploy (Containerized, Migrate Job First)
 
-> Status: Implemented as a reproducible compose profile; the images are NOT yet
-> proven by a real `docker build` in CI — see "Known assumptions". The contract
+> Status: Reproducible compose profile; images proven by a real `docker build`
+> + full stack proof on 2026-10-06 (branch `Kusts/closure-round-p0-rls-cutover`,
+> PR #6 — api/web built, postgres → migrate 49/49 on empty DB → api as
+> `iptv_app` + web, health/ready, restart, backup → destroy → restore →
+> migrate no-op 0/49 → smoke; see execution log below). Scheduling/offsite/
+> PITR remain operator work — see "Known assumptions". The contract
 > it enforces (migrations run only through the `migrate` job, with owner
 > credentials, before the API starts) is the part that matters most and is
 > covered by tests.
@@ -41,10 +45,16 @@ Deploy order is expressed in `depends_on` and must not be reordered by hand:
 5. Infisical reachable from the host and from the containers when
    `INFISICAL_*` is filled: without it the secrets adapter stays noop and every
    `infisical://` ref fails closed (ADR-0014, `packages/secrets/README.md`).
-6. `APP_DATABASE_URL` stays commented until the RLS cutover checklist is
-   complete. Pointing the app at `iptv_app` today means fail-closed reads on
-   every domain that is not enrolled yet — see
-   [RLS role split cutover](rls-role-split-cutover.md).
+6. `APP_DATABASE_URL` must be SET to a valid restricted `iptv_app` connection
+   (the fail-closed boot guard refuses to start the API without it when
+   `NODE_ENV=production` — there is no owner fallback). This is rehearsal,
+   NOT cutover: pointing the app at `iptv_app` today means fail-closed reads
+   on every domain that is not enrolled yet — see
+   [RLS role split cutover](rls-role-split-cutover.md). If the API container
+   crash-loops at boot, read its logs first (`... logs api`): with
+   `restart: unless-stopped` an invalid configuration restarts forever by
+   design — fix the env, then `up -d --force-recreate api`. Never "fix" it
+   by giving the API owner credentials.
 
 ## Build
 
@@ -84,10 +94,10 @@ docker compose --env-file deploy/staging/.env.staging `
 `run --rm migrate` prints one summary line and exits:
 
 ```text
-iptv-migrate: applied=46 skipped=0 total=46 dir=/app/db/migrations
+iptv-migrate: applied=49 skipped=0 total=49 dir=/app/db/migrations
 ```
 
-`applied=0 skipped=46` on a re-deploy is the expected idempotent no-op. Running
+`applied=0 skipped=49` on a re-deploy is the expected idempotent no-op. Running
 the same `up -d` again without a code change is therefore safe.
 
 Rules that are not negotiable:
@@ -96,6 +106,12 @@ Rules that are not negotiable:
   connection string in `DATABASE_URL`. The CLI refuses to run as `iptv_app`
   before it opens a connection.
 - The API NEVER migrates on boot. There is no boot-migrate path.
+- The API NEVER receives the owner connection: `DATABASE_URL` and
+  `POSTGRES_PASSWORD` in `.env.staging` exist for interpolation + the migrate
+  job only; the compose file blanks them for the `api` service, and the
+  production boot guard fails the boot if they ever reach the API process
+  (proven 2026-10-06: first staging boot refused with `DATABASE_URL must NOT
+  be present in the API process`).
 - The migrate job has `restart: "no"` on purpose: a failed migration must stop
   the rollout, not retry against a half-migrated schema.
 
@@ -173,20 +189,20 @@ one.
   operator host (see [Browser drift challenge](browser-drift-challenge.md)) and
   treat this image as reproducible packaging plus a reviewed container boundary.
 
-## Known assumptions (first real `docker build` must confirm)
+## Known assumptions (confirmed by the first real `docker build` 2026-10-06)
 
 1. `pnpm install --prod --filter "@iptv/api..."` (and the worker equivalent) is
-   the smallest correct runtime install. Verified locally against the real
-   lockfile: 9 of 12 projects, no next/react/playwright. Not yet verified
-   inside the image.
+   the smallest correct runtime install. CONFIRMED inside the image: the api
+   image built and booted cleanly 2026-10-06 (PR #6 staging proof).
 2. The Next.js standalone layout mirrors the monorepo root, so `server.js` is
    at `apps/web/server.js` in the runtime stage and hashed assets must be copied
-   to `apps/web/.next/static`. Confirm on the first web build; if Next emits a
-   different shape, fix the COPY paths.
+   to `apps/web/.next/static`. CONFIRMED: the web image built and serves 200
+   on `/` 2026-10-06.
 3. `NEXT_PUBLIC_API_BASE_URL` is inlined at build time — changing it requires a
    web image rebuild, not a restart.
 4. `corepack prepare pnpm@10.15.0 --activate` needs registry access at build
-   time and the matching corepack signature keys in the base image.
+   time and the matching corepack signature keys in the base image. CONFIRMED
+   implicitly: both images built 2026-10-06 with registry access.
 5. `apps/web/public` does not exist yet; when it appears, add the `public` COPY
    back to `apps/web/Dockerfile` (the comment in that file says which line).
 
