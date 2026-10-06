@@ -2,6 +2,7 @@
 
 ## Unreleased — Added
 
+- test(database): add SQL proof `db/tests/012_rls_update_delete_proofs.sql` for the already-enrolled `crm.customers` RLS policy: Tenant A/B own UPDATE, row-theft denial, `WITH CHECK` tenant migration denial, independent cross-tenant DELETE isolation, no-context fail-closed SELECT/INSERT, and owner visibility. Executed **PASS** on a freshly started PostgreSQL 17 test container using tmpfs/no persistent volume; `@iptv/database` applied all 46/46 current migrations and its tests passed 16/16 before the SQL proof. This adds no migration or domain enrollment, and does not claim full RLS/cutover readiness.
 - docs: record the follow-up CINEVISION read-only browser smoke: all 11 read-operation schema outcomes passed HTTP 200 across 8 underlying GET paths using the compiled `fetchProjectedInPage` and current parsers; this does not replace the CLI/profile identity-fencing/reauth E2E. The customer-create form was not opened, Step 3 probe remains unstarted, and no live write or certification promotion occurred.
 
 - docs: clarify CINEVISION version handling — `v3.94` is only an unverified candidate, Step 1 records but does not change the registered `v3.93` pin, and pin updates require explicit footer/bundle corroboration plus compatibility-record reconciliation in Fase 19. No gate or certification status changed.
