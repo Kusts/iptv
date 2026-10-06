@@ -90,7 +90,7 @@ Bash/WSL on Windows).
 |---|---|---|
 | Lint | `pnpm lint` | — |
 | Typecheck | `pnpm typecheck` | — |
-| Tests | `pnpm test` | `TEST_DATABASE_URL` pointing to a **disposable, EMPTY** database (integration tests apply all 46 migrations themselves via `applyMigrations`; turbo does **not** load `.env` — export the variable in the shell) |
+| Tests | `pnpm test` | `TEST_DATABASE_URL` pointing to a **disposable, EMPTY** database (integration tests apply all migrations themselves via `applyMigrations`; turbo does **not** load `.env` — export the variable in the shell) |
 | Build | `pnpm build` | — |
 | Docs gate | `python scripts/validate_docs.py` | PyYAML |
 | Contract gates | `python tests/contracts/test_contracts.py` · `python tests/contracts/test_seed_contract.py` | PyYAML |

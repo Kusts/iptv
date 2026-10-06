@@ -21,7 +21,7 @@ pnpm --filter @iptv/api test
 (`docker compose up -d postgres`).
 
 Tests need `TEST_DATABASE_URL` pointing at a **disposable, empty** database:
-integration files apply the 46 migrations themselves via `applyMigrations` in
+integration files apply all migrations themselves via `applyMigrations` in
 `beforeAll`. Without it, integration files skip and the unit tests (memory
 store, no network) still run. `vitest.config.ts` pins `maxWorkers: 1` and
 `testTimeout: 15000` because integration files share one database and assert

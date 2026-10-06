@@ -115,8 +115,10 @@ Status 2026-10-05: both engineering hardening items below are CLOSED (engineerin
   rows; explicit source 403s; authorized filter returns exactly the source;
   unknown 400) and web flow tests for the permission gate. Pure/API typecheck,
   API HITL unit tests and web flow tests passed on 2026-10-05; the PostgreSQL
-  API integration test was added but not executed because no verified
-  disposable EMPTY `TEST_DATABASE_URL` was available. This closes the
+API integration test was EXECUTED 2026-10-06 against a verified disposable
+EMPTY database (fresh database, all 48 migrations applied by the suite's own
+`applyMigrations`) and passed — full `@iptv/api` suite: 67 test files / 802
+tests, 0 failures, with all 35 integration files running (none skipped). This closes the
   surfacing gap only — it is NOT provider/live certification and the remaining
   live gates above are unchanged.
 

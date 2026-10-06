@@ -18,7 +18,7 @@ O registro autoritativo de entrega é o `CHANGELOG.md` (anexe toda entrega em
 - Subir aplicações: `pnpm dev` (web em :3000, API em :3001).
 - Para workers de vencimento (outbox/webhook/renewal drains) em dev:
   `API_SCHEDULER_ENABLED=1` no `.env`.
-- Seed de dados piloto: após aplicar TODAS as migrations (46), seguir
+- Seed de dados piloto: após aplicar TODAS as migrations, seguir
   `db/seeds/README.md`.
 - Checks, na ordem da CI (`.github/workflows/ci.yml`): `pnpm lint`,
   `pnpm typecheck`, `pnpm test`, `pnpm build` e os gates Python
@@ -26,7 +26,7 @@ O registro autoritativo de entrega é o `CHANGELOG.md` (anexe toda entrega em
   `python tests/contracts/test_contracts.py`,
   `python tests/contracts/test_seed_contract.py`).
 - `TEST_DATABASE_URL` deve apontar para um banco PostgreSQL **descartável e
-  VAZIO**: os testes de integração aplicam as 46 migrations eles mesmos via
+  VAZIO**: os testes de integração aplicam todas as migrations eles mesmos via
   `applyMigrations` no `beforeAll`. Turbo NÃO carrega o `.env` — exporte a
   variável no shell antes de `pnpm test`.
 - Runs com escopo: `pnpm --filter @iptv/<pkg> <script>` — o nome sempre tem o

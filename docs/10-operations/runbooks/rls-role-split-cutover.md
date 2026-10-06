@@ -279,16 +279,68 @@ executed against disposable databases only) + `db/tests/012` +
   (`auth.listMemberships`, `PermissionsGuard.findActiveMembership` run on the
   raw pool). They receive DML grants but are deliberately NOT RLS-enrolled;
   enrolling them today would fail-close every login (0 memberships → 403).
-  Unblock path (choose at their enrollment): a `043`-shaped
-  `SECURITY DEFINER` membership resolver, or moving the membership read
-  inside a tenant transaction. `db/tests/012` asserts this exception
-  explicitly so it cannot silently grow.
+  Unblock path DECIDED by the 2026-10-06 analysis (section below):
+  a `043`-shaped `SECURITY DEFINER` membership resolver pair; moving the read
+  inside a tenant transaction is infeasible for the true pre-context lookups
+  (login/`resolveSession` exist precisely to DISCOVER the tenant). 
+  `db/tests/012` asserts this exception explicitly so it cannot silently grow.
 - Safety rails added in the same round: `APP_DATABASE_URL` is now a validated
   config key (`packages/config`), and a production boot that resolves the API
   pool to the owner connection logs the `RLS BYPASSED` warning
   (`warnOnOwnerFallback` in `apps/api/src/app.module.ts`). The SQL proof
   suite (`db/tests/*.sql`) now runs in CI against a disposable database
   (`.github/workflows/ci.yml`).
+
+## Control membership resolver analysis (2026-10-06, read-only discovery)
+
+Question settled by code-path inventory: CAN `control.tenant_memberships` +
+`control.membership_roles` be RLS-enrolled without breaking the app?
+**Answer: yes — engineering-only, via the certified 043 pattern.** Findings
+(all with file:symbol evidence, read-only pass over the current tree):
+
+- **Pre-context `iptv_app` readers that would fail-close under own-tenant RLS:**
+  `packages/auth/src/auth.ts:listMemberships` (called by `login` and
+  `resolveSession` on the raw pool), `setActiveTenant`'s membership check
+  (tenant switch), `apps/api/src/auth/permissions.guard.ts` (`findActiveMembership`
+  + `listExtraRoleKeys` — every guarded request, before any
+  `withTenantTransaction`), and the membership INSERTs in
+  `packages/auth/src/auth.ts:register`, `apps/api/src/tenants/tenants.controller.ts:create`
+  and the partners tenant-provision block. In-context readers that keep
+  working untouched: `human-review/claim.commands.ts:handleClaim` and
+  `support-store.ts:membershipIsActive` (both inside
+  `withTenantTransaction`, tenant-filtered).
+- **Breakage order if enrolled naively (047 header claim verified, one
+  nuance):** login still returns 200 (credential/session tables are global)
+  but with `activeTenantId = null` → `GET /v1/tenants` empty → switch 403
+  `TENANT_FORBIDDEN` → every guarded route 403; the INSERT paths fail with
+  `42501` (`WITH CHECK` on NULL context).
+- **Outbox drain / scheduler / admin recover-reconcile do NOT read membership
+  tables** — they are unaffected by THIS enrollment. The cross-tenant drain
+  question belongs to the platform slice below, not here.
+- **Decision (engineering):** option (A) — SECURITY DEFINER resolvers.
+  `control.list_memberships_for_session(p_token_hash)` (join
+  `auth_sessions → tenant_memberships → tenants`, ACTIVE-only, session-bound)
+  and `control.check_membership_active(p_user_id, p_tenant_id)`; owner-held,
+  `SET search_path = control, pg_temp`, `REVOKE ALL FROM PUBLIC`, `EXECUTE`
+  to `iptv_app` only; then `ENABLE ROW LEVEL SECURITY` + plain
+  `tenant_isolation` on both tables; swap the three reader call sites and wrap
+  the three INSERT paths in `withTenantTransaction(<new tenant id>)` (context
+  equals the row being created, so `WITH CHECK` passes). Option (B) — setting
+  a tenant/user GUC earlier — was REJECTED: infeasible chicken-and-egg for the
+  login discovery path, larger blast radius, no repo precedent. Option (C) —
+  keeping the exception indefinitely — rejected as a permanent cross-tenant
+  read over-grant on the membership graph.
+- **Landing invariant:** migration `049` + `db/tests/013` (009-shaped:
+  secdef/pinned search_path/`EXECUTE iptv_app`-only/narrow body/ACTIVE-only/
+  unknown-or-expired token → 0 rows/per-session containment + enrolled-policy
+  isolation sample + login→switch→guarded rehearsal) + the `db/tests/012`
+  exception-block update + this runbook MUST land atomically in one commit —
+  012 hard-fails if the tables enroll without its exception block updated
+  (intended tripwire). Token-hash binding only: never raw tokens, never log
+  the hash; the `user_id`-parameterized resolver variant is rejected (would
+  allow membership enumeration by any app-role caller).
+- **Scope note:** this closes the control domain only. Global cutover remains
+  BLOCKED pending the platform/billing/finance rollouts below.
 
 ## Platform enrollment design decision (OPEN — blocks cutover with billing/finance)
 
