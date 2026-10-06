@@ -74,10 +74,11 @@ Get-Content -Raw "db\tests\007_rls_app_role_pilot.sql" `
 > tracks which domains are enrolled.
 
 Enrolled domains: `crm`, `communication` (041/042 + pre-context resolver 043);
-`control` + `identity` (047 — identity fully enrolled; `control` partially:
-global tables granted without RLS, `feature_flags` hybrid policy,
-`tenant_memberships`/`membership_roles` granted but NOT enrolled pending a
-pre-context resolver, see the 047 log below).
+`control` + `identity` (047/048 + membership resolvers + enrollment 049 —
+`identity` fully enrolled, `control.feature_flags` hybrid policy,
+`control.tenant_memberships`/`control.membership_roles` enrolled with the
+pre-context reads rerouted through `SECURITY DEFINER` resolvers; see the
+2026-10-06 enrollment log below).
 
 1. [DONE 2026-09-29] Per-domain policy + `GRANT` rollout beyond
    `crm.customers`: migration `042` enforces all 12 remaining tenant-scoped
@@ -280,7 +281,9 @@ executed against disposable databases only) + `db/tests/012` +
   raw pool). They receive DML grants but are deliberately NOT RLS-enrolled;
   enrolling them today would fail-close every login (0 memberships → 403).
   Unblock path DECIDED by the 2026-10-06 analysis (section below):
-  a `043`-shaped `SECURITY DEFINER` membership resolver pair; moving the read
+  a `043`-shaped `SECURITY DEFINER` membership resolver trio (superseded
+  wording — the 047-era text said "pair" before the guard role-resolution
+  function was added to the decision on 2026-10-06); moving the read
   inside a tenant transaction is infeasible for the true pre-context lookups
   (login/`resolveSession` exist precisely to DISCOVER the tenant). 
   `db/tests/012` asserts this exception explicitly so it cannot silently grow.
@@ -317,15 +320,23 @@ Question settled by code-path inventory: CAN `control.tenant_memberships` +
 - **Outbox drain / scheduler / admin recover-reconcile do NOT read membership
   tables** — they are unaffected by THIS enrollment. The cross-tenant drain
   question belongs to the platform slice below, not here.
-- **Decision (engineering):** option (A) — SECURITY DEFINER resolvers.
-  `control.list_memberships_for_session(p_token_hash)` (join
-  `auth_sessions → tenant_memberships → tenants`, ACTIVE-only, session-bound)
-  and `control.check_membership_active(p_user_id, p_tenant_id)`; owner-held,
-  `SET search_path = control, pg_temp`, `REVOKE ALL FROM PUBLIC`, `EXECUTE`
-  to `iptv_app` only; then `ENABLE ROW LEVEL SECURITY` + plain
-  `tenant_isolation` on both tables; swap the three reader call sites and wrap
-  the three INSERT paths in `withTenantTransaction(<new tenant id>)` (context
-  equals the row being created, so `WITH CHECK` passes). Option (B) — setting
+- **Decision (engineering):** option (A) — SECURITY DEFINER resolver trio
+  (session-bound listing + switch check + guard role-resolution in one round
+  trip). `control.list_memberships_for_session(p_token_hash)` (join
+  `auth_sessions → tenant_memberships → tenants`, ALL-statuses session-bound —
+  full parity with the pre-049 read),
+  `control.check_membership_active(p_user_id, p_tenant_id)` and
+  `control.resolve_membership_roles(p_user_id, p_tenant_id)` (one base-role +
+  extras-array row); owner-held, `SET search_path = control, pg_temp`,
+  `REVOKE ALL FROM PUBLIC`, `EXECUTE` to `iptv_app` only; then `ENABLE ROW
+  LEVEL SECURITY` + plain `tenant_isolation` on both tables; swap the three
+  reader call sites and wrap the three INSERT paths in
+  `withTenantTransaction(<new tenant id>)` (context equals the row being
+  created, so `WITH CHECK` passes). Two refinements landed during review:
+  user-ACTIVE gating on the user_id-keyed functions (closes the
+  suspended-user oracle at the DB layer), and the listing kept FULL-status
+  parity with the pre-049 read while switch/guard remain ACTIVE-only.
+  Option (B) — setting
   a tenant/user GUC earlier — was REJECTED: infeasible chicken-and-egg for the
   login discovery path, larger blast radius, no repo precedent. Option (C) —
   keeping the exception indefinitely — rejected as a permanent cross-tenant
@@ -341,6 +352,42 @@ Question settled by code-path inventory: CAN `control.tenant_memberships` +
   allow membership enumeration by any app-role caller).
 - **Scope note:** this closes the control domain only. Global cutover remains
   BLOCKED pending the platform/billing/finance rollouts below.
+
+## Control membership enrollment log (2026-10-06)
+
+Migration `049` (`db/migrations/202610060000_049_control_membership_resolvers.sql`)
+landed atomically with the resolver call-site swaps, SQL proof `db/tests/013`,
+the `db/tests/012` exception-block flip and this log — the atomic invariant
+from the analysis above, honored:
+
+- **Three `043`-shaped resolvers, owner-held, `SECURITY DEFINER`,
+  `search_path = control, pg_temp`, `EXECUTE` to `iptv_app` only:**
+  `control.list_memberships_for_session(text)` (login/`resolveSession`,
+  ALL-statuses session-bound parity with the pre-049 read — ACTIVE-filtering
+  happens at the login call site; unknown-or-expired token → 0 rows),
+  `control.check_membership_active(uuid, uuid)` (`setActiveTenant` switch
+  check) and `control.resolve_membership_roles(uuid, uuid)` (one
+  base-role + extras-array row feeding `PermissionsGuard` in a single round
+  trip, `MembershipLoader` contract preserved).
+- **Call-site swaps:** `login` creates the session first (null active tenant),
+  resolves memberships through the new session hash, then pins the first
+  ACTIVE tenant; `resolveSession` passes its token hash; `setActiveTenant`
+  and `PermissionsGuard` call their resolvers; the three membership INSERT
+  paths (`auth.register`, `POST /v1/tenants`, partners provision) acquire
+  tenant context equal to the row being created (partners pre-checks the slug before changing context and restores the source
+  context in a `finally`; a concurrent same-slug race past the pre-check rolls back and surfaces as a 5xx retry rather than the business `SLUG_TAKEN` — the raw `23505`→business-error mapping gap is pre-existing and out of this slice's scope).
+- **Both tables RLS-enrolled** with the plain `tenant_isolation` template;
+  in-context readers (`human-review` claim, `support-store`) untouched and
+  still green. Proof: `db/tests/013` (009-shaped + enrolled-policy isolation
+  sample + login→switch→guard rehearsal as `iptv_app`) and
+  `rls-control-identity.integration.test.ts` (enrollment + resolver coverage).
+  013 additionally pins the review refinements (user-ACTIVE gating on the
+  user_id-keyed functions, FULL-status listing parity) and the
+  trigger-layered denial (the pre-existing 012
+  `enforce_membership_role_tenant` trigger fires before RLS on
+  `membership_roles`).
+- **Cutover still BLOCKED:** engineering-only slice; the app still connects as
+  the owner (`iptv`), and platform/billing/finance have no grants/policies yet.
 
 ## Platform enrollment design decision (OPEN — blocks cutover with billing/finance)
 

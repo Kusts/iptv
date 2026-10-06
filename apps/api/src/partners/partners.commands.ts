@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
+import { sql } from "kysely";
 import { newId, now } from "@iptv/domain";
 import type { CommandResult } from "@iptv/domain";
 import type { CommandBus, CommandHandlerContext } from "../commands/command-bus.js";
@@ -828,6 +829,22 @@ async function handleConvertToTenant(
   }
   const tenantId = newId();
   const at = now();
+  // Pre-check the slug on the GLOBAL tenants table (no RLS) BEFORE any
+  // context change: a taken slug fails closed here with the business
+  // SLUG_TAKEN shape instead of aborting the transaction below.
+  const slugTaken = await trx
+    .selectFrom("control.tenants")
+    .select(["id"])
+    .where("slug", "=", slug)
+    .executeTakeFirst();
+  if (slugTaken !== undefined) {
+    return { ok: false, code: "precondition_failed", message: "tenant slug is taken (SLUG_TAKEN)" };
+  }
+  // The membership tables are RLS-enrolled (049): this transaction runs under
+  // the SOURCE tenant context, so acquire context equal to the NEW tenant
+  // before inserting its membership row, then restore the caller's context so
+  // every later tenant-scoped write below keeps its original evaluation.
+  await sql`SELECT set_config('app.tenant_id', ${tenantId}, true)`.execute(trx);
   try {
     await trx
       .insertInto("control.tenants")
@@ -859,6 +876,16 @@ async function handleConvertToTenant(
       return { ok: false, code: "precondition_failed", message: "tenant slug is taken (SLUG_TAKEN)" };
     }
     throw err;
+  } finally {
+    // Always release the acquired context, even on the error paths above.
+    // On an aborted transaction the restore itself fails, so secondary
+    // errors are swallowed: the tx is rolling back anyway and must not mask
+    // the original error.
+    try {
+      await sql`SELECT set_config('app.tenant_id', ${ctx.tenantId}, true)`.execute(trx);
+    } catch {
+      // Swallowed by design (see above).
+    }
   }
   const linked = await linkPartnerTenant(ctx, account.id, tenantId);
   if (linked === null) {

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { Kysely } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import { sql } from "kysely";
 import type { Database } from "@iptv/database";
 import { newId, now } from "@iptv/domain";
@@ -213,21 +213,26 @@ export function createAuth(db: Kysely<Database>, config: AuthConfig): {
     };
   }
 
-  async function listMemberships(userId: string): Promise<MembershipSummary[]> {
-    const rows = await db
-      .selectFrom("control.tenant_memberships as m")
-      .innerJoin("control.tenants as t", "t.id", "m.tenant_id")
-      .select([
-        "m.tenant_id as tenant_id",
-        "t.slug as tenant_slug",
-        "t.name as tenant_name",
-        "m.role_key as role_key",
-        "m.status as status",
-      ])
-      .where("m.user_id", "=", userId)
-      .orderBy("t.created_at", "asc")
-      .execute();
-    return rows.map((r) => ({
+  /**
+   * Session-bound membership listing via the 049 resolver
+   * (`control.list_memberships_for_session`): the membership tables are
+   * RLS-enrolled, so a direct `user_id` read would fail-close with no tenant
+   * context. Binding to the opaque session token hash keeps the lookup narrow
+   * (no `user_id`-parameterized enumeration surface). Columns mirror the
+   * pre-049 SELECT exactly (tenant id/slug/name, role, status).
+   */
+  async function listMembershipsForSession(
+    tokenHash: string,
+    executor: Kysely<Database> | Transaction<Database> = db,
+  ): Promise<MembershipSummary[]> {
+    const result = await sql<{
+      tenant_id: string;
+      tenant_slug: string;
+      tenant_name: string;
+      role_key: string;
+      status: string;
+    }>`select * from control.list_memberships_for_session(${tokenHash})`.execute(executor);
+    return result.rows.map((r) => ({
       tenantId: r.tenant_id,
       tenantSlug: r.tenant_slug,
       tenantName: r.tenant_name,
@@ -277,8 +282,15 @@ export function createAuth(db: Kysely<Database>, config: AuthConfig): {
         throw new AuthError(400, "INVALID_TENANT_NAME", "tenant name must not be blank");
       }
       const passwordHash = await hashPassword(input.password);
+      // The provisioned tenant id is fixed up front so the transaction can
+      // acquire tenant context equal to the membership row being created
+      // (049: membership tables are RLS-enrolled, fail-closed when unset).
+      const provisionedTenantId = input.tenantName !== undefined ? newId() : null;
       try {
         return await db.transaction().execute(async (trx) => {
+          if (provisionedTenantId !== null) {
+            await sql`SELECT set_config('app.tenant_id', ${provisionedTenantId}, true)`.execute(trx);
+          }
           // Exact-form pre-check; case variants are caught by the
           // `lower(email)` unique index at INSERT time (mapped to 409 below).
           const existing = await trx
@@ -314,11 +326,11 @@ export function createAuth(db: Kysely<Database>, config: AuthConfig): {
             })
             .execute();
           let activeTenantId: string | null = null;
-          if (input.tenantName !== undefined) {
+          if (input.tenantName !== undefined && provisionedTenantId !== null) {
             const tenant = await trx
               .insertInto("control.tenants")
               .values({
-                id: newId(),
+                id: provisionedTenantId,
                 slug: slugify(input.tenantName),
                 name: input.tenantName.trim(),
                 status: "ACTIVE",
@@ -396,24 +408,40 @@ export function createAuth(db: Kysely<Database>, config: AuthConfig): {
       if (cred.status !== "ACTIVE") {
         throw new AuthError(403, "USER_SUSPENDED", "user is not active");
       }
-      const memberships = await listMemberships(cred.user_id);
-      const firstActive = memberships.find((m) => m.status === "ACTIVE") ?? null;
-      const session = await createSession(
-        db as Pick<Kysely<Database>, "insertInto">,
-        cred.user_id,
-        firstActive?.tenantId ?? null,
-      );
-      return {
-        token: session.token,
-        user: await toUser({
-          id: cred.user_id,
-          display_name: cred.display_name,
-          is_platform_admin: cred.is_platform_admin,
-          email,
-        }),
-        activeTenantId: firstActive?.tenantId ?? null,
-        tenantContextRevision: "0",
-      };
+      // The session must exist before the membership read: the 049 resolver
+      // is session-hash-bound (a `user_id`-keyed read would fail-close under
+      // RLS and would widen the enumeration surface). Create with no active
+      // tenant, resolve memberships through the new session, then pin the
+      // first ACTIVE membership when one exists — all in ONE transaction so
+      // any failure rolls the session row back (no orphan session).
+      // Zero-membership users commit a session with a null active tenant.
+      return await db.transaction().execute(async (trx) => {
+        const session = await createSession(
+          trx as Pick<Kysely<Database>, "insertInto">,
+          cred.user_id,
+          null,
+        );
+        const memberships = await listMembershipsForSession(hashToken(session.token), trx);
+        const firstActive = memberships.find((m) => m.status === "ACTIVE") ?? null;
+        if (firstActive !== null) {
+          await trx
+            .updateTable("control.auth_sessions")
+            .set({ active_tenant_id: firstActive.tenantId })
+            .where("id", "=", session.sessionId)
+            .execute();
+        }
+        return {
+          token: session.token,
+          user: await toUser({
+            id: cred.user_id,
+            display_name: cred.display_name,
+            is_platform_admin: cred.is_platform_admin,
+            email,
+          }),
+          activeTenantId: firstActive?.tenantId ?? null,
+          tenantContextRevision: "0",
+        };
+      });
     },
 
     async logout(input) {
@@ -447,7 +475,7 @@ export function createAuth(db: Kysely<Database>, config: AuthConfig): {
       if (rows.expires_at.getTime() <= Date.now() || rows.status !== "ACTIVE") {
         return null;
       }
-      const memberships = await listMemberships(rows.user_id);
+      const memberships = await listMembershipsForSession(hashToken(input.token));
       return {
         user: await toUser({
           id: rows.user_id,
@@ -490,14 +518,12 @@ export function createAuth(db: Kysely<Database>, config: AuthConfig): {
         throw new AuthError(404, "TENANT_NOT_FOUND", "tenant not found");
       }
       if (!session.is_platform_admin) {
-        const membership = await db
-          .selectFrom("control.tenant_memberships")
-          .select(["id"])
-          .where("user_id", "=", session.user_id)
-          .where("tenant_id", "=", input.tenantId)
-          .where("status", "=", "ACTIVE")
-          .executeTakeFirst();
-        if (membership === undefined) {
+        // Pre-context check via the 049 resolver: a direct membership read
+        // would fail-close under RLS (no tenant context on this path).
+        const check = await sql<{ active: boolean }>`
+          SELECT control.check_membership_active(${session.user_id}::uuid, ${input.tenantId}::uuid) AS active
+        `.execute(db);
+        if (check.rows[0]?.active !== true) {
           throw new AuthError(403, "TENANT_FORBIDDEN", "no active membership in this tenant");
         }
       }

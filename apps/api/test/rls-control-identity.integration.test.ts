@@ -324,7 +324,7 @@ describe.skipIf(!hasDb)("RLS enrollment on control + identity (requires TEST_DAT
           })
           .execute();
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/42501|row-level security|insufficient_privilege|permission denied|belongs to tenant/i);
 
     await expect(
       withTenantTransaction(db, tenantA, async (trx) => {
@@ -349,7 +349,7 @@ describe.skipIf(!hasDb)("RLS enrollment on control + identity (requires TEST_DAT
           })
           .execute();
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/42501|row-level security|insufficient_privilege|permission denied|belongs to tenant/i);
 
     // The app role must never be able to write a GLOBAL feature flag.
     await expect(
@@ -369,7 +369,172 @@ describe.skipIf(!hasDb)("RLS enrollment on control + identity (requires TEST_DAT
           })
           .execute();
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/42501|row-level security|insufficient_privilege|permission denied|belongs to tenant/i);
+  });
+
+  it("enrolls control.tenant_memberships + control.membership_roles with tenant_isolation", async () => {
+    // Migration 049 closed the 047 pre-context exception: both tables carry
+    // RLS + the plain tenant template; pre-context reads go through the
+    // SECURITY DEFINER resolvers (covered below and in db/tests/013).
+    const rows = await sql<{ table_name: string; rowsecurity: boolean; policies: string[] }>`
+      SELECT c.relname AS table_name,
+             c.relrowsecurity AS rowsecurity,
+             coalesce(
+               array_agg(p.policyname) FILTER (WHERE p.policyname IS NOT NULL),
+               ARRAY[]::text[]
+             ) AS policies
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      LEFT JOIN pg_policies p
+        ON p.schemaname = n.nspname AND p.tablename = c.relname
+      WHERE n.nspname = 'control' AND c.relname IN ('tenant_memberships', 'membership_roles')
+      GROUP BY c.relname, c.relrowsecurity
+      ORDER BY c.relname
+    `.execute(db);
+
+    expect(rows.rows).toHaveLength(2);
+    for (const row of rows.rows) {
+      expect(row.rowsecurity, `${row.table_name} must have RLS enabled`).toBe(true);
+      expect(row.policies, `${row.table_name} must carry tenant_isolation`).toContain("tenant_isolation");
+    }
+  });
+
+  it("resolves pre-context membership reads through the 049 functions as iptv_app", async () => {
+    const tenantA = await makeTenant();
+    const tenantB = await makeTenant();
+    const now = new Date();
+    const userId = newId();
+    await db
+      .insertInto("control.users")
+      .values({
+        id: userId,
+        auth_subject: `email:rls-mem-${userId.slice(-8)}@example.com`,
+        display_name: "RLS Membership User",
+        status: "ACTIVE",
+        is_platform_admin: false,
+        created_at: now,
+        updated_at: now,
+      })
+      .execute();
+    const membershipId = newId();
+    await db
+      .insertInto("control.tenant_memberships")
+      .values({
+        id: membershipId,
+        tenant_id: tenantA,
+        user_id: userId,
+        role_key: "tenant_owner",
+        status: "ACTIVE",
+        created_at: now,
+        updated_at: now,
+      })
+      .execute();
+    await db
+      .insertInto("control.membership_roles")
+      .values({
+        id: newId(),
+        tenant_id: tenantA,
+        membership_id: membershipId,
+        role_key: "tenant_admin",
+        created_at: now,
+      })
+      .execute();
+    // SUSPENDED membership in tenant B: resolvers must ignore it.
+    await db
+      .insertInto("control.tenant_memberships")
+      .values({
+        id: newId(),
+        tenant_id: tenantB,
+        user_id: userId,
+        role_key: "tenant_operator",
+        status: "SUSPENDED",
+        created_at: now,
+        updated_at: now,
+      })
+      .execute();
+    const tokenHash = `rls-mem-hash-${userId.replace(/-/g, "").slice(-12)}`;
+    await db
+      .insertInto("control.auth_sessions")
+      .values({
+        id: newId(),
+        user_id: userId,
+        token_hash: tokenHash,
+        active_tenant_id: tenantA,
+        tenant_context_revision: "0",
+        expires_at: new Date(Date.now() + 3600_000),
+        created_at: now,
+        last_seen_at: now,
+      })
+      .execute();
+
+    try {
+      // No tenant context anywhere below: the exact pre-context state the
+      // login/switch/guard paths run in.
+      const listed = await db.transaction().execute(async (trx) => {
+        await sql`SET LOCAL ROLE iptv_app`.execute(trx);
+        const result = await sql<{
+          tenant_id: string;
+          tenant_slug: string;
+          tenant_name: string;
+          role_key: string;
+          status: string;
+        }>`select * from control.list_memberships_for_session(${tokenHash})`.execute(trx);
+        return result.rows;
+      });
+      // F4 parity: the listing is ALL-statuses session-bound (like the pre-049
+      // auth.listMemberships) — the SUSPENDED row in tenant B is visible again,
+      // while the switch/guard checks below stay ACTIVE-only. Sorted: the
+      // resolver orders by tenant created_at, which sequential fixtures may tie.
+      expect(listed.map((r) => [r.tenant_id, r.role_key, r.status]).sort()).toEqual(
+        [
+          [tenantA, "tenant_owner", "ACTIVE"],
+          [tenantB, "tenant_operator", "SUSPENDED"],
+        ].sort(),
+      );
+
+      const activeCheck = await db.transaction().execute(async (trx) => {
+        await sql`SET LOCAL ROLE iptv_app`.execute(trx);
+        const own = await sql<{ active: boolean }>`
+          SELECT control.check_membership_active(${userId}::uuid, ${tenantA}::uuid) AS active
+        `.execute(trx);
+        const suspended = await sql<{ active: boolean }>`
+          SELECT control.check_membership_active(${userId}::uuid, ${tenantB}::uuid) AS active
+        `.execute(trx);
+        return { own: own.rows[0]?.active, suspended: suspended.rows[0]?.active };
+      });
+      expect(activeCheck.own).toBe(true);
+      expect(activeCheck.suspended).toBe(false);
+
+      const resolved = await db.transaction().execute(async (trx) => {
+        await sql`SET LOCAL ROLE iptv_app`.execute(trx);
+        const result = await sql<{
+          membership_id: string;
+          base_role_key: string;
+          extra_role_keys: string[];
+        }>`select * from control.resolve_membership_roles(${userId}::uuid, ${tenantA}::uuid)`.execute(trx);
+        return result.rows;
+      });
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0]?.membership_id).toBe(membershipId);
+      expect(resolved[0]?.base_role_key).toBe("tenant_owner");
+      expect(resolved[0]?.extra_role_keys).toContain("tenant_admin");
+
+      // Direct reads stay fail-closed without context, even though rows exist.
+      const directWithoutContext = await db.transaction().execute(async (trx) => {
+        await sql`SET LOCAL ROLE iptv_app`.execute(trx);
+        const memberships = await trx.selectFrom("control.tenant_memberships").select("id").execute();
+        const bindings = await trx.selectFrom("control.membership_roles").select("id").execute();
+        return { memberships: memberships.length, bindings: bindings.length };
+      });
+      expect(directWithoutContext).toEqual({ memberships: 0, bindings: 0 });
+    } finally {
+      // Owner connection: bypasses RLS, so cleanup sees every fixture row.
+      await db.deleteFrom("control.auth_sessions").where("user_id", "=", userId).execute();
+      await db.deleteFrom("control.membership_roles").where("tenant_id", "=", tenantA).execute();
+      await db.deleteFrom("control.membership_roles").where("tenant_id", "=", tenantB).execute();
+      await db.deleteFrom("control.tenant_memberships").where("user_id", "=", userId).execute();
+      await db.deleteFrom("control.users").where("id", "=", userId).execute();
+    }
   });
 
   it("keeps the owner connection as the RLS bypass (sees every tenant)", async () => {

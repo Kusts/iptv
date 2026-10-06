@@ -7,7 +7,7 @@ import {
   SetMetadata,
 } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import { requirePermission, resolveActor } from "@iptv/auth";
 import type { Database } from "@iptv/database";
 import type { FastifyRequest } from "fastify";
@@ -45,30 +45,29 @@ export class PermissionsGuard implements CanActivate {
     if (tenantId === null) {
       throw new HttpException({ code: "NO_ACTIVE_TENANT", message: "no active tenant selected" }, 403);
     }
+    // Pre-context membership load via the 049 resolver
+    // (`control.resolve_membership_roles`): the membership tables are
+    // RLS-enrolled, so direct reads would fail-close with no tenant context
+    // on this path. ONE call serves both loader methods (base role + extra
+    // keys for the ACTIVE membership, zero rows otherwise); the binding uses
+    // only the already-authenticated user/tenant, no new request state. The
+    // existing `MembershipLoader` contract is preserved via this in-memory
+    // adapter, so `packages/auth` needs no interface change.
+    const resolved = await sql<{
+      membership_id: string;
+      base_role_key: string;
+      extra_role_keys: string[];
+    }>`select * from control.resolve_membership_roles(${auth.userId}::uuid, ${tenantId}::uuid)`.execute(db);
+    const resolvedRow = resolved.rows[0];
     const actor = await resolveActor(
       {
-        findActiveMembership: async (userId: string, tid: string) => {
-          const row = await db
-            .selectFrom("control.tenant_memberships")
-            .select(["id", "role_key"])
-            .where("user_id", "=", userId)
-            .where("tenant_id", "=", tid)
-            .where("status", "=", "ACTIVE")
-            .executeTakeFirst();
-          if (row === undefined) {
+        findActiveMembership: async () => {
+          if (resolvedRow === undefined) {
             return null;
           }
-          return { id: row.id, roleKey: row.role_key };
+          return { id: resolvedRow.membership_id, roleKey: resolvedRow.base_role_key };
         },
-        listExtraRoleKeys: async (membershipId: string) => {
-          const rows = await db
-            .selectFrom("control.membership_roles")
-            .select(["role_key"])
-            .where("membership_id", "=", membershipId)
-            .where("tenant_id", "=", tenantId)
-            .execute();
-          return rows.map((r) => r.role_key);
-        },
+        listExtraRoleKeys: async () => resolvedRow?.extra_role_keys ?? [],
       },
       { userId: auth.userId, isPlatformAdmin: auth.isPlatformAdmin, tenantId },
     );

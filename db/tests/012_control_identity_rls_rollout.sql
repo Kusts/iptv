@@ -1,18 +1,21 @@
--- 012 RLS domain rollout (migration 047): control.* + identity.* as iptv_app.
+-- 012 RLS domain rollout (migrations 047 + 049): control.* + identity.* as iptv_app.
 -- Enrolled surface: identity.persons, identity.identities,
 -- identity.identity_merge_reviews (plain tenant template) +
--- control.feature_flags (hybrid global+own read / own-tenant write).
+-- control.feature_flags (hybrid global+own read / own-tenant write) +
+-- control.tenant_memberships + control.membership_roles (plain tenant
+-- template since 049, reached via the 043-style resolvers — the former
+-- deliberate pre-context exception is CLOSED, see below).
 -- Also asserts: grants on the global control catalogs (grant-without-RLS
--- rationale), the global-table allow-list, and the DELIBERATE pre-context
--- exception (control.tenant_memberships + control.membership_roles keep their
--- tenant_id column but stay RLS-free — enrolling them would break login, see
--- the migration header).
+-- rationale) and the global-table allow-list (no tenant_id-bearing
+-- control/identity table may stay unenrolled anymore).
 -- Isolation sample: identity.persons (tenant A/B, fail-closed, cross-tenant
 -- write blocked) plus control.feature_flags (global + own read, cross-tenant
--- and GLOBAL writes blocked), then owner bypass.
+-- and GLOBAL writes blocked), then owner bypass. The membership-table
+-- isolation sample (resolvers + enrolled policies + login->switch->guard
+-- rehearsal) lives in db/tests/013.
 -- Fixture rows ROLLBACK; role/policy/grants persist.
 -- Regression: db/tests/006 (spike), 007 (pilot), 008 (crm/communication),
--- 009 (pre-context resolver). Run all five.
+-- 009 (pre-context resolver), 013 (membership resolvers). Run all six.
 -- Execute: cat file | docker exec -i iptv-postgres-1 psql -U iptv -d <disposable_db> -v ON_ERROR_STOP=1 -f -
 \set ON_ERROR_STOP on
 BEGIN;
@@ -25,7 +28,9 @@ DECLARE
         'identity.persons',
         'identity.identities',
         'identity.identity_merge_reviews',
-        'control.feature_flags'
+        'control.feature_flags',
+        'control.tenant_memberships',
+        'control.membership_roles'
     ];
     granted_full_dml text[] := ARRAY[
         'identity.persons',
@@ -103,18 +108,18 @@ BEGIN
             RAISE EXCEPTION 'global catalog % must stay read-only for iptv_app', t;
         END IF;
     END LOOP;
-    RAISE NOTICE 'rollout preconditions OK: iptv_app NOBYPASSRLS, RLS + tenant_isolation on 4 tables, DML/read-only grants as designed';
+    RAISE NOTICE 'rollout preconditions OK: iptv_app NOBYPASSRLS, RLS + tenant_isolation on 6 tables, DML/read-only grants as designed';
 END $$;
 
 -- 2) Allow-list assertion: every tenant_id-bearing table in control/identity
--- is RLS-enforced EXCEPT the explicit pre-context exception pair. A new
--- tenant_id-bearing table appearing here without a policy fails the test.
+-- is RLS-enforced. The 047 pre-context exception pair
+-- (control.tenant_memberships + control.membership_roles) enrolled via
+-- migration 049, so the documented-exception list is EMPTY — the mechanism
+-- stays (a new tenant_id-bearing table appearing here without a policy fails
+-- the test), but nothing may hide behind it anymore.
 DO $$
 DECLARE
-    pre_context_exceptions text[] := ARRAY[
-        'control.tenant_memberships',
-        'control.membership_roles'
-    ];
+    pre_context_exceptions text[] := ARRAY[]::text[];
     unenrolled text[];
     t text;
 BEGIN
@@ -129,12 +134,12 @@ BEGIN
            WHERE a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped
        )
        AND (SELECT relrowsecurity FROM pg_class WHERE oid = c.oid) IS DISTINCT FROM true;
-    FOREACH t IN ARRAY unenrolled LOOP
+    FOREACH t IN ARRAY coalesce(unenrolled, '{}'::text[]) LOOP
         IF NOT (t = ANY (pre_context_exceptions)) THEN
             RAISE EXCEPTION 'tenant_id-bearing table % is not RLS-enrolled and is not a documented exception', t;
         END IF;
     END LOOP;
-    RAISE NOTICE 'allow-list OK: % unenrolled tenant_id table(s), all documented pre-context exceptions', coalesce(array_length(unenrolled, 1), 0);
+    RAISE NOTICE 'allow-list OK: % unenrolled tenant_id table(s), exception list is empty by design (049 closed it)', coalesce(array_length(unenrolled, 1), 0);
 END $$;
 
 -- 3) Global-table assertion: the grant-without-RLS control tables really have
@@ -166,22 +171,32 @@ BEGIN
     RAISE NOTICE 'global tables OK: % control tables are tenant-less and RLS-free', array_length(globals, 1);
 END $$;
 
--- 4) Pre-context exception still RLS-free (auth must keep working after
--- cutover; db/tests/012 pins the decision until a 043-style resolver exists).
+-- 4) Former pre-context exception now ENROLLED (migration 049 closed it with
+-- the 043-style resolvers + same-commit call-site swaps): both tables must
+-- carry RLS + tenant_isolation. This block is the tripwire in reverse — if a
+-- future migration ever drops the enrollment, the test fails loudly.
 DO $$
 DECLARE
-    exceptions text[] := ARRAY[
+    enrolled text[] := ARRAY[
         'control.tenant_memberships',
         'control.membership_roles'
     ];
     t text;
 BEGIN
-    FOREACH t IN ARRAY exceptions LOOP
-        IF (SELECT relrowsecurity FROM pg_class WHERE oid = t::regclass) IS DISTINCT FROM false THEN
-            RAISE EXCEPTION '% was RLS-enrolled without the pre-context resolver; update this test and the runbook together', t;
+    FOREACH t IN ARRAY enrolled LOOP
+        IF (SELECT relrowsecurity FROM pg_class WHERE oid = t::regclass) IS DISTINCT FROM true THEN
+            RAISE EXCEPTION '% lost its RLS enrollment; the 049 resolver contract requires it', t;
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_policies
+            WHERE schemaname = 'control'
+              AND tablename = split_part(t, '.', 2)
+              AND policyname = 'tenant_isolation'
+        ) THEN
+            RAISE EXCEPTION 'tenant_isolation policy missing on %', t;
         END IF;
     END LOOP;
-    RAISE NOTICE 'pre-context exception OK: tenant_memberships + membership_roles remain RLS-free by design';
+    RAISE NOTICE 'membership enrollment OK: tenant_memberships + membership_roles are RLS-enrolled (049 resolvers carry the pre-context reads)';
 END $$;
 
 -- 5) Fixture: two tenants, one person each (as owner), one GLOBAL feature flag

@@ -11,6 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
+import { sql } from "kysely";
 import type { AuthInstance } from "@iptv/auth";
 import type { Database } from "@iptv/database";
 import { newId, now } from "@iptv/domain";
@@ -94,11 +95,16 @@ export class TenantsController {
       throw new HttpException({ code: "INVALID_SLUG", message: "invalid slug" }, 400);
     }
     try {
+      // The provisioned id is fixed up front so the transaction can acquire
+      // tenant context equal to the membership row being created (049: the
+      // membership tables are RLS-enrolled, fail-closed when unset).
+      const tenantId = newId();
       const tenant = await db.transaction().execute(async (trx) => {
+        await sql`SELECT set_config('app.tenant_id', ${tenantId}, true)`.execute(trx);
         const created = await trx
           .insertInto("control.tenants")
           .values({
-            id: newId(),
+            id: tenantId,
             slug,
             name,
             status: "ACTIVE",
