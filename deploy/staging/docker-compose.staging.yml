@@ -130,7 +130,8 @@ services:
     container_name: iptv-staging-web
     restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
       - "127.0.0.1:3000:3000"
     networks:

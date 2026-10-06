@@ -45,10 +45,16 @@ Deploy order is expressed in `depends_on` and must not be reordered by hand:
 5. Infisical reachable from the host and from the containers when
    `INFISICAL_*` is filled: without it the secrets adapter stays noop and every
    `infisical://` ref fails closed (ADR-0014, `packages/secrets/README.md`).
-6. `APP_DATABASE_URL` stays commented until the RLS cutover checklist is
-   complete. Pointing the app at `iptv_app` today means fail-closed reads on
-   every domain that is not enrolled yet — see
-   [RLS role split cutover](rls-role-split-cutover.md).
+6. `APP_DATABASE_URL` must be SET to a valid restricted `iptv_app` connection
+   (the fail-closed boot guard refuses to start the API without it when
+   `NODE_ENV=production` — there is no owner fallback). This is rehearsal,
+   NOT cutover: pointing the app at `iptv_app` today means fail-closed reads
+   on every domain that is not enrolled yet — see
+   [RLS role split cutover](rls-role-split-cutover.md). If the API container
+   crash-loops at boot, read its logs first (`... logs api`): with
+   `restart: unless-stopped` an invalid configuration restarts forever by
+   design — fix the env, then `up -d --force-recreate api`. Never "fix" it
+   by giving the API owner credentials.
 
 ## Build
 
