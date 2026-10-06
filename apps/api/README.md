@@ -40,9 +40,14 @@ directly at the point of use and is safe to leave unset.
 | `NODE_ENV` | `development` | `development`/`test`/`production`; production tightens CORS and the auth secret. |
 | `PORT` | `3001` | Listen port. |
 | `LOG_LEVEL` | `info` | Fastify log level. |
-| `DATABASE_URL` | unset | Owner/RLS-bypass connection; used for migrations/DDL. |
-| `APP_DATABASE_URL` | unset | Preferred application pool connection (RLS app role); falls back to `DATABASE_URL`, then `TEST_DATABASE_URL`. |
-| `TEST_DATABASE_URL` | unset | Disposable DB for integration tests only. |
+| `DATABASE_URL` | unset | Owner/RLS-bypass connection; used for migrations/DDL only. **Rejected at boot when non-blank in a `NODE_ENV=production` API process.** |
+| `APP_DATABASE_URL` | unset | Application pool connection (RLS app role). Outside production it falls back to `DATABASE_URL`, then `TEST_DATABASE_URL`; **in production it is mandatory and must be a URL-encoded, control-character-free `pg://`/`postgres://`/`postgresql://` URI with a non-empty host and database name, whose authority username is exactly `iptv_app`, with canonical lowercase literal query keys, no repeated parameter and no `user=`, `role=`, `options=` or host/port/database query parameter.** |
+| `TEST_DATABASE_URL` | unset | Disposable DB for integration tests only; **rejected at boot when non-blank in a `NODE_ENV=production` API process**. |
+| `DATABASE_OWNER_URL` | unset | Alternative owner-only spelling some deployment tooling may carry; never used as a connection, inspected only to reject non-blank in production — **rejected at boot when non-blank in a `NODE_ENV=production` API process**. |
+| `POSTGRES_PASSWORD` | unset | Owner/superuser password (docker compose); never needed by the API. **Rejected at boot when non-blank in a `NODE_ENV=production` API process** (repo blank-means-absent rule). `PGPASSWORD` is covered by the driver-consumed row below and is stricter. |
+| `PGOPTIONS` | unset | libpq/driver startup options; forwarded to server startup outside the URI and could request a role change (e.g. `-c role=owner`), subject to server-side membership/privileges this guard does not verify. **Rejected at boot when non-blank in a `NODE_ENV=production` API process.** |
+| `PGHOST` / `PGPORT` / `PGDATABASE` / `PGUSER` / `PGSSLMODE` / `PGSSLNEGOTIATION` / `PGPASSWORD` / `PGOPTIONS` | unset | Variables the pg driver itself consumes. **Rejected in production when supplied at all** — only an empty string counts as absent, whitespace included, because the driver would consume a whitespace value just as readily. |
+| `PGAPPNAME` | unset | Driver/server application name. Ordinary values (spaces included) are legal; **rejected at boot in production when it contains an ASCII control character** (NUL/tab/newline), which would otherwise reach driver startup parameters and server logs. |
 | `BETTER_AUTH_SECRET` | dev-only value | Session-token pepper for `packages/auth`; **must** be overridden in production. |
 | `BETTER_AUTH_URL` | unset | Auth base URL hint. |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` outside production, `[]` (deny all) in production | Comma-separated exact `http(s)://host[:port]` origins. No wildcard, no path/query/hash. |
@@ -72,9 +77,10 @@ directly at the point of use and is safe to leave unset.
 
 ### Production configuration fail-fast
 
-`loadConfig()` (`@iptv/config`) runs in `main.ts` before the Nest app is created,
-so an invalid production env is a boot failure, never a silently-degraded
-runtime. With `NODE_ENV=production` two keys are mandatory:
+`loadConfig()` (`@iptv/config`) runs in `main.ts` **before** the optional
+observability initialization and before the Nest app is created, so an invalid
+production env is a boot failure, never a silently-degraded runtime. With
+`NODE_ENV=production` these keys are mandatory:
 
 - `BETTER_AUTH_SECRET` — the dev-only default is rejected.
 - `PROVIDER_DISPATCH_MODE` — must be exactly `durable` (no case folding, no
@@ -85,6 +91,121 @@ runtime. With `NODE_ENV=production` two keys are mandatory:
   the historical silent `inline` fallback must never reach production.
   Outside production the key is unvalidated and
   `providerDispatchModeFromEnv()` keeps its inline fallback.
+- `APP_DATABASE_URL` — must be set, non-blank, free of ASCII control characters,
+  and a parseable **PostgreSQL** URI (`pg://`, `postgres://` or `postgresql://`) that
+  states its **target explicitly**: a non-empty **host** in the authority and a
+  non-empty **database name** in the path (an empty host or path would let the
+  driver fall back to ambient `PGHOST`/`PGDATABASE` or a libpq default). Its
+  **authority username is exactly `iptv_app`**, with **no `user=`, `role=`,
+  `options=` or `host=`/`port=`/`database=`/`db=`/`dbname=` query parameter**
+  (case-insensitive). Per the node-postgres
+  connection-string reference, `user` is the driver identity override (it
+  replaces the authority username at connect time) and `options` is forwarded to
+  server startup as command-line options — it could therefore request a role
+  change (e.g. `options=-c role=owner`), and whether that request succeeds
+  depends on server-side role membership/privileges, which **this guard does not
+  verify**. `role` is denied **by policy**: it is not claimed to change identity
+  in the current driver, but no production URL needs it and denying it removes a
+  whole class of identity-shaped parameters. The `host`/`port`/`database`/`db`/
+  `dbname` keys are refused because they would override the target the URI
+  already states. Ordinary settings (`sslmode`,
+  `application_name`, `connect_timeout`, …) stay legal. There is **no production
+  fallback** to `DATABASE_URL` or `TEST_DATABASE_URL`. Blank counts as absent
+  (remove a bare `APP_DATABASE_URL=` placeholder); a value with leading/trailing
+  whitespace is rejected too, never silently trimmed — it is a credential, and
+  repairing it at boot would hide the misconfiguration. Interior spaces are fine.
+  Rejected: owner/superuser usernames (`iptv`, `postgres`), case variants
+  (`IPTV_APP`), percent-encoded forms (`iptv%5Fapp`), non-PostgreSQL schemes,
+  malformed URIs, ASCII control characters anywhere in the value (tab/LF/CR are
+  stripped by URL parsing and could smuggle a different connection string) and
+  `user`/`role`/`options` overrides.
+- URI components are screened individually: the username, the password, the raw
+  hostname, query string **and the database path** must carry well-formed percent escapes
+  and must not decode to an ASCII control character. `new URL` keeps
+  `%00`/`%09` encoded in those components while `URLSearchParams` decodes them
+  into **real** control characters, so `application_name=api%00user%00postgres`
+  (or a `db%00x` database name) would otherwise reach the driver intact. A
+  percent-encoded **space** in a password (`p%20cret`) stays legal, and an
+  accepted URL is kept byte-exact.
+- A **URI fragment is forbidden**: any literal `#` is refused, including a bare
+  trailing `#` whose parsed fragment would be empty. A fragment is not part of
+  the PostgreSQL connection contract, so it is rejected rather than parsed or
+  silently dropped. An **encoded `%23`** inside a component is not a delimiter
+  and stays ordinary encoded data (`p%23cret`, `/iptv%23`) — it is refused only
+  if it decodes to an ASCII control character.
+- `sslnegotiation`, when present, must be exactly `postgres` or `direct` — it is
+  echoed back by the driver/server, so an invalid value is refused here with
+  credential-free text instead of downstream.
+- TLS settings are validated for ambiguity, not required: **TLS is not mandated
+  globally** (that is deployment-specific), only invalid/duplicated/conflicting
+  settings are refused. `pg://` is accepted alongside `postgres://` and
+  `postgresql://`. The URI must be **URL-encoded per the node-postgres docs**:
+  a literal space anywhere is refused (use `%20`) because the installed parser
+  **rewrites** a URI that contains one, which could make the driver's view of a
+  percent-encoded query key differ from the WHATWG-validated one. Query keys must
+  be **canonical lowercase literals** (`SSLMODE=` / `SslMode=` and percent-encoded
+  names such as `ssl%6dode=` are refused: the driver consumes lowercase
+  parameter names, so a mixed-case or encoded name would be read differently by
+  the driver than by this validator). **Values** may remain percent-encoded, and
+  forbidden keys stay rejected case-insensitively. A query
+  parameter must not be **repeated** (case-insensitively, before parsing —
+  `pg-connection-string` assigns parameters onto an object, so a repeat is
+  last-value-wins and the effective setting would depend on order).
+  `ssl` must be exactly `true|1|0`; **`ssl=false` is refused** because the
+  installed pg parser leaves it as a non-empty (truthy) string and so would not
+  disable TLS — use `ssl=0` or `sslmode=disable`. `sslmode` must be one of
+  `disable|prefer|require|verify-ca|verify-full|no-verify`, plus `allow` only
+  with `uselibpqcompat=true` (where `no-verify` is unavailable); **libpq-compat
+  `verify-ca` additionally requires a non-blank `sslrootcert` value** — the
+  installed pg parser throws without it. `verify-full` is **not** gated this way:
+  per the node-postgres documentation it uses `{}` (system CA + identity
+  verification), so it stays legal without a custom root certificate. In both
+  cases only the **parameter** is checked, never whether a certificate file is
+  readable or valid on the server.
+  `uselibpqcompat` must be exactly `true|false`; setting `ssl` **and** `sslmode`
+  together is refused as ambiguous; and `sslnegotiation=direct` is refused while
+  TLS is explicitly disabled (`sslmode=disable`, or `ssl=0`). Error text names
+  the allowed set, never the rejected value. Explicit TLS disable (`ssl=0` or
+  `sslmode=disable`) also cannot be combined with nonblank `sslcert`, `sslkey` or
+  `sslrootcert` parameters: the driver can let certificate options override
+  `ssl=0`, while `sslmode=disable` with certificate options remains conflicting
+  and may trigger certificate-file handling. The guard rejects both combinations.
+- `DATABASE_URL` / `DATABASE_OWNER_URL` / `TEST_DATABASE_URL` /
+  `POSTGRES_PASSWORD` — must be **absent** (non-blank is a boot error naming the
+  variable), even when `APP_DATABASE_URL` is valid: owner roles bypass RLS, a
+  test database is never a production target, and a password has no business in
+  the API env. Blank (including whitespace) counts as absent here — the repo
+  rule.
+- `PGPASSWORD` / `PGOPTIONS` / `PGHOST` / `PGPORT` / `PGDATABASE` / `PGUSER` /
+  `PGSSLMODE` / `PGSSLNEGOTIATION` — must be **genuinely unset**: the pg driver
+  consumes these directly, so **only an empty string counts as absent** and a
+  whitespace-only value is refused like any other supplied setting.
+  `PGOPTIONS` feeds driver startup `options` from outside the URI (the same
+  unverified role-change vector the URI rule closes) and the target/transport
+  variables would derive the connection from outside the validated URI. Keep
+  those in the migration/DDL job env only
+  (`docs/10-operations/runbooks/rls-role-split-cutover.md`).
+
+Error text names the variable and the rule only — **the connection value and its
+credentials are never printed**.
+
+`resolveAppConnectionString()` (`apps/api/src/app.module.ts`) calls the same
+two `@iptv/config` helpers (`assertNoPrivilegedDatabaseEnv` +
+`validateProductionAppDatabaseUrl`) that `loadConfig` runs, so the `DB` provider
+fails closed on exactly the same rules even when it is reached without
+`loadConfig` having validated the env. There is no second copy of the rules to
+drift. Development/test precedence (`APP_DATABASE_URL` → `DATABASE_URL` →
+`TEST_DATABASE_URL` → `null`) is unchanged, and every one of those variables —
+plus `POSTGRES_PASSWORD`/`PGPASSWORD` and an owner URL — stays legal there.
+
+> **Scope — configured identity only.** This guard proves what the API process
+> is *configured* to connect as. It never queries the server, so it does **not**
+> prove the connected role's effective privileges (`SUPERUSER`, membership in an
+> owner role, `BYPASSRLS`, `CREATEROLE`), does not enable RLS and does not
+> complete any cutover step. No grants, policies, migrations or pool mode
+> changed; the app still runs as owner until the per-domain cutover checklist in
+> `docs/10-operations/runbooks/rls-role-split-cutover.md` is complete, and
+> nothing here is RLS/cutover certification.
 
 ### Browser CORS
 
@@ -134,7 +255,7 @@ One line per real directory under `src/`.
 | `trial/` | `v1/trials` lifecycle, compatibility (`v1/compatibility`) and trial readback. |
 
 Cross-cutting files at the root of `src/`: `main.ts` (bootstrap order:
-observability → config → Nest → request-id → observability hook → CORS →
+config → observability → Nest → request-id → observability hook → CORS →
 listen → scheduler), `app.module.ts` (controllers/providers, DB and auth
 factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
 `health.controller.ts`.
@@ -165,7 +286,8 @@ factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
   `HATCHET_API_TOKEN`, optional SDK, Wave-0-gated — never default; missing
   SDK/config falls back to local with a warning).
 - **Observability** (`packages/observability`, api-only default): `main.ts`
-  calls `initObservability()` first inside try/catch; Fastify `onRequest`
+  calls `loadConfig()` first (production fail-fast) and then
+  `initObservability()` inside try/catch; Fastify `onRequest`
   hook extracts/propagates W3C `traceparent` → `request.traceId` +
   `x-trace-id` response header; spans wrap `CommandBus.execute` (command,
   tenant, result code — no payloads/secrets), gateway sends, Asaas calls and

@@ -1,4 +1,8 @@
-import { Logger, Module } from "@nestjs/common";
+import { Module } from "@nestjs/common";
+import {
+  assertNoPrivilegedDatabaseEnv,
+  validateProductionAppDatabaseUrl,
+} from "@iptv/config";
 import { createDb } from "@iptv/database";
 import type { Database } from "@iptv/database";
 import { createAuth, type AuthInstance } from "@iptv/auth";
@@ -61,17 +65,37 @@ const DEV_AUTH_SECRET = "dev-only-better-auth-secret-0123456789";
 
 /**
  * Resolve the connection string for the API pool (RLS cutover path).
- * Precedence: `APP_DATABASE_URL` (app role `iptv_app`) when set and
- * non-empty, else `DATABASE_URL` (owner, pre-cutover), else
- * `TEST_DATABASE_URL` (disposable test databases). Returns `null` when
- * none is set. Migrations/DDL ALWAYS use the owner string (`DATABASE_URL`)
- * directly — never this resolver — see
+ *
+ * Outside production the precedence is `APP_DATABASE_URL` (app role
+ * `iptv_app`) when set and non-empty, else `DATABASE_URL` (owner,
+ * pre-cutover), else `TEST_DATABASE_URL` (disposable test databases), else
+ * `null` — unchanged, and every value is used verbatim.
+ *
+ * With `NODE_ENV=production` there is NO fallback and the value must be the
+ * restricted application connection: this resolver calls the SAME
+ * `@iptv/config` helpers `loadConfig` uses (`assertNoPrivilegedDatabaseEnv` +
+ * `validateProductionAppDatabaseUrl`), so the pool factory fails closed on a
+ * privileged/test env var, an owner username, a non-PostgreSQL or malformed
+ * URI, a `user=` override or a padded value even when it is reached without
+ * `loadConfig` having run. Accepted values come back byte-exact; a credential
+ * is never trimmed and never printed.
+ *
+ * This validates the CONFIGURED identity only — it does not query the server,
+ * so it does not prove the connected role's effective privileges, enable RLS,
+ * complete the cutover or certify anything.
+ *
+ * Migrations/DDL ALWAYS use the owner string (`DATABASE_URL`) directly —
+ * never this resolver — see
  * `docs/10-operations/runbooks/rls-role-split-cutover.md`.
  */
 export function resolveAppConnectionString(
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
   const app = env["APP_DATABASE_URL"];
+  if (env["NODE_ENV"] === "production") {
+    assertNoPrivilegedDatabaseEnv(env);
+    return validateProductionAppDatabaseUrl(app);
+  }
   if (typeof app === "string" && app.length > 0) {
     return app;
   }
@@ -86,55 +110,7 @@ export function resolveAppConnectionString(
   return null;
 }
 
-/**
- * Loud signal that the RLS cutover has NOT happened: a production boot
- * without `APP_DATABASE_URL` resolves the API pool to the owner connection
- * (`DATABASE_URL`), and the owner role BYPASSES row-level security — so every
- * `tenant_isolation` policy shipped so far (`crm`, `communication`, `identity`,
- * `control`) is inert in production. This is a WARNING, never a boot failure:
- * the cutover checklist in
- * `docs/10-operations/runbooks/rls-role-split-cutover.md` is still blocked on
- * the remaining domains (`platform`, `billing`, `finance`), so refusing to boot
- * would take production down before the policies exist everywhere.
- *
- * An empty `APP_DATABASE_URL` counts as unset (the config loader treats empty
- * env values as absent) — a typo'd or blank value must not look like a
- * completed cutover.
- */
-export function ownerFallbackWarning(
-  env: NodeJS.ProcessEnv = process.env,
-): string | null {
-  if (env["NODE_ENV"] !== "production") {
-    return null;
-  }
-  const app = env["APP_DATABASE_URL"];
-  if (typeof app === "string" && app.length > 0) {
-    return null;
-  }
-  return (
-    "RLS BYPASSED: APP_DATABASE_URL is unset, so the API pool connects as the " +
-    "owner role (DATABASE_URL) which has BYPASSRLS. Row-level security is " +
-    "INERT in production until the role split cutover completes — do not treat " +
-    "tenant isolation as enforced. See " +
-    "docs/10-operations/runbooks/rls-role-split-cutover.md"
-  );
-}
-
-/** Emit the owner-fallback warning (when due) once at boot. */
-export function warnOnOwnerFallback(
-  env: NodeJS.ProcessEnv = process.env,
-  logger: Pick<Logger, "warn"> = new Logger("RlsRoleSplit"),
-): boolean {
-  const message = ownerFallbackWarning(env);
-  if (message === null) {
-    return false;
-  }
-  logger.warn(message);
-  return true;
-}
-
 function dbFactory(): Kysely<Database> | null {
-  warnOnOwnerFallback();
   const connectionString = resolveAppConnectionString();
   if (connectionString === null) {
     return null;
