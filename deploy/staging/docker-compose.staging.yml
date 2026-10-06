@@ -90,6 +90,13 @@ services:
     env_file:
       - .env.staging
     environment:
+      # Fail-closed production guard boundary (`assertNoPrivilegedDatabaseEnv`):
+      # this file also carries the OWNER connection for interpolation + the
+      # migrate job, but the owner string and owner password must NEVER reach
+      # the API process. Blank counts as absent, so unset them explicitly here
+      # (environment wins over env_file). Do NOT remove these lines.
+      DATABASE_URL: ""
+      POSTGRES_PASSWORD: ""
       # LOG_LEVEL has NO default on purpose: the Fastify logger stays disabled
       # when it is unset, and a silent container is undebuggable. Set it in
       # .env.staging (info for staging).
