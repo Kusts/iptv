@@ -361,7 +361,9 @@ executed against disposable databases only) + `db/tests/012` +
 - Safety rails added in the same round: `APP_DATABASE_URL` is now a validated
   config key (`packages/config`), and a production boot that resolves the API
   pool to the owner connection logs the `RLS BYPASSED` warning
-  (`warnOnOwnerFallback` in `apps/api/src/app.module.ts`). The SQL proof
+  (`warnOnOwnerFallback` in `apps/api/src/app.module.ts` — superseded
+  2026-10-06 by the fail-closed boot guard: `assertNoPrivilegedDatabaseEnv` +
+  `validateProductionAppDatabaseUrl`, warn-only functions removed). The SQL proof
   suite (`db/tests/*.sql`) now runs in CI against a disposable database
   (`.github/workflows/ci.yml`).
 
@@ -460,7 +462,14 @@ from the analysis above, honored:
 - **Cutover still BLOCKED:** engineering-only slice; the app still connects as
   the owner (`iptv`), and platform/billing/finance have no grants/policies yet.
 
-## Platform enrollment design decision (OPEN — blocks cutover with billing/finance)
+## Platform enrollment design decision (SUPERSEDED — kept as history)
+
+> SUPERSEDED 2026-10-06 by "Platform/outbox worker RLS — ACCEPTED DESIGN
+> DIRECTION" below (hybrid C: separate worker process + `EXECUTE`-only narrow
+> functions; pattern 1 via the API pool is REJECTED there, the global
+> `outbox_pending_idx` is preserved, per-tenant claim stays deferred).
+> The unsolved list below (inbox, scheduler loops, provider dispatcher, full
+> worker inventory) still stands; global cutover stays BLOCKED.
 
 `platform` carries the cross-tenant system spine
 (`idempotency_keys`, `audit_log`, `domain_events`, `outbox_messages`,
@@ -480,10 +489,13 @@ decision deferred to the platform rollout slice:
    scheduler), keeping all request-path DML on `iptv_app` — operationally
    simpler, but widens the bypass surface to worker code.
 
-Pattern 1 is the default candidate (smaller bypass surface, matches the
-certified 043/009 discipline). The known index gap also lands with this
-slice: `outbox_pending_idx` lacks a `tenant_id` prefix (finding from
-2026-09-29, above). Until platform + billing (+ `billing.tenant_channels`
+Pattern 1 was the default candidate here (smaller bypass surface, matches the
+certified 043/009 discipline) — REJECTED by the accepted direction below
+(the API process is the thing being isolated). The known index observation
+also stands corrected by that decision: `outbox_pending_idx` lacks a
+`tenant_id` prefix (finding from 2026-09-29, above) but the accepted global
+claim keeps the global partial index unchanged; a lease-expiry index is
+measured at implementation, not assumed. Until platform + billing (+ `billing.tenant_channels`
 043-shaped resolver) + finance enroll, the global cutover stays BLOCKED.
 ---
 
