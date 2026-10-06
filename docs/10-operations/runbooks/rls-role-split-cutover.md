@@ -285,7 +285,7 @@ executed against disposable databases only) + `db/tests/012` +
   wording — the 047-era text said "pair" before the guard role-resolution
   function was added to the decision on 2026-10-06); moving the read
   inside a tenant transaction is infeasible for the true pre-context lookups
-  (login/`resolveSession` exist precisely to DISCOVER the tenant). 
+  (login/`resolveSession` exist precisely to DISCOVER the tenant).
   `db/tests/012` asserts this exception explicitly so it cannot silently grow.
 - Safety rails added in the same round: `APP_DATABASE_URL` is now a validated
   config key (`packages/config`), and a production boot that resolves the API
