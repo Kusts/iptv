@@ -629,10 +629,15 @@ must measure it before adopting it.
 
 `outbox_pending_idx` (`next_attempt_at, created_at` WHERE `state IN
 ('PENDING','FAILED')`, migration 001) is **preserved unchanged**: the accepted
-claim is still global, so the global partial index remains correct. A lease-expiry
-index (e.g. on `lease_expires_at`, for reclaiming expired `PUBLISHING` rows) is
-**measured and added during implementation** — its necessity and shape must be
-confirmed against real volumes before it is created, not assumed here.
+claim is still global, so the global partial index remains correct. Migration
+050 CREATES a lease-expiry index (`outbox_lease_recovery_idx` on
+`lease_expires_at` WHERE `state = 'PUBLISHING'`) as part of the DB protocol.
+It is **provisional**: `outbox_claim` pins one `clock_timestamp()` per call so
+the expiry predicate is a plain range comparison the planner *can* drive from
+this index, but neither the plan choice nor the cost was measured against real
+volume. Before activation, confirm the plan and shape against representative
+volume (or drop it in a follow-up append-only migration if it proves
+unnecessary). It is additive and harmless on rollback.
 
 ## Not in scope — explicitly unsolved
 
@@ -676,23 +681,32 @@ This decision does **not** cover, and must not be read as covering:
 
 ## Rollback
 
-- **Activation gate (before the worker ever runs):** quiesce the legacy
-  in-process drain first (`API_SCHEDULER_ENABLED=0` and/or remove the
-  `outbox.drain` call) and let in-flight leases expire. The DB protocol
-  (migration 050) is additive and safe to apply while the legacy drain is
-  live, but the two must not CLAIM concurrently: the legacy drainer sets
-  `PUBLISHING` with a NULL lease and completes by `id` alone (no CAS), so it
-  could overwrite a fenced outcome and leave rows the lease-aware reclaim
-  will not select (it requires a non-NULL lease). Coexistence is therefore
-  more dangerous than duplicate publish.
+- **Activation gate (before the worker ever runs):** stop every legacy
+  publisher and PROVE none is in flight before the first new claim. Disabling
+  new ticks (`API_SCHEDULER_ENABLED=0` and/or removing the `outbox.drain`
+  call) is necessary but not sufficient: a legacy `drain` already running
+  holds no lease and completes by `id` alone (no CAS), so "let leases expire"
+  does not wait for it. The gate is: no legacy drain process is executing
+  (confirmed by process/worker shutdown or the drain's own completion
+  evidence), and no row is left mid-flight by it. The DB protocol (migration
+  050) is additive and safe to apply while the legacy drain is live, but the
+  two must not CLAIM concurrently — coexistence could overwrite a fenced
+  outcome and leave rows the lease-aware reclaim (which requires a non-NULL
+  lease) will never select. Coexistence is therefore more dangerous than
+  duplicate publish.
 - Disable the worker process and re-enable the previous drain path (API-side
   drain) — the only supported rollback, and only while the API still has that
-  capability. Before switching back, drain or explicitly resolve any row the
-  worker left in `PUBLISHING` (let its lease expire, then reclaim with the
-  current token or complete it); a `PUBLISHING` row with a NULL lease left by
-  the OLD drain is a pre-existing condition this migration does not repair.
-  Once the API's cross-tenant reach is removed, rollback is **forward-fix
-  only**: fix the worker, do not re-grant the API.
+  capability. **Never mark a claimed row `PUBLISHED` merely to clear state:**
+  `outbox_complete` records an outcome; it does not deliver. A worker that
+  died after claim and before publish leaves a `PUBLISHING` row whose
+  delivery is UNKNOWN, and completing it would lose the message. Resolve
+  worker-left rows only by: let the lease expire → reclaim with the current
+  token → publish with confirmation → complete; when delivery is uncertain,
+  RE-PUBLISH (at-least-once, consumers idempotent) rather than complete. A
+  `PUBLISHING` row with a NULL lease left by the OLD drain is a pre-existing
+  condition this migration does not repair. Once the API's cross-tenant reach
+  is removed, rollback is **forward-fix only**: fix the worker, do not
+  re-grant the API.
 - Drop the functions/policies/grants in a new append-only migration; never edit
   or remove migration 001.
 - Any new column/index is additive and stays in place on rollback — it is

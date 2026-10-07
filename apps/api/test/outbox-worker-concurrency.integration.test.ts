@@ -59,15 +59,18 @@ function withDatabase(base: string, database: string): string {
 
 describe.skipIf(!hasDb)("outbox worker concurrency (requires TEST_DATABASE_URL)", () => {
   const databaseName = `obx_conc_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-  const adminDb = createDb({ connectionString: withDatabase(connectionString as string, "postgres") });
-  let dedicatedUrl = "";
+  // Built inside beforeAll: the suite callback still runs under skipIf, so a
+  // module/describe-level `new URL(undefined)` would throw at collection time
+  // when TEST_DATABASE_URL is unset instead of skipping cleanly.
+  let adminDb: ReturnType<typeof createDb>;
   let dbOwner: ReturnType<typeof createDb>;
   let dbSessionA: ReturnType<typeof createDb>;
   let dbSessionB: ReturnType<typeof createDb>;
 
   beforeAll(async () => {
+    adminDb = createDb({ connectionString: withDatabase(connectionString as string, "postgres") });
     await sql`CREATE DATABASE ${sql.id(databaseName)}`.execute(adminDb);
-    dedicatedUrl = withDatabase(connectionString as string, databaseName);
+    const dedicatedUrl = withDatabase(connectionString as string, databaseName);
     dbOwner = createDb({ connectionString: dedicatedUrl });
     dbSessionA = createDb({ connectionString: dedicatedUrl });
     dbSessionB = createDb({ connectionString: dedicatedUrl });
@@ -76,8 +79,10 @@ describe.skipIf(!hasDb)("outbox worker concurrency (requires TEST_DATABASE_URL)"
 
   afterAll(async () => {
     await Promise.all([dbOwner?.destroy(), dbSessionA?.destroy(), dbSessionB?.destroy()]);
-    await sql`DROP DATABASE ${sql.id(databaseName)} WITH (FORCE)`.execute(adminDb);
-    await adminDb.destroy();
+    if (adminDb !== undefined) {
+      await sql`DROP DATABASE ${sql.id(databaseName)} WITH (FORCE)`.execute(adminDb);
+      await adminDb.destroy();
+    }
   });
 
   /** Seed `count` due PENDING rows for one fresh tenant. */
@@ -129,17 +134,23 @@ describe.skipIf(!hasDb)("outbox worker concurrency (requires TEST_DATABASE_URL)"
 
     await aHoldsClaim.promise;
 
-    // If SKIP LOCKED were missing, this would block on A's row lock forever
-    // (A is waiting for B) and the test would time out.
-    const rowB = await dbSessionB.transaction().execute(async (trx) => {
-      await sql`SET LOCAL ROLE outbox_worker`.execute(trx);
-      const res = await sql<ClaimRow>`
-        SELECT id, tenant_id, claim_token FROM platform.outbox_claim(1, 'wB', 300)
-      `.execute(trx);
-      return res.rows[0] ?? null;
-    });
-
-    bMayFinish.resolve();
+    // If SKIP LOCKED regressed, B would block on A's row lock (A waits for B),
+    // so a bounded statement_timeout turns that into a fast, clean failure
+    // instead of a hung teardown. `bMayFinish` is always released so A can
+    // finish even when B throws.
+    let rowB: ClaimRow | null = null;
+    try {
+      rowB = await dbSessionB.transaction().execute(async (trx) => {
+        await sql`SET LOCAL statement_timeout = '10s'`.execute(trx);
+        await sql`SET LOCAL ROLE outbox_worker`.execute(trx);
+        const res = await sql<ClaimRow>`
+          SELECT id, tenant_id, claim_token FROM platform.outbox_claim(1, 'wB', 300)
+        `.execute(trx);
+        return res.rows[0] ?? null;
+      });
+    } finally {
+      bMayFinish.resolve();
+    }
     const rowA = await sessionA;
 
     expect(ids).toContain(rowA.id);
