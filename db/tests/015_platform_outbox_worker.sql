@@ -253,6 +253,17 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'worker/executor roles must hold no large-object grants';
     END IF;
+    -- Parameter ACLs live outside every object catalog
+    -- (pg_parameter_acl, cluster-global): any entry naming either role —
+    -- SET or ALTER SYSTEM ON PARAMETER — is server-configuration power
+    -- outside the EXECUTE-only boundary.
+    IF EXISTS (
+        SELECT 1 FROM pg_parameter_acl AS p, aclexplode(p.paracl) AS a
+        JOIN pg_roles AS r ON r.oid = a.grantee
+        WHERE r.rolname IN ('outbox_worker', 'outbox_executor')
+    ) THEN
+        RAISE EXCEPTION 'worker/executor roles must hold no parameter privileges';
+    END IF;
     -- No grant option anywhere: neither role may hold any privilege WITH
     -- GRANT OPTION (which would let it re-grant the boundary to others).
     -- Owner entries name the migration owner, never these roles, so any

@@ -108,7 +108,11 @@ BEGIN;
 -- sequences (relacl), columns (attacl: a column-only GRANT survives a
 -- table-level audit and stays usable after the USAGE grant), functions
 -- (proacl), types (typacl), and large objects (lomacl, readable via
--- lo_get(oid)). A reused worker identity retaining e.g.
+-- lo_get(oid)), plus server parameters (pg_parameter_acl.paracl,
+-- cluster-global like roles: GRANT SET / ALTER SYSTEM ON PARAMETER ...
+-- is server-configuration power — e.g. ALTER SYSTEM ON PARAMETER
+-- archive_command — living outside every object catalog). A reused worker
+-- identity retaining e.g.
 -- SELECT on billing.charges would keep that access after becoming the
 -- worker, violating the EXECUTE-only boundary without touching `platform`.
 -- Database-level CONNECT/TEMP mechanics (datacl) are out of scope: the
@@ -194,6 +198,15 @@ BEGIN
                       WHERE a.grantee = v_worker_oid) THEN
             RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_worker" already holds direct privileges on database objects (any schema)';
         END IF;
+        -- Parameter ACLs live outside every object catalog
+        -- (pg_parameter_acl, cluster-global): a reused identity retaining
+        -- e.g. ALTER SYSTEM ON PARAMETER archive_command would keep
+        -- server-configuration power after becoming the worker.
+        IF EXISTS (SELECT 1 FROM pg_parameter_acl AS p,
+                   aclexplode(p.paracl) AS a
+                   WHERE a.grantee = v_worker_oid) THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_worker" already holds parameter privileges (GRANT SET / ALTER SYSTEM ON PARAMETER ... is server-configuration power outside the EXECUTE-only boundary)';
+        END IF;
     END IF;
 
     SELECT r.oid INTO v_executor_oid FROM pg_roles AS r WHERE r.rolname = 'outbox_executor';
@@ -250,6 +263,14 @@ BEGIN
                       aclexplode(l.lomacl) AS a
                       WHERE a.grantee = v_executor_oid) THEN
             RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_executor" already holds direct privileges on database objects (any schema)';
+        END IF;
+        -- Parameter ACLs live outside every object catalog
+        -- (pg_parameter_acl, cluster-global): same server-configuration
+        -- power, refused here with a distinct message.
+        IF EXISTS (SELECT 1 FROM pg_parameter_acl AS p,
+                   aclexplode(p.paracl) AS a
+                   WHERE a.grantee = v_executor_oid) THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_executor" already holds parameter privileges (GRANT SET / ALTER SYSTEM ON PARAMETER ... is server-configuration power outside the EXECUTE-only boundary)';
         END IF;
     END IF;
 END $$;
@@ -642,6 +663,18 @@ BEGIN
     IF (SELECT c.relacl::text FROM pg_class AS c
         WHERE c.oid = 'platform.outbox_transitions'::regclass) ~ '([,{])=[arwdDxtm]+/' THEN
         RAISE EXCEPTION 'migration 050 refused: installed audit table is still granted to PUBLIC';
+    END IF;
+    -- Parameter privileges are cluster-global and installed by nothing here:
+    -- any pg_parameter_acl entry naming either role — pre-existing or
+    -- injected by a concurrent GRANT at install time — breaks the
+    -- EXECUTE-only boundary. Zero entries are expected, so grant-option is
+    -- implicitly covered too.
+    IF EXISTS (
+        SELECT 1 FROM pg_parameter_acl AS p, aclexplode(p.paracl) AS a
+        JOIN pg_roles AS r ON r.oid = a.grantee
+        WHERE r.rolname IN ('outbox_worker', 'outbox_executor')
+    ) THEN
+        RAISE EXCEPTION 'migration 050 refused: worker/executor roles hold unexpected parameter privileges (no GRANT ... ON PARAMETER ... may name these roles)';
     END IF;
     IF (SELECT count(*) FROM pg_policies
         WHERE schemaname = 'platform' AND tablename = 'outbox_messages') <> 1

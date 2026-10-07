@@ -93,6 +93,18 @@ note_cleanup_error() {
   fi
 }
 
+# Parameter ACLs (pg_parameter_acl) are cluster-global: dropping the scratch
+# database does NOT remove them, and DROP ROLE refuses while any remain
+# ("privileges for parameter ..."). Strip them before every DROP ROLE so a
+# parameter-acl scenario cleans up exactly like every other scenario. The
+# subselect yields NULL for an already-dropped role, so this is a no-op
+# there; only SET / ALTER SYSTEM entries can name the role.
+strip_parameter_acls() {
+  local role="$1"
+  psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -q -c \
+    "DO \$do\$DECLARE v_param text; BEGIN FOR v_param IN SELECT p.parname FROM pg_parameter_acl AS p, aclexplode(p.paracl) AS a WHERE a.grantee = (SELECT oid FROM pg_roles WHERE rolname = '$role') LOOP EXECUTE format('REVOKE ALL ON PARAMETER %I FROM %I', v_param, '$role'); END LOOP; END \$do\$;" >/dev/null
+}
+
 # Best-effort drops for the EXIT trap: try, VERIFY, and record — never abort
 # the remaining cleanup and never silence a failure.
 drop_db_best_effort() {
@@ -111,6 +123,7 @@ drop_db_best_effort() {
 
 drop_role_best_effort() {
   local role="$1"
+  strip_parameter_acls "$role" >/dev/null 2>&1 || true
   if psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -q -c "DROP ROLE IF EXISTS \"$role\"" >/dev/null 2>&1; then
     if [[ "$(psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_roles WHERE rolname = '$role'" 2>/dev/null)" != "0" ]]; then
       note_cleanup_error "role $role still exists after DROP"
@@ -156,6 +169,7 @@ create_from_template() {
 
 drop_role_verified() {
   local role="$1"
+  strip_parameter_acls "$role"
   psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -q -c "DROP ROLE IF EXISTS \"$role\"" >/dev/null
   if [[ "$(psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_roles WHERE rolname = '$role'")" != "0" ]]; then
     fail "role $role still exists after DROP (check dependent objects)"
@@ -419,6 +433,23 @@ expect_refuse "worker-large-object-grant" 'direct privileges on database objects
   "CREATE ROLE outbox_worker LOGIN NOBYPASSRLS" \
   "SELECT lo_create(170001)" \
   "GRANT SELECT ON LARGE OBJECT 170001 TO outbox_worker"
+
+# Parameter-ACL reuse: a worker retaining ALTER SYSTEM ON PARAMETER keeps
+# server-configuration power outside the EXECUTE-only boundary — refused with
+# a distinct 'parameter privileges' message. pg_parameter_acl is
+# cluster-global, so cleanup strips it before DROP ROLE (see
+# strip_parameter_acls); the scenario itself touches no table state.
+CURRENT_ROLES="outbox_worker"
+expect_refuse "worker-parameter-acl" 'parameter privileges' \
+  "CREATE ROLE outbox_worker LOGIN NOBYPASSRLS" \
+  "GRANT ALTER SYSTEM ON PARAMETER archive_command TO outbox_worker"
+
+# Same hole through the executor identity: SET ON PARAMETER is the other
+# half of the parameter-privilege surface (read/change server configuration).
+CURRENT_ROLES="outbox_executor"
+expect_refuse "executor-parameter-acl" 'parameter privileges' \
+  "CREATE ROLE outbox_executor NOLOGIN NOINHERIT NOBYPASSRLS" \
+  "GRANT SET ON PARAMETER log_min_duration_statement TO outbox_executor"
 
 # Non-superuser deployer (P1a): establishing executor ownership (ALTER ...
 # OWNER TO a fresh zero-membership role) needs membership-or-superuser, and
