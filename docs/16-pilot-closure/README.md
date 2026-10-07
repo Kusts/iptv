@@ -1,0 +1,45 @@
+# Pilot Closure — Wave 17 (execução)
+
+> Status: **IN_EXECUTION — P0** (2026-10-07)
+> SPEC de origem: `IPTV Pilot Closure SPEC v1` + `IPTV Pilot Closure PLAN v1`
+> (recebidos do operador nesta sessão; texto integral na proposta, não
+> duplicado aqui).
+> Revisão normativa: [`SPEC-PLAN-REVIEW.md`](SPEC-PLAN-REVIEW.md)
+> Autoridade: este diretório **complementa** `docs/15-implementation-baseline/`
+> e não o substitui. Em conflito, o baseline vence até ADR/revisão que o
+> atualize (ver REVIEW §1).
+> Registro de entrega: `CHANGELOG.md` (`## Unreleased`).
+
+## Decisões jev (MCP jev, nesta sessão)
+
+- `jev_decide`: interlock via **migration 051** com autoridade em DB
+  (`opt_a_051_db`, conf. 0.66); documentar em **novo `docs/16-pilot-closure/`**
+  (conf. 0.98); implementação em **fatias P0 primeiro** (conf. 0.97).
+- `jev_gate` (migration 051 + docs + drift): `confirm`, risco 2.02, não-produção.
+  Autorização do operador: pedido explícito "inicie a implementação completa".
+
+## Fatias P0 (PRs `closure/p0-*`, um PLAN, sem PR gigante)
+
+| Slice | Escopo | Dono | Estado |
+|---|---|---|---|
+| `p0-docs` | REVIEW + este README + drift count-agnostic + CHANGELOG | Planner | DONE nesta sessão |
+| `p0-outbox-interlock` | migration 051 + gate legacy em DB + claim gate + testes | coder → tester → reviewer | DONE (Round 2 APPROVED + PASS) |
+| `p0-worker-p2s` | shutdown/batch accounting + heartbeat em drain + roleGuard database-wide | coder → tester → reviewer | DONE (incluído no mesmo ciclo) |
+| `p0-015-integration` | 015 pós-051 (postura+lifecycle sob WORKER; 016 mantém CAS/NULL/rollback) | coder → tester → reviewer | DONE (tester PASS ponta a ponta 001–016; reviewer R2 BLOCKED-somente-por-falta-de-shell suprido por evidência do planner: diff confirma só arquivos do escopo P0 aprovado, migrations 001–050 intactas, 3 gates Python verdes) |
+| `p0-staging-10` | staging da issue #10 após merge P0 | posterior | PENDENTE — requer PR + human merge (sem merge automático) + CI da main |
+
+## Ordem após P0 (PLAN v1, sem nova SPEC)
+
+```text
+P1 RLS ──────┬─ P2 Agent/Workflow (após contratos P1)
+             ├─ P4 Frontend (usa backend existente)
+             └─ preparação P3 (certificações só após staging seguro)
+P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
+```
+
+## Artefatos finais (C9 + PLAN — acompanhar aqui)
+
+RLS inventory · Worker inventory · Integration certification register ·
+Agent evaluation report · Workflow runtime ADR · E2E G/F evidence matrix ·
+Staging evidence · DR evidence · Security closure report · Performance report ·
+Pilot evidence report · final release readiness report.

@@ -681,19 +681,36 @@ This decision does **not** cover, and must not be read as covering:
 
 ## Rollback
 
-- **Activation gate (before the worker ever runs):** stop every legacy
-  publisher and PROVE none is in flight before the first new claim. Disabling
-  new ticks (`API_SCHEDULER_ENABLED=0` and/or removing the `outbox.drain`
-  call) is necessary but not sufficient: a legacy `drain` already running
-  holds no lease and completes by `id` alone (no CAS), so "let leases expire"
-  does not wait for it. The gate is: no legacy drain process is executing
-  (confirmed by process/worker shutdown or the drain's own completion
-  evidence), and no row is left mid-flight by it. The DB protocol (migration
-  050) is additive and safe to apply while the legacy drain is live, but the
-  two must not CLAIM concurrently — coexistence could overwrite a fenced
-  outcome and leave rows the lease-aware reclaim (which requires a non-NULL
-  lease) will never select. Coexistence is therefore more dangerous than
-  duplicate publish.
+- **Activation gate (before the worker ever runs):** the gate is now a
+  DATABASE live-interlock (migration `051`), not a copied env var. The
+  runtime mode is authoritative in `platform.outbox_runtime_control`
+  (singleton `id=1`, seed `LEGACY` gen 1); switch it ONLY through
+  `platform.outbox_runtime_set(p_from, p_to, p_actor, p_expected_generation)` as the superuser
+  operator (granted to nobody by design):
+  `LEGACY -> QUIESCING -> WORKER` (rollback is forward-fix
+  `WORKER -> QUIESCING -> LEGACY`, never a DOWN migration). Procedure:
+  set `LEGACY_OUTBOX_DRAIN_ENABLED=0` (and/or stop the scheduler) →
+  `GET /v1/admin/outbox/drain-state` until `inFlight = 0`
+  (`waitForQuiescence` bounds the wait; a stopped trigger is NOT proof) →
+  `SELECT platform.outbox_runtime_set('LEGACY','QUIESCING','<operator>', 1)`
+  (the legacy drain now refuses new drains in `QUIESCING`/`WORKER` by
+  consulting `platform.outbox_runtime_mode()` before every drain — same
+  409 as the env kill-switch, which stays as defense in depth) → prove
+  zero unfenced rows as owner
+  (`SELECT count(*) FROM platform.outbox_messages WHERE state='PUBLISHING'
+  AND lease_expires_at IS NULL` must be 0; rows WITH a lease never block —
+  reclaim covers them) →
+  `SELECT platform.outbox_runtime_set('QUIESCING','WORKER','<operator>', 2)`
+  (refused while unfenced rows exist; concurrent second writers observe 0
+  rows and fail via generation-CAS — pass the generation just observed via
+  `platform.outbox_runtime_mode()`/control row, never a guessed number) → assert `OUTBOX_LEGACY_QUIESCED=1` AND copy the
+  observed state (`OUTBOX_LEGACY_DRAIN_ENABLED=0`,
+  `OUTBOX_LEGACY_IN_FLIGHT=0` — unknown refuses boot) →
+  `outbox-worker check` (exit 0) → `run --once` smoke → start the loop.
+  The worker needs no new hot-path call: `platform.outbox_claim` itself
+  `RAISE`s outside `WORKER` mode. Disabling new ticks is necessary but not
+  sufficient: a legacy `drain` already running holds no lease and completes
+  by `id` alone (no CAS), so "let leases expire" does not wait for it.
 - Disable the worker process and re-enable the previous drain path (API-side
   drain) — the only supported rollback, and only while the API still has that
   capability. **Never mark a claimed row `PUBLISHED` merely to clear state:**
@@ -737,8 +754,9 @@ drain, and staging with the new roles.
 
 ## Worker process + legacy quiescence (implemented 2026-10-07, issue #10)
 
-The runtime half of this decision now exists; the DB protocol above is
-unchanged (migration 050 frozen, no 051 was needed):
+The runtime half of this decision now exists, and migration 051 implements
+the DB live-interlock protocol described above (supersedes the earlier
+"no 051 was needed" note):
 
 - **Process** `apps/outbox-worker/` (`@iptv/outbox-worker`, see its README):
   connects EXCLUSIVELY via `OUTBOX_WORKER_DATABASE_URL` (parse-time username

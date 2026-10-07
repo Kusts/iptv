@@ -13,6 +13,17 @@
  *       executor);
  *   (e) EXECUTE on exactly the four lifecycle functions with their exact
  *       signatures from migration 050.
+ *   (f) zero cluster-global parameter ACLs (`pg_parameter_acl`) naming the
+ *       worker — `GRANT ... ON PARAMETER ...` is server-configuration
+ *       power living outside every object catalog (051 mirror).
+ *   (g) the worker owns NO object in the database (relations, functions,
+ *       types, schemas, large objects) — 051 mirror.
+ *   (h) no `CREATE` on the `platform` schema — the worker may USE the
+ *       schema to reach its functions, never create in it.
+ *
+ * Deliberately NOT asserted: `TEMPORARY` on the database and other
+ * instance defaults vary by provider (PUBLIC defaults, cloud presets) and
+ * confer no object access by themselves — documented here, never gated.
  *
  * Failure messages name only the failed predicate — never values, URLs, or
  * tokens. The query port is injectable so the whole matrix is unit-testable.
@@ -101,6 +112,30 @@ export async function assertOutboxWorkerIdentity(query: RoleQuery): Promise<Role
     if (check["v"] !== true) {
       throw new RoleGuardError("lifecycle function is not executable by the worker identity");
     }
+  }
+
+  const parameterAcls = await singleRow(
+    query,
+    "SELECT count(*)::int AS n FROM pg_parameter_acl AS p, aclexplode(p.paracl) AS a WHERE a.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'outbox_worker')",
+  );
+  if (Number(parameterAcls["n"]) !== 0) {
+    throw new RoleGuardError("unexpected parameter privileges for the worker identity");
+  }
+
+  const ownedObjects = await singleRow(
+    query,
+    "SELECT ((SELECT count(*) FROM pg_class WHERE relowner = (SELECT oid FROM pg_roles WHERE rolname = 'outbox_worker')) + (SELECT count(*) FROM pg_proc WHERE proowner = (SELECT oid FROM pg_roles WHERE rolname = 'outbox_worker')) + (SELECT count(*) FROM pg_type WHERE typowner = (SELECT oid FROM pg_roles WHERE rolname = 'outbox_worker')) + (SELECT count(*) FROM pg_namespace WHERE nspowner = (SELECT oid FROM pg_roles WHERE rolname = 'outbox_worker')) + (SELECT count(*) FROM pg_largeobject_metadata WHERE lomowner = (SELECT oid FROM pg_roles WHERE rolname = 'outbox_worker')))::int AS n",
+  );
+  if (Number(ownedObjects["n"]) !== 0) {
+    throw new RoleGuardError("worker identity owns database objects");
+  }
+
+  const schemaCreate = await singleRow(
+    query,
+    "SELECT has_schema_privilege('platform', 'CREATE') AS v",
+  );
+  if (schemaCreate["v"] !== false) {
+    throw new RoleGuardError("schema create privilege detected on platform schema");
   }
 
   return { ok: true };

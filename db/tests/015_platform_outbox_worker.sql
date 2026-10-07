@@ -1,7 +1,9 @@
--- 015 Platform outbox worker proofs against migration 050 (hybrid-C).
+-- 015 Platform outbox worker proofs against migrations 050 (hybrid-C) + 051
+-- (runtime live-interlock).
 -- Proves the dedicated worker boundary on `platform.outbox_messages`:
 -- worker LOGIN role with EXECUTE-only on the four SECURITY DEFINER
--- lifecycle functions (claim/renew/complete/fail), server lease + token +
+-- lifecycle functions (claim/renew/complete/fail) plus the narrow
+-- outbox_runtime_mode() read authority, server lease + token +
 -- CAS fencing, crash reclaim without manual repair, tenant containment of
 -- the worker process, bounded input fail-closed, append-only audit.
 -- SINGLE SESSION: this file runs every scenario on one connection, so its
@@ -13,7 +15,12 @@
 -- 050 file on scratch databases with pre-created roles.
 -- This does NOT wire the dedicated worker process, remove the in-process
 -- scheduler drain, or enroll inbox/scheduler/dispatcher/billing/finance.
--- Fixture rows and attempted writes ROLLBACK; roles/functions/policies persist.
+-- Post-051 the claim itself is gated on the runtime authority: this file
+-- activates WORKER in-block (LEGACY gen 1 -> QUIESCING gen 2 -> WORKER gen 3,
+-- actor '015-proof', unfenced-zero proven between the steps) and exercises
+-- the lifecycle under the active protocol; interlock CAS/NULL/rollback
+-- proofs live in 016 and are NOT duplicated here.
+-- Fixture rows, transitions and control switches ROLLBACK; roles/functions/policies persist.
 -- Execute only on a disposable database after applying every migration:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/015_platform_outbox_worker.sql
 \set ON_ERROR_STOP on
@@ -91,52 +98,136 @@ BEGIN
     END IF;
 
     -- Ownership posture: the worker owns nothing; the executor owns EXACTLY
-    -- the four lifecycle functions (allow-listed) and nothing else — no
-    -- table/sequence/type/schema ownership that could alter the trust model.
+    -- the six functions (four lifecycle + mode/set, allow-listed below) and
+    -- EXACTLY the two runtime tables (051 authority) with their dependent
+    -- objects (pkey indexes, toast table/index) — and nothing else: no
+    -- outbox_messages/transitions ownership, no sequence/type/schema
+    -- ownership that could alter the trust model. (050 era: the executor
+    -- owned no relations at all; 051 adds only the two runtime tables, which
+    -- carry zero grants — the executor reads them by ownership.)
     IF EXISTS (SELECT 1 FROM pg_class AS c JOIN pg_roles AS r ON r.oid = c.relowner
-               WHERE r.rolname IN ('outbox_worker', 'outbox_executor')) THEN
-        RAISE EXCEPTION 'worker/executor roles must own no relations';
+               WHERE r.rolname = 'outbox_worker') THEN
+        RAISE EXCEPTION 'outbox_worker must own no relations';
+    END IF;
+    IF (SELECT pg_get_userbyid(c.relowner) FROM pg_class AS c
+        WHERE c.oid = 'platform.outbox_runtime_control'::regclass) <> 'outbox_executor' THEN
+        RAISE EXCEPTION 'runtime control table must be owned by outbox_executor';
+    END IF;
+    IF (SELECT pg_get_userbyid(c.relowner) FROM pg_class AS c
+        WHERE c.oid = 'platform.outbox_runtime_transitions'::regclass) <> 'outbox_executor' THEN
+        RAISE EXCEPTION 'runtime transitions table must be owned by outbox_executor';
+    END IF;
+    IF (SELECT count(*) FROM pg_class AS c
+        JOIN pg_roles AS r ON r.oid = c.relowner
+        JOIN pg_namespace AS n ON n.oid = c.relnamespace
+        WHERE r.rolname = 'outbox_executor'
+          AND n.nspname = 'platform' AND c.relkind = 'r') <> 2 THEN
+        RAISE EXCEPTION 'outbox_executor must own exactly the two runtime tables in platform';
+    END IF;
+    -- pg_toast is allow-listed by LINKAGE, not by schema: only the toast
+    -- table of each runtime table (pg_class.reltoastrelid) and the indexes
+    -- built on those toast tables (pg_index.indrelid) are tolerated. Any
+    -- other executor-owned toast relation fails here.
+    IF EXISTS (SELECT 1 FROM pg_class AS c
+               JOIN pg_roles AS r ON r.oid = c.relowner
+               JOIN pg_namespace AS n ON n.oid = c.relnamespace
+               WHERE r.rolname = 'outbox_executor'
+                 AND NOT ((n.nspname = 'platform' AND c.relname IN
+                   ('outbox_runtime_control', 'outbox_runtime_transitions',
+                    'outbox_runtime_control_pkey', 'outbox_runtime_transitions_pkey'))
+                   OR (n.nspname = 'pg_toast'
+                       AND (EXISTS (SELECT 1 FROM pg_class AS t
+                                   WHERE t.oid IN ('platform.outbox_runtime_control'::regclass,
+                                                   'platform.outbox_runtime_transitions'::regclass)
+                                     AND t.reltoastrelid = c.oid)
+                            OR EXISTS (SELECT 1 FROM pg_index AS ix
+                                       JOIN pg_class AS t ON t.reltoastrelid = ix.indrelid
+                                       WHERE ix.indexrelid = c.oid
+                                         AND t.oid IN ('platform.outbox_runtime_control'::regclass,
+                                                       'platform.outbox_runtime_transitions'::regclass)))))) THEN
+        RAISE EXCEPTION 'outbox_executor must own only the two runtime tables and their dependent objects';
+    END IF;
+    -- The runtime tables carry ZERO grants (owner-implicit only): the
+    -- executor reads them by ownership, worker/app roles reach them ONLY
+    -- through functions. A PUBLIC entry is invisible to the aclexplode JOIN
+    -- (empty grantee), so it is refused separately by ACL-text match.
+    IF EXISTS (
+        SELECT 1 FROM pg_class AS c, aclexplode(c.relacl) AS a
+        WHERE c.oid IN ('platform.outbox_runtime_control'::regclass,
+                        'platform.outbox_runtime_transitions'::regclass)
+          AND a.grantee <> c.relowner
+    ) THEN
+        RAISE EXCEPTION 'runtime tables must carry zero non-owner grants';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_class AS c
+        WHERE c.oid IN ('platform.outbox_runtime_control'::regclass,
+                        'platform.outbox_runtime_transitions'::regclass)
+          AND c.relacl::text ~ '([,{])=[arwdDxtm]+/'
+    ) THEN
+        RAISE EXCEPTION 'runtime tables must be revoked from PUBLIC';
     END IF;
     IF EXISTS (SELECT 1 FROM pg_namespace AS n JOIN pg_roles AS r ON r.oid = n.nspowner
                WHERE r.rolname IN ('outbox_worker', 'outbox_executor')) THEN
         RAISE EXCEPTION 'worker/executor roles must own no schemas';
     END IF;
+    -- Type dependents (051): each executor-owned table brings its composite
+    -- rowtype ('c', linked to the table) plus the auto-created array type
+    -- ('b'); the worker still owns no types, and the executor owns nothing
+    -- beyond these four dependents.
     IF EXISTS (SELECT 1 FROM pg_type AS t JOIN pg_roles AS r ON r.oid = t.typowner
-               WHERE r.rolname IN ('outbox_worker', 'outbox_executor')) THEN
-        RAISE EXCEPTION 'worker/executor roles must own no types';
+               WHERE r.rolname = 'outbox_worker') THEN
+        RAISE EXCEPTION 'outbox_worker must own no types';
+    END IF;
+    IF (SELECT count(*) FROM pg_type AS t JOIN pg_roles AS r ON r.oid = t.typowner
+        WHERE r.rolname = 'outbox_executor') <> 4 THEN
+        RAISE EXCEPTION 'outbox_executor must own exactly the four dependent types of the two runtime tables';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_type AS t
+               JOIN pg_roles AS r ON r.oid = t.typowner
+               LEFT JOIN pg_class AS c ON c.oid = t.typrelid
+               WHERE r.rolname = 'outbox_executor'
+                 AND NOT ((t.typtype = 'c' AND c.relname IN
+                   ('outbox_runtime_control', 'outbox_runtime_transitions'))
+                   OR (t.typtype = 'b' AND t.typname IN
+                   ('_outbox_runtime_control', '_outbox_runtime_transitions')))) THEN
+        RAISE EXCEPTION 'outbox_executor must own only the dependent types of the two runtime tables';
     END IF;
     IF EXISTS (SELECT 1 FROM pg_largeobject_metadata AS l JOIN pg_roles AS r ON r.oid = l.lomowner
                WHERE r.rolname IN ('outbox_worker', 'outbox_executor')) THEN
         RAISE EXCEPTION 'worker/executor roles must own no large objects';
     END IF;
     IF (SELECT count(*) FROM pg_proc AS p JOIN pg_roles AS r ON r.oid = p.proowner
-        WHERE r.rolname = 'outbox_executor') <> 4 THEN
-        RAISE EXCEPTION 'outbox_executor must own exactly the four lifecycle functions';
+        WHERE r.rolname = 'outbox_executor') <> 6 THEN
+        RAISE EXCEPTION 'outbox_executor must own exactly the six functions (four lifecycle + mode/set)';
     END IF;
     IF EXISTS (SELECT 1 FROM pg_proc AS p
                JOIN pg_roles AS r ON r.oid = p.proowner
                JOIN pg_namespace AS n ON n.oid = p.pronamespace
                WHERE r.rolname = 'outbox_executor'
                AND NOT (n.nspname = 'platform' AND p.proname IN
-                 ('outbox_claim', 'outbox_renew', 'outbox_complete', 'outbox_fail'))) THEN
-        RAISE EXCEPTION 'outbox_executor must own nothing outside the four lifecycle functions';
+                 ('outbox_claim', 'outbox_renew', 'outbox_complete', 'outbox_fail',
+                  'outbox_runtime_mode', 'outbox_runtime_set'))) THEN
+        RAISE EXCEPTION 'outbox_executor must own nothing outside the six lifecycle/runtime functions';
     END IF;
     IF EXISTS (SELECT 1 FROM pg_proc AS p JOIN pg_roles AS r ON r.oid = p.proowner
                WHERE r.rolname = 'outbox_worker') THEN
         RAISE EXCEPTION 'outbox_worker must own no functions';
     END IF;
 
-    -- The four functions exist, are SECURITY DEFINER, executor-owned, with a
+    -- The six functions exist, are SECURITY DEFINER, executor-owned, with a
     -- fixed search_path and no PUBLIC execute.
     IF (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'platform' AND p.proname IN
-        ('outbox_claim', 'outbox_renew', 'outbox_complete', 'outbox_fail')) <> 4 THEN
-        RAISE EXCEPTION 'all four outbox lifecycle functions must exist';
+        ('outbox_claim', 'outbox_renew', 'outbox_complete', 'outbox_fail',
+         'outbox_runtime_mode', 'outbox_runtime_set')) <> 6 THEN
+        RAISE EXCEPTION 'all six outbox functions (four lifecycle + mode/set) must exist';
     END IF;
     IF EXISTS (
         SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'platform' AND p.proname IN
-        ('outbox_claim', 'outbox_renew', 'outbox_complete', 'outbox_fail')
+        ('outbox_claim', 'outbox_renew', 'outbox_complete', 'outbox_fail',
+         'outbox_runtime_mode', 'outbox_runtime_set')
         AND (p.prosecdef IS DISTINCT FROM true
             OR pg_get_userbyid(p.proowner) <> 'outbox_executor'
             OR p.proconfig IS DISTINCT FROM ARRAY['search_path=platform, pg_temp'])
@@ -162,14 +253,32 @@ BEGIN
     IF NOT has_function_privilege('outbox_worker', 'platform.outbox_fail(uuid, uuid, text, timestamptz)', 'EXECUTE') THEN
         RAISE EXCEPTION 'outbox_worker must hold EXECUTE on outbox_fail';
     END IF;
+    -- mode() is the narrow read authority: worker AND app may EXECUTE it;
+    -- set() is granted to NOBODY (operator-only: the superuser bypasses
+    -- privilege checks, so no grant is needed).
+    IF NOT has_function_privilege('outbox_worker', 'platform.outbox_runtime_mode()', 'EXECUTE') THEN
+        RAISE EXCEPTION 'outbox_worker must hold EXECUTE on outbox_runtime_mode';
+    END IF;
+    IF has_function_privilege('outbox_worker', 'platform.outbox_runtime_set(text, text, text, integer)', 'EXECUTE') THEN
+        RAISE EXCEPTION 'outbox_worker must not execute outbox_runtime_set';
+    END IF;
+    IF NOT has_function_privilege('iptv_app', 'platform.outbox_runtime_mode()', 'EXECUTE') THEN
+        RAISE EXCEPTION 'iptv_app must hold EXECUTE on outbox_runtime_mode';
+    END IF;
+    IF has_function_privilege('iptv_app', 'platform.outbox_runtime_set(text, text, text, integer)', 'EXECUTE') THEN
+        RAISE EXCEPTION 'iptv_app must not execute outbox_runtime_set';
+    END IF;
     -- PUBLIC EXECUTE appears in proacl as a bare "=X/grantor" entry
     -- (after "{" or ","); role grants look like "name=X/grantor" (013 idiom).
+    -- All six functions (four lifecycle + mode/set) are revoked from PUBLIC.
     FOR v_fn IN
         SELECT unnest(ARRAY[
             'platform.outbox_claim(integer, text, integer)',
             'platform.outbox_renew(uuid, uuid, integer)',
             'platform.outbox_complete(uuid, uuid)',
-            'platform.outbox_fail(uuid, uuid, text, timestamptz)'
+            'platform.outbox_fail(uuid, uuid, text, timestamptz)',
+            'platform.outbox_runtime_mode()',
+            'platform.outbox_runtime_set(text, text, text, integer)'
         ])
     LOOP
         IF EXISTS (
@@ -184,11 +293,15 @@ BEGIN
         OR has_function_privilege('iptv_app', 'platform.outbox_renew(uuid, uuid, integer)', 'EXECUTE')
         OR has_function_privilege('iptv_app', 'platform.outbox_complete(uuid, uuid)', 'EXECUTE')
         OR has_function_privilege('iptv_app', 'platform.outbox_fail(uuid, uuid, text, timestamptz)', 'EXECUTE') THEN
-        RAISE EXCEPTION 'iptv_app must not execute any worker function (API is not a worker)';
+        RAISE EXCEPTION 'iptv_app must not execute any worker lifecycle function (API is not a worker)';
     END IF;
-    -- Grantee allow-list: the ONLY named grantees on the four functions are
-    -- the owner (outbox_executor, implicit) and outbox_worker (EXECUTE).
-    -- Any third grantee — pre-existing or concurrent — breaks the boundary.
+    IF has_function_privilege('iptv_app', 'platform.outbox_runtime_set(text, text, text, integer)', 'EXECUTE') THEN
+        RAISE EXCEPTION 'iptv_app must not execute outbox_runtime_set (operator-only switch)';
+    END IF;
+    -- Grantee allow-list: the ONLY named grantees on the four lifecycle
+    -- functions are the owner (outbox_executor, implicit) and outbox_worker
+    -- (EXECUTE). Any third grantee — pre-existing or concurrent — breaks
+    -- the boundary.
     FOR v_fn IN
         SELECT unnest(ARRAY[
             'platform.outbox_claim(integer, text, integer)',
@@ -206,6 +319,47 @@ BEGIN
             RAISE EXCEPTION 'worker function % has an unexpected grantee (only outbox_worker may be granted)', v_fn;
         END IF;
     END LOOP;
+    -- Exact privilege on the four lifecycle functions (051 idiom): every
+    -- non-owner entry must be outbox_worker EXECUTE WITHOUT grant option —
+    -- grantee identity alone would still allow WITH GRANT OPTION re-grants.
+    IF EXISTS (
+        SELECT 1 FROM pg_proc AS p, aclexplode(p.proacl) AS a
+        WHERE p.oid IN (
+            'platform.outbox_claim(integer, text, integer)'::regprocedure,
+            'platform.outbox_renew(uuid, uuid, integer)'::regprocedure,
+            'platform.outbox_complete(uuid, uuid)'::regprocedure,
+            'platform.outbox_fail(uuid, uuid, text, timestamptz)'::regprocedure)
+          AND NOT ((a.grantee = p.proowner)
+                OR (a.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'outbox_worker')
+                    AND a.privilege_type = 'EXECUTE'
+                    AND NOT a.is_grantable))
+    ) THEN
+        RAISE EXCEPTION 'lifecycle functions must grant only worker EXECUTE without grant option (plus owner entries)';
+    END IF;
+    -- mode() exact privilege (051:359-368 mirror): ONLY outbox_worker +
+    -- iptv_app EXECUTE WITHOUT grant option (plus tolerated owner entries);
+    -- set() names NOBODY besides its owner (operator-only).
+    IF EXISTS (
+        SELECT 1 FROM pg_proc AS p, aclexplode(p.proacl) AS a
+        WHERE p.oid = 'platform.outbox_runtime_mode()'::regprocedure
+          AND NOT ((a.grantee = p.proowner)
+                OR (a.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'outbox_worker')
+                    AND a.privilege_type = 'EXECUTE'
+                    AND NOT a.is_grantable)
+                OR (a.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'iptv_app')
+                    AND a.privilege_type = 'EXECUTE'
+                    AND NOT a.is_grantable))
+    ) THEN
+        RAISE EXCEPTION 'outbox_runtime_mode must grant only worker/app EXECUTE without grant option (plus owner entries)';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_proc AS p, aclexplode(p.proacl) AS a
+        JOIN pg_roles AS r ON r.oid = a.grantee
+        WHERE p.oid = 'platform.outbox_runtime_set(text, text, text, integer)'::regprocedure
+          AND r.rolname NOT IN ('outbox_executor')
+    ) THEN
+        RAISE EXCEPTION 'outbox_runtime_set must name no grantee besides its owner';
+    END IF;
 
     -- Zero direct table privileges for the worker: EXECUTE-only, nothing else.
     -- Column-level grants (attacl) are checked explicitly: has_*_privilege
@@ -218,7 +372,9 @@ BEGIN
         OR has_table_privilege('outbox_worker', 'platform.outbox_transitions', 'SELECT')
         OR has_table_privilege('outbox_worker', 'platform.outbox_transitions', 'INSERT')
         OR has_table_privilege('outbox_worker', 'platform.outbox_transitions', 'UPDATE')
-        OR has_table_privilege('outbox_worker', 'platform.outbox_transitions', 'DELETE') THEN
+        OR has_table_privilege('outbox_worker', 'platform.outbox_transitions', 'DELETE')
+        OR has_table_privilege('outbox_worker', 'platform.outbox_runtime_control', 'SELECT')
+        OR has_table_privilege('outbox_worker', 'platform.outbox_runtime_transitions', 'SELECT') THEN
         RAISE EXCEPTION 'outbox_worker must hold zero table privileges (EXECUTE on functions only)';
     END IF;
     -- Append-only audit: the executor may INSERT/SELECT but never UPDATE/DELETE.
@@ -264,10 +420,11 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'worker/executor roles must hold no parameter privileges';
     END IF;
-    -- No grant option anywhere: neither role may hold any privilege WITH
-    -- GRANT OPTION (which would let it re-grant the boundary to others).
-    -- Owner entries name the migration owner, never these roles, so any
-    -- grantable entry here is a third-party injection path.
+    -- No grant option anywhere: none of the worker/executor/app roles may
+    -- hold any privilege WITH GRANT OPTION (which would let it re-grant
+    -- the boundary to others). Owner entries name the migration owner,
+    -- never these roles, so any grantable entry here is a third-party
+    -- injection path.
     IF EXISTS (
         SELECT 1 FROM (
             SELECT a.grantee, a.is_grantable FROM pg_namespace AS n, aclexplode(n.nspacl) AS a
@@ -283,15 +440,15 @@ BEGIN
             SELECT a.grantee, a.is_grantable FROM pg_largeobject_metadata AS l, aclexplode(l.lomacl) AS a
         ) AS g
         JOIN pg_roles AS r ON r.oid = g.grantee
-        WHERE r.rolname IN ('outbox_worker', 'outbox_executor')
+        WHERE r.rolname IN ('outbox_worker', 'outbox_executor', 'iptv_app')
           AND g.is_grantable
     ) THEN
-        RAISE EXCEPTION 'worker/executor roles must hold no grantable (WITH GRANT OPTION) privileges';
+        RAISE EXCEPTION 'worker/executor/app roles must hold no grantable (WITH GRANT OPTION) privileges';
     END IF;
     -- Worker allow-list, database-wide: USAGE on the platform schema plus
-    -- EXECUTE on exactly the four functions (asserted above); no relation
-    -- grant anywhere, no function grant outside the four, no other schema
-    -- grant anywhere.
+    -- EXECUTE on exactly the four lifecycle functions and outbox_runtime_mode
+    -- (asserted above); no relation grant anywhere, no other function grant,
+    -- no other schema grant anywhere.
     IF EXISTS (
         SELECT 1 FROM pg_namespace AS n, aclexplode(n.nspacl) AS a
         JOIN pg_roles AS r ON r.oid = a.grantee
@@ -315,14 +472,18 @@ BEGIN
               'platform.outbox_claim(integer, text, integer)'::regprocedure,
               'platform.outbox_renew(uuid, uuid, integer)'::regprocedure,
               'platform.outbox_complete(uuid, uuid)'::regprocedure,
-              'platform.outbox_fail(uuid, uuid, text, timestamptz)'::regprocedure)
+              'platform.outbox_fail(uuid, uuid, text, timestamptz)'::regprocedure,
+              'platform.outbox_runtime_mode()'::regprocedure)
     ) THEN
-        RAISE EXCEPTION 'outbox_worker must hold EXECUTE on the four lifecycle functions only';
+        RAISE EXCEPTION 'outbox_worker must hold EXECUTE on the four lifecycle functions plus outbox_runtime_mode only';
     END IF;
     -- Executor allow-list, database-wide: USAGE on the platform schema plus
     -- exactly SELECT+UPDATE on outbox_messages and INSERT+SELECT on
-    -- outbox_transitions; no other schema/relation grant anywhere, and no
-    -- function grant outside the four it owns (owner entries are implicit).
+    -- outbox_transitions, plus the materialized owner entries on the two
+    -- runtime tables it owns (REVOKE FROM PUBLIC materializes them; the
+    -- zero-non-owner check above already refuses any third grantee there);
+    -- no other schema/relation grant anywhere, and no
+    -- function grant outside the six it owns (owner entries are implicit).
     IF EXISTS (
         SELECT 1 FROM pg_namespace AS n, aclexplode(n.nspacl) AS a
         JOIN pg_roles AS r ON r.oid = a.grantee
@@ -338,9 +499,12 @@ BEGIN
           AND NOT ((c.oid = 'platform.outbox_messages'::regclass
                     AND a.privilege_type IN ('SELECT', 'UPDATE'))
                 OR (c.oid = 'platform.outbox_transitions'::regclass
-                    AND a.privilege_type IN ('INSERT', 'SELECT')))
+                    AND a.privilege_type IN ('INSERT', 'SELECT'))
+                OR (c.oid IN ('platform.outbox_runtime_control'::regclass,
+                              'platform.outbox_runtime_transitions'::regclass)
+                    AND a.grantee = c.relowner))
     ) THEN
-        RAISE EXCEPTION 'outbox_executor must hold only the installed table DML (messages SELECT+UPDATE, transitions INSERT+SELECT)';
+        RAISE EXCEPTION 'outbox_executor must hold only the installed table DML (messages SELECT+UPDATE, transitions INSERT+SELECT) plus owner entries on the two runtime tables';
     END IF;
     IF EXISTS (
         SELECT 1 FROM pg_proc AS p, aclexplode(p.proacl) AS a
@@ -401,6 +565,62 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'outbox_transitions_append_only') THEN
         RAISE EXCEPTION 'append-only trigger missing on platform.outbox_transitions';
+    END IF;
+END $$;
+
+-- 1b) Runtime activation (051 protocol): the seed is (LEGACY, gen 1); the
+-- worker claim is refused there with the fixed mode message; then
+-- LEGACY -> QUIESCING (gen 2) -> WORKER (gen 3) as actor '015-proof', with
+-- the unfenced-zero proof between the steps. Every claim block below runs
+-- under the active WORKER protocol; CAS/NULL/rollback proofs live in 016.
+DO $$
+DECLARE
+    v_mode text;
+    v_exp integer;
+    v_gen integer;
+    v_msg text;
+    v_rejected boolean;
+BEGIN
+    RESET ROLE;
+    RESET app.tenant_id;
+    SELECT c.mode, c.generation INTO v_mode, v_exp
+    FROM platform.outbox_runtime_control AS c WHERE c.id = 1;
+    IF v_mode <> 'LEGACY' OR v_exp <> 1 THEN
+        RAISE EXCEPTION 'runtime authority seed must be exactly (LEGACY, generation 1) at 015 start, got (%, %)', v_mode, v_exp;
+    END IF;
+
+    -- LEGACY denial carries the fixed mode message (never echoing values).
+    SET LOCAL ROLE outbox_worker;
+    v_rejected := false;
+    v_msg := NULL;
+    BEGIN
+        PERFORM platform.outbox_claim(10, 'wLegacy015', 300);
+    EXCEPTION WHEN raise_exception THEN
+        GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+        v_rejected := true;
+    END;
+    IF NOT v_rejected THEN RAISE EXCEPTION 'claim in LEGACY mode must fail'; END IF;
+    IF v_msg <> 'outbox_claim: runtime mode is not WORKER (worker protocol is not active)' THEN
+        RAISE EXCEPTION 'LEGACY claim refusal must carry the fixed WORKER-mode message, got %', v_msg;
+    END IF;
+    RESET ROLE;
+
+    SELECT platform.outbox_runtime_set('LEGACY', 'QUIESCING', '015-proof', v_exp) INTO v_gen;
+    IF v_gen <> 2 THEN
+        RAISE EXCEPTION 'LEGACY -> QUIESCING must land on generation 2, got %', v_gen;
+    END IF;
+
+    -- Unfenced-zero proof: no legacy PUBLISHING row without a lease may
+    -- exist before the worker protocol takes over (the lease-aware reclaim
+    -- only selects non-NULL leases, so such a row would strand).
+    IF EXISTS (SELECT 1 FROM platform.outbox_messages AS m
+               WHERE m.state = 'PUBLISHING' AND m.lease_expires_at IS NULL) THEN
+        RAISE EXCEPTION 'unfenced PUBLISHING rows block worker activation (015 fixtures insert no PUBLISHING rows)';
+    END IF;
+
+    SELECT platform.outbox_runtime_set('QUIESCING', 'WORKER', '015-proof', v_gen) INTO v_gen;
+    IF v_gen <> 3 THEN
+        RAISE EXCEPTION 'QUIESCING -> WORKER must land on generation 3, got %', v_gen;
     END IF;
 END $$;
 
@@ -526,6 +746,20 @@ BEGIN
     END;
 
     BEGIN
+        PERFORM 1 FROM platform.outbox_runtime_control LIMIT 1;
+        RAISE EXCEPTION 'expected worker runtime-control read to fail';
+    EXCEPTION WHEN insufficient_privilege THEN
+        NULL;
+    END;
+
+    BEGIN
+        PERFORM 1 FROM platform.outbox_runtime_transitions LIMIT 1;
+        RAISE EXCEPTION 'expected worker runtime-transitions read to fail';
+    EXCEPTION WHEN insufficient_privilege THEN
+        NULL;
+    END;
+
+    BEGIN
         PERFORM 1 FROM crm.customers LIMIT 1;
         RAISE EXCEPTION 'expected worker tenant-table read to fail';
     EXCEPTION WHEN insufficient_privilege THEN
@@ -533,10 +767,12 @@ BEGIN
     END;
 END $$;
 
--- 5) API role não executa nenhuma função do worker.
+-- 5) API role não executa nenhuma função lifecycle do worker nem o switch
+-- do runtime; mas lê a autoridade (mode) enquanto o protocolo está ativo.
 DO $$
 DECLARE
     v_id uuid;
+    v_mode text;
 BEGIN
     RESET ROLE;
     RESET app.tenant_id;
@@ -567,6 +803,16 @@ BEGIN
     EXCEPTION WHEN insufficient_privilege THEN
         NULL;
     END;
+    BEGIN
+        PERFORM platform.outbox_runtime_set('WORKER', 'QUIESCING', 'api', 3);
+        RAISE EXCEPTION 'expected iptv_app runtime set to fail';
+    EXCEPTION WHEN insufficient_privilege THEN
+        NULL;
+    END;
+    SELECT platform.outbox_runtime_mode() INTO v_mode;
+    IF v_mode <> 'WORKER' THEN
+        RAISE EXCEPTION 'iptv_app must read WORKER from the authority while the protocol is active';
+    END IF;
 END $$;
 
 -- 6) Disjoint claims: dois workers nunca detêm claim atual sobre a mesma row.
@@ -977,5 +1223,5 @@ BEGIN
     END IF;
 END $$;
 
-\echo 015: platform outbox worker proofs PASS: claim/fencing/renew/reclaim/crash-recovery/bounds/tenant-isolation/audit, EXECUTE-only worker, iptv_app and PUBLIC denied
+\echo 015: platform outbox worker proofs PASS: posture (6 executor functions + 2 runtime tables, PUBLIC revoked) + WORKER activation (015-proof, unfenced-zero) + claim/fencing/renew/reclaim/crash-recovery/bounds/tenant-isolation/audit, EXECUTE-only worker, iptv_app lifecycle/set and PUBLIC denied
 ROLLBACK;

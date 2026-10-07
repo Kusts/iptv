@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
+import type { Kysely } from "kysely";
+import type { Database } from "@iptv/database";
 import {
   LegacyOutboxDrainDisabledError,
   OutboxDrainer,
+  assertLegacyRuntimeMode,
   isLegacyOutboxDrainEnabled,
 } from "../src/outbox/outbox-drainer.js";
 import { LocalTransport } from "../src/outbox/transport.js";
@@ -102,5 +105,48 @@ describe("legacy outbox drain gate (pure, no DB)", () => {
     }
     const drainer = new IdleDrainer(null, new LocalTransport());
     await expect(drainer.waitForQuiescence(150)).resolves.toBeUndefined();
+  });
+});
+
+describe("legacy runtime mode gate (migration 051, no DB)", () => {
+  // Minimal QueryExecutor stub: RawBuilder.execute() resolves the executor
+  // via getExecutor(), compiles through transformQuery()/compileQuery(),
+  // then calls executeQuery() — no real driver. The compiled query is
+  // ignored: this stub answers the mode read with a fixed row.
+  function stubDb(mode: string): Kysely<Database> {
+    const executor = {
+      transformQuery: (node: unknown) => node,
+      compileQuery: () => ({}),
+      executeQuery: async () => ({ rows: [{ mode }] }),
+    };
+    return { getExecutor: () => executor } as unknown as Kysely<Database>;
+  }
+
+  it("assertLegacyRuntimeMode resolves in LEGACY", async () => {
+    await expect(assertLegacyRuntimeMode(stubDb("LEGACY"))).resolves.toBeUndefined();
+  });
+
+  it.each(["QUIESCING", "WORKER", "BOGUS"])("refuses mode %s with the disabled error", async (mode) => {
+    await expect(assertLegacyRuntimeMode(stubDb(mode))).rejects.toBeInstanceOf(
+      LegacyOutboxDrainDisabledError,
+    );
+    await expect(assertLegacyRuntimeMode(stubDb(mode))).rejects.toThrow(
+      "legacy outbox drain is disabled (runtime mode is not LEGACY)",
+    );
+  });
+
+  it("drain refuses on non-LEGACY mode and releases the gauge", async () => {
+    delete process.env[ENV_KEY];
+    const drainer = new OutboxDrainer(stubDb("WORKER"), new LocalTransport());
+    await expect(drainer.drain()).rejects.toBeInstanceOf(LegacyOutboxDrainDisabledError);
+    await expect(drainer.drain()).rejects.toThrow("runtime mode is not LEGACY");
+    // Accounted like any other DB failure: attempt counted, nothing in flight.
+    expect(drainer.getDrainState()).toMatchObject({ inFlight: 0, totalDrains: 2 });
+  });
+
+  it("default reason keeps the env message byte-identical", () => {
+    expect(new LegacyOutboxDrainDisabledError().message).toBe(
+      "legacy outbox drain is disabled (LEGACY_OUTBOX_DRAIN_ENABLED=0)",
+    );
   });
 });

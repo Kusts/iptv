@@ -423,4 +423,74 @@ describe("outbox worker", () => {
     expect(retryAt).toBeLessThanOrEqual(Date.now() + 7 * 24 * 60 * 60 * 1000 - 60_000);
     expect(retryAt).toBeGreaterThan(Date.now());
   });
+
+  it("stop() waits for the current batch instead of abandoning claimed lanes", async () => {
+    const order: string[] = [];
+    let releaseClaim!: () => void;
+    let claimEntered = false;
+    const claimGate = new Promise<void>((resolve) => {
+      releaseClaim = resolve;
+    });
+    class GatedDb extends FakeDb {
+      override async claim(limit: number, worker: string, leaseSeconds: number): Promise<ClaimRow[]> {
+        claimEntered = true;
+        await claimGate;
+        return super.claim(limit, worker, leaseSeconds);
+      }
+    }
+    const db = new GatedDb();
+    db.seed(makeEnvelope(), randomUUID());
+    const transport = new FakeTransport();
+    const innerPublish = transport.publish.bind(transport);
+    transport.publish = async (envelope) => {
+      await innerPublish(envelope);
+      order.push("published");
+    };
+    const worker = new OutboxWorker({ config: testConfig(), rpc: db, transport, logger: silent });
+
+    const batch = worker.runOnce();
+    while (!claimEntered) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 5);
+      });
+    }
+    // Stop lands DURING the claim (inFlight is still 0): only the batch
+    // tracker keeps stop() waiting for the just-claimed lanes.
+    const stopped: Promise<void> = worker.stop().then(() => {
+      order.push("stopped");
+    });
+    releaseClaim();
+    const outcome = await batch;
+    await stopped;
+
+    expect(outcome).toMatchObject({ claimed: 1, published: 1 });
+    expect(order).toEqual(["published", "stopped"]);
+  });
+
+  it("heartbeat keeps renewing the lease during a graceful drain", async () => {
+    const db = new FakeDb();
+    db.seed(makeEnvelope(), randomUUID());
+    const transport = new FakeTransport({ delayMs: 150 });
+    const worker = new OutboxWorker({
+      config: testConfig({ renewAfterMs: 20, maxRenews: 10 }),
+      rpc: db,
+      transport,
+      logger: silent,
+    });
+    let stopPromise: Promise<void> | null = null;
+    const innerPublish = transport.publish.bind(transport);
+    transport.publish = async (envelope) => {
+      // A graceful drain starts mid-publish: renewals must continue until
+      // the publish settles (never abort early on stopRequested).
+      stopPromise = worker.stop();
+      await innerPublish(envelope);
+    };
+
+    const outcome = await worker.runOnce();
+    if (stopPromise !== null) await stopPromise;
+
+    expect(outcome).toMatchObject({ claimed: 1, published: 1 });
+    expect(db.renewCalls).toBeGreaterThanOrEqual(1);
+    expect(worker.snapshot().renewals).toBeGreaterThanOrEqual(1);
+  });
 });
