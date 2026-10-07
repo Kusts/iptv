@@ -80,6 +80,11 @@ export function classifyErrorCode(err: unknown): string {
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise<void>((resolve) => {
+    // Intentionally ref'd: the poll sleep in `start()` and the drain sleep in
+    // `stop()` MUST hold the event loop open, otherwise an idle long-running
+    // worker would exit mid-sleep. The heartbeat race below never touches
+    // this helper — it owns a dedicated wall-clock timer per wait and clears
+    // it on settle (see processItem), so `run --once` exits promptly.
     setTimeout(resolve, ms);
   });
 }
@@ -182,7 +187,23 @@ export class OutboxWorker {
       let renewals = 0;
       const heartbeat = (async (): Promise<void> => {
         while (!settled) {
-          await Promise.race([this.sleep(this.config.renewAfterMs), settledPromise]);
+          // Lease is wall-clock: wait on a dedicated timer (NOT the
+          // injectable poll `sleep`), cleared as soon as the item settles.
+          // The losing `setTimeout` of a naive `Promise.race` would otherwise
+          // stay referenced up to renewAfterMs (default 150s) after a fast
+          // publish, holding the loop open so `run --once` prints its result
+          // but exits ~2.5min late (and SIGTERM grace stalls the same way).
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              new Promise<void>((resolve) => {
+                timer = setTimeout(resolve, this.config.renewAfterMs);
+              }),
+              settledPromise,
+            ]);
+          } finally {
+            if (timer !== undefined) clearTimeout(timer);
+          }
           if (settled || this.stopRequested) break;
           if (renewals >= this.config.maxRenews) break;
           let n = 0;

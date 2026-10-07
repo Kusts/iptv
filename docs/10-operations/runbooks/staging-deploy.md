@@ -149,26 +149,46 @@ Fresh staging order: `postgres → migrate 001–050 (owner) → api (as
 `iptv_app`, legacy drain still enabled by default) → web`, then:
 
 ```powershell
-# 1. disable new legacy drains (API-side gate; scheduler skips its outbox tick)
-#    in .env.staging: LEGACY_OUTBOX_DRAIN_ENABLED=0, then recreate the api service
-# 2. prove ZERO legacy drain in flight (a stopped trigger is not proof)
+# 1. prove ZERO legacy drain in flight BEFORE touching the api service
+#    (a stopped trigger is not proof). Recreating api mid-drain strands rows:
+#    legacy claims only PENDING/FAILED and flips them to PUBLISHING with NO
+#    lease, while the worker only reclaims PUBLISHING rows with a non-null
+#    EXPIRED lease — a mid-drain kill leaves PUBLISHING rows with null lease
+#    that NEITHER drainer reclaims.
+curl.exe -i http://127.0.0.1:3001/v1/admin/outbox/drain-state
+#    expect {"legacyDrainEnabled":true,"inFlight":0,...} (platform-admin auth);
+#    if inFlight > 0, wait and re-poll — do NOT proceed to step 2.
+# 2. disable new legacy drains (API-side gate; scheduler skips its outbox tick)
+#    in .env.staging: LEGACY_OUTBOX_DRAIN_ENABLED=0, then PROMPTLY recreate
+#    the api service. Keep the window between step 1 and this recreate short:
+#    any drain that starts in between re-opens the stranding window, so
+#    re-verify inFlight 0 immediately before recreating.
+# 3. prove ZERO in flight again AFTER the recreate
 curl.exe -i http://127.0.0.1:3001/v1/admin/outbox/drain-state
 #    expect {"legacyDrainEnabled":false,"inFlight":0,...} (platform-admin auth)
-# 3. set the worker password once (migration 050 sets none) and fill the
+# 4. set the worker password once (migration 050 sets none) and fill the
 #    LOCAL .env.staging.outbox-worker (from its .example), asserting
 #    OUTBOX_LEGACY_QUIESCED=1 only now
-# 4. boot rehearsal with zero claims, then a single bounded batch
+# 5. boot rehearsal with zero claims, then a single bounded batch
 docker compose --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml --profile outbox `
   run --rm outbox-worker check
 docker compose --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml --profile outbox `
   run --rm outbox-worker run --once
-# 5. start the loop only after the smoke passes
+# 6. start the loop only after the smoke passes
 docker compose --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml --profile outbox `
   up -d outbox-worker
 ```
+
+Stranded-row detection (operator triage, NOT automatic SQL surgery): rows in
+`PUBLISHING` with a null lease (`claim_token IS NULL`) are stranded by a
+mid-drain api recreate and are invisible to both drainers. Detect with
+`SELECT count(*) FROM platform.outbox_messages WHERE state = 'PUBLISHING'
+AND claim_token IS NULL`; any nonzero count after steps 1–3 is an
+operator triage event (inspect, then forward-fix deliberately — never an
+ad-hoc state flip).
 
 Confirm in PostgreSQL: API session = `iptv_app`, worker session =
 `outbox_worker`, migrations ran as owner, no role with `BYPASSRLS`
