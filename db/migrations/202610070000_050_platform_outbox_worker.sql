@@ -68,13 +68,164 @@
 BEGIN;
 
 -- Roles: worker identity (login, least privilege) + function owner (no login).
+-- FAIL-CLOSED pre-existing posture gate (P1): role names are cluster-global,
+-- so a coinciding name proves nothing about attributes, ownership, or
+-- memberships. Policy: CREATE when absent; VALIDATE rigorously when present;
+-- ABORT on anything unexpected. Never ALTER a divergent role into compliance:
+-- silent normalization could mask a compromise or a concurrent configuration.
+--
+-- Expected posture when a role already exists:
+--   outbox_worker:   LOGIN, NOSUPERUSER, NOCREATEDB, NOCREATEROLE,
+--                     NOREPLICATION, NOBYPASSRLS.
+--   outbox_executor: NOLOGIN, NOINHERIT, NOSUPERUSER, NOCREATEDB,
+--                     NOCREATEROLE, NOREPLICATION, NOBYPASSRLS.
+--   (INHERIT is not constrained for outbox_worker: with zero memberships it
+--   grants nothing either way.)
+-- Membership rule (both roles): ZERO rows in pg_auth_members in EITHER
+-- direction (nobody is a member of the role; the role is a member of
+-- nothing). This single rule closes every SET ROLE path — any principal
+-- assuming outbox_executor, or outbox_worker assuming an owner/admin role —
+-- without depending on version-specific membership-option semantics: on
+-- PostgreSQL 16+ pg_auth_members carries inherit_option/set_option columns,
+-- but with no membership row there is no grant to interpret, so the check is
+-- deliberately option-agnostic. Any membership row aborts the migration.
+-- Ownership rule (both roles): the role must own NO object in this database
+-- (relations including sequences, functions, types, schemas). The executor's
+-- ownership of the four lifecycle functions is granted LATER in this same
+-- migration, so at this point any owned object is pre-existing and
+-- unexpected. Any owned object aborts the migration.
+-- Grant rule (both roles): no direct ACL entry naming the role on the
+-- platform schema, on any existing platform relation/function (table-level
+-- relacl/proacl/nspacl), or on any COLUMN of a platform relation
+-- (pg_attribute.attacl: a column-only GRANT would survive a table-level
+-- audit and stay usable after the USAGE grant below). The GRANTs below are
+-- the ONLY privileges these roles may ever hold; anything found earlier
+-- aborts the migration. (Indirect grants via membership are already
+-- excluded by the membership rule; per-role login settings are not checked
+-- because function calls run with the pinned proconfig search_path, and the
+-- NOLOGIN executor never logs in.)
+-- Install verification (end of this migration): even with clean
+-- pre-existing roles, the environment could inject privileges AT CREATE
+-- time — pre-existing ALTER DEFAULT PRIVILEGES (e.g. GRANT EXECUTE ON
+-- FUNCTIONS IN SCHEMA platform TO somebody) or a concurrent GRANT. The
+-- closing block therefore re-asserts the exact installed boundary
+-- (function grantees, audit-table grantees, single policy per table) and
+-- aborts — rolling everything back — on any deviation. PUBLIC is revoked
+-- explicitly AND refused by that allow-list.
+-- A compatible pre-existing role (created exactly as below) passes and the
+-- migration proceeds with the same minimal grants. All refusal messages name
+-- the offending posture only — never secret values (rolpassword is never
+-- read).
 DO $$
+DECLARE
+    v_worker_oid oid;
+    v_executor_oid oid;
+    v_rec record;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'outbox_worker') THEN
+    SELECT r.oid INTO v_worker_oid FROM pg_roles AS r WHERE r.rolname = 'outbox_worker';
+    IF v_worker_oid IS NULL THEN
         CREATE ROLE outbox_worker LOGIN NOBYPASSRLS;
+    ELSE
+        SELECT r.rolcanlogin, r.rolsuper, r.rolbypassrls, r.rolcreatedb,
+               r.rolcreaterole, r.rolreplication
+          INTO v_rec
+          FROM pg_roles AS r WHERE r.oid = v_worker_oid;
+        IF NOT v_rec.rolcanlogin THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_worker" is NOLOGIN (expected LOGIN worker identity)';
+        END IF;
+        IF v_rec.rolsuper THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_worker" is SUPERUSER';
+        END IF;
+        IF v_rec.rolbypassrls THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_worker" has BYPASSRLS';
+        END IF;
+        IF v_rec.rolcreatedb OR v_rec.rolcreaterole OR v_rec.rolreplication THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_worker" holds CREATEDB/CREATEROLE/REPLICATION';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_auth_members AS m
+                    WHERE m.roleid = v_worker_oid OR m.member = v_worker_oid) THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_worker" has unexpected role memberships (refusing to trust a shared identity)';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_class AS c WHERE c.relowner = v_worker_oid)
+           OR EXISTS (SELECT 1 FROM pg_proc AS p WHERE p.proowner = v_worker_oid)
+           OR EXISTS (SELECT 1 FROM pg_type AS t WHERE t.typowner = v_worker_oid)
+           OR EXISTS (SELECT 1 FROM pg_namespace AS n WHERE n.nspowner = v_worker_oid) THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_worker" owns database objects';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_namespace AS n, aclexplode(n.nspacl) AS a
+                    WHERE n.nspname = 'platform' AND a.grantee = v_worker_oid)
+           OR EXISTS (SELECT 1 FROM pg_class AS c
+                      JOIN pg_namespace AS n ON n.oid = c.relnamespace,
+                      aclexplode(c.relacl) AS a
+                      WHERE n.nspname = 'platform' AND a.grantee = v_worker_oid)
+           OR EXISTS (SELECT 1 FROM pg_proc AS p
+                      JOIN pg_namespace AS n ON n.oid = p.pronamespace,
+                      aclexplode(p.proacl) AS a
+                      WHERE n.nspname = 'platform' AND a.grantee = v_worker_oid)
+           -- Column-level grants live in attacl, not relacl: refuse those too.
+           OR EXISTS (SELECT 1 FROM pg_attribute AS at
+                      JOIN pg_class AS c ON c.oid = at.attrelid
+                      JOIN pg_namespace AS n ON n.oid = c.relnamespace,
+                      aclexplode(at.attacl) AS a
+                      WHERE n.nspname = 'platform' AND a.grantee = v_worker_oid) THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_worker" already holds direct privileges on platform objects';
+        END IF;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'outbox_executor') THEN
+
+    SELECT r.oid INTO v_executor_oid FROM pg_roles AS r WHERE r.rolname = 'outbox_executor';
+    IF v_executor_oid IS NULL THEN
         CREATE ROLE outbox_executor NOLOGIN NOINHERIT NOBYPASSRLS;
+    ELSE
+        SELECT r.rolcanlogin, r.rolinherit, r.rolsuper, r.rolbypassrls,
+               r.rolcreatedb, r.rolcreaterole, r.rolreplication
+          INTO v_rec
+          FROM pg_roles AS r WHERE r.oid = v_executor_oid;
+        IF v_rec.rolcanlogin THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_executor" has LOGIN (expected NOLOGIN function owner)';
+        END IF;
+        IF v_rec.rolinherit THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_executor" has INHERIT (contract requires NOINHERIT)';
+        END IF;
+        IF v_rec.rolsuper THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_executor" is SUPERUSER';
+        END IF;
+        IF v_rec.rolbypassrls THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_executor" has BYPASSRLS';
+        END IF;
+        IF v_rec.rolcreatedb OR v_rec.rolcreaterole OR v_rec.rolreplication THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_executor" holds CREATEDB/CREATEROLE/REPLICATION';
+        END IF;
+        -- A role already granted to (or granted from) any other principal
+        -- would let that principal exercise the privileges installed below,
+        -- including the SECURITY DEFINER functions: refuse, never normalize.
+        IF EXISTS (SELECT 1 FROM pg_auth_members AS m
+                    WHERE m.roleid = v_executor_oid OR m.member = v_executor_oid) THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_executor" has unexpected role memberships (refusing to trust a shared identity)';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_class AS c WHERE c.relowner = v_executor_oid)
+           OR EXISTS (SELECT 1 FROM pg_proc AS p WHERE p.proowner = v_executor_oid)
+           OR EXISTS (SELECT 1 FROM pg_type AS t WHERE t.typowner = v_executor_oid)
+           OR EXISTS (SELECT 1 FROM pg_namespace AS n WHERE n.nspowner = v_executor_oid) THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_executor" owns database objects';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_namespace AS n, aclexplode(n.nspacl) AS a
+                    WHERE n.nspname = 'platform' AND a.grantee = v_executor_oid)
+           OR EXISTS (SELECT 1 FROM pg_class AS c
+                      JOIN pg_namespace AS n ON n.oid = c.relnamespace,
+                      aclexplode(c.relacl) AS a
+                      WHERE n.nspname = 'platform' AND a.grantee = v_executor_oid)
+           OR EXISTS (SELECT 1 FROM pg_proc AS p
+                      JOIN pg_namespace AS n ON n.oid = p.pronamespace,
+                      aclexplode(p.proacl) AS a
+                      WHERE n.nspname = 'platform' AND a.grantee = v_executor_oid)
+           -- Column-level grants live in attacl, not relacl: refuse those too.
+           OR EXISTS (SELECT 1 FROM pg_attribute AS at
+                      JOIN pg_class AS c ON c.oid = at.attrelid
+                      JOIN pg_namespace AS n ON n.oid = c.relnamespace,
+                      aclexplode(at.attacl) AS a
+                      WHERE n.nspname = 'platform' AND a.grantee = v_executor_oid) THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_executor" already holds direct privileges on platform objects';
+        END IF;
     END IF;
 END $$;
 
@@ -403,5 +554,64 @@ CREATE POLICY outbox_executor_isolation ON platform.outbox_transitions
 CREATE INDEX outbox_lease_recovery_idx
     ON platform.outbox_messages (lease_expires_at)
     WHERE state = 'PUBLISHING';
+
+-- Install verification (same transaction: any failure rolls EVERYTHING back).
+-- The pre-existing-role gate above cannot see privileges injected AT CREATE
+-- time (pre-existing ALTER DEFAULT PRIVILEGES, concurrent GRANT), so assert
+-- the exact installed boundary here:
+--   * the four functions name ONLY outbox_worker (plus their owner
+--     outbox_executor, which PostgreSQL materializes as an explicit EXECUTE
+--     entry on owner change — benign, the owner holds all rights implicitly)
+--     as grantees; PUBLIC — revoked above — is refused too;
+--   * the new audit table names ONLY outbox_executor (plus its own owner —
+--     this lineage carries explicit owner entries on platform tables, which
+--     change nothing for a role that already holds all rights implicitly);
+--   * exactly one policy per table (a surviving permissive policy for any
+--     other role would OR with the executor-only policy and break isolation).
+DO $$
+DECLARE
+    v_fn text;
+BEGIN
+    FOR v_fn IN
+        SELECT unnest(ARRAY[
+            'platform.outbox_claim(integer, text, integer)',
+            'platform.outbox_renew(uuid, uuid, integer)',
+            'platform.outbox_complete(uuid, uuid)',
+            'platform.outbox_fail(uuid, uuid, text, timestamptz)'
+        ])
+    LOOP
+        IF EXISTS (
+            SELECT 1 FROM pg_proc AS p, aclexplode(p.proacl) AS a
+            JOIN pg_roles AS r ON r.oid = a.grantee
+            WHERE p.oid = v_fn::regprocedure
+              AND r.rolname <> 'outbox_worker'
+              AND r.oid <> p.proowner
+        ) THEN
+            RAISE EXCEPTION 'migration 050 refused: installed function % names an unexpected grantee (only outbox_worker may hold EXECUTE)', v_fn;
+        END IF;
+        IF (SELECT p.proacl::text FROM pg_proc AS p WHERE p.oid = v_fn::regprocedure) ~ '([,{])=X/' THEN
+            RAISE EXCEPTION 'migration 050 refused: installed function % is still executable by PUBLIC', v_fn;
+        END IF;
+    END LOOP;
+    IF EXISTS (
+        SELECT 1 FROM pg_class AS c, aclexplode(c.relacl) AS a
+        JOIN pg_roles AS r ON r.oid = a.grantee
+        WHERE c.oid = 'platform.outbox_transitions'::regclass
+          AND r.rolname <> 'outbox_executor'
+          AND r.oid <> c.relowner
+    ) THEN
+        RAISE EXCEPTION 'migration 050 refused: installed audit table names an unexpected grantee (only outbox_executor may hold DML)';
+    END IF;
+    IF (SELECT c.relacl::text FROM pg_class AS c
+        WHERE c.oid = 'platform.outbox_transitions'::regclass) ~ '([,{])=[arwdDxtm]+/' THEN
+        RAISE EXCEPTION 'migration 050 refused: installed audit table is still granted to PUBLIC';
+    END IF;
+    IF (SELECT count(*) FROM pg_policies
+        WHERE schemaname = 'platform' AND tablename = 'outbox_messages') <> 1
+       OR (SELECT count(*) FROM pg_policies
+        WHERE schemaname = 'platform' AND tablename = 'outbox_transitions') <> 1 THEN
+        RAISE EXCEPTION 'migration 050 refused: expected exactly one RLS policy per outbox table (executor-only singleton)';
+    END IF;
+END $$;
 
 COMMIT;

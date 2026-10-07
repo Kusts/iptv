@@ -7,7 +7,10 @@
 -- SINGLE SESSION: this file runs every scenario on one connection, so its
 -- claim-disjointness section proves the state/lease exclusion, NOT lock
 -- contention. Real two-session concurrency (SKIP LOCKED + cross-session CAS)
--- is proven by `apps/api/test/outbox-worker-concurrency.integration.test.ts`.
+-- is proven by `packages/database/test/outbox-worker-concurrency.integration.test.ts`.
+-- Negative migration guards (hostile pre-existing roles must refuse 050) are
+-- proven by `scripts/run_outbox_role_negative_tests.sh`, which replays the
+-- 050 file on scratch databases with pre-created roles.
 -- This does NOT wire the dedicated worker process, remove the in-process
 -- scheduler drain, or enroll inbox/scheduler/dispatcher/billing/finance.
 -- Fixture rows and attempted writes ROLLBACK; roles/functions/policies persist.
@@ -21,6 +24,7 @@ DO $$
 DECLARE
     v_acl text;
     v_fn text;
+    v_owner name;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'outbox_worker') THEN
         RAISE EXCEPTION 'migration 050 not applied: role outbox_worker is missing';
@@ -45,6 +49,77 @@ BEGIN
     END IF;
     IF (SELECT rolsuper FROM pg_roles WHERE rolname IN ('outbox_worker', 'outbox_executor') AND rolsuper) IS NOT NULL THEN
         RAISE EXCEPTION 'worker/executor roles must never be superuser';
+    END IF;
+    IF (SELECT rolcreatedb FROM pg_roles WHERE rolname IN ('outbox_worker', 'outbox_executor') AND rolcreatedb) IS NOT NULL THEN
+        RAISE EXCEPTION 'worker/executor roles must never hold CREATEDB';
+    END IF;
+    IF (SELECT rolcreaterole FROM pg_roles WHERE rolname IN ('outbox_worker', 'outbox_executor') AND rolcreaterole) IS NOT NULL THEN
+        RAISE EXCEPTION 'worker/executor roles must never hold CREATEROLE';
+    END IF;
+
+    -- Membership posture (P1 hardening mirror): ZERO membership rows in
+    -- EITHER direction for both roles. Nobody is a member of them, and they
+    -- are members of nothing — so no principal can SET ROLE into the executor
+    -- (and inherit the SECURITY DEFINER boundary), and the worker cannot SET
+    -- ROLE into an owner/admin role. The check is row-existence only, hence
+    -- independent of PG16+ inherit_option/set_option membership semantics:
+    -- with no row there is no grant to interpret. The pg_has_role USAGE
+    -- probes below corroborate the same closure for the principals that
+    -- matter here (a single superuser-owned connection cannot meaningfully
+    -- attempt SET ROLE denials dynamically: the session user itself could
+    -- assume any role, so the denial must be structural).
+    IF EXISTS (SELECT 1 FROM pg_auth_members AS m
+               JOIN pg_roles AS r ON r.oid IN (m.roleid, m.member)
+               WHERE r.rolname IN ('outbox_worker', 'outbox_executor')) THEN
+        RAISE EXCEPTION 'worker/executor roles must hold zero role memberships in either direction';
+    END IF;
+    SELECT session_user INTO v_owner;
+    IF pg_has_role('iptv_app', 'outbox_executor', 'USAGE') THEN
+        RAISE EXCEPTION 'no API principal may hold SET ROLE capability on outbox_executor';
+    END IF;
+    IF pg_has_role('outbox_worker', 'outbox_executor', 'USAGE') THEN
+        RAISE EXCEPTION 'outbox_worker must not hold SET ROLE capability on outbox_executor';
+    END IF;
+    IF pg_has_role('outbox_executor', 'outbox_worker', 'USAGE') THEN
+        RAISE EXCEPTION 'outbox_executor must not hold SET ROLE capability on outbox_worker';
+    END IF;
+    IF pg_has_role('outbox_worker', v_owner, 'USAGE') THEN
+        RAISE EXCEPTION 'outbox_worker must not hold SET ROLE capability on the owner role %', v_owner;
+    END IF;
+    IF pg_has_role('iptv_app', v_owner, 'USAGE') THEN
+        RAISE EXCEPTION 'iptv_app must not hold SET ROLE capability on the owner role %', v_owner;
+    END IF;
+
+    -- Ownership posture: the worker owns nothing; the executor owns EXACTLY
+    -- the four lifecycle functions (allow-listed) and nothing else — no
+    -- table/sequence/type/schema ownership that could alter the trust model.
+    IF EXISTS (SELECT 1 FROM pg_class AS c JOIN pg_roles AS r ON r.oid = c.relowner
+               WHERE r.rolname IN ('outbox_worker', 'outbox_executor')) THEN
+        RAISE EXCEPTION 'worker/executor roles must own no relations';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_namespace AS n JOIN pg_roles AS r ON r.oid = n.nspowner
+               WHERE r.rolname IN ('outbox_worker', 'outbox_executor')) THEN
+        RAISE EXCEPTION 'worker/executor roles must own no schemas';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_type AS t JOIN pg_roles AS r ON r.oid = t.typowner
+               WHERE r.rolname IN ('outbox_worker', 'outbox_executor')) THEN
+        RAISE EXCEPTION 'worker/executor roles must own no types';
+    END IF;
+    IF (SELECT count(*) FROM pg_proc AS p JOIN pg_roles AS r ON r.oid = p.proowner
+        WHERE r.rolname = 'outbox_executor') <> 4 THEN
+        RAISE EXCEPTION 'outbox_executor must own exactly the four lifecycle functions';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_proc AS p
+               JOIN pg_roles AS r ON r.oid = p.proowner
+               JOIN pg_namespace AS n ON n.oid = p.pronamespace
+               WHERE r.rolname = 'outbox_executor'
+               AND NOT (n.nspname = 'platform' AND p.proname IN
+                 ('outbox_claim', 'outbox_renew', 'outbox_complete', 'outbox_fail'))) THEN
+        RAISE EXCEPTION 'outbox_executor must own nothing outside the four lifecycle functions';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_proc AS p JOIN pg_roles AS r ON r.oid = p.proowner
+               WHERE r.rolname = 'outbox_worker') THEN
+        RAISE EXCEPTION 'outbox_worker must own no functions';
     END IF;
 
     -- The four functions exist, are SECURITY DEFINER, executor-owned, with a
@@ -107,8 +182,31 @@ BEGIN
         OR has_function_privilege('iptv_app', 'platform.outbox_fail(uuid, uuid, text, timestamptz)', 'EXECUTE') THEN
         RAISE EXCEPTION 'iptv_app must not execute any worker function (API is not a worker)';
     END IF;
+    -- Grantee allow-list: the ONLY named grantees on the four functions are
+    -- the owner (outbox_executor, implicit) and outbox_worker (EXECUTE).
+    -- Any third grantee — pre-existing or concurrent — breaks the boundary.
+    FOR v_fn IN
+        SELECT unnest(ARRAY[
+            'platform.outbox_claim(integer, text, integer)',
+            'platform.outbox_renew(uuid, uuid, integer)',
+            'platform.outbox_complete(uuid, uuid)',
+            'platform.outbox_fail(uuid, uuid, text, timestamptz)'
+        ])
+    LOOP
+        IF EXISTS (
+            SELECT 1 FROM pg_proc AS p, aclexplode(p.proacl) AS a
+            JOIN pg_roles AS r ON r.oid = a.grantee
+            WHERE p.oid = v_fn::regprocedure
+              AND r.rolname NOT IN ('outbox_worker', 'outbox_executor')
+        ) THEN
+            RAISE EXCEPTION 'worker function % has an unexpected grantee (only outbox_worker may be granted)', v_fn;
+        END IF;
+    END LOOP;
 
     -- Zero direct table privileges for the worker: EXECUTE-only, nothing else.
+    -- Column-level grants (attacl) are checked explicitly: has_*_privilege
+    -- probes below could miss a column-only GRANT, and such a grant would
+    -- stay usable after the schema USAGE grant.
     IF has_table_privilege('outbox_worker', 'platform.outbox_messages', 'SELECT')
         OR has_table_privilege('outbox_worker', 'platform.outbox_messages', 'INSERT')
         OR has_table_privilege('outbox_worker', 'platform.outbox_messages', 'UPDATE')
@@ -124,6 +222,27 @@ BEGIN
         OR has_table_privilege('outbox_executor', 'platform.outbox_transitions', 'DELETE') THEN
         RAISE EXCEPTION 'outbox_executor must not hold UPDATE/DELETE on the audit table';
     END IF;
+    -- Column-level grants name neither role on any platform column: a
+    -- column-only GRANT would bypass the table-level EXECUTE-only proof.
+    IF EXISTS (
+        SELECT 1 FROM pg_attribute AS at
+        JOIN pg_class AS c ON c.oid = at.attrelid
+        JOIN pg_namespace AS n ON n.oid = c.relnamespace,
+        aclexplode(at.attacl) AS a
+        JOIN pg_roles AS r ON r.oid = a.grantee
+        WHERE n.nspname = 'platform'
+          AND r.rolname IN ('outbox_worker', 'outbox_executor')
+    ) THEN
+        RAISE EXCEPTION 'worker/executor roles must hold no column-level grants on platform tables';
+    END IF;
+    -- No default privileges may target the platform schema: ALTER DEFAULT
+    -- PRIVILEGES would silently extend future GRANTs (e.g. EXECUTE on new
+    -- functions) to third parties outside the installed boundary.
+    IF EXISTS (SELECT 1 FROM pg_default_acl AS d
+               JOIN pg_namespace AS n ON n.oid = d.defaclnamespace
+               WHERE n.nspname = 'platform') THEN
+        RAISE EXCEPTION 'platform schema must carry no default-privilege rules (they could inject future grants)';
+    END IF;
 
     -- RLS enabled with executor-only policies on exactly these tables.
     IF (SELECT relrowsecurity FROM pg_class WHERE oid = 'platform.outbox_messages'::regclass) IS DISTINCT FROM true THEN
@@ -132,9 +251,20 @@ BEGIN
     IF (SELECT relrowsecurity FROM pg_class WHERE oid = 'platform.outbox_transitions'::regclass) IS DISTINCT FROM true THEN
         RAISE EXCEPTION 'RLS is not enabled on platform.outbox_transitions';
     END IF;
+    -- Exactly one policy per table (executor-only singleton): a surviving
+    -- permissive policy for any other role would OR with the isolation
+    -- policy and break the boundary.
+    IF (SELECT count(*) FROM pg_policies WHERE schemaname = 'platform'
+        AND tablename = 'outbox_messages') <> 1 THEN
+        RAISE EXCEPTION 'outbox_messages must carry exactly one RLS policy (executor-only singleton)';
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'platform'
         AND tablename = 'outbox_messages' AND policyname = 'outbox_executor_isolation') THEN
         RAISE EXCEPTION 'outbox_executor_isolation policy missing on outbox_messages';
+    END IF;
+    IF (SELECT count(*) FROM pg_policies WHERE schemaname = 'platform'
+        AND tablename = 'outbox_transitions') <> 1 THEN
+        RAISE EXCEPTION 'outbox_transitions must carry exactly one RLS policy (executor-only singleton)';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'platform'
         AND tablename = 'outbox_transitions' AND policyname = 'outbox_executor_isolation') THEN
@@ -481,6 +611,22 @@ BEGIN
 
     PERFORM pg_sleep(2);
 
+    -- Wall-clock discrimination (P2): after a REAL 1s-lease expiry the row
+    -- MUST read expired on clock_timestamp() (the protocol clock) while it
+    -- MUST still read live on the frozen now() (transaction start). If both
+    -- clocks agreed here, this proof could not tell them apart — and a
+    -- now()-based close-out could PASS while an expired row stays stuck.
+    RESET ROLE;
+    IF NOT EXISTS (SELECT 1 FROM platform.outbox_messages AS m
+        WHERE m.id = v_id AND m.lease_expires_at <= clock_timestamp()) THEN
+        RAISE EXCEPTION 'short lease must read expired on clock_timestamp() after pg_sleep';
+    END IF;
+    IF EXISTS (SELECT 1 FROM platform.outbox_messages AS m
+        WHERE m.id = v_id AND m.lease_expires_at <= now()) THEN
+        RAISE EXCEPTION 'short lease must still read live on frozen now() (clocks must disagree here)';
+    END IF;
+    SET LOCAL ROLE outbox_worker;
+
     SELECT c.claim_token INTO v_new_token
     FROM platform.outbox_claim(1, 'wFast', 300) AS c WHERE c.id = v_id;
     IF v_new_token IS NULL OR v_new_token = v_old_token THEN
@@ -517,7 +663,10 @@ BEGIN
 
     RESET ROLE;
     SELECT m.next_attempt_at INTO v_retry FROM platform.outbox_messages AS m WHERE m.id = v_id;
-    IF v_retry IS NULL OR v_retry < now() OR v_retry > now() + make_interval(secs => 120) THEN
+    -- Wall-clock comparison (P2): the retry instant is produced from
+    -- clock_timestamp() inside outbox_fail, so the window check uses the same
+    -- basis instead of the frozen transaction-start now().
+    IF v_retry IS NULL OR v_retry < clock_timestamp() OR v_retry > clock_timestamp() + make_interval(secs => 120) THEN
         RAISE EXCEPTION 'default retry must land ~60s in the future, got %', v_retry;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM platform.outbox_transitions AS t
@@ -686,10 +835,13 @@ BEGIN
     RESET ROLE;
     RESET app.tenant_id;
 
+    -- Stuck-lease close-out on the WALL CLOCK (P2): leases are minted from
+    -- clock_timestamp(), while now() stays frozen at transaction start, so a
+    -- now()-based comparison could PASS with an expired PUBLISHING row stuck.
     SELECT count(*) INTO stuck FROM platform.outbox_messages AS m
     WHERE m.state = 'PUBLISHING'
       AND m.lease_expires_at IS NOT NULL
-      AND m.lease_expires_at <= now();
+      AND m.lease_expires_at <= clock_timestamp();
     IF stuck <> 0 THEN
         RAISE EXCEPTION 'no PUBLISHING row may hold an expired lease at proof end, stuck %', stuck;
     END IF;

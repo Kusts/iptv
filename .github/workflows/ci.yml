@@ -59,3 +59,36 @@ jobs:
       - run: python scripts/validate_docs.py
       - run: python tests/contracts/test_contracts.py
       - run: python tests/contracts/test_seed_contract.py
+
+  # P1 fail-closed proof in full isolation: replays ONLY migration 050 on
+  # scratch databases with hostile pre-existing cluster-global roles (each
+  # must refuse) plus exact-posture roles (must accept). Separate job with
+  # its OWN postgres service because roles are cluster-global: sharing the
+  # `build` job's server (which applies 050 via vitest/psql runners) would
+  # make the hostile-role simulation refuse via its pre-flight instead of
+  # proving anything. The script owns its scratch DBs+roles and verifies
+  # zero leftovers, so this job cannot leak into anything else.
+  outbox-050-role-guards:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: iptv_guards
+          POSTGRES_USER: iptv
+          POSTGRES_PASSWORD: iptv
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U iptv -d iptv_guards"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Outbox 050 role-guard negative tests (psql)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+          DATABASE_URL="postgresql://iptv:iptv@localhost:5432/iptv_guards" \
+            bash scripts/run_outbox_role_negative_tests.sh
