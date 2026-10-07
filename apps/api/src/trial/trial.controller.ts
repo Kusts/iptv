@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -199,30 +199,34 @@ export class TrialController {
   ) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const { limit, offset } = pagination(query);
-    let qb = this.requireDb()
-      .selectFrom("trial.trials")
-      .select([
-        "id",
-        "person_id",
-        "trial_kind",
-        "lifecycle_status",
-        "technical_outcome",
-        "requested_duration_minutes",
-        "activated_at",
-        "expires_at",
-        "created_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "desc")
-      .limit(limit)
-      .offset(offset);
-    if (query.personId !== undefined) {
-      qb = qb.where("person_id", "=", query.personId);
-    }
-    if (query.status !== undefined) {
-      qb = qb.where("lifecycle_status", "=", query.status);
-    }
-    const rows = await qb.execute();
+    // P1.4-056 (P1.3 FIX1 mirror): tenant-scoped reads inside the request
+    // tenant's context — direct reads fail-closed under `iptv_app`.
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      let qb = trx
+        .selectFrom("trial.trials")
+        .select([
+          "id",
+          "person_id",
+          "trial_kind",
+          "lifecycle_status",
+          "technical_outcome",
+          "requested_duration_minutes",
+          "activated_at",
+          "expires_at",
+          "created_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("created_at", "desc")
+        .limit(limit)
+        .offset(offset);
+      if (query.personId !== undefined) {
+        qb = qb.where("person_id", "=", query.personId);
+      }
+      if (query.status !== undefined) {
+        qb = qb.where("lifecycle_status", "=", query.status);
+      }
+      return qb.execute();
+    });
     return {
       trials: rows.map((r) => ({
         id: r.id,
@@ -243,54 +247,62 @@ export class TrialController {
   @RequirePermission("trial.read")
   async get(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
-    const row = await db
-      .selectFrom("trial.trials")
-      .select([
-        "id",
-        "person_id",
-        "lead_id",
-        "previous_trial_id",
-        "trial_kind",
-        "retrial_reason",
-        "lifecycle_status",
-        "technical_outcome",
-        "requested_duration_minutes",
-        "adult_content_enabled",
-        "provider_account_id",
-        "activated_at",
-        "expires_at",
-        "ended_at",
-        "invalidated_reason",
-        "created_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", id)
-      .executeTakeFirst();
-    if (row === undefined) {
+    // P1.4-056 (P1.3 FIX1 mirror): see list() — one tenant transaction for
+    // all three reads.
+    const bundled = await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const row = await trx
+        .selectFrom("trial.trials")
+        .select([
+          "id",
+          "person_id",
+          "lead_id",
+          "previous_trial_id",
+          "trial_kind",
+          "retrial_reason",
+          "lifecycle_status",
+          "technical_outcome",
+          "requested_duration_minutes",
+          "adult_content_enabled",
+          "provider_account_id",
+          "activated_at",
+          "expires_at",
+          "ended_at",
+          "invalidated_reason",
+          "created_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", id)
+        .executeTakeFirst();
+      if (row === undefined) {
+        return null;
+      }
+      const attempts = await trx
+        .selectFrom("trial.trial_attempts")
+        .select(["id", "attempt_type", "outcome", "error_code", "started_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("trial_id", "=", id)
+        .orderBy("started_at", "asc")
+        .execute();
+      const technical = await trx
+        .selectFrom("trial.trial_technical_results")
+        .select([
+          "id",
+          "installation_success",
+          "authentication_success",
+          "playback_success",
+          "buffering_observed",
+          "summary_outcome",
+          "assessed_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("trial_id", "=", id)
+        .executeTakeFirst();
+      return { row, attempts, technical };
+    });
+    if (bundled === null) {
       throw new HttpException({ code: "NOT_FOUND", message: "trial not found" }, 404);
     }
-    const attempts = await db
-      .selectFrom("trial.trial_attempts")
-      .select(["id", "attempt_type", "outcome", "error_code", "started_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("trial_id", "=", id)
-      .orderBy("started_at", "asc")
-      .execute();
-    const technical = await db
-      .selectFrom("trial.trial_technical_results")
-      .select([
-        "id",
-        "installation_success",
-        "authentication_success",
-        "playback_success",
-        "buffering_observed",
-        "summary_outcome",
-        "assessed_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("trial_id", "=", id)
-      .executeTakeFirst();
+    const { row, attempts, technical } = bundled;
     return {
       id: row.id,
       personId: row.person_id,
@@ -335,8 +347,10 @@ export class TrialController {
   @RequirePermission("trial.read")
   async getTechnicalResult(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const row = await this.requireDb()
-      .selectFrom("trial.trial_technical_results")
+    // P1.4-056 (P1.3 FIX1 mirror): see list().
+    const row = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("trial.trial_technical_results")
       .select([
         "id",
         "trial_id",
@@ -349,7 +363,8 @@ export class TrialController {
       ])
       .where("tenant_id", "=", tenant.id)
       .where("trial_id", "=", id)
-      .executeTakeFirst();
+      .executeTakeFirst(),
+    );
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "technical result not found" }, 404);
     }
