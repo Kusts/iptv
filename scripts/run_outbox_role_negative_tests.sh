@@ -96,16 +96,17 @@ note_cleanup_error() {
 # Best-effort drops for the EXIT trap: try, VERIFY, and record — never abort
 # the remaining cleanup and never silence a failure.
 drop_db_best_effort() {
-  local db="$1"
-  if psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -q -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE)" >/dev/null 2>&1; then
-    if [[ "$(psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_database WHERE datname = '$db'" 2>/dev/null)" != "0" ]]; then
-      note_cleanup_error "database $db still exists after DROP"
+  local db="$1" i
+  for i in 1 2; do
+    if drop_db_try "$db" ""; then
       return
     fi
-  else
-    note_cleanup_error "DROP DATABASE $db failed"
+    sleep 2
+  done
+  if drop_db_try "$db" " WITH (FORCE)"; then
     return
   fi
+  note_cleanup_error "database $db still exists after DROP"
 }
 
 drop_role_best_effort() {
@@ -124,12 +125,28 @@ drop_role_best_effort() {
 # Drop helpers verify the removal and fail loudly instead of swallowing errors.
 # All admin commands run from the ANCHOR connection: connecting to the very
 # database being dropped (or to the template being cloned) is an error.
+# Graceful first: a plain DROP closes the common case with zero signals.
+# WITH (FORCE) SIGTERMs lingering backends as a LAST resort only — a victim
+# that cannot shut down gracefully still forces one crash-recovery cycle,
+# which is reported, never hidden.
+drop_db_try() {
+  local db="$1" force_clause="$2"
+  psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -q -c "DROP DATABASE IF EXISTS \"$db\"$force_clause" >/dev/null 2>&1 || return 1
+  [[ "$(psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_database WHERE datname = '$db'" 2>/dev/null)" == "0" ]]
+}
+
 drop_db_verified() {
-  local db="$1"
-  psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -q -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE)" >/dev/null
-  if [[ "$(psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_database WHERE datname = '$db'")" != "0" ]]; then
-    fail "scratch database $db still exists after DROP"
+  local db="$1" i
+  for i in 1 2 3; do
+    if drop_db_try "$db" ""; then
+      return 0
+    fi
+    sleep 2
+  done
+  if drop_db_try "$db" " WITH (FORCE)"; then
+    return 0
   fi
+  fail "scratch database $db still exists after DROP"
 }
 
 create_from_template() {
@@ -171,32 +188,37 @@ cleanup() {
     drop_db_best_effort "$TPL"
     TEMPLATE_OK=""
   fi
-  if [[ -n "$LOCK_PID" ]]; then
-    kill "$LOCK_PID" 2>/dev/null || true
-    LOCK_PID=""
-  fi
+  release_interlock
   if [[ -n "$CLEANUP_ERRORS" ]]; then
     echo "FAIL[cleanup]: $CLEANUP_ERRORS" >&2
     exit 1
   fi
 }
 trap cleanup EXIT
+# Caveat: SIGKILL (kill -9) of THIS script cannot run the trap and orphans
+# the holder (a sleeping psql on the anchor still holding the advisory
+# lock). Any later run then waits at the handshake and fails loudly at the
+# 1800s timeout instead of racing: terminate the orphan psql and re-run.
+# Normal exits, errors, INT and TERM all release cleanly via the trap.
 
 # Run interlock (same anchor): hold a session-level advisory lock for the
 # whole run so a second concurrent run WAITS here instead of racing the
 # pre-flight below and deleting this run's cluster-global roles. The holder
-# is a coprocess whose ONLY stdout line — emitted by SQL after the lock is
-# actually acquired — is the handshake the main shell waits for; process
-# liveness alone would also match a holder still blocked in pg_advisory_lock,
-# so a fixed sleep is NOT accepted as proof. Timeout covers a full preceding
-# run; EOF/death fails loudly instead of proceeding unlocked.
+# is an interactive coprocess session: it acquires the lock, emits the
+# handshake marker, then idles until the main shell sends \q — a CLEAN
+# disconnect. KILLING the holder (SIGTERM) is NOT acceptable here: any
+# signal-death makes the postmaster run crash recovery and warn siblings
+# ("crash of another server process"), which can spuriously fail a
+# concurrently serialized run. Session end releases advisory locks by
+# definition, so \q is both clean and sufficient.
 coproc LOCK_HOLDER {
-  psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -X -q -At \
-    -c "SELECT pg_advisory_lock($RUN_ADVISORY_LOCK_KEY);" \
-    -c "SELECT 'LOCK_ACQUIRED' AS interlock;" \
-    -c "SELECT pg_sleep(86400);"
+  psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -X -q -At
 }
 LOCK_PID=$LOCK_HOLDER_PID
+{
+  echo "SELECT pg_advisory_lock($RUN_ADVISORY_LOCK_KEY);"
+  echo "SELECT 'LOCK_ACQUIRED' AS interlock;"
+} >&"${LOCK_HOLDER[1]}"
 LOCK_LINE=""
 while true; do
   if IFS= read -t 1800 -r LOCK_LINE <&"${LOCK_HOLDER[0]}"; then
@@ -216,6 +238,18 @@ while true; do
     fi
   fi
 done
+release_interlock() {
+  if [[ -n "$LOCK_PID" ]]; then
+    # Graceful release: ask the holder session to quit normally (session end
+    # releases the lock), then close our ends and reap it. Never kill: a
+    # signal-death would force postmaster crash recovery.
+    echo '\q' >&"${LOCK_HOLDER[1]}" 2>/dev/null || true
+    exec {LOCK_HOLDER[1]}>&- 2>/dev/null || true
+    exec {LOCK_HOLDER[0]}<&- 2>/dev/null || true
+    wait "$LOCK_PID" 2>/dev/null || true
+    LOCK_PID=""
+  fi
+}
 
 # --- Pre-flight: refuse foreign state instead of touching it. ---
 PRE_ROLES="$(psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -tAc \
@@ -344,9 +378,31 @@ expect_refuse "worker-column-grant" 'direct privileges on database objects' \
 # ALTER DEFAULT PRIVILEGES must be caught by the install-verification block
 # (unexpected grantee on the new functions), not silently committed.
 CURRENT_ROLES="neg_attacker"
-expect_refuse "default-privs-exec-inject" 'unexpected grantee' \
+expect_refuse "default-privs-exec-inject" 'unexpected grant' \
   "CREATE ROLE neg_attacker LOGIN" \
   "ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT EXECUTE ON FUNCTIONS TO neg_attacker"
+
+# Excessive default privileges for a COMPATIBLE role: GRANT ALL ON TABLES to
+# the executor lands UPDATE/DELETE/TRUNCATE on the new audit table at CREATE
+# time — the verification must refuse on privilege_type, not just grantee.
+CURRENT_ROLES="outbox_executor"
+expect_refuse "default-privs-excess-table" 'unexpected grant' \
+  "CREATE ROLE outbox_executor NOLOGIN NOINHERIT NOBYPASSRLS" \
+  "ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT ALL ON TABLES TO outbox_executor"
+
+# Grant-option injection: EXECUTE WITH GRANT OPTION would let the worker
+# re-grant the boundary — refused on is_grantable.
+CURRENT_ROLES="outbox_worker"
+expect_refuse "default-privs-grant-option" 'unexpected grant' \
+  "CREATE ROLE outbox_worker LOGIN NOBYPASSRLS" \
+  "ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT EXECUTE ON FUNCTIONS TO outbox_worker WITH GRANT OPTION"
+
+# Surviving permissive policy: a pre-existing policy for another role on an
+# outbox table ORs with the executor-only policy — the singleton check must
+# refuse (DROP POLICY IF EXISTS only removes the same-named one).
+CURRENT_ROLES=""
+expect_refuse "surviving-permissive-policy" 'exactly one RLS policy' \
+  "CREATE POLICY perm_all ON platform.outbox_messages FOR ALL TO PUBLIC USING (true)"
 
 # Cross-schema reuse (P1b): a worker with compatible attributes but a live
 # grant OUTSIDE platform (here SELECT on billing.charges) must refuse — the

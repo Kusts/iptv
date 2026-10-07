@@ -584,13 +584,15 @@ CREATE INDEX outbox_lease_recovery_idx
 -- The pre-existing-role gate above cannot see privileges injected AT CREATE
 -- time (pre-existing ALTER DEFAULT PRIVILEGES, concurrent GRANT), so assert
 -- the exact installed boundary here:
---   * the four functions name ONLY outbox_worker (plus their owner
---     outbox_executor, which PostgreSQL materializes as an explicit EXECUTE
---     entry on owner change — benign, the owner holds all rights implicitly)
---     as grantees; PUBLIC — revoked above — is refused too;
---   * the new audit table names ONLY outbox_executor (plus its own owner —
---     this lineage carries explicit owner entries on platform tables, which
---     change nothing for a role that already holds all rights implicitly);
+--   * the four functions carry ONLY worker=EXECUTE without grant option
+--     (plus tolerated owner entries: PostgreSQL materializes an explicit
+--     EXECUTE entry for the owner on OWNER TO, and this lineage carries
+--     explicit owner entries — both benign, the owner holds all rights
+--     implicitly); PUBLIC — revoked above — is refused too. Grantee
+--     identity alone is NOT enough: a default privilege granting ALL or
+--     WITH GRANT OPTION would otherwise COMMIT;
+--   * the new audit table carries ONLY executor=INSERT,SELECT without grant
+--     option (plus tolerated owner entries, same rationale);
 --   * exactly one policy per table (a surviving permissive policy for any
 --     other role would OR with the executor-only policy and break isolation).
 DO $$
@@ -605,27 +607,37 @@ BEGIN
             'platform.outbox_fail(uuid, uuid, text, timestamptz)'
         ])
     LOOP
+        -- Exact privilege (not just grantee identity): ONLY worker=EXECUTE
+        -- without grant option, plus tolerated owner entries. A default
+        -- privilege granting e.g. ALL or WITH GRANT OPTION would otherwise
+        -- survive a grantee-only check and COMMIT.
         IF EXISTS (
             SELECT 1 FROM pg_proc AS p, aclexplode(p.proacl) AS a
-            JOIN pg_roles AS r ON r.oid = a.grantee
             WHERE p.oid = v_fn::regprocedure
-              AND r.rolname <> 'outbox_worker'
-              AND r.oid <> p.proowner
+              AND NOT ((a.grantee = p.proowner)
+                    OR (a.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'outbox_worker')
+                        AND a.privilege_type = 'EXECUTE'
+                        AND NOT a.is_grantable))
         ) THEN
-            RAISE EXCEPTION 'migration 050 refused: installed function % names an unexpected grantee (only outbox_worker may hold EXECUTE)', v_fn;
+            RAISE EXCEPTION 'migration 050 refused: installed function % carries an unexpected grant (only worker=EXECUTE without grant option is allowed)', v_fn;
         END IF;
         IF (SELECT p.proacl::text FROM pg_proc AS p WHERE p.oid = v_fn::regprocedure) ~ '([,{])=X/' THEN
             RAISE EXCEPTION 'migration 050 refused: installed function % is still executable by PUBLIC', v_fn;
         END IF;
     END LOOP;
+    -- Exact DML (not just grantee identity): ONLY executor INSERT+SELECT
+    -- without grant option, plus tolerated owner entries. A default
+    -- privilege granting e.g. ALL ON TABLES (UPDATE/DELETE/TRUNCATE) would
+    -- otherwise survive a grantee-only check and COMMIT.
     IF EXISTS (
         SELECT 1 FROM pg_class AS c, aclexplode(c.relacl) AS a
-        JOIN pg_roles AS r ON r.oid = a.grantee
         WHERE c.oid = 'platform.outbox_transitions'::regclass
-          AND r.rolname <> 'outbox_executor'
-          AND r.oid <> c.relowner
+          AND NOT ((a.grantee = c.relowner)
+                OR (a.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'outbox_executor')
+                    AND a.privilege_type IN ('INSERT', 'SELECT')
+                    AND NOT a.is_grantable))
     ) THEN
-        RAISE EXCEPTION 'migration 050 refused: installed audit table names an unexpected grantee (only outbox_executor may hold DML)';
+        RAISE EXCEPTION 'migration 050 refused: installed audit table carries an unexpected grant (only executor=INSERT,SELECT without grant option is allowed)';
     END IF;
     IF (SELECT c.relacl::text FROM pg_class AS c
         WHERE c.oid = 'platform.outbox_transitions'::regclass) ~ '([,{])=[arwdDxtm]+/' THEN

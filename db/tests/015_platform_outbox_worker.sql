@@ -253,6 +253,30 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'worker/executor roles must hold no large-object grants';
     END IF;
+    -- No grant option anywhere: neither role may hold any privilege WITH
+    -- GRANT OPTION (which would let it re-grant the boundary to others).
+    -- Owner entries name the migration owner, never these roles, so any
+    -- grantable entry here is a third-party injection path.
+    IF EXISTS (
+        SELECT 1 FROM (
+            SELECT a.grantee, a.is_grantable FROM pg_namespace AS n, aclexplode(n.nspacl) AS a
+            UNION ALL
+            SELECT a.grantee, a.is_grantable FROM pg_class AS c, aclexplode(c.relacl) AS a
+            UNION ALL
+            SELECT a.grantee, a.is_grantable FROM pg_attribute AS at, aclexplode(at.attacl) AS a
+            UNION ALL
+            SELECT a.grantee, a.is_grantable FROM pg_proc AS p, aclexplode(p.proacl) AS a
+            UNION ALL
+            SELECT a.grantee, a.is_grantable FROM pg_type AS t, aclexplode(t.typacl) AS a
+            UNION ALL
+            SELECT a.grantee, a.is_grantable FROM pg_largeobject_metadata AS l, aclexplode(l.lomacl) AS a
+        ) AS g
+        JOIN pg_roles AS r ON r.oid = g.grantee
+        WHERE r.rolname IN ('outbox_worker', 'outbox_executor')
+          AND g.is_grantable
+    ) THEN
+        RAISE EXCEPTION 'worker/executor roles must hold no grantable (WITH GRANT OPTION) privileges';
+    END IF;
     -- Worker allow-list, database-wide: USAGE on the platform schema plus
     -- EXECUTE on exactly the four functions (asserted above); no relation
     -- grant anywhere, no function grant outside the four, no other schema
