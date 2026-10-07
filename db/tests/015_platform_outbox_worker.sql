@@ -4,6 +4,10 @@
 -- lifecycle functions (claim/renew/complete/fail), server lease + token +
 -- CAS fencing, crash reclaim without manual repair, tenant containment of
 -- the worker process, bounded input fail-closed, append-only audit.
+-- SINGLE SESSION: this file runs every scenario on one connection, so its
+-- claim-disjointness section proves the state/lease exclusion, NOT lock
+-- contention. Real two-session concurrency (SKIP LOCKED + cross-session CAS)
+-- is proven by `apps/api/test/outbox-worker-concurrency.integration.test.ts`.
 -- This does NOT wire the dedicated worker process, remove the in-process
 -- scheduler drain, or enroll inbox/scheduler/dispatcher/billing/finance.
 -- Fixture rows and attempted writes ROLLBACK; roles/functions/policies persist.
@@ -522,11 +526,52 @@ BEGIN
     END IF;
 END $$;
 
--- 11) Bounds: limite, lease, worker, código e retry inválidos falham fechado.
+-- 10b) Retry floor: an explicit retry in the past or inside the 60s window is
+-- raised to the floor (never a hot retry), not accepted as-is.
 DO $$
 DECLARE
     v_id uuid;
     v_token uuid;
+    v_result integer;
+    v_retry timestamptz;
+    v_before timestamptz := clock_timestamp();
+BEGIN
+    RESET ROLE;
+    RESET app.tenant_id;
+    INSERT INTO platform.outbox_messages
+        (tenant_id, domain_event_id, topic, payload_json, state, next_attempt_at)
+    SELECT m.tenant_id, m.domain_event_id, 'proof.floor', '{"n":12}',
+        'PENDING', now() - make_interval(secs => 5)
+    FROM platform.outbox_messages AS m WHERE m.topic = 'proof.b1';
+
+    SET LOCAL ROLE outbox_worker;
+    SELECT c.id, c.claim_token INTO v_id, v_token
+    FROM platform.outbox_claim(1, 'wFloor', 300) AS c WHERE c.topic = 'proof.floor';
+    IF v_id IS NULL THEN
+        RAISE EXCEPTION 'floor fixture must be claimable';
+    END IF;
+    -- Request a retry "now": the floor must push it to now+60s.
+    SELECT platform.outbox_fail(v_id, v_token, 'FLOOR', v_before) INTO v_result;
+    IF v_result <> 1 THEN
+        RAISE EXCEPTION 'floor fail must park the row';
+    END IF;
+
+    RESET ROLE;
+    SELECT m.next_attempt_at INTO v_retry FROM platform.outbox_messages AS m WHERE m.id = v_id;
+    IF v_retry < v_before + make_interval(secs => 59) THEN
+        RAISE EXCEPTION 'retry floor must raise a past/too-soon retry to >= now+60s, got %', v_retry;
+    END IF;
+END $$;
+
+-- 11) Bounds: limite, lease, worker, código e retry inválidos falham fechado.
+-- Each expected rejection is captured as a FLAG, then asserted OUTSIDE the
+-- protected block, so a function that accepts invalid input still fails the
+-- proof (a sentinel RAISE must never be swallowed by the same handler).
+DO $$
+DECLARE
+    v_id uuid;
+    v_token uuid;
+    v_rejected boolean;
 BEGIN
     RESET ROLE;
     RESET app.tenant_id;
@@ -534,41 +579,55 @@ BEGIN
     FROM platform.outbox_messages AS m WHERE m.topic = 'proof.a1';
     SET LOCAL ROLE outbox_worker;
 
+    v_rejected := false;
     BEGIN
         PERFORM platform.outbox_claim(0, 'w', 300);
-        RAISE EXCEPTION 'expected claim limit 0 to fail';
-    EXCEPTION WHEN raise_exception THEN NULL;
+    EXCEPTION WHEN raise_exception THEN v_rejected := true;
     END;
+    IF NOT v_rejected THEN RAISE EXCEPTION 'claim limit 0 must fail'; END IF;
+
+    v_rejected := false;
     BEGIN
         PERFORM platform.outbox_claim(101, 'w', 300);
-        RAISE EXCEPTION 'expected claim limit 101 to fail';
-    EXCEPTION WHEN raise_exception THEN NULL;
+    EXCEPTION WHEN raise_exception THEN v_rejected := true;
     END;
+    IF NOT v_rejected THEN RAISE EXCEPTION 'claim limit 101 must fail'; END IF;
+
+    v_rejected := false;
     BEGIN
         PERFORM platform.outbox_claim(1, '   ', 300);
-        RAISE EXCEPTION 'expected blank worker to fail';
-    EXCEPTION WHEN raise_exception THEN NULL;
+    EXCEPTION WHEN raise_exception THEN v_rejected := true;
     END;
+    IF NOT v_rejected THEN RAISE EXCEPTION 'blank worker must fail'; END IF;
+
+    v_rejected := false;
     BEGIN
         PERFORM platform.outbox_claim(1, 'w', 0);
-        RAISE EXCEPTION 'expected lease 0 to fail';
-    EXCEPTION WHEN raise_exception THEN NULL;
+    EXCEPTION WHEN raise_exception THEN v_rejected := true;
     END;
+    IF NOT v_rejected THEN RAISE EXCEPTION 'lease 0 must fail'; END IF;
+
+    v_rejected := false;
     BEGIN
         PERFORM platform.outbox_claim(1, 'w', 3601);
-        RAISE EXCEPTION 'expected lease 3601 to fail';
-    EXCEPTION WHEN raise_exception THEN NULL;
+    EXCEPTION WHEN raise_exception THEN v_rejected := true;
     END;
+    IF NOT v_rejected THEN RAISE EXCEPTION 'lease 3601 must fail'; END IF;
+
+    v_rejected := false;
     BEGIN
         PERFORM platform.outbox_fail(v_id, v_token, '  ', NULL);
-        RAISE EXCEPTION 'expected blank fail code to fail';
-    EXCEPTION WHEN raise_exception THEN NULL;
+    EXCEPTION WHEN raise_exception THEN v_rejected := true;
     END;
+    IF NOT v_rejected THEN RAISE EXCEPTION 'blank fail code must fail'; END IF;
+
+    v_rejected := false;
     BEGIN
-        PERFORM platform.outbox_fail(v_id, v_token, 'X', now() + make_interval(days => 8));
-        RAISE EXCEPTION 'expected far-future retry to fail';
-    EXCEPTION WHEN raise_exception THEN NULL;
+        PERFORM platform.outbox_fail(v_id, v_token, 'X', clock_timestamp() + make_interval(days => 8));
+    EXCEPTION WHEN raise_exception THEN v_rejected := true;
     END;
+    IF NOT v_rejected THEN RAISE EXCEPTION 'far-future retry must fail'; END IF;
+
     IF platform.outbox_complete('11111111-1111-1111-1111-111111111111', gen_random_uuid()) <> 0 THEN
         RAISE EXCEPTION 'complete on an unknown id must write 0 rows';
     END IF;

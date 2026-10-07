@@ -31,20 +31,31 @@
 --     `outbox_worker` ONLY — `iptv_app` receives "permission denied".
 --   * RLS on `platform.outbox_messages` + `platform.outbox_transitions`
 --     with an executor-only policy each (scope: exactly these tables).
---   * `outbox_lease_recovery_idx` partial on expired PUBLISHING leases
---     (045 recovery-index precedent; immutable, planner-safe).
+--   * `outbox_lease_recovery_idx` partial on in-flight PUBLISHING leases.
+--     The claim pins ONE `clock_timestamp()` per call so the expiry
+--     predicate is a plain range comparison the planner can drive from this
+--     index (the runbook requires its shape be re-measured against real
+--     volume before activation; it is additive and harmless on rollback).
 --     `outbox_pending_idx` (001) is preserved UNCHANGED.
 --
 -- Deliberately NOT in this migration:
 --   * No EXECUTE for `iptv_app` and no direct table grants for the worker:
 --     the API process must not become a worker executor (option A rejected).
 --   * No BYPASSRLS anywhere (option B rejected).
---   * No scheduler/dispatcher/inbox changes: the in-process
---     `OutboxDrainer.drain(25)` still runs. While both paths run, double
---     publish is possible (at-least-once consumers stay idempotent); the
---     follow-up removes the API-side drain once the dedicated worker process
---     is staged. Rollback of THIS migration = a new append-only migration
---     dropping functions/policies/grants; new columns/index stay in place.
+--   * No worker process and no scheduler/dispatcher/inbox changes: the
+--     in-process `OutboxDrainer.drain(25)` still runs on the API pool.
+--     This DB protocol must NOT be activated while the legacy drain is live:
+--     coexistence is worse than double-publish, because the legacy drainer
+--     sets `PUBLISHING` with NO lease and completes by `id` alone (no CAS),
+--     so it could overwrite a fenced outcome and leave rows this reclaim
+--     (which requires a non-NULL lease) will never select. Activation gate
+--     (next slice): quiesce the legacy drain (`API_SCHEDULER_ENABLED=0` /
+--     remove the `outbox.drain` call), let in-flight leases expire, then
+--     start the worker. Rollback of THIS migration = a new append-only
+--     migration dropping functions/policies/grants; new columns/index stay
+--     in place. Rollback of the WORKER (once active) is forward-fix: a
+--     legacy `PUBLISHING` row with a NULL lease left by the OLD drain is a
+--     pre-existing condition this migration does not silently repair.
 --
 -- At-least-once (explicitly NOT exactly-once): a lease expiry lets a second
 -- worker reclaim and re-publish a row while the first sender is paused; what
@@ -114,6 +125,12 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = platform, pg_temp
 AS $$
+DECLARE
+    -- One captured wall-clock instant per call: `clock_timestamp()` is
+    -- volatile, so pinning it keeps the expiry predicate an index-range
+    -- comparison (outbox_lease_recovery_idx) instead of a per-row volatile
+    -- evaluation, and makes the claim deterministic within the call.
+    v_now timestamptz := clock_timestamp();
 BEGIN
     IF p_worker IS NULL OR btrim(p_worker) = '' THEN
         RAISE EXCEPTION 'outbox_claim: p_worker must be a non-blank worker name';
@@ -131,12 +148,12 @@ BEGIN
         FROM platform.outbox_messages AS m
         WHERE (
             m.state IN ('PENDING', 'FAILED')
-            AND m.next_attempt_at <= now()
+            AND m.next_attempt_at <= v_now
         )
         OR (
             m.state = 'PUBLISHING'
             AND m.lease_expires_at IS NOT NULL
-            AND m.lease_expires_at <= clock_timestamp()
+            AND m.lease_expires_at <= v_now
         )
         ORDER BY m.next_attempt_at ASC, m.created_at ASC
         LIMIT p_limit
@@ -150,7 +167,7 @@ BEGIN
             -- Wall clock (not `now()`): `now()` is frozen at transaction
             -- start, so a single-transaction proof could never observe a
             -- real expiry; across production transactions both agree.
-            lease_expires_at = clock_timestamp() + make_interval(secs => p_lease_seconds),
+            lease_expires_at = v_now + make_interval(secs => p_lease_seconds),
             attempt_count = m.attempt_count + 1,
             last_error_code = NULL
         FROM candidate AS c
@@ -278,6 +295,7 @@ DECLARE
     v_updated integer := 0;
     v_retry timestamptz;
     v_worker text;
+    v_now timestamptz := clock_timestamp();
 BEGIN
     IF p_id IS NULL OR p_token IS NULL THEN
         RAISE EXCEPTION 'outbox_fail: p_id and p_token are required';
@@ -286,11 +304,14 @@ BEGIN
         RAISE EXCEPTION 'outbox_fail: p_code must be a non-blank error code';
     END IF;
 
-    v_retry := COALESCE(p_retry_at, now() + make_interval(secs => 60));
-    IF v_retry < now() THEN
-        v_retry := now() + make_interval(secs => 60);
+    -- Backoff contract: the retry instant is CLAMPED to [now+60s, now+7d].
+    -- A past or too-soon request is raised to the 60s floor (never a hot
+    -- retry); beyond 7 days is refused, not clamped (operator error).
+    v_retry := COALESCE(p_retry_at, v_now + make_interval(secs => 60));
+    IF v_retry < v_now + make_interval(secs => 60) THEN
+        v_retry := v_now + make_interval(secs => 60);
     END IF;
-    IF v_retry > now() + make_interval(days => 7) THEN
+    IF v_retry > v_now + make_interval(days => 7) THEN
         RAISE EXCEPTION 'outbox_fail: p_retry_at must be within 7 days';
     END IF;
 
@@ -371,8 +392,11 @@ CREATE POLICY outbox_executor_isolation ON platform.outbox_transitions
     WITH CHECK (true);
 
 -- Lease-recovery index (045 precedent): partial on in-flight PUBLISHING
--- leases so reclaim scans stay bounded. No `now()` expression (immutable,
--- planner-safe). `outbox_pending_idx` (001) stays UNCHANGED.
+-- leases so reclaim scans stay bounded. `outbox_claim` pins one
+-- `clock_timestamp()` per call, so the `lease_expires_at <= v_now` predicate
+-- is a range comparison this index can serve. Shape is provisional pending
+-- real-volume measurement (runbook); additive and harmless on rollback.
+-- `outbox_pending_idx` (001) stays UNCHANGED.
 CREATE INDEX outbox_lease_recovery_idx
     ON platform.outbox_messages (lease_expires_at)
     WHERE state = 'PUBLISHING';

@@ -506,13 +506,18 @@ measured at implementation, not assumed. Until platform + billing (+ `billing.te
 > Migration `050` (`db/migrations/202610070000_050_platform_outbox_worker.sql`)
 > creates the two roles, lease columns, audit table, four `SECURITY DEFINER`
 > functions, `REVOKE FROM PUBLIC` + worker-only `EXECUTE`, executor-only RLS
-> policies and the lease-recovery index; proof `db/tests/015` executes all
-> acceptance criteria 1–9 that are database-provable (15/15 SQL files PASS on
-> a zeroed disposable DB, seeds ×2). Still missing: the separate worker
-> process, removal of the in-process scheduler `drain(25)` (coexistence would
-> double-publish), staging with the new roles, and any certification. The
-> paragraphs below remain the binding design record; "not implemented" notes
-> inside them now refer to the process/staging remainder, not the DB layer.
+> policies and the lease-recovery index; proof `db/tests/015` covers the
+> single-session matrix (15/15 SQL files PASS on a zeroed disposable DB,
+> seeds ×2) and `apps/api/test/outbox-worker-concurrency.integration.test.ts`
+> covers real two-session SKIP LOCKED disjointness + cross-session CAS. These
+> prove the DB boundary and fencing; they do NOT prove process-level items
+> (the worker authenticating as its own LOGIN role end to end, backpressure
+> under load, poison-row handling) or staging. Still missing: the separate
+> worker process, removal of the in-process scheduler `drain(25)` (activation
+> requires quiescing the legacy drain — see Rollback), staging with the new
+> roles, and any certification. The paragraphs below remain the binding
+> design record; "not implemented" notes inside them now refer to the
+> process/staging remainder, not the DB layer.
 
 ## Scope
 
@@ -671,10 +676,23 @@ This decision does **not** cover, and must not be read as covering:
 
 ## Rollback
 
+- **Activation gate (before the worker ever runs):** quiesce the legacy
+  in-process drain first (`API_SCHEDULER_ENABLED=0` and/or remove the
+  `outbox.drain` call) and let in-flight leases expire. The DB protocol
+  (migration 050) is additive and safe to apply while the legacy drain is
+  live, but the two must not CLAIM concurrently: the legacy drainer sets
+  `PUBLISHING` with a NULL lease and completes by `id` alone (no CAS), so it
+  could overwrite a fenced outcome and leave rows the lease-aware reclaim
+  will not select (it requires a non-NULL lease). Coexistence is therefore
+  more dangerous than duplicate publish.
 - Disable the worker process and re-enable the previous drain path (API-side
   drain) — the only supported rollback, and only while the API still has that
-  capability. Once the API's cross-tenant reach is removed, rollback is
-  **forward-fix only**: fix the worker, do not re-grant the API.
+  capability. Before switching back, drain or explicitly resolve any row the
+  worker left in `PUBLISHING` (let its lease expire, then reclaim with the
+  current token or complete it); a `PUBLISHING` row with a NULL lease left by
+  the OLD drain is a pre-existing condition this migration does not repair.
+  Once the API's cross-tenant reach is removed, rollback is **forward-fix
+  only**: fix the worker, do not re-grant the API.
 - Drop the functions/policies/grants in a new append-only migration; never edit
   or remove migration 001.
 - Any new column/index is additive and stays in place on rollback — it is
@@ -690,11 +708,15 @@ This decision does **not** cover, and must not be read as covering:
   expire, then re-grant to a fresh role. No row state is repaired by hand — the
   reclaim path handles it.
 
-## SQL proof tests (planned, not written)
+## SQL proof tests
 
-To be added under `db/tests/` during implementation, following the existing
-`0NN` numbering: worker-role privilege inventory, `PUBLIC` revocation,
+Implemented in `db/tests/015_platform_outbox_worker.sql` (single-session
+matrix: worker-role privilege inventory, `PUBLIC` revocation,
 API-cannot-execute, stale-token CAS rejection, lease-expiry reclaim,
-concurrent-claim disjointness (current claims only — duplicate external publish
-across a lease expiry is permitted, at-least-once), executor RLS scoping, and
-audit append-only enforcement.
+claim-disjointness state/lease exclusion, executor RLS scoping, audit
+append-only enforcement, bounds fail-closed). Real two-session concurrency
+(`FOR UPDATE SKIP LOCKED` disjointness under an open row lock, and
+cross-session CAS fencing) is proven by
+`apps/api/test/outbox-worker-concurrency.integration.test.ts`. Still pending
+before activation: the separate worker process, the quiescence of the legacy
+drain, and staging with the new roles.
