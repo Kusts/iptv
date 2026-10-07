@@ -86,3 +86,9 @@ Por slice, o contrato continua: inventário do domínio → grants + policies
 (migration append-only) → prova SQL (`db/tests/0NN`) → rehearsal via caminho real
 da app (isolamento A/B, fail-closed, escrita cross-tenant bloqueada, owner bypass).
 Re-rodar este inventário a cada slice mantém o `UNKNOWN → 0` auditável até o cutover.
+
+## Follow-ups P1-exit/cutover (registrados, não-bloqueantes P1.3)
+
+- **Webhook completo sob `iptv_app`** (gate P1-exit): bus escreve `domain_events`/`outbox_messages`/`audit_log`, e a 050 proíbe `iptv_app`→outbox. Direção (ARCH-P13 Q2): funções produtoras estreitas `SECURITY DEFINER` (só `PENDING`, tenant/contexto validados, `search_path` fixo, `PUBLIC` revogado) com executor não-login dedicado, via nova migration append-only — sem tocar 050/051.
+- **TOCTOU resolve→uso (Asaas)** (ARCH-P13 Q3): revalidar canal/`ACTIVE`/hash na mesma transação do insert inbox, com lock que conflite com disable/rotate; definir linearização (revogação confirmada antes do aceite impede ingresso). Slice de ingresso/inbox do platform spine.
+- **Leitores sem contexto (sweep P1.3):** `analytics.controller.ts:308-313,424-430`, `finance.controller.ts:131-140,252-274,521-536` (wrap por-tenant), `scheduler.service.ts:302-311` (cross-tenant intencional: loop por tenant com contexto ou função definer).
