@@ -96,10 +96,10 @@ docker compose --env-file deploy/staging/.env.staging `
 `run --rm migrate` prints one summary line and exits:
 
 ```text
-iptv-migrate: applied=49 skipped=0 total=49 dir=/app/db/migrations
+iptv-migrate: applied=51 skipped=0 total=51 dir=/app/db/migrations
 ```
 
-`applied=0 skipped=49` on a re-deploy is the expected idempotent no-op. Running
+`applied=0 skipped=51` on a re-deploy is the expected idempotent no-op. Running
 the same `up -d` again without a code change is therefore safe.
 
 Rules that are not negotiable:
@@ -142,11 +142,26 @@ database health are covered by
 [outbox backlog](outbox-workflow-backlog.md) and
 [database degraded](database-degraded.md).
 
-## Outbox worker activation (pós-050, opt-in)
+## Outbox worker activation (051 interlock, opt-in)
 
 The dedicated worker (`--profile outbox`) is NEVER part of the default `up`.
-Fresh staging order: `postgres → migrate 001–050 (owner) → api (as
+Fresh staging order: `postgres → migrate 001–051 (owner) → api (as
 `iptv_app`, legacy drain still enabled by default) → web`, then:
+
+> SUPERSEDED (migration 051): the old env-copy activation (copying observed
+> drain-state values into the worker env as the authority) is replaced by the
+> DATABASE live-interlock `platform.outbox_runtime_control`
+> (`LEGACY → QUIESCING → WORKER`, rollback `WORKER → QUIESCING → LEGACY`) via
+> `platform.outbox_runtime_set()`. The env values stay as a fail-closed
+> operator assertion, but the DATABASE decides who may publish: the legacy
+> drainer consults `platform.outbox_runtime_mode()` before every drain
+> (`QUIESCING`/`WORKER` refuse with the same disabled error), and
+> `platform.outbox_claim()` raises unless the mode is `WORKER`. An API restart
+> cannot change the mode — only `set()` (superuser operator, granted to NOBODY)
+> switches it, with a two-key CAS on `(mode, generation)`. First proven
+> end-to-end 2026-10-07 (STAGING-P0, branch `closure/p0-outbox-interlock`):
+> full cycle `LEGACY→QUIESCING→WORKER→QUIESCING→LEGACY` (generations 2–5) —
+> see `evidence/staging-p0-051/report.md`.
 
 ```powershell
 # 1. prove ZERO legacy drain in flight BEFORE touching the api service
@@ -156,7 +171,9 @@ Fresh staging order: `postgres → migrate 001–050 (owner) → api (as
 #    EXPIRED lease — a mid-drain kill leaves PUBLISHING rows with null lease
 #    that NEITHER drainer reclaims.
 curl.exe -i http://127.0.0.1:3001/v1/admin/outbox/drain-state
-#    expect {"enabled":true,"inFlight":0,...} (platform-admin auth);
+#    expect {"enabled":true,"inFlight":0,...} (platform-admin auth +
+#    x-tenant-context-revision header matching the session; without it the
+#    guard answers 409 TENANT_CONTEXT_CONFLICT);
 #    if inFlight > 0, wait and re-poll — do NOT proceed to step 2.
 # 2. disable new legacy drains (API-side gate; scheduler skips its outbox tick)
 #    in .env.staging: LEGACY_OUTBOX_DRAIN_ENABLED=0, then PROMPTLY recreate
@@ -166,29 +183,48 @@ curl.exe -i http://127.0.0.1:3001/v1/admin/outbox/drain-state
 # 3. prove ZERO in flight again AFTER the recreate
 curl.exe -i http://127.0.0.1:3001/v1/admin/outbox/drain-state
 #    expect {"enabled":false,"inFlight":0,...} (platform-admin auth)
-# 4. set the worker password once (migration 050 sets none) and fill the
+# 4. switch the DATABASE authority (owner psql, superuser operator):
+#    observe the generation first, then advance one step at a time —
+#    set() refuses skipped steps and stale generations (fixed messages).
+#    SELECT mode, generation FROM platform.outbox_runtime_control WHERE id = 1;
+#    -- expect LEGACY, generation N
+#    SELECT platform.outbox_runtime_set('LEGACY','QUIESCING','<operator>',N);
+#    -- returns N+1. Activation MUST start here, never straight to WORKER.
+# 5. prove unfenced-zero: no legacy-stranded row may exist before WORKER
+#    SELECT count(*) FROM platform.outbox_messages
+#      WHERE state = 'PUBLISHING' AND lease_expires_at IS NULL;
+#    -- must be 0, else set() to WORKER refuses (operator triage, see below).
+#    SELECT platform.outbox_runtime_set('QUIESCING','WORKER','<operator>',N+1);
+#    -- returns N+2. The worker protocol is authoritative only now.
+# 6. set the worker password once (migration 050 sets none) and fill the
 #    LOCAL .env.staging.outbox-worker (from its .example), asserting
-#    OUTBOX_LEGACY_QUIESCED=1 only now
-# 5. boot rehearsal with zero claims, then a single bounded batch
+#    OUTBOX_LEGACY_QUIESCED=1 plus the OBSERVED drain-state
+#    (OUTBOX_LEGACY_DRAIN_ENABLED=0, OUTBOX_LEGACY_IN_FLIGHT=0) only now
+# 7. boot rehearsal with zero claims, then a single bounded batch
 docker compose --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml --profile outbox `
   run --rm outbox-worker check
 docker compose --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml --profile outbox `
   run --rm outbox-worker run --once
-# 6. start the loop only after the smoke passes
+# 8. start the loop only after the smoke passes
 docker compose --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml --profile outbox `
   up -d outbox-worker
 ```
 
+Rollback is a forward transition, never a data repair: stop the worker, await
+in-flight (zero `PUBLISHING` rows with live leases), then
+`set('WORKER','QUIESCING',...)` → `set('QUIESCING','LEGACY',...)` and re-arm
+the legacy drain (`LEGACY_OUTBOX_DRAIN_ENABLED=1` + recreate api, then
+drain-state shows `enabled:true,inFlight:0`).
+
 Stranded-row detection (operator triage, NOT automatic SQL surgery): rows in
-`PUBLISHING` with a null lease (`claim_token IS NULL`) are stranded by a
-mid-drain api recreate and are invisible to both drainers. Detect with
-`SELECT count(*) FROM platform.outbox_messages WHERE state = 'PUBLISHING'
-AND claim_token IS NULL`; any nonzero count after steps 1–3 is an
-operator triage event (inspect, then forward-fix deliberately — never an
-ad-hoc state flip).
+`PUBLISHING` with a null lease (`lease_expires_at IS NULL`, equivalently
+`claim_token IS NULL`) are stranded by a mid-drain api recreate and are
+invisible to both drainers. `set()` to `WORKER` refuses while any exists —
+that refusal IS the guard working, not a migration problem. Inspect, then
+forward-fix deliberately — never an ad-hoc state flip.
 
 Confirm in PostgreSQL: API session = `iptv_app`, worker session =
 `outbox_worker`, migrations ran as owner, no role with `BYPASSRLS`
@@ -217,6 +253,15 @@ Decide forward-fix vs rollback BEFORE touching the environment:
   [Migration failure](migration-failure.md): determine whether the transaction
   rolled back, do not blindly re-run non-idempotent data movement, and prefer a
   forward-fix over a destructive reversal.
+  Privilege-boundary rule (STAGING-P0 correction): restore WITH owners — NEVER
+  `--no-owner` (it flattens the 050/051 boundary: everything lands on the
+  restoring superuser and `SECURITY DEFINER` would execute as superuser).
+  Pre-provision the scenario-B roles first (`iptv_app` / `outbox_worker` LOGIN
+  NOBYPASSRLS, `outbox_executor` NOLOGIN NOINHERIT NOBYPASSRLS), restore as the
+  owner superuser, then VERIFY post-restore (050/051 tables + six lifecycle
+  functions `outbox_executor`-owned `SECURITY DEFINER`, exact EXECUTE grants,
+  `set()` granted to nobody) BEFORE `migrate no-op` + `ready`. Proven
+  2026-10-07 (`evidence/staging-p0-051/report.md` §4).
 
 ```powershell
 # pin the known-good image tags, then recreate only the app services
@@ -250,8 +295,9 @@ one.
   operator host (see [Browser drift challenge](browser-drift-challenge.md)) and
   treat this image as reproducible packaging plus a reviewed container boundary.
 - **Outbox worker** (`--profile outbox`): the dedicated platform outbox
-  publisher (migration 050 protocol). Long-running but NEVER default: see
-  "Outbox worker activation (pós-050, opt-in)" above. `check` is the compose
+  publisher (050 leased protocol under the 051 runtime interlock).
+  Long-running but NEVER default: see
+  "Outbox worker activation (051 interlock, opt-in)" above. `check` is the compose
   healthcheck (zero claims); `run --once` is the staging smoke.
 
 ## Known assumptions (confirmed by the first real `docker build` 2026-10-06)

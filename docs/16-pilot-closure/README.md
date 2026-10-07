@@ -26,7 +26,7 @@
 | `p0-outbox-interlock` | migration 051 + gate legacy em DB + claim gate + testes | coder → tester → reviewer | DONE (Round 2 APPROVED + PASS) |
 | `p0-worker-p2s` | shutdown/batch accounting + heartbeat em drain + roleGuard database-wide | coder → tester → reviewer | DONE (incluído no mesmo ciclo) |
 | `p0-015-integration` | 015 pós-051 (postura+lifecycle sob WORKER; 016 mantém CAS/NULL/rollback) | coder → tester → reviewer | DONE (tester PASS ponta a ponta 001–016; reviewer R2 BLOCKED-somente-por-falta-de-shell suprido por evidência do planner: diff confirma só arquivos do escopo P0 aprovado, migrations 001–050 intactas, 3 gates Python verdes) |
-| `p0-staging-10` | staging da issue #10 após merge P0 | posterior | PENDENTE — requer PR + human merge (sem merge automático) + CI da main |
+| `p0-staging-10` | staging da issue #10 com 051 (cutover+rollback+restore com owners) | infra → tester → reviewer | DONE (tester PASS ao vivo + reviewer APPROVED; commit neste branch) |
 
 ## Ordem após P0 (PLAN v1, sem nova SPEC)
 
