@@ -49,13 +49,16 @@
 --     sets `PUBLISHING` with NO lease and completes by `id` alone (no CAS),
 --     so it could overwrite a fenced outcome and leave rows this reclaim
 --     (which requires a non-NULL lease) will never select. Activation gate
---     (next slice): quiesce the legacy drain (`API_SCHEDULER_ENABLED=0` /
---     remove the `outbox.drain` call), let in-flight leases expire, then
---     start the worker. Rollback of THIS migration = a new append-only
---     migration dropping functions/policies/grants; new columns/index stay
---     in place. Rollback of the WORKER (once active) is forward-fix: a
---     legacy `PUBLISHING` row with a NULL lease left by the OLD drain is a
---     pre-existing condition this migration does not silently repair.
+--     (next slice): PROVE no legacy publisher is in flight — stopping new
+--     ticks is not enough, because a running legacy drain holds no lease and
+--     completes by `id` alone — then start the worker. Rollback of THIS
+--     migration = a new append-only migration dropping functions/policies/
+--     grants; new columns/index stay in place. Rollback of the WORKER (once
+--     active) is forward-fix, and must NEVER complete a claimed row just to
+--     clear state: reclaim → publish with confirmation → complete, or
+--     re-publish when delivery is uncertain. A legacy `PUBLISHING` row with
+--     a NULL lease left by the OLD drain is a pre-existing condition this
+--     migration does not silently repair (see runbook Rollback).
 --
 -- At-least-once (explicitly NOT exactly-once): a lease expiry lets a second
 -- worker reclaim and re-publish a row while the first sender is paused; what
