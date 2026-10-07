@@ -156,7 +156,7 @@ Fresh staging order: `postgres → migrate 001–050 (owner) → api (as
 #    EXPIRED lease — a mid-drain kill leaves PUBLISHING rows with null lease
 #    that NEITHER drainer reclaims.
 curl.exe -i http://127.0.0.1:3001/v1/admin/outbox/drain-state
-#    expect {"legacyDrainEnabled":true,"inFlight":0,...} (platform-admin auth);
+#    expect {"enabled":true,"inFlight":0,...} (platform-admin auth);
 #    if inFlight > 0, wait and re-poll — do NOT proceed to step 2.
 # 2. disable new legacy drains (API-side gate; scheduler skips its outbox tick)
 #    in .env.staging: LEGACY_OUTBOX_DRAIN_ENABLED=0, then PROMPTLY recreate
@@ -165,7 +165,7 @@ curl.exe -i http://127.0.0.1:3001/v1/admin/outbox/drain-state
 #    re-verify inFlight 0 immediately before recreating.
 # 3. prove ZERO in flight again AFTER the recreate
 curl.exe -i http://127.0.0.1:3001/v1/admin/outbox/drain-state
-#    expect {"legacyDrainEnabled":false,"inFlight":0,...} (platform-admin auth)
+#    expect {"enabled":false,"inFlight":0,...} (platform-admin auth)
 # 4. set the worker password once (migration 050 sets none) and fill the
 #    LOCAL .env.staging.outbox-worker (from its .example), asserting
 #    OUTBOX_LEGACY_QUIESCED=1 only now

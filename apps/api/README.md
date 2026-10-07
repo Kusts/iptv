@@ -287,7 +287,7 @@ factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
   current behavior; anything else fails closed at read time); a disabled
   drainer throws `LEGACY_DRAIN_DISABLED` (POST maps to 409) and the scheduler
   tick skips its outbox pass. `GET /v1/admin/outbox/drain-state`
-  (platform-admin-only) reports `{legacyDrainEnabled, inFlight, totalDrains,
+  (platform-admin-only) reports `{enabled, inFlight, totalDrains,
   lastFinishedAt}` for the activation procedure, and
   `waitForQuiescence()`/`awaitOutboxQuiescence()` bound the wait for zero
   in-flight. The claim SQL is unchanged (no lease/CAS — removal is a later

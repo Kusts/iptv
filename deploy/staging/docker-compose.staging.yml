@@ -210,6 +210,9 @@ services:
     # also restart, which is intended: the operator stops the service
     # manually once logs/health show a config or quiescence problem.
     restart: unless-stopped
+    # SIGKILL grace covers OUTBOX_WORKER_SHUTDOWN_TIMEOUT_MS (max 120s):
+    # clean exit stays immediate; grace only delays the SIGKILL.
+    stop_grace_period: 130s
     depends_on:
       postgres:
         condition: service_healthy

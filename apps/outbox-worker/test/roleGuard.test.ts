@@ -55,7 +55,7 @@ describe("role guard", () => {
     await expect(assertOutboxWorkerIdentity(makeQuery({}))).resolves.toEqual({ ok: true });
   });
 
-  it("checks all eight table predicates and all four functions", async () => {
+  it("checks all fourteen table predicates and all four functions", async () => {
     let tables = 0;
     let functions = 0;
     const counting: RoleQuery = async (sql, params) => {
@@ -64,7 +64,7 @@ describe("role guard", () => {
       return makeQuery({})(sql, params);
     };
     await assertOutboxWorkerIdentity(counting);
-    expect(tables).toBe(8);
+    expect(tables).toBe(14);
     expect(functions).toBe(4);
   });
 
@@ -129,6 +129,11 @@ describe("role guard", () => {
     await expect(
       assertOutboxWorkerIdentity(
         makeQuery({ tablePrivTrue: "platform.outbox_transitions|INSERT" }),
+      ),
+    ).rejects.toThrow(/direct table privilege/);
+    await expect(
+      assertOutboxWorkerIdentity(
+        makeQuery({ tablePrivTrue: "platform.outbox_transitions|TRUNCATE" }),
       ),
     ).rejects.toThrow(/direct table privilege/);
   });

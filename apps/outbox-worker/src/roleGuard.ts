@@ -53,7 +53,7 @@ const EXPECTED_FUNCTIONS = [
 
 const OUTBOX_TABLES = ["platform.outbox_messages", "platform.outbox_transitions"] as const;
 
-const TABLE_PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE"] as const;
+const TABLE_PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"] as const;
 
 export async function assertOutboxWorkerIdentity(query: RoleQuery): Promise<RoleCheckResult> {
   const identity = await singleRow(query, "SELECT current_user AS u, session_user AS s");

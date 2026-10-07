@@ -26,5 +26,7 @@ describe("staging compose outbox-worker contract", () => {
     // container on usage output instead of draining.
     expect(block).not.toMatch(/command:\s*\[.*--help.*\]/);
     expect(block).toContain('profiles: ["outbox"]');
+    // SIGKILL grace must cover OUTBOX_WORKER_SHUTDOWN_TIMEOUT_MS (max 120s).
+    expect(block).toMatch(/stop_grace_period:\s*130s/);
   });
 });
