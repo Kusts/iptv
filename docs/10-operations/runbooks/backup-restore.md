@@ -71,6 +71,29 @@ corrompido falha no restore, não pela metade.
 7. Registrar evidência (comando, archive hash, duração, checagens) no log de
    operações. Sem esse registro, o incidente não conta como validação DR.
 
+## Cluster roles pós-050 (restore drill + cluster novo)
+
+Roles PostgreSQL são cluster-level: um backup normal da database NÃO os
+carrega. Num cluster fresco (restore drill ou cluster novo), provisione ANTES
+do `pg_restore`/migrate, como superuser owner:
+
+```sql
+-- Exatamente a postura que a migration 050 aceita (qualquer divergência
+-- recusa a migration em vez de normalizar):
+CREATE ROLE outbox_worker LOGIN NOBYPASSRLS;
+CREATE ROLE outbox_executor NOLOGIN NOINHERIT NOBYPASSRLS;
+-- Zero memberships, zero grants, zero objetos possuídos (a migration valida
+-- tudo fail-closed, incl. pg_parameter_acl). Senhas NÃO vivem no dump:
+ALTER ROLE outbox_worker PASSWORD '...';  -- caminho de secrets do operador
+```
+
+Cenários a rehearsar (issue #10): **A — cluster limpo** (sem roles outbox →
+migrate 001–050 cria + API + worker + testes); **B — roles compatíveis
+preexistentes** (criadas exatamente como acima → migrate PASS). Um cenário
+incompatível (ex. `BYPASSRLS`) deve recusar fail-closed. O drill existente
+(`db-restore-drill.sh`) ainda não cobre esses roles — estender o script é
+trabalho futuro; o procedimento acima é o contrato até lá.
+
 ## Encryption e offsite (OPERATOR/INFRA EVIDENCE REQUIRED)
 
 - Encryption at rest do archive: aplicar na camada de storage (ex. `age`/

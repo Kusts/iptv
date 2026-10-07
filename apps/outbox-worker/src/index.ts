@@ -1,0 +1,15 @@
+export { ActivationError, checkActivationGate } from "./activation.js";
+export type { ActivationInput } from "./activation.js";
+export { ConfigError, isOutboxWorkerEnabled, resolveOutboxWorkerConfig, parseOutboxWorkerConfig, validateOutboxWorkerDatabaseUrl } from "./config.js";
+export type { OutboxWorkerConfig } from "./config.js";
+export { closePool, createOutboxWorkerPool } from "./db.js";
+export { RoleGuardError, assertOutboxWorkerIdentity } from "./roleGuard.js";
+export type { RoleCheckResult, RoleQuery } from "./roleGuard.js";
+export { WorkerMetrics } from "./metrics.js";
+export type { ShutdownState, WorkerMetricsSnapshot } from "./metrics.js";
+export { PgOutboxRpc } from "./rpc.js";
+export type { ClaimRow, DbPort, OutboxDbQuery } from "./rpc.js";
+export { FakeTransport, LocalTransport } from "./transport.js";
+export type { FakeTransportOptions, TransportPort } from "./transport.js";
+export { OutboxWorker, classifyErrorCode } from "./worker.js";
+export type { BatchOutcome, OutboxWorkerDeps, WorkerLogger } from "./worker.js";

@@ -4,7 +4,7 @@ import type { Database } from "@iptv/database";
 import { newId, type CommandActor } from "@iptv/domain";
 import { recordCommandExecuted, withSpan } from "@iptv/observability";
 import { CommandBus } from "../commands/command-bus.js";
-import { OutboxDrainer } from "../outbox/outbox-drainer.js";
+import { OutboxDrainer, isLegacyOutboxDrainEnabled } from "../outbox/outbox-drainer.js";
 import { WahaWebhookService } from "../communications/waha-webhook.service.js";
 import { AsaasWebhookService } from "../billing/asaas-webhook.service.js";
 import { ProviderDispatcherService } from "../provider/provider-dispatcher.service.js";
@@ -235,9 +235,22 @@ export class SchedulerService implements OnModuleDestroy {
       });
     }
     await this.runTask(result, "outbox.drain", async () => {
+      if (!isLegacyOutboxDrainEnabled()) {
+        this.logger.log("scheduler skipping legacy outbox drain (LEGACY_OUTBOX_DRAIN_ENABLED=0)");
+        return;
+      }
       result.outbox = await this.outbox.drain(25);
     });
     return result;
+  }
+
+  /** Operational hook: wait for in-flight legacy outbox drains to finish. */
+  async awaitOutboxQuiescence(timeoutMs?: number): Promise<void> {
+    if (timeoutMs === undefined) {
+      await this.outbox.waitForQuiescence();
+    } else {
+      await this.outbox.waitForQuiescence(timeoutMs);
+    }
   }
 
   /** One task, isolated: failure is recorded + logged, never rethrown. */

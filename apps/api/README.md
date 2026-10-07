@@ -242,7 +242,7 @@ One line per real directory under `src/`.
 | `inbox/` | Durable inbox: insert-once dedupe + envelope normalization for inbound events. |
 | `inventory/` | Supplier app catalog, app trials, license assets and supplier credit/balance operations. |
 | `knowledge/` | `v1/knowledge` items, versions, solutions, corrections, gaps, freshness and search. |
-| `outbox/` | `v1/admin/outbox` drain of domain events plus the local transport. |
+| `outbox/` | `v1/admin/outbox` legacy drain of domain events plus the local transport (LEGACY — quiescence-gated, see below). |
 | `partners/` | Partners/reseller core, credit orders, membership and academy under `v1`. |
 | `policy/` | `v1/policies` layered policy resolution (platform → tenant → context) for autonomy decisions. |
 | `provider/` | `v1/provider` operations/evidence/health, the `ProviderOpsPort`, secret-ref gate and the leased durable dispatcher (`v1/admin/provider-dispatch`). |
@@ -280,6 +280,21 @@ factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
   `OnModuleDestroy` clears the interval (graceful shutdown; scheduler
   failure never touches the API critical path). `GET /v1/health` reports
   `{scheduler: enabled|disabled, tickSeconds}`.
+- **Legacy outbox drain** (`src/outbox/`, LEGACY — coexistence with the
+  dedicated worker is prohibited): `POST /v1/admin/outbox/drain`
+  (platform-admin-only) publishes due envelopes through `LocalTransport`.
+  `LEGACY_OUTBOX_DRAIN_ENABLED=0` disables new drains (default `1` preserves
+  current behavior; anything else fails closed at read time); a disabled
+  drainer throws `LEGACY_DRAIN_DISABLED` (POST maps to 409) and the scheduler
+  tick skips its outbox pass. `GET /v1/admin/outbox/drain-state`
+  (platform-admin-only) reports `{legacyDrainEnabled, inFlight, totalDrains,
+  lastFinishedAt}` for the activation procedure, and
+  `waitForQuiescence()`/`awaitOutboxQuiescence()` bound the wait for zero
+  in-flight. The claim SQL is unchanged (no lease/CAS — removal is a later
+  slice). Rollback caveat: worker-claimed `PUBLISHING` rows carry leases the
+  legacy drain cannot reclaim — re-arming legacy requires zero fenced rows or
+  forward-fix via the worker. See `apps/outbox-worker/README.md` and the
+  [RLS role split cutover](../../docs/10-operations/runbooks/rls-role-split-cutover.md).
 - **Workflow substrate** (`packages/workflows`, `WORKFLOW` provider):
   `WorkflowPort` with `LocalWorkflowAdapter` default (in-memory, explicitly
   **non-durable**) and `HatchetWorkflowAdapter` (env-gated via

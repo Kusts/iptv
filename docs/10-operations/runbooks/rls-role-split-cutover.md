@@ -734,3 +734,69 @@ cross-session CAS fencing) is proven by
 `packages/database/test/outbox-worker-concurrency.integration.test.ts`. Still pending
 before activation: the separate worker process, the quiescence of the legacy
 drain, and staging with the new roles.
+
+## Worker process + legacy quiescence (implemented 2026-10-07, issue #10)
+
+The runtime half of this decision now exists; the DB protocol above is
+unchanged (migration 050 frozen, no 051 was needed):
+
+- **Process** `apps/outbox-worker/` (`@iptv/outbox-worker`, see its README):
+  connects EXCLUSIVELY via `OUTBOX_WORKER_DATABASE_URL` (parse-time username
+  must be exactly `outbox_worker`, identity query keys refused) and re-proves
+  the posture on every boot (`current_user`/`session_user`, `pg_roles`
+  attributes, zero memberships, no table privileges, EXECUTE on exactly the
+  four functions). Boot order `config → connect → roleGuard → activation
+  gate`; anything failing refuses to claim. Normal operation uses ONLY the
+  four functions — no direct table SELECT/UPDATE. Loop: bounded
+  claim → per-item envelope validation → publish with heartbeat renew
+  (token-current, budgeted) → complete/fail; lost lease abandons without
+  recording. Crash semantics A/B/C and at-least-once are documented in
+  `apps/outbox-worker/README.md`. Disabled by default
+  (`OUTBOX_WORKER_ENABLED=1` required).
+- **Legacy quiescence** (`apps/api/src/outbox/outbox-drainer.ts`,
+  `scheduler.service.ts`, `outbox.controller.ts`): the legacy drain is now
+  explicitly disableable (`LEGACY_OUTBOX_DRAIN_ENABLED=0`, default `1`
+  preserves current behavior), carries an in-flight gauge
+  (`getDrainState()`), refuses new drains while disabled
+  (`LEGACY_DRAIN_DISABLED`, POST maps to 409), is skipped by the scheduler
+  tick when disabled, and exposes
+  `GET /v1/admin/outbox/drain-state` (platform-admin-only) plus
+  `waitForQuiescence()`/`awaitOutboxQuiescence()` for the procedure below.
+  The legacy SQL itself is UNCHANGED (removal is a later slice, after
+  certification).
+- **Zero-coexistence proof**: the worker boot refuses unless
+  `OUTBOX_LEGACY_QUIESCED=1` AND the observed legacy state is disabled with
+  zero in flight (`checkActivationGate`; negative paths unit-tested); the API
+  refuses legacy drains once disabled (tested, including gate-before-DB).
+  Supported configurations are legacy-enabled+worker-disabled OR
+  legacy-disabled+quiesced+worker-enabled — never both publishers live.
+- **Activation procedure (staging/production)**: set
+  `LEGACY_OUTBOX_DRAIN_ENABLED=0` (and/or stop the scheduler) →
+  `GET /v1/admin/outbox/drain-state` until `inFlight = 0`
+  (`waitForQuiescence` bounds the wait; a stopped trigger is NOT proof) →
+  assert `OUTBOX_LEGACY_QUIESCED=1` AND copy the observed state
+  (`OUTBOX_LEGACY_DRAIN_ENABLED=0`, `OUTBOX_LEGACY_IN_FLIGHT=0` — unknown
+  refuses boot, never assume the API default) →
+  `outbox-worker check` (exit 0) →
+  `run --once` smoke → start the loop. Two worker instances are supported
+  (disjoint `SKIP LOCKED` claims, stale token loses); start with one.
+- **Rollback**: stop the worker (SIGTERM drains in-flight up to
+  `OUTBOX_WORKER_SHUTDOWN_TIMEOUT_MS`, never forces outcomes) → confirm zero
+  `PUBLISHING` rows with live leases (owner query) → only then consider
+  re-enabling the legacy path. Residual `PUBLISHING` rows after a crash are
+  forward-fix (restart the worker; the legacy drain cannot reclaim fenced
+  rows). Never complete/fail rows artificially to clear state.
+- **Staging / restore / cluster notes**: staging order is
+  `postgres → migrate 001–050 (owner) → api (iptv_app, legacy disabled,
+  quiesced) → outbox-worker (outbox_worker) → web`; set the worker password
+  with `ALTER ROLE outbox_worker PASSWORD ...` (050 sets none) and keep it in
+  the operator secret path, never in this repo. Roles are cluster-global: a
+  database backup does NOT carry `outbox_worker`/`outbox_executor` — bootstrap
+  them before restore/migrate on a fresh cluster (exact posture per 050, or
+  the migration refuses), then rotate passwords. See
+  [staging](staging-deploy.md) and [backup/restore](backup-restore.md).
+
+Status after #10: `platform outbox DB = PASS`, `platform outbox runtime`
+awaits CI green on the new suites plus a real staging/restore/cluster
+rehearsal — until then it stays PENDING and the project stays
+READY FOR CONTROLLED STAGING.

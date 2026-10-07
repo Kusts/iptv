@@ -23,6 +23,7 @@ traffic is terminated by a reverse proxy or tunnel outside this file.
 postgres (healthy) ──▶ migrate (one-shot, exit 0) ──▶ api (ready) ──▶ web
                                                 browser-worker  (opt-in profile)
                                                 pgbouncer       (opt-in profile)
+                                                outbox-worker   (opt-in profile, ONLY after legacy quiescence)
 ```
 
 Deploy order is expressed in `depends_on` and must not be reordered by hand:
@@ -74,6 +75,7 @@ Images produced:
 | `migrate` | `iptv-staging-migrate:local` | same Dockerfile, different entrypoint |
 | `web` | `iptv-staging-web:local` | Next.js standalone |
 | `browser-worker` | `iptv-staging-browser-worker:local` | opt-in profile, see limitations |
+| `outbox-worker` | `iptv-staging-outbox-worker:local` | opt-in profile, ONLY after legacy quiescence (see below) |
 
 Tag images with an immutable revision before a real environment (see Rollback).
 
@@ -140,6 +142,45 @@ database health are covered by
 [outbox backlog](outbox-workflow-backlog.md) and
 [database degraded](database-degraded.md).
 
+## Outbox worker activation (pós-050, opt-in)
+
+The dedicated worker (`--profile outbox`) is NEVER part of the default `up`.
+Fresh staging order: `postgres → migrate 001–050 (owner) → api (as
+`iptv_app`, legacy drain still enabled by default) → web`, then:
+
+```powershell
+# 1. disable new legacy drains (API-side gate; scheduler skips its outbox tick)
+#    in .env.staging: LEGACY_OUTBOX_DRAIN_ENABLED=0, then recreate the api service
+# 2. prove ZERO legacy drain in flight (a stopped trigger is not proof)
+curl.exe -i http://127.0.0.1:3001/v1/admin/outbox/drain-state
+#    expect {"legacyDrainEnabled":false,"inFlight":0,...} (platform-admin auth)
+# 3. set the worker password once (migration 050 sets none) and fill the
+#    LOCAL .env.staging.outbox-worker (from its .example), asserting
+#    OUTBOX_LEGACY_QUIESCED=1 only now
+# 4. boot rehearsal with zero claims, then a single bounded batch
+docker compose --env-file deploy/staging/.env.staging `
+  -f deploy/staging/docker-compose.staging.yml --profile outbox `
+  run --rm outbox-worker check
+docker compose --env-file deploy/staging/.env.staging `
+  -f deploy/staging/docker-compose.staging.yml --profile outbox `
+  run --rm outbox-worker run --once
+# 5. start the loop only after the smoke passes
+docker compose --env-file deploy/staging/.env.staging `
+  -f deploy/staging/docker-compose.staging.yml --profile outbox `
+  up -d outbox-worker
+```
+
+Confirm in PostgreSQL: API session = `iptv_app`, worker session =
+`outbox_worker`, migrations ran as owner, no role with `BYPASSRLS`
+(`SELECT rolname FROM pg_roles WHERE rolbypassrls`). Staging E2E on the
+worker: happy publish, fail/retry, renew, reclaim, restart, stale token,
+activation refusal while legacy is enabled. Rollback: stop the worker, await
+in-flight, confirm zero `PUBLISHING` rows with live leases before any legacy
+re-arm — residual fenced rows are forward-fix via the worker (the legacy
+drain cannot reclaim them). Full procedure and crash semantics:
+[RLS role split cutover](rls-role-split-cutover.md) ("Worker process +
+legacy quiescence") and `apps/outbox-worker/README.md`.
+
 ## Rollback
 
 Decide forward-fix vs rollback BEFORE touching the environment:
@@ -188,6 +229,10 @@ one.
   detection certified on a desktop browser. Prefer running the worker on the
   operator host (see [Browser drift challenge](browser-drift-challenge.md)) and
   treat this image as reproducible packaging plus a reviewed container boundary.
+- **Outbox worker** (`--profile outbox`): the dedicated platform outbox
+  publisher (migration 050 protocol). Long-running but NEVER default: see
+  "Outbox worker activation (pós-050, opt-in)" above. `check` is the compose
+  healthcheck (zero claims); `run --once` is the staging smoke.
 
 ## Known assumptions (confirmed by the first real `docker build` 2026-10-06)
 
