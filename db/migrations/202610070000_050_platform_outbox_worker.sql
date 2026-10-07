@@ -90,17 +90,31 @@ BEGIN;
 -- but with no membership row there is no grant to interpret, so the check is
 -- deliberately option-agnostic. Any membership row aborts the migration.
 -- Ownership rule (both roles): the role must own NO object in this database
--- (relations including sequences, functions, types, schemas). The executor's
+-- (relations including sequences, functions, types, schemas, large objects). The executor's
 -- ownership of the four lifecycle functions is granted LATER in this same
 -- migration, so at this point any owned object is pre-existing and
 -- unexpected. Any owned object aborts the migration.
--- Grant rule (both roles): no direct ACL entry naming the role on the
--- platform schema, on any existing platform relation/function (table-level
--- relacl/proacl/nspacl), or on any COLUMN of a platform relation
--- (pg_attribute.attacl: a column-only GRANT would survive a table-level
--- audit and stay usable after the USAGE grant below). The GRANTs below are
--- the ONLY privileges these roles may ever hold; anything found earlier
--- aborts the migration. (Indirect grants via membership are already
+-- Install identity (P1a): this migration MUST run as a SUPERUSER owner.
+-- Establishing the executor boundary (ALTER ... OWNER TO a fresh
+-- zero-membership role) requires either membership in the new role or
+-- superuser — and the membership rule below forbids the former BY DESIGN
+-- (a pre-granted membership would itself be refused), while role creation
+-- needs CREATEROLE. All supported environments run migrations as a
+-- superuser owner; anything else fails closed HERE with a clear message
+-- instead of obscurely at ALTER/CREATE. SESSION_USER (not CURRENT_USER)
+-- is checked: it is the authenticated identity, unaffected by SET ROLE.
+-- Grant rule (both roles): no direct ACL entry naming the role on ANY
+-- database object, in ANY schema — schemas (nspacl), relations including
+-- sequences (relacl), columns (attacl: a column-only GRANT survives a
+-- table-level audit and stays usable after the USAGE grant), functions
+-- (proacl), types (typacl), and large objects (lomacl, readable via
+-- lo_get(oid)). A reused worker identity retaining e.g.
+-- SELECT on billing.charges would keep that access after becoming the
+-- worker, violating the EXECUTE-only boundary without touching `platform`.
+-- Database-level CONNECT/TEMP mechanics (datacl) are out of scope: the
+-- migration never grants them and assumes the PUBLIC defaults. The GRANTs
+-- below are the ONLY privileges these roles may ever hold; anything found
+-- earlier aborts the migration. (Indirect grants via membership are already
 -- excluded by the membership rule; per-role login settings are not checked
 -- because function calls run with the pinned proconfig search_path, and the
 -- NOLOGIN executor never logs in.)
@@ -120,8 +134,16 @@ DO $$
 DECLARE
     v_worker_oid oid;
     v_executor_oid oid;
+    v_login name;
+    v_is_super boolean;
     v_rec record;
 BEGIN
+    SELECT session_user INTO v_login;
+    SELECT r.rolsuper INTO v_is_super FROM pg_roles AS r WHERE r.rolname = v_login;
+    IF NOT COALESCE(v_is_super, false) THEN
+        RAISE EXCEPTION 'migration 050 refused: must run as a superuser owner (executor ownership transfer and role creation cannot succeed otherwise, and pre-granted memberships are refused by design)';
+    END IF;
+
     SELECT r.oid INTO v_worker_oid FROM pg_roles AS r WHERE r.rolname = 'outbox_worker';
     IF v_worker_oid IS NULL THEN
         CREATE ROLE outbox_worker LOGIN NOBYPASSRLS;
@@ -149,26 +171,28 @@ BEGIN
         IF EXISTS (SELECT 1 FROM pg_class AS c WHERE c.relowner = v_worker_oid)
            OR EXISTS (SELECT 1 FROM pg_proc AS p WHERE p.proowner = v_worker_oid)
            OR EXISTS (SELECT 1 FROM pg_type AS t WHERE t.typowner = v_worker_oid)
-           OR EXISTS (SELECT 1 FROM pg_namespace AS n WHERE n.nspowner = v_worker_oid) THEN
+           OR EXISTS (SELECT 1 FROM pg_namespace AS n WHERE n.nspowner = v_worker_oid)
+           OR EXISTS (SELECT 1 FROM pg_largeobject_metadata AS l WHERE l.lomowner = v_worker_oid) THEN
             RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_worker" owns database objects';
         END IF;
         IF EXISTS (SELECT 1 FROM pg_namespace AS n, aclexplode(n.nspacl) AS a
-                    WHERE n.nspname = 'platform' AND a.grantee = v_worker_oid)
-           OR EXISTS (SELECT 1 FROM pg_class AS c
-                      JOIN pg_namespace AS n ON n.oid = c.relnamespace,
-                      aclexplode(c.relacl) AS a
-                      WHERE n.nspname = 'platform' AND a.grantee = v_worker_oid)
-           OR EXISTS (SELECT 1 FROM pg_proc AS p
-                      JOIN pg_namespace AS n ON n.oid = p.pronamespace,
-                      aclexplode(p.proacl) AS a
-                      WHERE n.nspname = 'platform' AND a.grantee = v_worker_oid)
-           -- Column-level grants live in attacl, not relacl: refuse those too.
-           OR EXISTS (SELECT 1 FROM pg_attribute AS at
-                      JOIN pg_class AS c ON c.oid = at.attrelid
-                      JOIN pg_namespace AS n ON n.oid = c.relnamespace,
-                      aclexplode(at.attacl) AS a
-                      WHERE n.nspname = 'platform' AND a.grantee = v_worker_oid) THEN
-            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_worker" already holds direct privileges on platform objects';
+                    WHERE a.grantee = v_worker_oid)
+           OR EXISTS (SELECT 1 FROM pg_class AS c, aclexplode(c.relacl) AS a
+                      WHERE a.grantee = v_worker_oid)
+           OR EXISTS (SELECT 1 FROM pg_proc AS p, aclexplode(p.proacl) AS a
+                      WHERE a.grantee = v_worker_oid)
+           OR EXISTS (SELECT 1 FROM pg_attribute AS at, aclexplode(at.attacl) AS a
+                      WHERE a.grantee = v_worker_oid)
+           OR EXISTS (SELECT 1 FROM pg_type AS t, aclexplode(t.typacl) AS a
+                      WHERE a.grantee = v_worker_oid)
+           -- Large objects have their own catalog (lomowner/lomacl): a reused
+           -- identity retaining LO access could read via lo_get(oid).
+           OR EXISTS (SELECT 1 FROM pg_largeobject_metadata AS l
+                      WHERE l.lomowner = v_worker_oid)
+           OR EXISTS (SELECT 1 FROM pg_largeobject_metadata AS l,
+                      aclexplode(l.lomacl) AS a
+                      WHERE a.grantee = v_worker_oid) THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_worker" already holds direct privileges on database objects (any schema)';
         END IF;
     END IF;
 
@@ -205,26 +229,27 @@ BEGIN
         IF EXISTS (SELECT 1 FROM pg_class AS c WHERE c.relowner = v_executor_oid)
            OR EXISTS (SELECT 1 FROM pg_proc AS p WHERE p.proowner = v_executor_oid)
            OR EXISTS (SELECT 1 FROM pg_type AS t WHERE t.typowner = v_executor_oid)
-           OR EXISTS (SELECT 1 FROM pg_namespace AS n WHERE n.nspowner = v_executor_oid) THEN
+           OR EXISTS (SELECT 1 FROM pg_namespace AS n WHERE n.nspowner = v_executor_oid)
+           OR EXISTS (SELECT 1 FROM pg_largeobject_metadata AS l WHERE l.lomowner = v_executor_oid) THEN
             RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_executor" owns database objects';
         END IF;
         IF EXISTS (SELECT 1 FROM pg_namespace AS n, aclexplode(n.nspacl) AS a
-                    WHERE n.nspname = 'platform' AND a.grantee = v_executor_oid)
-           OR EXISTS (SELECT 1 FROM pg_class AS c
-                      JOIN pg_namespace AS n ON n.oid = c.relnamespace,
-                      aclexplode(c.relacl) AS a
-                      WHERE n.nspname = 'platform' AND a.grantee = v_executor_oid)
-           OR EXISTS (SELECT 1 FROM pg_proc AS p
-                      JOIN pg_namespace AS n ON n.oid = p.pronamespace,
-                      aclexplode(p.proacl) AS a
-                      WHERE n.nspname = 'platform' AND a.grantee = v_executor_oid)
-           -- Column-level grants live in attacl, not relacl: refuse those too.
-           OR EXISTS (SELECT 1 FROM pg_attribute AS at
-                      JOIN pg_class AS c ON c.oid = at.attrelid
-                      JOIN pg_namespace AS n ON n.oid = c.relnamespace,
-                      aclexplode(at.attacl) AS a
-                      WHERE n.nspname = 'platform' AND a.grantee = v_executor_oid) THEN
-            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_executor" already holds direct privileges on platform objects';
+                    WHERE a.grantee = v_executor_oid)
+           OR EXISTS (SELECT 1 FROM pg_class AS c, aclexplode(c.relacl) AS a
+                      WHERE a.grantee = v_executor_oid)
+           OR EXISTS (SELECT 1 FROM pg_proc AS p, aclexplode(p.proacl) AS a
+                      WHERE a.grantee = v_executor_oid)
+           OR EXISTS (SELECT 1 FROM pg_attribute AS at, aclexplode(at.attacl) AS a
+                      WHERE a.grantee = v_executor_oid)
+           OR EXISTS (SELECT 1 FROM pg_type AS t, aclexplode(t.typacl) AS a
+                      WHERE a.grantee = v_executor_oid)
+           -- Large objects have their own catalog (lomowner/lomacl).
+           OR EXISTS (SELECT 1 FROM pg_largeobject_metadata AS l
+                      WHERE l.lomowner = v_executor_oid)
+           OR EXISTS (SELECT 1 FROM pg_largeobject_metadata AS l,
+                      aclexplode(l.lomacl) AS a
+                      WHERE a.grantee = v_executor_oid) THEN
+            RAISE EXCEPTION 'migration 050 refused: pre-existing role "outbox_executor" already holds direct privileges on database objects (any schema)';
         END IF;
     END IF;
 END $$;

@@ -105,6 +105,10 @@ BEGIN
                WHERE r.rolname IN ('outbox_worker', 'outbox_executor')) THEN
         RAISE EXCEPTION 'worker/executor roles must own no types';
     END IF;
+    IF EXISTS (SELECT 1 FROM pg_largeobject_metadata AS l JOIN pg_roles AS r ON r.oid = l.lomowner
+               WHERE r.rolname IN ('outbox_worker', 'outbox_executor')) THEN
+        RAISE EXCEPTION 'worker/executor roles must own no large objects';
+    END IF;
     IF (SELECT count(*) FROM pg_proc AS p JOIN pg_roles AS r ON r.oid = p.proowner
         WHERE r.rolname = 'outbox_executor') <> 4 THEN
         RAISE EXCEPTION 'outbox_executor must own exactly the four lifecycle functions';
@@ -224,16 +228,92 @@ BEGIN
     END IF;
     -- Column-level grants name neither role on any platform column: a
     -- column-only GRANT would bypass the table-level EXECUTE-only proof.
+    -- Database-wide boundary (P1b mirror): the ONLY object privileges either
+    -- role may hold, in ANY schema, are the ones this migration installs.
+    -- Anything else — e.g. a reused worker keeping SELECT on billing.charges
+    -- — fails here even if every platform-scoped check passes.
     IF EXISTS (
-        SELECT 1 FROM pg_attribute AS at
-        JOIN pg_class AS c ON c.oid = at.attrelid
-        JOIN pg_namespace AS n ON n.oid = c.relnamespace,
-        aclexplode(at.attacl) AS a
+        SELECT 1 FROM pg_attribute AS at, aclexplode(at.attacl) AS a
         JOIN pg_roles AS r ON r.oid = a.grantee
-        WHERE n.nspname = 'platform'
-          AND r.rolname IN ('outbox_worker', 'outbox_executor')
+        WHERE r.rolname IN ('outbox_worker', 'outbox_executor')
     ) THEN
-        RAISE EXCEPTION 'worker/executor roles must hold no column-level grants on platform tables';
+        RAISE EXCEPTION 'worker/executor roles must hold no column-level grants on any table';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_type AS t, aclexplode(t.typacl) AS a
+        JOIN pg_roles AS r ON r.oid = a.grantee
+        WHERE r.rolname IN ('outbox_worker', 'outbox_executor')
+    ) THEN
+        RAISE EXCEPTION 'worker/executor roles must hold no type grants';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_largeobject_metadata AS l, aclexplode(l.lomacl) AS a
+        JOIN pg_roles AS r ON r.oid = a.grantee
+        WHERE r.rolname IN ('outbox_worker', 'outbox_executor')
+    ) THEN
+        RAISE EXCEPTION 'worker/executor roles must hold no large-object grants';
+    END IF;
+    -- Worker allow-list, database-wide: USAGE on the platform schema plus
+    -- EXECUTE on exactly the four functions (asserted above); no relation
+    -- grant anywhere, no function grant outside the four, no other schema
+    -- grant anywhere.
+    IF EXISTS (
+        SELECT 1 FROM pg_namespace AS n, aclexplode(n.nspacl) AS a
+        JOIN pg_roles AS r ON r.oid = a.grantee
+        WHERE r.rolname = 'outbox_worker'
+          AND NOT (n.nspname = 'platform' AND a.privilege_type = 'USAGE')
+    ) THEN
+        RAISE EXCEPTION 'outbox_worker must hold schema USAGE on platform only';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_class AS c, aclexplode(c.relacl) AS a
+        JOIN pg_roles AS r ON r.oid = a.grantee
+        WHERE r.rolname = 'outbox_worker'
+    ) THEN
+        RAISE EXCEPTION 'outbox_worker must hold no relation grants in any schema';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_proc AS p, aclexplode(p.proacl) AS a
+        JOIN pg_roles AS r ON r.oid = a.grantee
+        WHERE r.rolname = 'outbox_worker'
+          AND p.oid NOT IN (
+              'platform.outbox_claim(integer, text, integer)'::regprocedure,
+              'platform.outbox_renew(uuid, uuid, integer)'::regprocedure,
+              'platform.outbox_complete(uuid, uuid)'::regprocedure,
+              'platform.outbox_fail(uuid, uuid, text, timestamptz)'::regprocedure)
+    ) THEN
+        RAISE EXCEPTION 'outbox_worker must hold EXECUTE on the four lifecycle functions only';
+    END IF;
+    -- Executor allow-list, database-wide: USAGE on the platform schema plus
+    -- exactly SELECT+UPDATE on outbox_messages and INSERT+SELECT on
+    -- outbox_transitions; no other schema/relation grant anywhere, and no
+    -- function grant outside the four it owns (owner entries are implicit).
+    IF EXISTS (
+        SELECT 1 FROM pg_namespace AS n, aclexplode(n.nspacl) AS a
+        JOIN pg_roles AS r ON r.oid = a.grantee
+        WHERE r.rolname = 'outbox_executor'
+          AND NOT (n.nspname = 'platform' AND a.privilege_type = 'USAGE')
+    ) THEN
+        RAISE EXCEPTION 'outbox_executor must hold schema USAGE on platform only';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_class AS c, aclexplode(c.relacl) AS a
+        JOIN pg_roles AS r ON r.oid = a.grantee
+        WHERE r.rolname = 'outbox_executor'
+          AND NOT ((c.oid = 'platform.outbox_messages'::regclass
+                    AND a.privilege_type IN ('SELECT', 'UPDATE'))
+                OR (c.oid = 'platform.outbox_transitions'::regclass
+                    AND a.privilege_type IN ('INSERT', 'SELECT')))
+    ) THEN
+        RAISE EXCEPTION 'outbox_executor must hold only the installed table DML (messages SELECT+UPDATE, transitions INSERT+SELECT)';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_proc AS p, aclexplode(p.proacl) AS a
+        JOIN pg_roles AS r ON r.oid = a.grantee
+        WHERE r.rolname = 'outbox_executor'
+          AND p.proowner <> (SELECT oid FROM pg_roles WHERE rolname = 'outbox_executor')
+    ) THEN
+        RAISE EXCEPTION 'outbox_executor must hold no function grants outside the functions it owns';
     END IF;
     -- No default privileges may target the platform schema: ALTER DEFAULT
     -- PRIVILEGES would silently extend future GRANTs (e.g. EXECUTE on new

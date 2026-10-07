@@ -66,6 +66,18 @@ fi
 db_url() {
   printf '%s/%s%s' "$BASE" "$1" "$QUERY"
 }
+# Same server/database/query, but authenticating as another role (for the
+# non-superuser deployer proof). The password is an ephemeral throwaway for
+# a disposable server, never a real credential.
+db_url_as() {
+  local user="$1" password="$2" db="$3"
+  if [[ "$BASE" =~ ^([a-zA-Z][a-zA-Z0-9+.-]*://)([^@/?#]*@)?([^/?#]+)$ ]]; then
+    printf '%s%s:%s@%s/%s%s' "${BASH_REMATCH[1]}" "$user" "$password" "${BASH_REMATCH[3]}" "$db" "$QUERY"
+  else
+    echo "cannot rewrite DATABASE_URL userinfo" >&2
+    exit 2
+  fi
+}
 ANCHOR_URL="$DATABASE_URL"
 
 fail() {
@@ -207,7 +219,7 @@ done
 
 # --- Pre-flight: refuse foreign state instead of touching it. ---
 PRE_ROLES="$(psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -tAc \
-  "SELECT rolname FROM pg_roles WHERE rolname IN ('outbox_worker','outbox_executor','neg_admin','neg_attacker') ORDER BY 1")"
+  "SELECT rolname FROM pg_roles WHERE rolname IN ('outbox_worker','outbox_executor','neg_admin','neg_attacker','neg_deployer') ORDER BY 1")"
 if [[ -n "$PRE_ROLES" ]]; then
   echo "refusing: server already has roles that this script must create from scratch:" >&2
   echo "$PRE_ROLES" >&2
@@ -238,16 +250,30 @@ PASS_REFUSE=0
 PASS_ACCEPT=0
 
 # expect_refuse <scenario> <expected-message-fragment> <setup-sql...>
+# Runs the 050 replay as the superuser owner. For a replay as another role,
+# set REPLAY_URL (full connection string) for the duration of the call; set
+# ASSERT_SESSION_USER to require the replay to authenticate as that role
+# (proves the refusal came from the intended identity, not a URL mixup).
+REPLAY_URL=""
+ASSERT_SESSION_USER=""
 expect_refuse() {
   local scenario="$1"; local want="$2"; shift 2
   local db="iptv_050neg_${RUN_ID}_${scenario}"
+  local replay="${REPLAY_URL:-$(db_url "$db")}"
   CURRENT_DB="$db"
   create_from_template "$db"
   for stmt in "$@"; do
     psql "$(db_url "$db")" -v ON_ERROR_STOP=1 -q -c "$stmt" >/dev/null
   done
+  if [[ -n "${ASSERT_SESSION_USER:-}" ]]; then
+    local probe
+    probe="$(psql "$replay" -v ON_ERROR_STOP=1 -tAc "SELECT session_user")"
+    if [[ "$probe" != "$ASSERT_SESSION_USER" ]]; then
+      fail "[$scenario]: replay identity is '$probe', expected '$ASSERT_SESSION_USER'"
+    fi
+  fi
   local out
-  if out="$(psql "$(db_url "$db")" -v ON_ERROR_STOP=1 -f "$MIG050" 2>&1)"; then
+  if out="$(psql "$replay" -v ON_ERROR_STOP=1 -f "$MIG050" 2>&1)"; then
     fail "[$scenario]: 050 SUCCEEDED with hostile posture (must refuse)"
   fi
   if [[ "$out" != *"$want"* ]]; then
@@ -310,7 +336,7 @@ expect_refuse "worker-owns-table" 'owns database objects' \
 # Column-level grants live in attacl, not relacl: a hostile column GRANT must
 # refuse even when the role attributes are otherwise compatible.
 CURRENT_ROLES="outbox_worker"
-expect_refuse "worker-column-grant" 'direct privileges on platform objects' \
+expect_refuse "worker-column-grant" 'direct privileges on database objects' \
   "CREATE ROLE outbox_worker LOGIN NOBYPASSRLS" \
   "GRANT SELECT (tenant_id) ON platform.outbox_messages TO outbox_worker"
 
@@ -321,6 +347,37 @@ CURRENT_ROLES="neg_attacker"
 expect_refuse "default-privs-exec-inject" 'unexpected grantee' \
   "CREATE ROLE neg_attacker LOGIN" \
   "ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT EXECUTE ON FUNCTIONS TO neg_attacker"
+
+# Cross-schema reuse (P1b): a worker with compatible attributes but a live
+# grant OUTSIDE platform (here SELECT on billing.charges) must refuse — the
+# EXECUTE-only boundary is database-wide, not platform-scoped.
+CURRENT_ROLES="outbox_worker"
+expect_refuse "worker-cross-schema-grant" 'direct privileges on database objects' \
+  "CREATE ROLE outbox_worker LOGIN NOBYPASSRLS" \
+  "GRANT SELECT ON billing.charges TO outbox_worker"
+
+# Large-object reuse: a worker retaining LO access must refuse — readable
+# via lo_get(oid) outside every table/function audit.
+CURRENT_ROLES="outbox_worker"
+expect_refuse "worker-large-object-grant" 'direct privileges on database objects' \
+  "CREATE ROLE outbox_worker LOGIN NOBYPASSRLS" \
+  "SELECT lo_create(170001)" \
+  "GRANT SELECT ON LARGE OBJECT 170001 TO outbox_worker"
+
+# Non-superuser deployer (P1a): establishing executor ownership (ALTER ...
+# OWNER TO a fresh zero-membership role) needs membership-or-superuser, and
+# the membership rule forbids the former by design — so 050 fails closed
+# HERE with a clear message instead of obscurely at ALTER/CREATE. Replay as
+# a throwaway non-superuser LOGIN on a template clone. The password is an
+# ephemeral test-only value for a disposable server, never a real secret.
+CURRENT_ROLES="neg_deployer"
+NEG_DEPLOYER_PW="NegDeployer0k_ephemeral"
+REPLAY_URL="$(db_url_as "neg_deployer" "$NEG_DEPLOYER_PW" "iptv_050neg_${RUN_ID}_nonsuper-deployer")"
+ASSERT_SESSION_USER="neg_deployer"
+expect_refuse "nonsuper-deployer" 'must run as a superuser owner' \
+  "CREATE ROLE neg_deployer LOGIN PASSWORD '$NEG_DEPLOYER_PW'"
+REPLAY_URL=""
+ASSERT_SESSION_USER=""
 
 CURRENT_ROLES=""
 
@@ -367,7 +424,7 @@ drop_current_roles
 
 # --- Final sweep: nothing owned by this run may remain. ---
 LEFTOVER_ROLES="$(psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -tAc \
-  "SELECT count(*) FROM pg_roles WHERE rolname IN ('outbox_worker','outbox_executor','neg_admin','neg_attacker')")"
+  "SELECT count(*) FROM pg_roles WHERE rolname IN ('outbox_worker','outbox_executor','neg_admin','neg_attacker','neg_deployer')")"
 LEFTOVER_DBS="$(psql "$ANCHOR_URL" -v ON_ERROR_STOP=1 -tAc \
   "SELECT count(*) FROM pg_database WHERE datname LIKE 'iptv_050neg%'")"
 drop_db_verified "$TPL"
