@@ -2,7 +2,6 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { Inject, Injectable } from "@nestjs/common";
 import { sql, type Kysely } from "kysely";
 import { withTenantTransaction, type Database } from "@iptv/database";
-import { newId } from "@iptv/domain";
 import type { CommandActor } from "@iptv/domain";
 import { withSpan } from "@iptv/observability";
 import { CommandBus } from "../commands/command-bus.js";
@@ -89,21 +88,42 @@ export class AsaasWebhookService {
     return { ok: true, channel };
   }
 
+  /**
+   * Atomic accept through `billing.accept_asaas_delivery` (053): the routing
+   * row is locked (`FOR UPDATE`), revalidated ACTIVE, matched against the
+   * EXPECTED tenant (the `resolveChannel` result, compared under the same
+   * lock BEFORE any insert), and the inbox row is inserted-once in the SAME
+   * transaction, closing the resolve-then-insert TOCTOU window (a channel
+   * DISABLED after the app-side secret check is refused with zero inbox
+   * rows). A routing key re-pointed to another tenant mid-flight (resolve
+   * said A, the locked row now says B) is refused the same way -- the
+   * pre-insert expected-tenant guard means no payload of A ever lands in B.
+   * Returns `null` on such a mid-flight refusal -- the controller maps it to
+   * 404 like an unknown endpoint -- or when the returned tenant disagrees
+   * with the resolved one (defense in depth: unreachable when the pre-insert
+   * guard fires, kept so a future function change can never deliver into
+   * another tenant silently). Secret comparison stays app-side and
+   * timing-safe (`verifySecret`); the function never sees secrets.
+   */
   async acceptRaw(input: {
     tenantId: string;
+    tenantKey: string;
     externalEventId: string;
     payload: unknown;
-  }): Promise<{ inserted: boolean; inboxId: string }> {
-    const row = await this.inbox.tryInsert({
-      tenantId: input.tenantId,
-      provider: "asaas",
-      externalEventId: input.externalEventId,
-      eventType: "asaas.raw",
-      payloadHash: sha256Hex(JSON.stringify(input.payload)),
-      payload: { body: input.payload },
-      correlationId: newId(),
-    });
-    return { inserted: row.inserted, inboxId: row.id };
+  }): Promise<{ inserted: boolean; inboxId: string } | null> {
+    const result = await sql<{
+      o_accepted: boolean;
+      o_tenant_id: string;
+      o_inbox_id: string;
+      o_inserted: boolean;
+    }>`select * from billing.accept_asaas_delivery(${input.tenantKey}, ${input.externalEventId}, ${"asaas.raw"}, ${sha256Hex(JSON.stringify(input.payload))}, ${JSON.stringify({ body: input.payload })}::jsonb, ${input.tenantId}::uuid)`.execute(
+      this.requireDb(),
+    );
+    const row = result.rows[0];
+    if (row === undefined || !row.o_accepted || row.o_tenant_id !== input.tenantId) {
+      return null;
+    }
+    return { inserted: row.o_inserted, inboxId: row.o_inbox_id };
   }
 
   async processRow(tenantId: string, inboxId: string, payload: unknown): Promise<void> {
@@ -201,27 +221,57 @@ export class AsaasWebhookService {
     });
   }
 
-  /** Poll/process entry point for deferred rows (tests + future worker). */
+  /**
+   * Inline HTTP processing entry point: claims THIS row first through
+   * `platform.inbox_claim_by_id` (054) -- the same RECEIVED -> PROCESSING
+   * protocol the scheduler drain uses -- and only then runs `processRow`.
+   * Zero claimed rows means the drain already owns the row (it won the
+   * inline x scheduler race), so the caller MUST skip processing and ack
+   * idempotently: exactly one processor ever owns a row. A tenant mismatch
+   * (unreachable -- the id comes from our own accept) fails closed the same
+   * way.
+   */
+  async processInline(tenantId: string, inboxId: string, payload: unknown, consumer: string): Promise<{ claimed: boolean }> {
+    const claimed = await sql<{
+      o_inbox_id: string;
+      o_tenant_id: string;
+      o_payload_json: unknown;
+    }>`select * from platform.inbox_claim_by_id(${inboxId}::uuid, ${consumer})`.execute(this.requireDb());
+    const row = claimed.rows[0];
+    if (row === undefined || row.o_tenant_id !== tenantId) {
+      return { claimed: false };
+    }
+    await this.processRow(tenantId, inboxId, payload);
+    return { claimed: true };
+  }
+
+  /**
+   * Poll/process entry point for deferred rows (tests + scheduler worker).
+   * Claims a disjoint RECEIVED set through `platform.inbox_claim` (054:
+   * RECEIVED → PROCESSING under `FOR UPDATE SKIP LOCKED`, provider-scoped so
+   * the WAHA drain can never take our rows and vice versa), then processes
+   * each claimed row under ITS OWN tenant (the tenant comes from the claimed
+   * row, never from request input; `processRow` fans out to the tenant-scoped
+   * command path and `markState` lands in the same row-tenant context).
+   * Concurrent drains never process the same row: what one claim takes, the
+   * other never sees again.
+   */
   async drainPending(limit = 50): Promise<{ processed: number; failed: number }> {
     return withSpan("webhook.asaas.drain", { provider: "asaas" }, async () => {
-    const db = this.requireDb();
-    const rows = await db
-      .selectFrom("platform.inbox_messages")
-      .select(["id", "tenant_id", "payload_json"])
-      .where("provider", "=", "asaas")
-      .where("state", "=", "RECEIVED")
-      .orderBy("received_at", "asc")
-      .limit(limit)
-      .execute();
+    const claimed = await sql<{
+      o_inbox_id: string;
+      o_tenant_id: string;
+      o_payload_json: unknown;
+    }>`select * from platform.inbox_claim(${limit}, ${"asaas"}, ${"drain:asaas"})`.execute(this.requireDb());
     let processed = 0;
     let failed = 0;
-    for (const row of rows) {
-      const body = (row.payload_json as { body?: unknown })?.body ?? row.payload_json;
+    for (const row of claimed.rows) {
+      const body = (row.o_payload_json as { body?: unknown })?.body ?? row.o_payload_json;
       try {
-        await this.processRow(row.tenant_id, row.id, body);
+        await this.processRow(row.o_tenant_id, row.o_inbox_id, body);
         processed += 1;
       } catch {
-        await this.inbox.markState({ tenantId: row.tenant_id, id: row.id, state: "FAILED", errorCode: "HANDLER_ERROR" });
+        await this.inbox.markState({ tenantId: row.o_tenant_id, id: row.o_inbox_id, state: "FAILED", errorCode: "HANDLER_ERROR" });
         failed += 1;
       }
     }

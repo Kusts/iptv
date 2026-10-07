@@ -43,7 +43,7 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 |---|---|---|
 | `P1.1` inventário | `scripts/rls-inventory.sh` + `P1-RLS-INVENTORY.md` + `evidence/rls-inventory/20261007/` (26/149/21/5) | DONE nesta sessão (tester PASS + reviewer APPROVED; branch `closure/p1-rls-inventory`) |
 | `P1.3` billing+finance (Tier 0, dinheiro-primeiro) | resolver `billing.tenant_channels` (043-shaped) + charges/payments/refunds/bindings/reconciliation + ledger/transactions/allocations/reversals + provas adversariais | DONE nesta sessão: 052 + 017/018 + wraps + rehearsal 5/5 sob `iptv_app` (tester PASS; reviewer final indisponível — self-review planner, re-review no PR); follow-ups P1-exit recorded (webhook-e2e, TOCTOU, sweep) |
-| `P1.2` platform spine | inbox, idempotency, audit, domain events, global/hybrid catalogs (outbox feito) | após P1.3 |
+| `P1.2` platform spine | inbox, idempotency, audit, domain events, global/hybrid catalogs (outbox feito) | DONE nesta sessão: 053 + 054 + 019/020/021 (tester PASS + reviewer APPROVED) |
 | `P1.4–P1.6` | transacional → operacional → analítico + runtimes cross-tenant por tabela | após P1.2 |
 
 ## Artefatos finais (C9 + PLAN — acompanhar aqui)

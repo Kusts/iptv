@@ -10,10 +10,15 @@ import { normalizeAsaasPayload } from "./asaas-normalizer.js";
  * authenticates the provider, and the `:tenantKey` path segment maps to the
  * tenant via `billing.tenant_channels` (never from payload content).
  *
- * Pipeline: verify → durable inbox (insert-once on provider event id) →
- * 202 fast ack → async normalize (`charge.webhook_confirm` /
- * `payment.record_chargeback`). `?defer=1` skips inline processing so a
- * worker/test can poll via `drainPending`.
+ * Pipeline: resolve (pre-context, ACTIVE row for the secret check) → local
+ * timing-safe verify → ATOMIC accept (`billing.accept_asaas_delivery`
+ * re-locks the routing row FOR UPDATE, revalidates ACTIVE, and inserts the
+ * inbox row in the same transaction, closing the resolve-then-insert TOCTOU)
+ * → 202 fast ack → async normalize (`charge.webhook_confirm` /
+ * `payment.record_chargeback`). A mid-flight DISABLE (or a routing key
+ * re-pointed to another tenant) refuses the accept and 404s like an unknown
+ * endpoint. `?defer=1` skips inline processing so a worker/test can poll
+ * via `drainPending`.
  */
 @Controller("v1/webhooks")
 export class AsaasWebhookController {
@@ -54,15 +59,31 @@ export class AsaasWebhookController {
         : normalized.externalEventId;
     const accepted = await this.webhooks.acceptRaw({
       tenantId: channel.tenantId,
+      tenantKey,
       externalEventId,
       payload: body,
     });
+    if (accepted === null) {
+      // Routing changed mid-flight (DISABLED or re-pointed after the secret
+      // check): fail closed exactly like an unknown endpoint, with zero
+      // inbox rows written.
+      recordWebhookReceived("asaas", "unknown_tenant");
+      throw new HttpException({ code: "NOT_FOUND", message: "unknown webhook endpoint" }, 404);
+    }
     if (!accepted.inserted) {
       recordWebhookReceived("asaas", "duplicate");
       return { accepted: true, deduped: true };
     }
     if (defer !== "1") {
-      await this.webhooks.processRow(channel.tenantId, accepted.inboxId, body);
+      // Inline claims the row first (054 `inbox_claim_by_id`): when the
+      // scheduler drain already owns it, the claim returns zero rows and the
+      // inline path skips `processRow`, acking idempotently -- exactly one
+      // processor ever owns a row, never double-processing.
+      const inline = await this.webhooks.processInline(channel.tenantId, accepted.inboxId, body, "inline:asaas");
+      if (!inline.claimed) {
+        recordWebhookReceived("asaas", "duplicate");
+        return { accepted: true, deduped: true };
+      }
     }
     recordWebhookReceived("asaas", "accepted");
     return { accepted: true, deduped: false };

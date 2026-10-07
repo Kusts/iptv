@@ -42,8 +42,15 @@ async function handlePublish(
   }
   const targetTenant =
     input.scope === "PLATFORM" ? null : (input.partnerTenantId ?? ctx.tenantId);
-  if (input.scope === "PARTNER" && input.partnerTenantId === undefined) {
-    // Partner policy without an explicit target binds the actor's tenant.
+  if (input.partnerTenantId !== undefined && input.scope !== "PARTNER") {
+    // An explicit cross-tenant target is only meaningful for PARTNER scope:
+    // TENANT publishes always bind the actor's tenant, PLATFORM rows carry
+    // no tenant. Fail closed instead of silently ignoring the target.
+    return {
+      ok: false,
+      code: "validation_failed",
+      message: "partnerTenantId is only allowed with PARTNER scope",
+    };
   }
   const version = await ctx.tx.nextPolicyVersion(input.family, input.scope, targetTenant);
   const stored = await ctx.tx.createPolicyDocument({

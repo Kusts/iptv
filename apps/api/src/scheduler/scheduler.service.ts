@@ -20,12 +20,22 @@ import { providerDispatchModeFromEnv } from "../provider/provider-port.js";
  * touches the API critical path, which shares no state with the loop
  * beyond the database).
  *
+ * IDENTITY (declared, 054): the loop runs TODAY as the pool owner role (the
+ * `DATABASE_URL` runtime identity, which bypasses RLS); at cutover it runs
+ * as `iptv_app` (NOBYPASSRLS). Both `drainPending` entry points claim through
+ * the `platform.inbox_claim` definer (EXECUTE to `iptv_app`), so they behave
+ * identically under either identity.
+ *
  * Each tick:
- * 1. runs the worker-eligible `*_due` commands per tenant that actually
- *    has due rows (platform-level due-scan; the commands themselves stay
- *    tenant-scoped — tenant id comes from the scan row, never from input),
+ * 1. enumerates tenants through the narrow platform-owned registry
+ *    (`control.list_scheduler_tenants` — ids only, zero global reads on
+ *    tenant business tables) and runs the worker-eligible `*_due` commands
+ *    per tenant (`bus.execute` → `withTransaction` →
+ *    `withTenantTransaction`, so every command stays tenant-scoped — the
+ *    commands themselves no-op when nothing is due),
  * 2. drains deferred webhook rows (`?defer=1` leftovers via both
- *    `drainPending` entry points),
+ *    `drainPending` entry points, each claiming disjoint RECEIVED rows
+ *    through `platform.inbox_claim`),
  * 3. drains the outbox LAST (small limit) so events emitted by steps 1–2
  *    converge in the same tick.
  *
@@ -184,7 +194,7 @@ export class SchedulerService implements OnModuleDestroy {
     // webhook drains next (their normalize stage emits too), and the outbox
     // drain LAST so one tick converges instead of leaving fresh PENDING
     // rows for the next tick.
-    const tenants = await this.scanDueTenants(result);
+    const tenants = await this.listSchedulerTenants(result);
     result.tenants = tenants.length;
     for (const tenantId of tenants) {
       for (const name of WORKER_COMMANDS) {
@@ -265,124 +275,21 @@ export class SchedulerService implements OnModuleDestroy {
   }
 
   /**
-   * Platform-level due-scan: distinct tenant ids that actually have due
-   * rows. Commands stay tenant-scoped (the scanned id becomes the actor
-   * tenant) — this scan only avoids invoking every tenant on every tick.
+   * Tenant enumeration through the narrow platform-owned registry
+   * (`control.list_scheduler_tenants`, migration 054): ids only, in creation
+   * order, touching NO business table -- the tick performs zero global reads
+   * on tenant business data. Due-work candidacy stays inside the per-tenant
+   * commands (idempotent no-ops when nothing is due); this list only avoids
+   * invoking tenants that do not exist. Tenant ids come from the registry,
+   * never from request input.
    */
-  private async scanDueTenants(result: SchedulerTickResult): Promise<string[]> {
+  private async listSchedulerTenants(result: SchedulerTickResult): Promise<string[]> {
     const db = this.db as Kysely<Database>;
-    const at = new Date();
-    const found = new Set<string>();
-    const collect = async (task: string, query: () => Promise<Array<{ tenant_id: string }>>): Promise<void> => {
-      await this.runTask(result, `scan.${task}`, async () => {
-        for (const row of await query()) {
-          found.add(row.tenant_id);
-        }
-      });
-    };
-    await collect("trial.expire_due", () =>
-      db
-        .selectFrom("trial.trials")
-        .select(["tenant_id"])
-        .distinct()
-        .where("lifecycle_status", "=", "ACTIVE")
-        .where("expires_at", "<=", at)
-        .execute(),
-    );
-    await collect("order.expire_due", () =>
-      db
-        .selectFrom("commerce.orders")
-        .select(["tenant_id"])
-        .distinct()
-        .where("status", "in", ["DRAFT", "AWAITING_PAYMENT"])
-        .where("expires_at", "is not", null)
-        .where("expires_at", "<=", at)
-        .execute(),
-    );
-    await collect("charge.expire_due", () =>
-      db
-        .selectFrom("billing.charges")
-        .select(["tenant_id"])
-        .distinct()
-        .where("status", "in", ["PENDING", "PROCESSING"])
-        .where("due_at", "is not", null)
-        .where("due_at", "<=", at)
-        .execute(),
-    );
-    // Renewal/subscription workers compute candidacy inside the command
-    // (policy windows, grace cutoffs), so any tenant with an ACTIVE
-    // subscription is a candidate — the commands no-op otherwise.
-    await collect("subscription.candidates", () =>
-      db.selectFrom("subscription.subscriptions").select(["tenant_id"]).distinct().where("status", "=", "ACTIVE").execute(),
-    );
-    // Stale-reminder recheck (F13): a payment may settle AFTER the
-    // subscription already transitioned to ENDED, leaving no ACTIVE row to
-    // trigger the worker above — yet `renewal.reminders_due` still owns an
-    // append-only CANCELLED pass for the queued reminder. Scan precisely the
-    // tenants that own a generated SYSTEM/INTERNAL `renewal-reminder:*`
-    // message whose latest delivery is still QUEUED and whose exact
-    // same-tenant linked renewal order is SETTLED, excluding legacy
-    // duplicate links already covered by a prior cycle. Tenant-safe on every
-    // join/subquery (message ↔ cycle ↔ order ↔ deliveries ↔ earlier cycle);
-    // unpaid/foreign/missing links never match, so tenants with only unpaid
-    // queued reminders are not re-scanned forever.
-    await collect("renewal.stale_reminders", () =>
-      db
-        .selectFrom("communication.messages as m")
-        .innerJoin("subscription.subscription_cycles as c", (join) =>
-          join.onRef("c.tenant_id", "=", "m.tenant_id"),
-        )
-        .innerJoin("commerce.orders as o", (join) =>
-          join
-            .onRef("o.tenant_id", "=", "c.tenant_id")
-            .onRef("o.id", "=", "c.renewal_order_id"),
-        )
-        .select(["m.tenant_id"])
-        .distinct()
-        .where("m.direction", "=", "INTERNAL")
-        .where("m.sender_type", "=", "SYSTEM")
-        .where("m.idempotency_key", "like", "renewal-reminder:%")
-        .where(sql<boolean>`"c"."id"::text = split_part("m"."idempotency_key", ':', 3)`)
-        .where(sql<boolean>`"c"."subscription_id"::text = split_part("m"."idempotency_key", ':', 2)`)
-        .where(sql<boolean>`"c"."renewal_order_id" is not null`)
-        .where("o.status", "=", "SETTLED")
-        .where((eb) =>
-          eb.exists((qb) =>
-            qb
-              .selectFrom("communication.message_deliveries as ld")
-              .select("ld.id")
-              .whereRef("ld.tenant_id", "=", "m.tenant_id")
-              .whereRef("ld.message_id", "=", "m.id")
-              .where("ld.status", "=", "QUEUED")
-              .where((neb) =>
-                neb.not(
-                  neb.exists((newer) =>
-                    newer
-                      .selectFrom("communication.message_deliveries as n")
-                      .select("n.id")
-                      .whereRef("n.tenant_id", "=", "ld.tenant_id")
-                      .whereRef("n.message_id", "=", "ld.message_id")
-                      .whereRef("n.attempt_no", ">", "ld.attempt_no"),
-                  ),
-                ),
-              ),
-          ),
-        )
-        .where((eb) =>
-          eb.not(
-            eb.exists((qb) =>
-              qb
-                .selectFrom("subscription.subscription_cycles as earlier")
-                .select("earlier.id")
-                .whereRef("earlier.tenant_id", "=", "c.tenant_id")
-                .whereRef("earlier.subscription_id", "=", "c.subscription_id")
-                .whereRef("earlier.renewal_order_id", "=", "c.renewal_order_id")
-                .whereRef("earlier.cycle_no", "<", "c.cycle_no"),
-            ),
-          ),
-        )
-        .execute(),
-    );
-    return [...found];
+    let tenants: string[] = [];
+    await this.runTask(result, "scan.scheduler_tenants", async () => {
+      const rows = await sql<{ o_tenant_id: string }>`select * from control.list_scheduler_tenants()`.execute(db);
+      tenants = rows.rows.map((row) => row.o_tenant_id);
+    });
+    return tenants;
   }
 }

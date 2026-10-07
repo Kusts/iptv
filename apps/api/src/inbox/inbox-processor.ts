@@ -1,7 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { createHash } from "node:crypto";
-import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { sql, type Kysely } from "kysely";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { newId, now, safeParseEnvelope } from "@iptv/domain";
 import type { EventEnvelope } from "@iptv/domain";
 
@@ -62,51 +62,53 @@ export class KyselyInboxStore implements InboxStore {
     payload: unknown;
     correlationId: string;
   }): Promise<{ inserted: boolean; id: string }> {
-    const db = this.requireDb();
-    const inserted = await db
-      .insertInto("platform.inbox_messages")
-      .values({
-        id: newId(),
-        tenant_id: input.tenantId,
-        provider: input.provider,
-        external_event_id: input.externalEventId,
-        event_type: input.eventType,
-        payload_hash: input.payloadHash,
-        payload_json: input.payload,
-        received_at: now(),
-        state: "RECEIVED",
-        attempt_count: 0,
-        processed_at: null,
-        last_error_code: null,
-        correlation_id: input.correlationId,
-      })
-      .onConflict((oc) => oc.constraint("inbox_external_event_unique").doNothing())
-      .returning("id")
-      .executeTakeFirst();
-    if (inserted !== undefined) {
-      return { inserted: true, id: inserted.id };
+    // Pre-context insert-once through the `platform.inbox_accept` producer
+    // (053): a direct INSERT under `iptv_app` with no `app.tenant_id` set
+    // fails the RLS WITH CHECK, and the producer returns the EXISTING id on
+    // conflict, so no compensating SELECT is needed. Shared by the WAHA
+    // ingress and any future provider path (Asaas collapses further into
+    // `billing.accept_asaas_delivery`, which calls the same producer).
+    const result = await sql<{
+      o_inbox_id: string;
+      o_inserted: boolean;
+    }>`select * from platform.inbox_accept(${input.tenantId}::uuid, ${input.provider}, ${input.externalEventId}, ${input.eventType}, ${input.payloadHash}, ${JSON.stringify(input.payload)}::jsonb)`.execute(
+      this.requireDb(),
+    );
+    const row = result.rows[0];
+    if (row === undefined) {
+      throw new Error("inbox accept returned no row");
     }
-    const existing = await db
-      .selectFrom("platform.inbox_messages")
-      .select("id")
-      .where("tenant_id", "=", input.tenantId)
-      .where("provider", "=", input.provider)
-      .where("external_event_id", "=", input.externalEventId)
-      .executeTakeFirstOrThrow();
-    return { inserted: false, id: existing.id };
+    return { inserted: row.o_inserted, id: row.o_inbox_id };
   }
 
   async markState(input: { tenantId: string; id: string; state: "PROCESSED" | "FAILED"; errorCode?: string }): Promise<void> {
-    await this.requireDb()
-      .updateTable("platform.inbox_messages")
-      .set({
-        state: input.state,
-        processed_at: input.state === "PROCESSED" ? now() : null,
-        last_error_code: input.errorCode ?? null,
-      })
-      .where("tenant_id", "=", input.tenantId)
-      .where("id", "=", input.id)
-      .execute();
+    // Lifecycle transition under explicit tenant context (053): the inbox
+    // table is RLS-enrolled, so the pool-level UPDATE must carry the
+    // caller's tenant (present in every markState input). The RECEIVED ->
+    // PROCESSING claim itself is producer-ized (`platform.inbox_claim`,
+    // 054); this terminal transition stays an explicit tenant-scoped UPDATE.
+    //
+    // 054: worker drains claim RECEIVED -> PROCESSING through
+    // `platform.inbox_claim` (narrow definer, SKIP LOCKED disjointness) and
+    // land here with the CLAIMED ROW's tenant -- the same row-tenant context
+    // for `processRow` and `markState`, never request input. Terminal states
+    // stay terminal: no lease, no reclaim, so a re-drain can never
+    // double-apply a claimed row. A PROCESSING row stranded by a crash
+    // between claim and this transition is recovered ONLY via the
+    // operator-owned `platform.inbox_requeue` (054) -- see the inbox section
+    // of `docs/10-operations/runbooks/rls-role-split-cutover.md`.
+    await withTenantTransaction(this.requireDb(), input.tenantId, async (trx) => {
+      await trx
+        .updateTable("platform.inbox_messages")
+        .set({
+          state: input.state,
+          processed_at: input.state === "PROCESSED" ? now() : null,
+          last_error_code: input.errorCode ?? null,
+        })
+        .where("tenant_id", "=", input.tenantId)
+        .where("id", "=", input.id)
+        .execute();
+    });
   }
 }
 

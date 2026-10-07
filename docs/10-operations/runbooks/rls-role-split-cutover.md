@@ -818,3 +818,66 @@ Status after #10: `platform outbox DB = PASS`, `platform outbox runtime`
 awaits CI green on the new suites plus a real staging/restore/cluster
 rehearsal — until then it stays PENDING and the project stays
 READY FOR CONTROLLED STAGING.
+
+## Inbox stuck rows — detect and requeue (054, operator-only)
+
+A webhook inbox row sits in `PROCESSING` when a drain (scheduler
+`drainPending` or the HTTP inline path) claimed it via `platform.inbox_claim`
+/ `platform.inbox_claim_by_id` but the terminal `markState`
+(`PROCESSED`/`FAILED`) never landed — worker crash between claim and
+`markState`, or a `markState` failure aborting the batch. The inbox is
+claim-once by design: there is deliberately NO automatic reclaim, so such
+rows wait here instead of double-processing. Recovery is one explicit
+operator act per row.
+
+### Alert
+
+A `PROCESSING` row older than 15 minutes is stuck. Detection query (read-only
+`platform.inbox_stuck_list`, `EXECUTE` to `iptv_app` — safe from any monitor;
+the function is a pure SELECT and can never move a row):
+
+```sql
+SELECT * FROM platform.inbox_stuck_list(interval '15 minutes');
+```
+
+Columns: `o_inbox_id`, `o_tenant_id`, `o_provider`, `o_claimed_by`
+(`drain:<provider>` vs `inline:<provider>` tells which path claimed it),
+`o_received_at`. Oldest first.
+
+### Procedure (one row at a time, direct owner connection)
+
+`platform.inbox_requeue(uuid)` is operator-only (051 `runtime_set` mirror:
+no `EXECUTE` to any role — run it as the migration owner, never from the app
+pool). It moves exactly one `PROCESSING` row back to `RECEIVED` with
+`claimed_by` cleared so the next drain claims it; anything else raises
+instead of repairing silently.
+
+```sql
+-- 1. Inspect the stuck row first (provider, tenant, payload, age).
+SELECT id, tenant_id, provider, external_event_id, state, claimed_by,
+       received_at, last_error_code
+FROM platform.inbox_messages
+WHERE id = '<o_inbox_id>';
+-- 2. Requeue exactly this row.
+SELECT platform.inbox_requeue('<o_inbox_id>');
+-- 3. Confirm it went back to RECEIVED, then watch the next drain claim it
+--    to PROCESSING and land it in PROCESSED/FAILED.
+SELECT id, state, claimed_by FROM platform.inbox_messages
+WHERE id = '<o_inbox_id>';
+```
+
+Before requeueing, reconcile the domain effect: the requeued row's normalize
+stage RE-RUNS on the next drain (`message.ingest` / `charge.webhook_confirm`
+/ `payment.record_chargeback` keyed by the row's external ids — verify no
+duplicate domain effect landed from the first partial attempt, then requeue
+the next row only after this one reaches a terminal state.
+
+### Never do this
+
+- No bulk `UPDATE ... SET state = 'RECEIVED'` and no ad-hoc state surgery:
+  one id per `inbox_requeue` call, each reconciled.
+- Never mark a stuck row `PROCESSED`/`FAILED` merely to clear the alert:
+  those transitions record an outcome that never happened (the outbox
+  rollback rule applies here too — re-publish/re-process, never complete).
+- Never grant `EXECUTE` on `inbox_requeue` to `iptv_app` or any worker role:
+  both the migration install check and `db/tests/021` fail on such a grant.
