@@ -12,16 +12,14 @@ export interface TransportPort {
 }
 
 /**
- * Local transport: structured-log delivery for tests/ops. Records envelopes
- * in memory and emits one compact log line per publish (ids + domain facts
- * only — NEVER the full payload).
+ * Local transport: structured-log delivery for ops. Publishes one compact log
+ * line per envelope (ids + domain facts only — NEVER the full payload) and
+ * retains NOTHING in memory (no unbounded array in the long-running loop).
  */
 export class LocalTransport implements TransportPort {
   readonly name = "local";
-  readonly published: EventEnvelope[] = [];
 
   async publish(envelope: EventEnvelope): Promise<void> {
-    this.published.push(envelope);
     console.log(
       JSON.stringify({
         msg: "outbox.publish.local",
@@ -32,14 +30,6 @@ export class LocalTransport implements TransportPort {
         aggregate_id: envelope.aggregate_id,
       }),
     );
-  }
-
-  count(): number {
-    return this.published.length;
-  }
-
-  clear(): void {
-    this.published.length = 0;
   }
 }
 

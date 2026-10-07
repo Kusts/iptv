@@ -77,4 +77,4 @@ USER node
 # No EXPOSE and no HEALTHCHECK on purpose: readiness is `cli.js check`
 # (used as the compose healthcheck), not an HTTP endpoint.
 ENTRYPOINT ["node", "apps/outbox-worker/dist/cli.js"]
-CMD ["--help"]
+CMD ["run"]

@@ -106,3 +106,16 @@ node apps/outbox-worker/dist/cli.js check        # exit 0 ready / 2 not-ready
 # Single bounded batch, then exit:
 node apps/outbox-worker/dist/cli.js run --once
 ```
+
+## Restart / exit semantics
+
+- Transient crash (non-zero exit): compose (`restart: unless-stopped`)
+  restarts the loop. The operator stops it manually once logs/health show a
+  config or quiescence problem.
+- Invalid config → exit 2 (`INVALID_CONFIG`, fail-closed, visible in logs and
+  the `check` healthcheck). Missing DB answers the same way (`BOOT_FAILED`).
+- Gate denied (legacy drain not quiesced) → exit 2 not-ready WITHOUT
+  claiming anything (`checkActivationGate` runs before the first claim; see
+  `worker.test.ts` "refuses boot while the legacy drain is active").
+- `SIGTERM`/`SIGINT` drains in-flight items up to
+  `OUTBOX_WORKER_SHUTDOWN_TIMEOUT_MS`, then exits.

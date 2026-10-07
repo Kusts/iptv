@@ -7,7 +7,7 @@ import { LegacyOutboxDrainDisabledError, OutboxDrainer } from "../src/outbox/out
 import { LocalTransport } from "../src/outbox/transport.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = join(here, "..", "..", "db", "migrations");
+const MIGRATIONS_DIR = join(here, "..", "..", "..", "db", "migrations");
 
 const connectionString = process.env["TEST_DATABASE_URL"];
 const hasDb = typeof connectionString === "string" && connectionString.length > 0;

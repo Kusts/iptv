@@ -205,7 +205,11 @@ services:
     image: iptv-staging-outbox-worker:local
     container_name: iptv-staging-outbox-worker
     profiles: ["outbox"]
-    restart: "no"
+    # Long-running claim loop: restart on transient crash (non-zero exit).
+    # Fail-closed states (invalid config / gate denied → exit 2 not-ready)
+    # also restart, which is intended: the operator stops the service
+    # manually once logs/health show a config or quiescence problem.
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
