@@ -501,12 +501,18 @@ measured at implementation, not assumed. Until platform + billing (+ `billing.te
 
 # Platform/outbox worker RLS — ACCEPTED DESIGN DIRECTION
 
-> **STATUS: ACCEPTED DESIGN DIRECTION — NOT IMPLEMENTED, NOT CERTIFIED.**
-> No migration, role, function, policy or worker process exists for this
-> decision. Everything below is design recorded for the implementation to follow
-> and prove; none of it has been executed, rehearsed or certified, and none of it
-> advances the cutover checklist above. It is not a separate ADR file because
-> this runbook is the chosen durable record for RLS role-split decisions.
+> **STATUS: ACCEPTED + PARTIALLY IMPLEMENTED (2026-10-07, issue #7) — DB
+> LAYER DONE, WORKER PROCESS + STAGING PENDING, NOT CERTIFIED.**
+> Migration `050` (`db/migrations/202610070000_050_platform_outbox_worker.sql`)
+> creates the two roles, lease columns, audit table, four `SECURITY DEFINER`
+> functions, `REVOKE FROM PUBLIC` + worker-only `EXECUTE`, executor-only RLS
+> policies and the lease-recovery index; proof `db/tests/015` executes all
+> acceptance criteria 1–9 that are database-provable (15/15 SQL files PASS on
+> a zeroed disposable DB, seeds ×2). Still missing: the separate worker
+> process, removal of the in-process scheduler `drain(25)` (coexistence would
+> double-publish), staging with the new roles, and any certification. The
+> paragraphs below remain the binding design record; "not implemented" notes
+> inside them now refer to the process/staging remainder, not the DB layer.
 
 ## Scope
 
