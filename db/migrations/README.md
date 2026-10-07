@@ -55,6 +55,7 @@
 47. `202610050000_047_rls_control_identity_rollout.sql`
 48. `202610050001_048_rls_feature_flags_policy_split.sql`
 49. `202610060000_049_control_membership_resolvers.sql`
+50. `202610070000_050_platform_outbox_worker.sql`
 
 ## Coverage by batch
 
@@ -90,13 +91,14 @@
 - append-only Reward Wallet ledger;
 - Gift Pass baseline.
 
-### 012–049 — Append-only increments after MVP Core
+### 012–050 — Append-only increments after MVP Core
 
 - Applied in filename order after 011; each file is self-describing (RLS
   policy rollout — CRM/communications, then control+identity with the 048
   feature-flags policy split and the 049 control-membership resolvers +
   enrollment —, WAHA channel resolver, provider CINEVISION
-  capability gates, provider dispatch lease, and other baseline increments).
+  capability gates, provider dispatch lease, the 050 platform outbox worker
+  isolation, and other baseline increments).
 - The canonical list above is generated from `db/migrations/*.sql` —
   append new migrations there; never edit or reorder existing files.
 
