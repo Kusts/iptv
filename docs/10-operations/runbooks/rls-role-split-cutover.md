@@ -508,7 +508,7 @@ measured at implementation, not assumed. Until platform + billing (+ `billing.te
 > functions, `REVOKE FROM PUBLIC` + worker-only `EXECUTE`, executor-only RLS
 > policies and the lease-recovery index; proof `db/tests/015` covers the
 > single-session matrix (15/15 SQL files PASS on a zeroed disposable DB,
-> seeds ×2) and `apps/api/test/outbox-worker-concurrency.integration.test.ts`
+> seeds ×2) and `packages/database/test/outbox-worker-concurrency.integration.test.ts`
 > covers real two-session SKIP LOCKED disjointness + cross-session CAS. These
 > prove the DB boundary and fencing; they do NOT prove process-level items
 > (the worker authenticating as its own LOGIN role end to end, backpressure
@@ -731,6 +731,6 @@ claim-disjointness state/lease exclusion, executor RLS scoping, audit
 append-only enforcement, bounds fail-closed). Real two-session concurrency
 (`FOR UPDATE SKIP LOCKED` disjointness under an open row lock, and
 cross-session CAS fencing) is proven by
-`apps/api/test/outbox-worker-concurrency.integration.test.ts`. Still pending
+`packages/database/test/outbox-worker-concurrency.integration.test.ts`. Still pending
 before activation: the separate worker process, the quiescence of the legacy
 drain, and staging with the new roles.
