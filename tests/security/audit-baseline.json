@@ -83,6 +83,14 @@
       "path": "apps__web>next>sharp",
       "reason": "build-time: librsvg via next/image no build. Sem imagem de atacante no pipeline de build.",
       "followup": "bump do next/sharp quando correção fluir"
+    },
+    "1124011": {
+      "severity": "high",
+      "module": "@opentelemetry/propagator-jaeger",
+      "url": "https://github.com/advisories/GHSA-45rx-2jwx-cxfr",
+      "path": "packages__observability>@opentelemetry/sdk-trace-node>@opentelemetry/propagator-jaeger",
+      "reason": "transitive-only: veio com o SDK de trace (P6b) e nunca é importado/registrado no código (propagação é só W3C traceparent); o DoS exige JaegerPropagator processando header malformado, inalcançável aqui.",
+      "followup": "remover via pnpm override se virar alcançável; some sozinho quando o SDK dropar a dep"
     }
   }
 }
