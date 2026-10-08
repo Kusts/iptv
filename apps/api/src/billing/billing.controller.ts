@@ -92,11 +92,21 @@ export class BillingController {
     return send(result);
   }
 
+  @Post("billing-customers/provision")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("billing.charge.write")
+  async provisionBillingCustomer(@Body() body: unknown, @Req() req: FastifyRequest) {
+    const result = await this.bus.execute(actorFromRequest(req), "billing.customer_provision", body, {
+      correlationId: req.id,
+      idempotencyKey: idempotencyKeyOf(req),
+    });
+    return send(result);
+  }
+
   @Post("charges/:id/reconcile")
   @UseGuards(AuthGuard, PermissionsGuard)
   @RequirePermission("billing.charge.write")
-  async reconcileCharge(@Param("id") id: string, @Req() req: FastifyRequest) {
-    const result = await this.bus.execute(actorFromRequest(req), "charge.reconcile", { chargeId: id }, {
+  async reconcileCharge(@Param("id") id: string, @Req() req: FastifyRequest) {    const result = await this.bus.execute(actorFromRequest(req), "charge.reconcile", { chargeId: id }, {
       correlationId: req.id,
     });
     return send(result);

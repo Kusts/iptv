@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- feat(billing): GAP-LOOP-1 vínculo pessoa→customer Asaas (migration `060_billing_customer_provider_binding` + prova `db/tests/027`): tabela `billing.customer_provider_bindings` (UNIQUE tenant-scoped `(person,provider)` + `(provider,external id)` documentados, RLS `tenant_isolation`, sem BYPASSRLS/outbox); `charge.create` auto-resolve o binding pela pessoa do pedido (sem campo forged no request) e falha fechado sem binding (precondition explícita, nunca PENDING silencioso); comando explícito `billing.customer_provision` (+ `POST /v1/billing-customers/provision` e OpenAPI) idempotente — Sandbox/echo aceitam o CPF de teste documentado (`SANDBOX_TEST_DOCUMENT_CPF`), produção sem documento real recusa com `DOCUMENT_REQUIRED` e nunca inventa; LGPD sem coluna de documento nesta slice (documento só in-transit). `charge_provider_bindings.external_customer_id` agora carrega o vínculo resolvido.
+
 - feat(pilot): deployment piloto fresco servido em `https://iptv.synkroo.com.br` (tunnel `iptv-pilot` nesta máquina → lane `-p iptv-pilot` :3200/:3201, migrate 59/59 + seeds, API `iptv_app` produção, worker loop modo WORKER gen 3; `evidence/rls-pilot/report.md`): ready 200 consistente (6/6) via URL pública. Tráfego real/pagamentos seguem proibidos até M4/M5 + gates P8.
 
 - feat(integrations): P3B-live Asaas Sandbox (`evidence/p3-asaas-sandbox/live-b1.md`): customer descartável → charge PIX BRL 5,00 → receiveInCash → PAID → duplicate webhook → reconcile → cleanup total (3 ciclos, resíduo zero); produção nunca tocada. SANDBOX-CERTIFIED (PAID/webhook/reconcile); refund-live declarado (provider recusa cash-receipt) + gates G1 (liquidação fiel via dashboard), G2 (webhook Asaas→nós exige URL pública), G3 (reorder dedicado).

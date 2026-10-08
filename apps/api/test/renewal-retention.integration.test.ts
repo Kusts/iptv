@@ -196,6 +196,19 @@ describe.skipIf(!hasDb)("Wave 9 Renewal + Retention (requires TEST_DATABASE_URL)
         updated_at: new Date(),
       })
       .execute();
+    // GAP-LOOP-1: charge.create auto-resolves the person's Asaas binding.
+    const provisionOwner = await db
+      .selectFrom("commerce.orders")
+      .select(["person_id"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", orderId)
+      .executeTakeFirstOrThrow();
+    const provisioned = await bus.execute(actor(), "billing.customer_provision", {
+      personId: provisionOwner.person_id,
+    });
+    if (!provisioned.ok) {
+      throw new Error(`customer.provision failed: ${JSON.stringify(provisioned)}`);
+    }
     const created = await bus.execute<{ id: string; providerChargeId: string | null }>(actor(), "charge.create", {
       orderId,
     });
