@@ -9,8 +9,8 @@ import {
   Req,
   UseGuards,
 } from "@nestjs/common";
-import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import type { Kysely, Transaction } from "kysely";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandActor, CommandResult } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -80,6 +80,12 @@ function idempotencyKeyOf(req: FastifyRequest): string | undefined {
  * Money is exact minor-unit strings; ratios are integer basis points.
  * Slices without a money authority (AI cost, payment fees) report
  * `BASELINE_UNAVAILABLE` instead of estimates.
+ *
+ * Reads run inside `withTenantTransaction` (actor tenant): the tables below
+ * are RLS-enrolled (migrations 052/055/057/058, fail-closed when
+ * `app.tenant_id` is unset), so pool-level selects under `iptv_app` would
+ * return empty silently after cutover. The explicit `tenant_id =`
+ * predicates stay as defense-in-depth alongside the RLS policy.
  */
 @Controller("v1")
 export class FinanceController {
@@ -106,8 +112,8 @@ export class FinanceController {
     return send(result);
   }
 
-  private async requireCustomer(tenantId: string, customerId: string) {
-    const customer = await this.requireDb()
+  private async requireCustomer(tenantId: string, customerId: string, db: Kysely<Database> | Transaction<Database>) {
+    const customer = await db
       .selectFrom("crm.customers")
       .select(["id", "person_id", "customer_since"])
       .where("tenant_id", "=", tenantId)
@@ -124,11 +130,12 @@ export class FinanceController {
     costTypes: readonly string[],
     targetType: string,
     targetIds: string[],
+    db: Kysely<Database> | Transaction<Database>,
   ): Promise<bigint> {
     if (targetIds.length === 0) {
       return 0n;
     }
-    const rows = await this.requireDb()
+    const rows = await db
       .selectFrom("finance.cost_allocations")
       .select(["amount_minor"])
       .where("tenant_id", "=", tenantId)
@@ -148,7 +155,9 @@ export class FinanceController {
       throw new HttpException({ code: "VALIDATION_FAILED", message: "customerId query param is required" }, 400);
     }
     try {
-      return await this.contributionInner(tenant.id, customerId);
+      return await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+        this.contributionInner(tenant.id, customerId, trx),
+      );
     } catch (err) {
       if (err instanceof HttpException) {
         throw err;
@@ -157,9 +166,8 @@ export class FinanceController {
     }
   }
 
-  private async contributionInner(tenantId: string, customerId: string) {
-    const db = this.requireDb();
-    const customer = await this.requireCustomer(tenantId, customerId);
+  private async contributionInner(tenantId: string, customerId: string, db: Kysely<Database> | Transaction<Database>) {
+    const customer = await this.requireCustomer(tenantId, customerId, db);
 
     // Revenue link is the order's person (orders predate the customer row:
     // `customer.created.v1` fires at settlement, and nothing backfills
@@ -201,8 +209,8 @@ export class FinanceController {
     }
 
     const cogsMinor =
-      (await this.allocationSums(tenantId, COGS_COST_TYPES, "ORDER", orderIds)) +
-      (await this.allocationSums(tenantId, COGS_COST_TYPES, "SUBSCRIPTION_CYCLE", cycleIds));
+      (await this.allocationSums(tenantId, COGS_COST_TYPES, "ORDER", orderIds, db)) +
+      (await this.allocationSums(tenantId, COGS_COST_TYPES, "SUBSCRIPTION_CYCLE", cycleIds, db));
 
     // MESSAGING_COST allocates per successful OUTBOUND delivery (the real
     // send fact — no runtime ever transitions scheduled_contacts to SENT),
@@ -241,10 +249,10 @@ export class FinanceController {
       .where("customer_id", "=", customerId)
       .execute();
     const variableMinor =
-      (await this.allocationSums(tenantId, VARIABLE_COST_TYPES, "MESSAGE_DELIVERY", deliveryRows.map((d) => d.delivery_id))) +
-      (await this.allocationSums(tenantId, VARIABLE_COST_TYPES, "SCHEDULED_CONTACT", contacts.map((c) => c.id))) +
-      (await this.allocationSums(tenantId, VARIABLE_COST_TYPES, "ATTRIBUTION_TOUCH", touches.map((t) => t.id))) +
-      (await this.allocationSums(tenantId, VARIABLE_COST_TYPES, "REWARD", rewards.map((r) => r.id)));
+      (await this.allocationSums(tenantId, VARIABLE_COST_TYPES, "MESSAGE_DELIVERY", deliveryRows.map((d) => d.delivery_id), db)) +
+      (await this.allocationSums(tenantId, VARIABLE_COST_TYPES, "SCHEDULED_CONTACT", contacts.map((c) => c.id), db)) +
+      (await this.allocationSums(tenantId, VARIABLE_COST_TYPES, "ATTRIBUTION_TOUCH", touches.map((t) => t.id), db)) +
+      (await this.allocationSums(tenantId, VARIABLE_COST_TYPES, "REWARD", rewards.map((r) => r.id), db));
 
     let refundsMinor = 0n;
     let chargebacksMinor = 0n;
@@ -283,7 +291,7 @@ export class FinanceController {
 
     const cycleViews = [];
     for (const cycle of cycles) {
-      const cost = await this.allocationSums(tenantId, COGS_COST_TYPES, "SUBSCRIPTION_CYCLE", [cycle.id]);
+      const cost = await this.allocationSums(tenantId, COGS_COST_TYPES, "SUBSCRIPTION_CYCLE", [cycle.id], db);
       cycleViews.push({
         cycleId: cycle.id,
         status: cycle.status,
@@ -318,8 +326,9 @@ export class FinanceController {
       throw new HttpException({ code: "VALIDATION_FAILED", message: "customerId query param is required" }, 400);
     }
     try {
-      const db = this.requireDb();
-      const customer = await this.requireCustomer(tenant.id, customerId);
+      return await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const db = trx;
+      const customer = await this.requireCustomer(tenant.id, customerId, db);
 
       const touches = await db
         .selectFrom("growth.attribution_touches")
@@ -333,6 +342,7 @@ export class FinanceController {
         [COST_ACQUISITION_TOUCH],
         "ATTRIBUTION_TOUCH",
         touches.map((t) => t.id),
+        db,
       );
 
       const rewards = await db
@@ -351,6 +361,7 @@ export class FinanceController {
         [COST_REFERRAL_REWARD],
         "REWARD",
         rewards.map((r) => r.reward_id),
+        db,
       );
 
       // ACQ-04: referral reward belongs to Referral CAC, never Paid CAC.
@@ -374,6 +385,7 @@ export class FinanceController {
         blendedAcquisitionMinor: blendedMinor.toString(),
         newPayingCustomers: 1,
       };
+      });
     } catch (err) {
       if (err instanceof HttpException) {
         throw err;
@@ -396,7 +408,8 @@ export class FinanceController {
   async cohorts(@Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     try {
-      const db = this.requireDb();
+      return await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const db = trx;
       const customers = await db
         .selectFrom("crm.customers")
         .select(["id", "person_id", "customer_since"])
@@ -445,6 +458,7 @@ export class FinanceController {
         });
       }
       return { cohorts: items, dataQuality: items.length === 0 ? ("EMPTY" as const) : ("OK" as const) };
+      });
     } catch {
       return { cohorts: [], dataQuality: "DEGRADED" as const };
     }
@@ -454,15 +468,17 @@ export class FinanceController {
   @UseGuards(AuthGuard, PermissionsGuard)
   @RequirePermission("billing.read")
   async overview(@Req() req: FastifyRequest) {
+    const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     try {
-      return await this.overviewInner(req.tenant as NonNullable<FastifyRequest["tenant"]>);
+      return await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+        this.overviewInner(tenant, trx),
+      );
     } catch {
       return degradedOverview();
     }
   }
 
-  private async overviewInner(tenant: NonNullable<FastifyRequest["tenant"]>) {
-    const db = this.requireDb();
+  private async overviewInner(tenant: NonNullable<FastifyRequest["tenant"]>, db: Kysely<Database> | Transaction<Database>) {
     const now = new Date();
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 

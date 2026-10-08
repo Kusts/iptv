@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -186,6 +186,9 @@ export class ProviderController {
    * evidência ou trace. `tenant_id` vem do contexto autenticado, nunca de
    * input. `requested_at DESC, id DESC` dá ordem estável entre operações
    * com o mesmo timestamp.
+   *
+   * P1-exit (P1.3 FIX1 mirror): leituras dentro da transação do tenant do
+   * request — selects diretos falham-fechados sob `iptv_app`.
    */
   @Get("operations")
   @UseGuards(AuthGuard, PermissionsGuard)
@@ -195,9 +198,9 @@ export class ProviderController {
     @Req() req: FastifyRequest,
   ) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
     const { limit, offset } = pagination(query);
-    let select = db
+    const { rows, counts } = await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+    let select = trx
       .selectFrom("provider.provider_operations")
       .select([...PROVIDER_OPERATION_SANITIZED_COLUMNS])
       .where("tenant_id", "=", tenant.id)
@@ -215,7 +218,7 @@ export class ProviderController {
     // as linhas de tentativa (o detalhe entrega as attempts sanitizadas).
     const counts = new Map<string, number>();
     if (rows.length > 0) {
-      const counted = await db
+      const counted = await trx
         .selectFrom("provider.provider_operation_attempts")
         .select(["provider_operation_id", (eb) => eb.fn.countAll<number>().as("attempts")])
         .where("tenant_id", "=", tenant.id)
@@ -230,6 +233,8 @@ export class ProviderController {
         counts.set(c.provider_operation_id, Number(c.attempts));
       }
     }
+    return { rows, counts };
+    });
     return {
       operations: rows.map((row) => ({
         ...sanitizeProviderOperation(row),
@@ -245,8 +250,8 @@ export class ProviderController {
   @RequirePermission("provider.operation.read")
   async get(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
-    const row = await db
+    const bundled = await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+    const row = await trx
       .selectFrom("provider.provider_operations")
       .select([...PROVIDER_OPERATION_SANITIZED_COLUMNS])
       .where("tenant_id", "=", tenant.id)
@@ -255,13 +260,16 @@ export class ProviderController {
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "provider operation not found" }, 404);
     }
-    const attempts = await db
+    const attempts = await trx
       .selectFrom("provider.provider_operation_attempts")
       .select(["attempt_no", "status", "error_code", "started_at"])
       .where("tenant_id", "=", tenant.id)
       .where("provider_operation_id", "=", id)
       .orderBy("attempt_no", "asc")
       .execute();
+    return { row, attempts };
+    });
+    const { row, attempts } = bundled;
     return {
       ...sanitizeProviderOperation(row),
       attempts: attempts.map((a) => ({
