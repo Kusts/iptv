@@ -74,6 +74,13 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 |---|---|---|
 | `P5` matriz G/F | `pilot-evidence.yaml` + gate + `P5-RELEASE-E2E.md` (33 PASS + G07/F12 BLOCKED operator) | DONE (tester PASS) |
 
+## P6 status
+
+| Slice | Escopo | Estado |
+|---|---|---|
+| `P6a` CI + sessão | security-scans/adversarial/audit-gate + P6-SECURITY.md (localStorage explícito) | DONE (tester PASS) |
+| `P6b` DR/obs/load | drill 91s + OTLP + alertas 16/16 + p95s + P6-*.md | DONE (tester PASS) |
+
 ## Artefatos finais (C9 + PLAN — acompanhar aqui)
 
 RLS inventory · Worker inventory · Integration certification register ·

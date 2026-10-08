@@ -1,18 +1,18 @@
-import { context, trace, type Attributes, type Span, type Tracer } from "@opentelemetry/api";
+import { context, trace, type Attributes, type Counter, type Span, type Tracer } from "@opentelemetry/api";
 
 /**
  * W1-12 observability skeleton (api-only by default).
  *
- * DECISION (documented, see README): this package depends ONLY on
- * `@opentelemetry/api` (pinned). With no OTLP endpoint configured the API
- * stays on its global no-op implementation: `withSpan` runs `fn` directly
- * with effectively zero overhead and zero network calls. The full SDK
- * (`NodeTracerProvider` + OTLP-http exporter) is loaded via dynamic
- * `import()` inside `initObservability()` ONLY when
- * `OTEL_EXPORTER_OTLP_ENDPOINT` is set and `OTEL_SDK_DISABLED` is not
- * `"true"` — so the SDK packages remain optional at runtime and are never
- * constructed in dev/CI. Upgrade path: add the SDK + exporter packages and
- * this file wires them without changing any call site.
+ * DECISION (documented, see README): this package's OTLP providers
+ * (`NodeTracerProvider` + OTLP-http exporters for traces/metrics/logs) are
+ * constructed via dynamic `import()` inside `initObservability()` ONLY when
+ * `OTEL_EXPORTER_OTLP_ENDPOINT` is set and `OTEL_SDK_DISABLED` is `"false"`.
+ * With no endpoint configured the API stays on its global no-op
+ * implementation: `withSpan` runs `fn` directly with effectively zero
+ * overhead and zero network calls, counters stay in-process only, and
+ * `emitLog` writes stdout JSON without exporting. Missing config never
+ * breaks boot — the bootstrap catches and keeps the noop path with a logged
+ * warning.
  *
  * Correlation: HTTP carries W3C `traceparent`; `extractTraceId` pulls the
  * trace id (or generates one) at the Fastify boundary and every log/span
@@ -25,6 +25,21 @@ const TRACER_NAME = "iptv-api";
 
 let enabled = false;
 
+/** OTLP counter handles, populated only by `configureOtlp`. */
+const otlpCounters = new Map<string, Counter>();
+
+/** Minimal structural type for the OTLP logger (avoids a static sdk-logs import). */
+interface OtlpLogger {
+  emit(record: {
+    body: string;
+    severityText?: string;
+    attributes?: Record<string, string | number | boolean>;
+  }): void;
+}
+
+let otlpLogger: OtlpLogger | null = null;
+let otlpShutdown: (() => Promise<void>) | null = null;
+
 export interface ObservabilityState {
   enabled: boolean;
   endpoint: string | null;
@@ -33,6 +48,7 @@ export interface ObservabilityState {
 export interface ObservabilityEnv {
   OTEL_EXPORTER_OTLP_ENDPOINT?: string;
   OTEL_SDK_DISABLED?: string;
+  OTEL_METRIC_EXPORT_INTERVAL_MS?: string;
 }
 
 function tracer(): Tracer {
@@ -53,8 +69,12 @@ export async function initObservability(
     enabled = false;
     return { enabled: false, endpoint: null };
   }
+  const rawInterval = env["OTEL_METRIC_EXPORT_INTERVAL_MS"];
+  const parsedInterval = rawInterval !== undefined ? Number(rawInterval) : Number.NaN;
+  const metricExportIntervalMs =
+    Number.isInteger(parsedInterval) && parsedInterval >= 1000 ? parsedInterval : 60000;
   try {
-    await configureOtlp(endpoint);
+    await configureOtlp(endpoint, metricExportIntervalMs);
     enabled = true;
     return { enabled: true, endpoint };
   } catch (err) {
@@ -67,30 +87,64 @@ export async function initObservability(
 }
 
 /**
- * OTLP wiring point. The SDK + exporter packages are OPTIONAL runtime deps
- * loaded only here; until they are added (upgrade path) this throws and the
- * caller keeps the noop path. Callers MUST NOT import SDK packages
- * statically anywhere else in the repo.
+ * OTLP wiring. The SDK + exporter packages are installed dependencies, but
+ * providers are constructed ONLY here — behind `OTEL_EXPORTER_OTLP_ENDPOINT`
+ * + `OTEL_SDK_DISABLED=false`. With no endpoint configured this function is
+ * never reached and the process holds zero providers, zero readers and makes
+ * zero network calls. Callers MUST NOT import SDK packages statically
+ * anywhere else in the repo.
+ *
+ * Endpoint convention: `OTEL_EXPORTER_OTLP_ENDPOINT` is the collector BASE
+ * (e.g. `http://otel-collector:4318`); `/v1/traces`, `/v1/metrics` and
+ * `/v1/logs` are appended here. `OTEL_METRIC_EXPORT_INTERVAL_MS` overrides
+ * the PeriodicExportingMetricReader interval (default 60000).
  */
-async function configureOtlp(endpoint: string): Promise<void> {
-  const sdkTraceNode = "@opentelemetry/sdk-trace-node";
-  const exporterOtlp = "@opentelemetry/exporter-trace-otlp-http";
-  let sdk: Record<string, unknown>;
-  let exporter: Record<string, unknown>;
-  try {
-    sdk = (await import(sdkTraceNode)) as Record<string, unknown>;
-    exporter = (await import(exporterOtlp)) as Record<string, unknown>;
-  } catch {
-    throw new Error(
-      `OTLP endpoint is set (${endpoint}) but the optional SDK packages are not installed ` +
-        `(${sdkTraceNode}, ${exporterOtlp}); running with noop spans`,
-    );
-  }
-  void sdk;
-  void exporter;
-  // Full wiring (NodeTracerProvider + OTLPTraceExporter + registration)
-  // lands here together with the dependency addition; the shape is kept
-  // deliberately thin so no call site changes.
+async function configureOtlp(endpoint: string, metricExportIntervalMs: number): Promise<void> {
+  const base = endpoint.replace(/\/+$/, "");
+  const [{ NodeTracerProvider, BatchSpanProcessor }, { OTLPTraceExporter }] = await Promise.all([
+    import("@opentelemetry/sdk-trace-node"),
+    import("@opentelemetry/exporter-trace-otlp-http"),
+  ]);
+  const traceProvider = new NodeTracerProvider();
+  traceProvider.addSpanProcessor(new BatchSpanProcessor(new OTLPTraceExporter({ url: `${base}/v1/traces` })));
+
+  const [{ MeterProvider, PeriodicExportingMetricReader }, { OTLPMetricExporter }] = await Promise.all([
+    import("@opentelemetry/sdk-metrics"),
+    import("@opentelemetry/exporter-metrics-otlp-http"),
+  ]);
+  const metricReader = new PeriodicExportingMetricReader({
+    exporter: new OTLPMetricExporter({ url: `${base}/v1/metrics` }),
+    exportIntervalMillis: metricExportIntervalMs,
+  });
+  const meterProvider = new MeterProvider({ readers: [metricReader] });
+  const meter = meterProvider.getMeter(TRACER_NAME);
+  otlpCounters.set(
+    "commands_executed_total",
+    meter.createCounter("commands_executed_total", { description: "Domain commands executed" }),
+  );
+  otlpCounters.set(
+    "webhooks_received_total",
+    meter.createCounter("webhooks_received_total", { description: "Provider webhooks received" }),
+  );
+
+  const [{ LoggerProvider, BatchLogRecordProcessor }, { OTLPLogExporter }] = await Promise.all([
+    import("@opentelemetry/sdk-logs"),
+    import("@opentelemetry/exporter-logs-otlp-http"),
+  ]);
+  const loggerProvider = new LoggerProvider();
+  loggerProvider.addLogRecordProcessor(
+    new BatchLogRecordProcessor(new OTLPLogExporter({ url: `${base}/v1/logs` })),
+  );
+  otlpLogger = loggerProvider.getLogger(TRACER_NAME);
+
+  traceProvider.register();
+  otlpShutdown = async () => {
+    // Flush in reverse dependency order; each shutdown is best-effort so a
+    // wedged collector never hangs process exit (callers bound it anyway).
+    await loggerProvider.shutdown().catch(() => undefined);
+    await meterProvider.shutdown().catch(() => undefined);
+    await traceProvider.shutdown().catch(() => undefined);
+  };
 }
 
 export function isObservabilityEnabled(): boolean {
@@ -100,6 +154,21 @@ export function isObservabilityEnabled(): boolean {
 /** Test seam: force the noop path without env juggling. */
 export function disableObservabilityForTests(): void {
   enabled = false;
+}
+
+/**
+ * Flush exporters and drop providers. Best-effort: a wedged collector never
+ * rejects this. After shutdown the helpers return to the noop path.
+ */
+export async function shutdownObservability(): Promise<void> {
+  enabled = false;
+  otlpCounters.clear();
+  otlpLogger = null;
+  const shutdown = otlpShutdown;
+  otlpShutdown = null;
+  if (shutdown !== null) {
+    await shutdown();
+  }
 }
 
 /**
@@ -209,16 +278,29 @@ function counterKey(name: string, labels: Record<string, string>): string {
   return `${name}{${parts.join(",")}}`;
 }
 
+/** Mirror an in-process increment into the OTLP counter when one is live. */
+function countOtlp(name: string, labels: Record<string, string>): void {
+  const counter = otlpCounters.get(name);
+  if (counter === undefined) return;
+  try {
+    counter.add(1, labels);
+  } catch {
+    // Telemetry never fails the wrapped work.
+  }
+}
+
 /** Minimal Counter: commands executed (labels: command, code). */
 export function recordCommandExecuted(command: string, code: string): void {
   const key = counterKey("commands_executed_total", { command, code });
   counters.set(key, (counters.get(key) ?? 0) + 1);
+  countOtlp("commands_executed_total", { command, code });
 }
 
 /** Minimal Counter: webhooks received (labels: provider, outcome). */
 export function recordWebhookReceived(provider: string, outcome: string): void {
   const key = counterKey("webhooks_received_total", { provider, outcome });
   counters.set(key, (counters.get(key) ?? 0) + 1);
+  countOtlp("webhooks_received_total", { provider, outcome });
 }
 
 /** Snapshot for tests/ops (no OTLP reader is constructed unless configured). */
@@ -229,6 +311,44 @@ export function readCounters(): Record<string, number> {
 /** Test seam: reset in-process counters. */
 export function resetCountersForTests(): void {
   counters.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Structured logs (stdout always, OTLP only when configured)
+// ---------------------------------------------------------------------------
+
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+/**
+ * Minimal structured log hook. ALWAYS writes one JSON line to stdout
+ * (`{level,msg,trace_id?,...attrs}` — sanitized, never payloads/secrets) and,
+ * when OTLP is enabled, also emits an OTLP log record. Zero-throw: logging
+ * never fails the calling work.
+ */
+export function emitLog(level: LogLevel, message: string, attrs: Attributes = {}): void {
+  const clean = sanitizeAttributes(attrs);
+  const traceId = currentTraceId();
+  try {
+    process.stdout.write(
+      `${JSON.stringify({ level, msg: message, ...(traceId !== null ? { trace_id: traceId } : {}), ...clean })}\n`,
+    );
+  } catch {
+    // Stdout closed/full — drop the line, never throw.
+  }
+  const logger = otlpLogger;
+  if (logger === null) return;
+  try {
+    const attributes: Record<string, string | number | boolean> = {};
+    for (const [key, value] of Object.entries(clean)) {
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        attributes[key] = value;
+      }
+    }
+    if (traceId !== null) attributes["trace_id"] = traceId;
+    logger.emit({ body: message, severityText: level.toUpperCase(), attributes });
+  } catch {
+    // OTLP logger failure is telemetry-internal, never caller-visible.
+  }
 }
 
 // ---------------------------------------------------------------------------

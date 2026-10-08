@@ -1,0 +1,23 @@
+# P6 security gate (CODER-P6A) — estende as regras default com um allowlist
+# global para constantes sintéticas de fixture / prosa de ADR já triadas
+# como não-segredo (ver docs/16-pilot-closure/P6-SECURITY.md §2).
+# Dentro do stanza, path E secret casam por AND: um segredo real novo —
+# mesmo dentro desses arquivos — continua falhando o scan.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "P6 triaged: synthetic test-fixture constants (hashed or request-scoped) + ADR prose false positive; exact values only, never real credentials"
+regexTarget = "secret"
+regexes = [
+  '''p13-fix1-asaas-secret''',
+  '''w16-exposure-idem''',
+  '''n3-arbitrary-resolve-key''',
+  '''2FA/passkeys/organization''',
+]
+paths = [
+  '''apps/api/test/billing-rls-rehearsal\.integration\.test\.ts''',
+  '''apps/api/test/experiments-w16\.integration\.test\.ts''',
+  '''apps/api/test/trial-dispatch\.unit\.test\.ts''',
+  '''docs/06-decisions/ADR-0015-auth-better-auth\.md''',
+]
