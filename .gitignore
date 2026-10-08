@@ -5,6 +5,7 @@
 # Placeholder-only staging templates (committed; no real values ever).
 !deploy/staging/.env.staging.example
 !deploy/staging/.env.staging.worker.example
+!deploy/staging/.env.staging.outbox-worker.example
 *.pem
 *.key
 *.p12

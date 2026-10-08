@@ -13,6 +13,10 @@
 # Deploy order (enforced by depends_on, do not reorder by hand):
 #   postgres (healthy) → migrate (one-shot, exit 0) → api (ready) → web
 #   browser-worker is opt-in (`--profile worker`) and runs on demand.
+#   outbox-worker is opt-in (`--profile outbox`) and starts ONLY after the
+#   legacy outbox drain is quiesced (see the rls-role-split-cutover runbook,
+#   "Worker process + legacy quiescence"); compose cannot enforce that gate,
+#   the operator procedure does.
 #
 #   docker compose -f deploy/staging/docker-compose.staging.yml build
 #   docker compose -f deploy/staging/docker-compose.staging.yml up -d
@@ -171,6 +175,78 @@ services:
       - worker_profile:/app/profile
     networks:
       - internal
+
+  # Dedicated platform outbox worker (migration 050 protocol), NOT a default
+  # service: opt-in profile, starts ONLY after the legacy outbox drain is
+  # quiesced — setting this up does not start it. Procedure:
+  #   1. Copy deploy/staging/.env.staging.outbox-worker.example to a LOCAL
+  #      .env.staging.outbox-worker (gitignored) and fill the four activation
+  #      values (OUTBOX_WORKER_ENABLED=1, OUTBOX_WORKER_ID,
+  #      OUTBOX_WORKER_DATABASE_URL as outbox_worker, OUTBOX_LEGACY_QUIESCED=1
+  #      only after GET /v1/admin/outbox/drain-state shows the legacy drain
+  #      disabled with inFlight 0 — a stopped scheduler alone is not proof).
+  #   2. Set the role password once: ALTER ROLE outbox_worker PASSWORD '...'
+  #      (migration 050 sets none; keep it in the operator secret path).
+  #   3. Boot rehearsal with zero claims, then a single bounded batch:
+  #        docker compose --env-file .env.staging \
+  #          -f deploy/staging/docker-compose.staging.yml --profile outbox \
+  #          run --rm outbox-worker check
+  #        ... run --rm outbox-worker run --once
+  #   4. Start the loop only after the smoke passes:
+  #        docker compose --env-file .env.staging \
+  #          -f deploy/staging/docker-compose.staging.yml --profile outbox \
+  #          up -d outbox-worker
+  # The worker publishes through LocalTransport (structured-log delivery, same
+  # as the API drainer today); real transports arrive behind the same port.
+  outbox-worker:
+    build:
+      context: ../..
+      dockerfile: apps/outbox-worker/Dockerfile
+    image: iptv-staging-outbox-worker:local
+    container_name: iptv-staging-outbox-worker
+    profiles: ["outbox"]
+    # Long-running claim loop: restart on transient crash (non-zero exit).
+    # Fail-closed states (invalid config / gate denied → exit 2 not-ready)
+    # also restart, which is intended: the operator stops the service
+    # manually once logs/health show a config or quiescence problem.
+    restart: unless-stopped
+    # SIGKILL grace covers OUTBOX_WORKER_SHUTDOWN_TIMEOUT_MS (max 120s):
+    # clean exit stays immediate; grace only delays the SIGKILL.
+    stop_grace_period: 130s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      api:
+        condition: service_healthy
+    # DEDICATED env file (NOT the API's .env.staging): the outbox_worker
+    # credential must exist only in the worker process. Sharing one file
+    # would inject it into the API container — secret sprawl with no benefit.
+    # The compose-level env_file below is the LOCAL filled copy, gitignored.
+    env_file:
+      - .env.staging.outbox-worker
+    environment:
+      # Belt and braces with the worker's own parse-time guard: the owner and
+      # app-role strings must NEVER reach this process (blank counts as
+      # absent, so unset them explicitly here — environment wins over
+      # env_file). Do NOT remove these lines.
+      DATABASE_URL: ""
+      APP_DATABASE_URL: ""
+      POSTGRES_PASSWORD: ""
+    networks:
+      - internal
+    mem_limit: 256m
+    cpus: 0.5
+    healthcheck:
+      # Readiness rehearsal with ZERO claims (config → connect → role →
+      # activation). Unhealthy here means "configured active but cannot
+      # claim" — exactly the not-ready state the runbook gates on.
+      test: ["CMD-SHELL", "node apps/outbox-worker/dist/cli.js check"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   # Transaction pooler, mirroring the dev docker-compose.yml service: opt-in
   # profile only, never on the default path. Migrations and owner traffic stay
