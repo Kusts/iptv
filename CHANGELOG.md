@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- docs(pilot): M2 fallback manual + capping (`evidence/p3-waha/m2-drill.md`: estado saudável lido ao vivo, procedimento de degradação/retomada; drill executado = ato do operador) + persistência do tunnel via Startup (tarefa agendada negada sem admin).
+
 - feat(integrations): M1-live WAHA (`evidence/p3-waha/m1-live.md`): sessão/restart/outbound/inbound/auth/dedupe/LID/triage provados ao vivo contra Contabo (conflito era 2ª instância na Hostinger, removida); webhook restaurado, ambiente devolvido.
 
 - docs(pilot): refund MANUAL policy (operator decision) + Asaas sandbox refund evidence (`evidence/p3-asaas-sandbox/live-refund-*.md`): governance path green live (request→2º-humano→execute→reconcile, anti-self/stale/over-refund, KNOWN_NOT_APPLIED sem efeito falso); provider recusa refund PIX/boleto no Sandbox — SUCCEEDED movido para canary M4/M5.
