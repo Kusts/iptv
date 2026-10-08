@@ -7,9 +7,12 @@
  * - `EchoAsaasAdapter` (default): deterministic synthetic outcomes for tests
  *   and local flows — no network, no credentials.
  * - `RealAsaasAdapter` (env-gated stub): used ONLY when `ASAAS_API_KEY` and
- *   `ASAAS_BASE_URL` are both set; transport timeouts/unknowns map to
- *   UNKNOWN_EFFECT (charge stays PROCESSING + reconcile task, NEVER an
- *   automatic create retry). There are no real Asaas calls in tests.
+ *   `ASAAS_BASE_URL` are both set; `createPixCharge` posts the `/payments`
+ *   minimum (`billingType/value/dueDate/externalReference` + `customer` only
+ *   from an explicit `providerCustomerId` binding, never invented); transport
+ *   timeouts/unknowns map to UNKNOWN_EFFECT (charge stays PROCESSING +
+ *   reconcile task, NEVER an automatic create retry). There are no real Asaas
+ *   calls in tests.
  *
  * Selection: `ASAAS_ADAPTER=echo|real` (default `echo`).
  */
@@ -23,6 +26,21 @@ export interface PixChargeRequest {
   valueMinor: bigint;
   currency: string;
   payer: { personId: string };
+  /**
+   * Proven Asaas customer id (`cus_...`) bound to the payer, or null when no
+   * binding exists. The Asaas `/payments` API requires `customer`: when absent
+   * the stub sends no customer and the provider rejects (4xx →
+   * KNOWN_NOT_APPLIED, charge stays PENDING) — the stub never invents one.
+   * B1 wires a disposable sandbox customer here; production wiring is a later
+   * explicit step, never inferred.
+   */
+  providerCustomerId?: string | null;
+  /**
+   * `YYYY-MM-DD` due date for the charge (required by `/payments`). Defaults
+   * to tomorrow (UTC) when omitted/blank; a malformed explicit value throws
+   * before any I/O.
+   */
+  dueDate?: string;
 }
 
 export interface PixChargeResult {
@@ -209,6 +227,24 @@ function mapPaymentStatusToRefund(raw: string): AsaasEffect {
     return "KNOWN_NOT_APPLIED";
   }
   return "UNKNOWN";
+}
+
+const DUE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Tomorrow (UTC) as `YYYY-MM-DD` — the default `/payments` due date. */
+function defaultDueDate(): string {
+  return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function resolveDueDate(explicit: string | undefined): string {
+  if (explicit === undefined || explicit.trim().length === 0) {
+    return defaultDueDate();
+  }
+  const value = explicit.trim();
+  if (!DUE_DATE_RE.test(value)) {
+    throw new Error(`asaas: dueDate must be YYYY-MM-DD (got ${JSON.stringify(explicit)})`);
+  }
+  return value;
 }
 
 function minorFromDecimal(value: unknown): bigint | null {
@@ -414,13 +450,27 @@ export class RealAsaasAdapter implements AsaasPort {
     // so the /100n formatting below is exact for every accepted input).
     requireBrlCurrency(input.currency, "pix charge");
     const major = `${input.valueMinor / 100n}.${(input.valueMinor % 100n).toString().padStart(2, "0")}`;
+    // Customer binding (P3): `/payments` requires `customer` + `dueDate`.
+    // The stub sends the proven binding when one exists and nothing otherwise
+    // — without a customer the provider rejects (4xx → KNOWN_NOT_APPLIED),
+    // which is the honest signal that B1 (disposable sandbox customer) is
+    // still pending. No sandbox/production value is ever hardcoded here.
+    const customerId =
+      typeof input.providerCustomerId === "string" && input.providerCustomerId.trim().length > 0
+        ? input.providerCustomerId.trim()
+        : null;
+    const body: Record<string, unknown> = {
+      billingType: "PIX",
+      value: major,
+      dueDate: resolveDueDate(input.dueDate),
+      externalReference: input.chargeId,
+    };
+    if (customerId !== null) {
+      body["customer"] = customerId;
+    }
     let response: { ok: boolean; status: number; json: unknown };
     try {
-      response = await this.postJson("/payments", {
-        billingType: "PIX",
-        value: major,
-        externalReference: input.chargeId,
-      });
+      response = await this.postJson("/payments", body);
     } catch (err) {
       const timeout = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
       return {

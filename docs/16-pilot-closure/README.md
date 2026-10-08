@@ -54,6 +54,12 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 | `P2b` budgets/fallback | budgets/timeouts/fallback no harness + 18 testes | DONE (tester PASS 35/35) |
 | `P2c` Hatchet gate | certificação W0-04 | NÃO certificável neste ambiente (sem servidor/token); local honesto + F12 BLOCKED (jev) |
 
+## P3 status
+
+| Slice | Escopo | Estado |
+|---|---|---|
+| `P3` integrações | Asaas software + stub customer; WAHA código/sintético; CINEVISION/MK/Infisical gates; Hatchet BLOCKED; register + `P3-INTEGRATIONS.md` + `evidence/p3-*/` | DONE sem live (tester PASS; lives = gates de operador: B1/B2, M1/M2, G07, Steps 3/6–9, F12) |
+
 ## Artefatos finais (C9 + PLAN — acompanhar aqui)
 
 RLS inventory · Worker inventory · Integration certification register ·
