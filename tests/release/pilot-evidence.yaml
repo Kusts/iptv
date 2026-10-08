@@ -1,0 +1,294 @@
+# Pilot evidence matrix — release G01–G18 / F01–F17
+# Gate canônico: docs/15-implementation-baseline/14-e2e-acceptance-matrix.md
+# TASK_ID: CODER-P5 · branch: closure/p5-release-e2e
+# Regra: cada ID aponta para (a) teste automatizado existente (arquivo:teste),
+# (b) evidência controlada existente (evidence/…), (c) operador com pedido
+# explícito, ou (d) BLOCKED com motivo + dono + condição de desbloqueio.
+# Zero UNKNOWN/NOT_MAPPED nos gates MVP-PILOT. BLOCKED só por gate externo
+# (live/operador), nunca por "não mapeado".
+# last_run honesto: nenhuma suíte de integração foi re-executada nesta tarefa
+# (sem TEST_DATABASE_URL descartável verificado); PASS = suíte/evidência
+# existente no repo, citada por arquivo:teste exato.
+
+- id: G01
+  status: PASS
+  test: 'apps/api/test/golden-loop.integration.test.ts:"legs a-b: inbound WhatsApp → lead/person/conversation → durable trial ACTIVE + binding"'
+  environment: integration (TEST_DATABASE_URL descartável; echo gateway, zero live)
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: outbound live (entrega real 1×) pendente de M1 (sessão sandbox + destinatário opt-in); suíte usa echo gateway
+- id: G02
+  status: PASS
+  test: 'apps/api/test/agent-shadow-approval.integration.test.ts:"inbound → SHADOW run persisted + HumanReview created; shadow NEVER sends"'
+  environment: integration (echo gateway)
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: G03
+  status: PASS
+  test: 'apps/api/test/trial-compat.integration.test.ts:"happy path: request -> provisioning(echo) -> ACTIVE -> technical PASSED -> trust renewal -> ENDED"'
+  environment: integration (echo provider)
+  evidence: código + suíte existente; readback em apps/api/test/trial-readback.integration.test.ts
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: provider live real (CINEVISION writes) pendente de Fase 6 Step 3; caminho echo certificado em software
+- id: G04
+  status: PASS
+  test: 'apps/api/test/trial-compat.integration.test.ts:"retrial after INVALIDATED goes through human review, then provisions"'
+  environment: integration
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: G05
+  status: PASS
+  test: 'apps/api/test/commerce-billing.integration.test.ts:"happy path: quote → submit → charge → webhook PAID → payment → balanced ledger → SETTLED → customer (idempotent)"'
+  environment: integration (echo Asaas; webhook sintético)
+  evidence: código + suíte existente; lifecycle live sandbox em evidence/p3-asaas-sandbox/report.md (software PASS / live BLOCKED-B1)
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: PIX lifecycle live completo pendente de B1 (customer sandbox + simulação via dashboard)
+- id: G06
+  status: PASS
+  test: 'apps/api/test/subscription-fulfillment.integration.test.ts:"full loop: SETTLED → PENDING + cycle → MANUAL resolve SUCCEEDED → ACTIVE + grants + notification"'
+  environment: integration (echo provider)
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: provisionamento em provider live pendente de Fase 6 Steps 3/6–9
+- id: G07
+  status: BLOCKED
+  test: 'apps/api/test/multidomain-dispatch.integration.test.ts:"license: echo success charges and applies (durable mode changes nothing on this path)" (parcial — caminho echo apenas)'
+  environment: integration echo (sem efeito econômico real)
+  evidence: evidence/p3-asaas-sandbox/report.md (refund/ledger em software); P3-INTEGRATIONS.md linha MK (Echo/manual adapters only)
+  last_run: not_rerun_in_this_task
+  owner: operator
+  limitations: compra real em fornecedor MK nunca executada; adapter echo/manual apenas
+  unblock: gate G07 do operador — conta/termos do fornecedor + compra controlada de teste + reconciliação de efeito desconhecido + limites de gasto explícitos
+- id: G08
+  status: PASS
+  test: 'apps/api/test/renewal-retention.integration.test.ts:"full renewal happy path: quote → charge → webhook → renew → new OPEN cycle"'
+  environment: integration
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: G09
+  status: PASS
+  test: 'apps/api/test/trial-compat.integration.test.ts:"trust renewal boundary: 4 days denied, 3 days allowed"'
+  environment: integration
+  evidence: 'código + suíte existente; também renewal-retention "trust renewal: forbidden without review, bounded extension once with approval"'
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: G10
+  status: PASS
+  test: 'apps/api/test/subscription-fulfillment.integration.test.ts:"cancel_at_period_end keeps access until cycle expiry, then ENDED"'
+  environment: integration
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: G11
+  status: PASS
+  test: 'apps/api/test/support-hitl-center.integration.test.ts:"runs the full ticket lifecycle with solution evidence"'
+  environment: integration
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: G12
+  status: PASS
+  test: 'apps/api/test/support-technical-access-g12.integration.test.ts:"grants technical access on a ticket without creating a commercial trial"'
+  environment: integration
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: G13
+  status: PASS
+  test: 'apps/api/test/referral-rewards.integration.test.ts:"happy path: create → qualify via settled order → issue → redeem zero-value → balanced ledger"'
+  environment: integration
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: G14
+  status: PASS
+  test: 'apps/api/test/partners-resellers.integration.test.ts:"G14: onboarding → academy → READY → activate → order settled with 1:1 credit consumption"'
+  environment: integration
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: G15
+  status: PASS
+  test: 'apps/api/test/partners-resellers.integration.test.ts:"G15: grandparent aggregates direct children only and cannot manage a grandchild"'
+  environment: integration
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: G16
+  status: PASS
+  test: 'apps/api/test/partners-resellers.integration.test.ts:"G16: ACTIVE reseller converts to an isolated SaaS tenant and keeps operating"'
+  environment: integration
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: G17
+  status: PASS
+  test: 'apps/api/test/campaigns-attribution.integration.test.ts:"keeps first-touch attribution and resolves conversions to the first-touch version (G17)"'
+  environment: integration
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: G18
+  status: PASS
+  test: 'apps/api/test/copilot-w14b.integration.test.ts:"G18: filtered view → explain → prepare → execute allowed command with approval where required"'
+  environment: integration
+  evidence: código + suíte existente; caminho de aprovação em "approved HIGH-risk review authorizes the later execution (G18 approval path)"
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: F01
+  status: PASS
+  test: 'apps/api/test/commerce-billing.integration.test.ts:"duplicate webhook delivery is a no-op (inbox dedupe + idempotent confirm)"'
+  environment: integration
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: F02
+  status: PASS
+  test: 'apps/api/test/subscription-fulfillment.integration.test.ts:"F02: provider outage queues fulfillment; recovery resumes without duplicate effect"'
+  environment: integration (echo provider; outage simulada)
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: outage de provider live real coberta apenas por simulação; bulkhead contra Hatchet pendente de certificação
+- id: F03
+  status: PASS
+  test: 'apps/api/test/provider-dispatch.integration.test.ts:"post-send lease expiry parks VERIFYING/UNKNOWN and never re-executes"'
+  environment: integration
+  evidence: código + suíte existente; também multidomain "uncertain outcome parks VERIFYING with no second execution"
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: timeout contra browser/provider live real pendente de canary Fase 6
+- id: F04
+  status: PASS
+  test: 'apps/api/test/subscription-fulfillment.integration.test.ts:"F04: DOM drift degrades only the affected write; unrelated fulfillment continues"'
+  environment: integration (drift simulado)
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: DOM drift live real pendente de canary Fase 6
+- id: F05
+  status: PASS
+  test: 'apps/api/test/waha-f05-f06.unit.test.ts (12 testes F05/F06, stubs HTTP só 127.0.0.1, zero live)'
+  environment: unit + stubs locais
+  evidence: evidence/p3-waha/report.md item 13 (429→CAPPED, prospecção adiada, inbound preservado)
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: observação de timelock/capping contra sessão WAHA real é gate do operador M2; código/sintético PASS
+- id: F06
+  status: PASS
+  test: 'apps/api/test/waha-f05-f06.unit.test.ts:"keeps routing correct across a session restart"'
+  environment: unit + stubs locais
+  evidence: evidence/p3-waha/report.md itens 1–2 (session/restart código PASS, live BLOCKED)
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: restart/reconnect contra sessão WAHA live é gate do operador M1; código/sintético PASS
+- id: F07
+  status: PASS
+  test: 'apps/api/test/agent-model-failure.test.ts:"F07 harness: a failing primary model never yields an action"'
+  environment: unit + integração com gateway mockado
+  evidence: código + suíte existente ("deterministic workflows are unaffected and a healthy model recovers the path")
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: F08
+  status: PASS
+  test: 'apps/api/test/commerce-billing.integration.test.ts:"self-approval is rejected and the requester cannot execute without approval"'
+  environment: integration
+  evidence: código + suíte existente; também agent-shadow approve/reject e copilot "execute routes the refund draft command through HITL approval (refund.request)"
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: F09
+  status: PASS
+  test: 'apps/api/test/agent-shadow-approval.integration.test.ts:"unauthorized tool/command use is denied by the bus"'
+  environment: integration
+  evidence: código + suíte existente; agent-model-failure.test.ts ("loud refusal, never a silent pass-through of untrusted text")
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: sem suíte adversarial dedicada de prompt-injection; cobertura é fail-closed do bus + classificação de conteúdo inseguro — considerar suíte adversarial futura (não bloqueia pilot)
+- id: F10
+  status: PASS
+  test: 'apps/api/test/cutover-ab-matrix.integration.test.ts:"own rows visible, cross-tenant invisible, no context fail-closed (REAL)" por domínio'
+  environment: integration sob pool iptv_app real (RLS ativa)
+  evidence: código + suíte existente; também commerce-billing "tenant isolation" e rls-tenant-context
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: F11
+  status: PASS
+  test: 'apps/api/test/commerce-billing.integration.test.ts:"stale approval is rejected after the payment is drained by another refund"'
+  environment: integration
+  evidence: código + suíte existente; também commands.unit "rejects stale approvals via expectedStatus" e copilot "execute rejects a stale expectedStatus with 409"
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: F12
+  status: BLOCKED
+  test: 'nenhum (adapter Hatchet é construction-only; LocalWorkflowAdapter perde fila no restart por desenho)'
+  environment: nenhum (BLOCKED — sem instância Hatchet; nada a executar)
+  evidence: 'evidence/p3-hatchet/report.md (9/9 LIVE-BLOCKED: sem instância, sem SDK, sem mapeamento real)'
+  last_run: 2026-10-07 (sonda P2C-HATCHET)
+  owner: operator
+  limitations: resume durável impossível neste ambiente; fallback Inngest exige decisão própria
+  unblock: decisão adotar-vs-manter-local + instância Hatchet real + SDK pinado + mapeamento workflow-name real + gate de 9 itens (cold-engine startup cf. upstream #4778, noisy-tenant, provider-down)
+- id: F13
+  status: PASS
+  test: 'apps/api/test/renewal-retention.integration.test.ts:"F13: settled renewal order suppresses the reminder before subscription.renew runs"'
+  environment: integration
+  evidence: código + suíte existente; também scheduler "tick revisits an ENDED tenant to cancel a queued reminder after its renewal order settles"
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: scheduler em staging com API_SCHEDULER_ENABLED=1 não exercitado para este caminho (staging-p0 usou scheduler desligado)
+- id: F14
+  status: PASS
+  test: 'apps/api/test/analytics-w14a.integration.test.ts:"F14: a failing family degrades the payload without sinking the summary"'
+  environment: integration
+  evidence: 'código + suíte existente; também "F14-SQL: a genuinely aborted statement degrades one family without sinking the rest"'
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: nenhuma além de last_run
+- id: F15
+  status: PASS
+  test: 'apps/api/test/inventory-supplier-credit.integration.test.ts:"blocks an over-balance reservation with the F15 signal and refuses manual refresh without a reading"'
+  environment: integration
+  evidence: código + suíte existente
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: saldo live real do fornecedor MK pendente do gate G07 do operador
+- id: F16
+  status: PASS
+  test: 'apps/api/test/commerce-billing.integration.test.ts:"cross-customer refund within the same tenant is rejected"'
+  environment: integration
+  evidence: código + suíte existente; também inventory-app-trial "rejects invalid transitions and cross-customer mixes"
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: enforcement na camada de comando (FKs tenant-only são insuficientes por desenho — ver gate); sem varredura exaustiva Order/Subscription/Cycle/Entitlement/add-on em um único teste — considerar teste F16 dedicado cobrindo as 5 superfícies (não bloqueia pilot)
+- id: F17
+  status: PASS
+  test: 'apps/api/test/commerce-billing.integration.test.ts:"two concurrent partial refunds both succeed; a third over-refund is rejected" + "UNKNOWN refund effect holds the reservation, then reconciles to applied" + "chargeback follows the distinct path (CHARGEBACK status + loss posting + review exception)"'
+  environment: integration
+  evidence: código + suíte existente; também billing-rls-rehearsal "chargeback via webhook records CHARGEBACK + loss reversal"
+  last_run: not_rerun_in_this_task
+  owner: coder
+  limitations: refund live contra Asaas sandbox pendente de B1; chargeback live nunca observado (só via webhook sintético)
