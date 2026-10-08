@@ -277,7 +277,7 @@ until their domain rollout — `iptv_app` has no grants there by design):
 
 `pnpm --filter @iptv/database test` on fresh `iptv_rls_vitest`
 (`TEST_DATABASE_URL`, disposable): **3 files, 16/16 PASS** — including
-`migrate.integration` applying all 46 canonical migrations (through 046)
+`migrate.integration` applying all canonical migrations in filename order
 through the real `applyMigrations` runner with idempotent re-run,
 and the `withTenantTransaction` app-role isolation test on the 042 surface.
 

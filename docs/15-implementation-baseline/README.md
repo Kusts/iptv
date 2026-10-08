@@ -1,6 +1,6 @@
 # Implementation Baseline v1.0.1
 
-> Status: **IMPLEMENTED THROUGH WAVE 16 + W0 CINEVISION RUNTIME HARDENING (FASES 0–5)** — migration 046 applied  
+> Status: **IMPLEMENTED THROUGH WAVE 17 (P0–P6 closure slices, stacked draft PRs #12–#24, unmerged)** — migrations 001–059 applied  
 > Baseline date: 2026-10-02  
 > Delivery record of truth: `CHANGELOG.md` (`## Unreleased`)  
 > Scope: consolidation of Modules 1–25 + planning closure + implementation delivery to Wave 16  
