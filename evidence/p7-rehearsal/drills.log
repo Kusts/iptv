@@ -1,0 +1,39 @@
+P7-REHEARSAL live drill literals (loopback; ports API 3211 / DB 5439), 2026-10-08.
+Secrets redacted; drill-only values lived process-local (or 0600 file outside repo).
+
+[flow] POST /v1/auth/register -> 201 (token + activeTenantId 01a1197d-e15f-…)
+[flow] INSERT communication.tenant_channels (p7-live-waha, sha256 secret, ACTIVE)
+[flow] POST /v1/webhooks/waha/p7-live-waha wamsg-p7-001 -> 202 {"accepted":true,"deduped":false}
+[flow] re-POST wamsg-p7-001 -> 202 {"accepted":true,"deduped":true}; inbox rows for tenant = 1 (PROCESSED)
+[flow] GET inbox/exceptions -> 1 OPEN (wamsg-p7-001, unmatched sender quarantined)
+[flow] POST /v1/crm/persons -> 201; POST exceptions/:id/resolve {"action":"map","personId"} -> 201 RESOLVED + conversationId
+[flow] POST wamsg-p7-002 (same sender) -> 202; INBOUND row in conversation
+[flow] POST conversations/:id/send-manual -> 201 {"deliveryStatus":"SENT","providerMessageId":"echo:8ddd…"}
+[flow] POST /v1/agent/copilot/ask -> 201 {"confidence":"OBSERVED"} (no model key; deterministic)
+
+[waha-down] reboot API with WAHA_BASE_URL=http://127.0.0.1:3999 (dead) + WAHA_API_KEY=drill-only
+[waha-down] POST send-manual -> 201 {"deliveryStatus":"FAILED","providerMessageId":null} in 0.1s
+[waha-down] deliveries: DELIVERED 1 / FAILED 1 / SENT 1; conversation OPEN; inbound wamsg-p7-003 -> 202 + ingested
+[waha-down-recovery] reboot echo baseline -> POST send-manual -> 201 SENT echo:273d… in 0.1s
+
+[db-restart] pre: conv=43 msg=56 inbox=72 outbox=879; docker restart iptv-rehearsal-postgres (5.5s)
+[db-restart] scheduler "terminating connection due to administrator command"; API process exit 1 (unhandled pg Client 'error')
+[db-restart-recovery] reboot API -> ready {"status":"ok"}; post: conv=43 msg=56 inbox=72 outbox=879 (zero loss)
+
+[worker-kill] OUTBOX_WORKER check -> {"status":"ready","checks":["config","connect","role","activation"]}
+[worker-kill] platform.outbox_runtime_set LEGACY->QUIESCING->WORKER (generation 1->2->3, actor p7-drill)
+[worker-kill] outbox_claim(1,'p7-victim2',60) -> 1 row PUBLISHING; loop run (lease 8s) started, then Stop-Process -Force (pid 2508, exit 1)
+[worker-kill] run --once (lease live) -> {"claimed":0,…,"empty":true} (fence holds)
+[worker-kill-recovery] after expiry run --once -> {"claimed":1,"published":1}; final PUBLISHED 881, 0 stranded
+
+[backup] Git Bash (MSYS_NO_PATHCONV=1): keygen C:/…/p7-rehearsal.key -> KEYGEN OK
+[backup] backup-dr.sh drill iptv-rehearsal-postgres iptv iptv C:/…/p7-drill
+[backup] DRILL PASS backup→encrypt→offsite→destroy→restore→bootstrap→smoke in 296s
+[backup] pre==post: migrations 59, outbox PUBLISHED 881, ledger 330400=330400, posture 050 intact; canonical gate 59==59; WARN no manifest sidecar
+
+[rotation] pre: 0 PUBLISHING; ALTER ROLE iptv_app/outbox_worker PASSWORD (new drill-only); kill API
+[rotation-recovery] reboot API (new APP_DATABASE_URL) -> ready ok; worker check (new URL) -> ready
+[rotation-recovery] outbox PUBLISHED 881, 0 PUBLISHING; POST send-manual (old session) -> 201 SENT echo:b1a3…
+
+[web] NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:3211 pnpm --filter @iptv/web build -> OK (897-*.js has 127.0.0.1:3211)
+[web] next start :3210 -> GET / 200 (5772 bytes, Control Center)

@@ -1,0 +1,14 @@
+P7-REHEARSAL suites on lane iptv-rehearsal (TEST_DATABASE_URL=127.0.0.1:5439/iptv), 2026-10-08
+cmd: pnpm --filter @iptv/api exec vitest run test/golden-loop.integration.test.ts test/commerce-billing.integration.test.ts test/subscription-fulfillment.integration.test.ts test/renewal-retention.integration.test.ts test/support-hitl-center.integration.test.ts test/provider-dispatch.integration.test.ts test/trial-compat.integration.test.ts test/scheduler.integration.test.ts test/billing-rls-rehearsal.integration.test.ts test/agent-model-failure.test.ts test/waha-f05-f06.unit.test.ts --reporter=basic
+PASS test/scheduler.integration.test.ts (4 tests) 11939ms
+PASS test/provider-dispatch.integration.test.ts (19 tests) 6316ms
+PASS test/commerce-billing.integration.test.ts (16 tests) 13212ms
+PASS test/billing-rls-rehearsal.integration.test.ts (5 tests) 23331ms
+PASS test/trial-compat.integration.test.ts (9 tests) 16005ms
+PASS test/golden-loop.integration.test.ts (3 tests) 15212ms
+PASS test/support-hitl-center.integration.test.ts (6 tests) 3728ms
+PASS test/agent-model-failure.test.ts (6 tests) 1273ms
+PASS test/waha-f05-f06.unit.test.ts (12 tests) 47ms
+PASS test/renewal-retention.integration.test.ts (16 tests) 24181ms
+PASS test/subscription-fulfillment.integration.test.ts (9 tests) 14354ms
+Test Files 11 passed (11) / Tests 105 passed (105) / Duration 140.81s
