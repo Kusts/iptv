@@ -280,7 +280,11 @@ one.
   and owner traffic stay DIRECT; only `iptv_app` DML may be pooled, and only
   after the step 4 certification in
   [RLS role split cutover](rls-role-split-cutover.md). Needs
-  `deploy/pgbouncer/pgbouncer.ini` plus a local, gitignored userlist.
+  `deploy/pgbouncer/pgbouncer.ini` plus a local, gitignored userlist
+  (`deploy/pgbouncer/userlist.staging.txt` on staging — same SCRAM-plaintext
+  rule as the dev `userlist.txt`). Certified 2026-10-08 on the 059 tree in
+  lane `iptv-cutover` (readiness + full A/B matrix through the pooler,
+  identical to direct): see `evidence/rls-cutover/report.md`.
 - **Browser worker** (`--profile worker`): an on-demand operator smoke CLI, not
   a service.
   ```powershell
