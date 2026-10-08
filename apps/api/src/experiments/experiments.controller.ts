@@ -10,8 +10,8 @@ import {
   Req,
   UseGuards,
 } from "@nestjs/common";
-import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import type { Kysely, Transaction } from "kysely";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandActor, CommandResult } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -109,16 +109,20 @@ export class ExperimentsController {
   async list(@Query() query: { status?: string; limit?: string }, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    let select = this.requireDb()
-      .selectFrom("experiments.experiments")
-      .select(["id", "experiment_key", "name", "status", "primary_metric_ref", "started_at", "ended_at"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "desc")
-      .limit(limit);
-    if (query.status !== undefined) {
-      select = select.where("status", "=", query.status);
-    }
-    const rows = await select.execute();
+    // P1.6-059: tenant-scoped read inside the request tenant's context —
+    // direct reads fail-closed under `iptv_app`.
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) => {
+      let select = trx
+        .selectFrom("experiments.experiments")
+        .select(["id", "experiment_key", "name", "status", "primary_metric_ref", "started_at", "ended_at"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("created_at", "desc")
+        .limit(limit);
+      if (query.status !== undefined) {
+        select = select.where("status", "=", query.status);
+      }
+      return select.execute();
+    });
     return {
       experiments: rows.map((r) => ({
         id: r.id,
@@ -137,8 +141,10 @@ export class ExperimentsController {
   @RequirePermission("experiments.read")
   async get(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const row = await this.requireDb()
-      .selectFrom("experiments.experiments")
+    // P1.6-059: see list().
+    const row = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("experiments.experiments")
       .select([
         "id",
         "experiment_key",
@@ -155,7 +161,8 @@ export class ExperimentsController {
       ])
       .where("tenant_id", "=", tenant.id)
       .where("id", "=", id)
-      .executeTakeFirst();
+      .executeTakeFirst(),
+    );
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "experiment not found in this tenant" }, 404);
     }
@@ -217,87 +224,91 @@ export class ExperimentsController {
   @RequirePermission("experiments.read")
   async aggregate(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
-    const experiment = await db
-      .selectFrom("experiments.experiments")
-      .select(["id", "experiment_key", "status", "primary_metric_ref", "guardrail_refs", "minimum_evidence_exposures"])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", id)
-      .executeTakeFirst();
-    if (experiment === undefined) {
-      throw new HttpException({ code: "NOT_FOUND", message: "experiment not found in this tenant" }, 404);
-    }
-    const assignments = await db
-      .selectFrom("experiments.experiment_assignments")
-      .select(["variant", (eb) => eb.fn.countAll().as("n")])
-      .where("tenant_id", "=", tenant.id)
-      .where("experiment_id", "=", id)
-      .groupBy("variant")
-      .execute();
-    const exposures = await db
-      .selectFrom("experiments.experiment_exposures")
-      .innerJoin("experiments.experiment_assignments", (join) =>
-        join
-          .onRef("experiments.experiment_assignments.id", "=", "experiments.experiment_exposures.experiment_assignment_id")
-          .on("experiments.experiment_assignments.tenant_id", "=", tenant.id),
-      )
-      .select(["experiments.experiment_assignments.variant", (eb) => eb.fn.countAll().as("n")])
-      .where("experiments.experiment_exposures.tenant_id", "=", tenant.id)
-      .where("experiments.experiment_assignments.experiment_id", "=", id)
-      .groupBy("experiments.experiment_assignments.variant")
-      .execute();
-    const exposuresByVariant = new Map<string, number>();
-    for (const row of exposures) {
-      exposuresByVariant.set(row.variant, Number(row.n));
-    }
-    const byVariant = assignments
-      .map((row) => ({
-        variant: row.variant,
-        assignments: Number(row.n),
-        exposures: exposuresByVariant.get(row.variant) ?? 0,
-      }))
-      .sort((a, b) => (a.variant < b.variant ? -1 : a.variant > b.variant ? 1 : 0));
-    const totalExposures = byVariant.reduce((acc, c) => acc + c.exposures, 0);
-    const minimum = Number(experiment.minimum_evidence_exposures);
-    const degradedMetrics: string[] = [];
-    const metricKeys = [
-      ...(experiment.primary_metric_ref === null ? [] : [experiment.primary_metric_ref]),
-      ...((experiment.guardrail_refs ?? []) as string[]),
-    ];
-    const metrics: Record<string, MetricPoint | null> = {};
-    for (const key of metricKeys) {
-      metrics[key] = await this.latestMetricPoint(tenant.id, key, degradedMetrics);
-    }
-    return {
-      experimentId: experiment.id,
-      experimentKey: experiment.experiment_key,
-      status: experiment.status,
-      evidence:
-        totalExposures < minimum
-          ? ("INSUFFICIENT_EVIDENCE" as const)
-          : ("READY_FOR_REVIEW" as const),
-      minimumEvidenceExposures: minimum,
-      totalAssignments: byVariant.reduce((acc, c) => acc + c.assignments, 0),
-      totalExposures,
-      byVariant,
-      // Overall (non-per-variant) read-model values for context only.
-      // Per-variant metric comparison is POST-MVP: `comparisons` stays
-      // null rather than inventing statistics.
-      primaryMetric: experiment.primary_metric_ref,
-      guardrails: (experiment.guardrail_refs ?? []) as string[],
-      metrics,
-      comparisons: null,
-      degradedMetrics,
-    };
+    // P1.6-059: see list() — the assignment/exposure counts plus the
+    // analytics read-model share one tenant context.
+    return withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const experiment = await trx
+        .selectFrom("experiments.experiments")
+        .select(["id", "experiment_key", "status", "primary_metric_ref", "guardrail_refs", "minimum_evidence_exposures"])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", id)
+        .executeTakeFirst();
+      if (experiment === undefined) {
+        throw new HttpException({ code: "NOT_FOUND", message: "experiment not found in this tenant" }, 404);
+      }
+      const assignments = await trx
+        .selectFrom("experiments.experiment_assignments")
+        .select(["variant", (eb) => eb.fn.countAll().as("n")])
+        .where("tenant_id", "=", tenant.id)
+        .where("experiment_id", "=", id)
+        .groupBy("variant")
+        .execute();
+      const exposures = await trx
+        .selectFrom("experiments.experiment_exposures")
+        .innerJoin("experiments.experiment_assignments", (join) =>
+          join
+            .onRef("experiments.experiment_assignments.id", "=", "experiments.experiment_exposures.experiment_assignment_id")
+            .on("experiments.experiment_assignments.tenant_id", "=", tenant.id),
+        )
+        .select(["experiments.experiment_assignments.variant", (eb) => eb.fn.countAll().as("n")])
+        .where("experiments.experiment_exposures.tenant_id", "=", tenant.id)
+        .where("experiments.experiment_assignments.experiment_id", "=", id)
+        .groupBy("experiments.experiment_assignments.variant")
+        .execute();
+      const exposuresByVariant = new Map<string, number>();
+      for (const row of exposures) {
+        exposuresByVariant.set(row.variant, Number(row.n));
+      }
+      const byVariant = assignments
+        .map((row) => ({
+          variant: row.variant,
+          assignments: Number(row.n),
+          exposures: exposuresByVariant.get(row.variant) ?? 0,
+        }))
+        .sort((a, b) => (a.variant < b.variant ? -1 : a.variant > b.variant ? 1 : 0));
+      const totalExposures = byVariant.reduce((acc, c) => acc + c.exposures, 0);
+      const minimum = Number(experiment.minimum_evidence_exposures);
+      const degradedMetrics: string[] = [];
+      const metricKeys = [
+        ...(experiment.primary_metric_ref === null ? [] : [experiment.primary_metric_ref]),
+        ...((experiment.guardrail_refs ?? []) as string[]),
+      ];
+      const metrics: Record<string, MetricPoint | null> = {};
+      for (const key of metricKeys) {
+        metrics[key] = await this.latestMetricPoint(trx, tenant.id, key, degradedMetrics);
+      }
+      return {
+        experimentId: experiment.id,
+        experimentKey: experiment.experiment_key,
+        status: experiment.status,
+        evidence:
+          totalExposures < minimum
+            ? ("INSUFFICIENT_EVIDENCE" as const)
+            : ("READY_FOR_REVIEW" as const),
+        minimumEvidenceExposures: minimum,
+        totalAssignments: byVariant.reduce((acc, c) => acc + c.assignments, 0),
+        totalExposures,
+        byVariant,
+        // Overall (non-per-variant) read-model values for context only.
+        // Per-variant metric comparison is POST-MVP: `comparisons` stays
+        // null rather than inventing statistics.
+        primaryMetric: experiment.primary_metric_ref,
+        guardrails: (experiment.guardrail_refs ?? []) as string[],
+        metrics,
+        comparisons: null,
+        degradedMetrics,
+      };
+    });
   }
 
   private async latestMetricPoint(
+    db: Kysely<Database> | Transaction<Database>,
     tenantId: string,
     metricKey: string,
     degradedMetrics: string[],
   ): Promise<MetricPoint | null> {
     try {
-      const row = await this.requireDb()
+      const row = await db
         .selectFrom("analytics.metric_snapshots")
         .select(["bucket_start", "value_json", "value_minor", "computed_at", "data_quality"])
         .where("tenant_id", "=", tenantId)
@@ -349,61 +360,65 @@ export class ExperimentsController {
     @Req() req: FastifyRequest,
   ) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
-    // Tenant-specific flags shadow global (null-tenant) ones.
-    const flag =
-      (await db
-        .selectFrom("control.feature_flags")
-        .select(["flag_key", "enabled", "config_json"])
-        .where("flag_key", "=", key)
-        .where("tenant_id", "=", tenant.id)
-        .executeTakeFirst()) ??
-      (await db
-        .selectFrom("control.feature_flags")
-        .select(["flag_key", "enabled", "config_json"])
-        .where("flag_key", "=", key)
-        .where("tenant_id", "is", null)
-        .executeTakeFirst());
-    if (flag === undefined) {
-      throw new HttpException({ code: "NOT_FOUND", message: "feature flag not found" }, 404);
-    }
-    const storedDefault = flag.enabled;
-    const config = (flag.config_json ?? {}) as Record<string, unknown>;
-    const experimentKey = typeof config["experimentKey"] === "string" ? (config["experimentKey"] as string) : null;
-    const experimentVariant =
-      typeof config["experimentVariant"] === "string" ? (config["experimentVariant"] as string) : CONTROL_VARIANT;
-    if (experimentKey === null || experimentKey.length === 0) {
-      return { key: flag.flag_key, enabled: storedDefault, source: "flag", variant: null, fallback: false };
-    }
-    if (query.subjectType === undefined || query.subjectId === undefined) {
-      return { key: flag.flag_key, enabled: storedDefault, source: "flag-default", variant: null, fallback: true };
-    }
-    try {
-      const experiment = await db
-        .selectFrom("experiments.experiments")
-        .select(["experiment_key", "status", "arm_variant_spec_json", "assignment_version"])
-        .where("tenant_id", "=", tenant.id)
-        .where("experiment_key", "=", experimentKey)
-        .executeTakeFirst();
-      if (experiment === undefined || experiment.status !== "RUNNING") {
-        return { key: flag.flag_key, enabled: storedDefault, source: "flag-default", variant: CONTROL_VARIANT, fallback: true };
+    // P1.6-059: see list(). The global (null-tenant) flag fallback stays
+    // visible: the 048 feature_flags_select policy allows
+    // `(tenant_id IS NULL) OR own-tenant` inside the tenant context.
+    return withTenantTransaction(this.requireDb(), tenant.id, async (db) => {
+      // Tenant-specific flags shadow global (null-tenant) ones.
+      const flag =
+        (await db
+          .selectFrom("control.feature_flags")
+          .select(["flag_key", "enabled", "config_json"])
+          .where("flag_key", "=", key)
+          .where("tenant_id", "=", tenant.id)
+          .executeTakeFirst()) ??
+        (await db
+          .selectFrom("control.feature_flags")
+          .select(["flag_key", "enabled", "config_json"])
+          .where("flag_key", "=", key)
+          .where("tenant_id", "is", null)
+          .executeTakeFirst());
+      if (flag === undefined) {
+        throw new HttpException({ code: "NOT_FOUND", message: "feature flag not found" }, 404);
       }
-      const variants = parseVariantSpec(experiment.arm_variant_spec_json);
-      const variant = assignVariant(
-        experiment.experiment_key,
-        subjectKeyOf(query.subjectType, query.subjectId),
-        Number(experiment.assignment_version),
-        variants,
-      );
-      return {
-        key: flag.flag_key,
-        enabled: variant === experimentVariant,
-        source: "experiment",
-        variant,
-        fallback: false,
-      };
-    } catch {
-      return { key: flag.flag_key, enabled: storedDefault, source: "flag-default", variant: null, fallback: true };
-    }
+      const storedDefault = flag.enabled;
+      const config = (flag.config_json ?? {}) as Record<string, unknown>;
+      const experimentKey = typeof config["experimentKey"] === "string" ? (config["experimentKey"] as string) : null;
+      const experimentVariant =
+        typeof config["experimentVariant"] === "string" ? (config["experimentVariant"] as string) : CONTROL_VARIANT;
+      if (experimentKey === null || experimentKey.length === 0) {
+        return { key: flag.flag_key, enabled: storedDefault, source: "flag", variant: null, fallback: false };
+      }
+      if (query.subjectType === undefined || query.subjectId === undefined) {
+        return { key: flag.flag_key, enabled: storedDefault, source: "flag-default", variant: null, fallback: true };
+      }
+      try {
+        const experiment = await db
+          .selectFrom("experiments.experiments")
+          .select(["experiment_key", "status", "arm_variant_spec_json", "assignment_version"])
+          .where("tenant_id", "=", tenant.id)
+          .where("experiment_key", "=", experimentKey)
+          .executeTakeFirst();
+        if (experiment === undefined || experiment.status !== "RUNNING") {
+          return { key: flag.flag_key, enabled: storedDefault, source: "flag-default", variant: CONTROL_VARIANT, fallback: true };
+        }
+        const variants = parseVariantSpec(experiment.arm_variant_spec_json);
+        const variant = assignVariant(
+          experiment.experiment_key,
+          subjectKeyOf(query.subjectType, query.subjectId),
+          Number(experiment.assignment_version),
+          variants,
+        );
+        return {
+          key: flag.flag_key,
+          enabled: variant === experimentVariant,
+          source: "experiment",
+          variant,
+          fallback: false,
+        };
+      } catch {
+        return { key: flag.flag_key, enabled: storedDefault, source: "flag-default", variant: null, fallback: true };
+      }
+    });
   }
 }
