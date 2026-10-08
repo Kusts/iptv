@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- feat(integrations): M1-live WAHA (`evidence/p3-waha/m1-live.md`): sessão/restart/outbound/inbound/auth/dedupe/LID/triage provados ao vivo contra Contabo (conflito era 2ª instância na Hostinger, removida); webhook restaurado, ambiente devolvido.
+
 - docs(pilot): refund MANUAL policy (operator decision) + Asaas sandbox refund evidence (`evidence/p3-asaas-sandbox/live-refund-*.md`): governance path green live (request→2º-humano→execute→reconcile, anti-self/stale/over-refund, KNOWN_NOT_APPLIED sem efeito falso); provider recusa refund PIX/boleto no Sandbox — SUCCEEDED movido para canary M4/M5.
 
 - feat(integrations): loop Asaas via API em lane scratch (`evidence/p3-asaas-sandbox/live-loop-api.md`): provision→order→charge (fail-closed sem binding)→pagamento sandbox→receiveInCash→webhook 202/202-deduped→reconcile idempotente→PAID + ledger balanceado + 1 efeito. Parado antes do refund (exige RECEIVED via dashboard).
