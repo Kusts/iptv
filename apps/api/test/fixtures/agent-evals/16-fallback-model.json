@@ -1,0 +1,7 @@
+{
+  "id": "fallback-model",
+  "description": "Offline baseline runs on the echo gateway (gatewayFromEnv default without a key); a live model needs an explicit key.",
+  "inbound": "Olá, quero saber mais sobre o serviço",
+  "expectedLabel": "happy_reply",
+  "expectedKind": "REPLY"
+}

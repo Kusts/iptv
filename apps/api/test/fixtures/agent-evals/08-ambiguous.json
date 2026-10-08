@@ -1,0 +1,8 @@
+{
+  "id": "ambiguous",
+  "description": "Vague inbound degrades to a clarifying REPLY: no tools, no escalation, nothing invented.",
+  "inbound": "hmm, tipo assim... você pode me ajudar com isso aí?",
+  "expectedLabel": "happy_reply",
+  "expectedKind": "REPLY",
+  "expectNoToolCalls": true
+}

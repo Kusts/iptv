@@ -1,0 +1,8 @@
+{
+  "id": "timeout",
+  "description": "Primary-model failure rejects loudly: no proposal, no run persisted (degrade = no action, F07 contract).",
+  "inbound": "Olá, quero saber mais",
+  "modelStub": "throw-transient",
+  "expectRunError": true,
+  "expectedLabel": "run_error"
+}

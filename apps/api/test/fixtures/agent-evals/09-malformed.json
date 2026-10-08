@@ -1,0 +1,8 @@
+{
+  "id": "malformed",
+  "description": "Garbage inbound never triggers a tool; baseline answers with a clarifying REPLY.",
+  "inbound": "??? ... --- ###",
+  "expectedLabel": "happy_reply",
+  "expectedKind": "REPLY",
+  "expectNoToolCalls": true
+}

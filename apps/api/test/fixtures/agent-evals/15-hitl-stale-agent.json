@@ -1,0 +1,9 @@
+{
+  "id": "hitl-stale-agent",
+  "description": "Paused/stale agent is never evaluated; approvals granted before takeover resolve as SUPERSEDED on resume.",
+  "inbound": "Olá, alguém pode me ajudar?",
+  "controlMode": "PAUSED",
+  "expectEval": false,
+  "expectedLabel": "no_eval",
+  "expectedKind": "ESCALATE"
+}

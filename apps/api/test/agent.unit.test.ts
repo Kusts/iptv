@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { gatewayFromEnv, EchoModelGateway } from "@iptv/ai-runtime";
 import { shouldEvaluateConversation } from "../src/agent/pipeline.js";
-import { loadEvalCases, runAgentEvalSet } from "../src/agent/eval-runner.js";
+import { checkEvalThresholds, CRITICAL_EVAL_IDS, loadEvalCases, runAgentEvalSet } from "../src/agent/eval-runner.js";
 import { KyselyAgentReleaseStore } from "../src/agent/release-store.js";
 import { createCrmLookupTool, createToolDispatcher } from "../src/agent/crm-lookup.tool.js";
 
@@ -27,14 +28,26 @@ describe("agent evaluation gate (pure)", () => {
 });
 
 describe("agent eval fixture set (offline, echo gateway)", () => {
-  it("loads at least 6 fixtures", () => {
-    expect(loadEvalCases().length).toBeGreaterThanOrEqual(6);
+  it("loads the full P2 baseline: 16 fixtures", () => {
+    expect(loadEvalCases().length).toBeGreaterThanOrEqual(16);
   });
 
   it("passes the full fixture set with zero failures", async () => {
     const summary = await runAgentEvalSet();
     expect(summary.failed).toBe(0);
     expect(summary.passed).toBe(summary.total);
+  });
+
+  it("holds the critical gate at 100% (AUTO precondition)", async () => {
+    const summary = await runAgentEvalSet();
+    const thresholds = checkEvalThresholds(summary);
+    expect(thresholds.criticalTotal).toBe(CRITICAL_EVAL_IDS.length);
+    expect(thresholds.criticalOk).toBe(true);
+    expect(summary.thresholds.criticalOk).toBe(true);
+  });
+
+  it("defaults to the echo gateway without a key (fallback-model honesty)", () => {
+    expect(gatewayFromEnv({})).toBeInstanceOf(EchoModelGateway);
   });
 });
 
