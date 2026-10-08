@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult, CommandActor } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -54,8 +54,12 @@ function idempotencyKeyOf(req: FastifyRequest): string | undefined {
 /**
  * Wave 11 Campaigns/Attribution surface. Writes go through the `CommandBus`
  * (owning context for campaign lifecycle, audiences, MessageIntent
- * scheduling and attribution); reads are plain tenant-scoped selects shaped
- * to the OpenAPI contract.
+ * scheduling and attribution); reads run inside `withTenantTransaction`
+ * (actor tenant): the tables below are RLS-enrolled (growth.* in migration
+ * 058, communication.message_intents in 042 — both fail-closed when
+ * `app.tenant_id` is unset), so pool-level selects under `iptv_app` would
+ * return empty silently after cutover. The explicit `tenant_id =`
+ * predicates stay as defense-in-depth alongside the RLS policy.
  *
  * Campaign writes reuse the acquisition permission (`crm.lead.write`); reads
  * use `crm.person.read`. No new permission keys (no migration in slice).
@@ -76,12 +80,16 @@ export class GrowthController {
   }
 
   private async requireCampaign(tenantId: string, campaignId: string): Promise<void> {
-    const row = await this.requireDb()
-      .selectFrom("growth.campaigns")
-      .select(["id"])
-      .where("tenant_id", "=", tenantId)
-      .where("id", "=", campaignId)
-      .executeTakeFirst();
+    // P1.5-058 (P1.3 FIX1 mirror): tenant-scoped read inside the request
+    // tenant's context — direct reads fail-closed under `iptv_app`.
+    const row = await withTenantTransaction(this.requireDb(), tenantId, (trx) =>
+      trx
+        .selectFrom("growth.campaigns")
+        .select(["id"])
+        .where("tenant_id", "=", tenantId)
+        .where("id", "=", campaignId)
+        .executeTakeFirst(),
+    );
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "campaign not found" }, 404);
     }
@@ -104,13 +112,16 @@ export class GrowthController {
   async listCampaigns(@Query() query: { limit?: string }, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    const rows = await this.requireDb()
-      .selectFrom("growth.campaigns")
-      .select(["id", "campaign_key", "name", "objective", "status", "current_version_id", "created_at", "updated_at"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "desc")
-      .limit(limit)
-      .execute();
+    // P1.5-058 (P1.3 FIX1 mirror): see requireCampaign().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("growth.campaigns")
+        .select(["id", "campaign_key", "name", "objective", "status", "current_version_id", "created_at", "updated_at"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("created_at", "desc")
+        .limit(limit)
+        .execute(),
+    );
     return {
       items: rows.map((row) => ({
         id: row.id,
@@ -130,12 +141,15 @@ export class GrowthController {
   @RequirePermission("crm.person.read")
   async getCampaign(@Param("campaignId") campaignId: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const row = await this.requireDb()
-      .selectFrom("growth.campaigns")
-      .select(["id", "campaign_key", "name", "objective", "status", "current_version_id", "created_at", "updated_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", campaignId)
-      .executeTakeFirst();
+    // P1.5-058 (P1.3 FIX1 mirror): see requireCampaign().
+    const row = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("growth.campaigns")
+        .select(["id", "campaign_key", "name", "objective", "status", "current_version_id", "created_at", "updated_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", campaignId)
+        .executeTakeFirst(),
+    );
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "campaign not found" }, 404);
     }
@@ -260,13 +274,16 @@ export class GrowthController {
   async listAudiences(@Query() query: { limit?: string }, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    const rows = await this.requireDb()
-      .selectFrom("growth.audience_definitions")
-      .select(["id", "campaign_id", "name", "membership_type", "criteria_json", "created_at"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "desc")
-      .limit(limit)
-      .execute();
+    // P1.5-058 (P1.3 FIX1 mirror): see requireCampaign().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("growth.audience_definitions")
+        .select(["id", "campaign_id", "name", "membership_type", "criteria_json", "created_at"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("created_at", "desc")
+        .limit(limit)
+        .execute(),
+    );
     return {
       items: rows.map((row) => ({
         id: row.id,
@@ -309,32 +326,36 @@ export class GrowthController {
     if (typeof personId !== "string" || personId.length === 0) {
       throw new HttpException({ code: "VALIDATION_FAILED", message: "personId query param is required" }, 400);
     }
-    const db = this.requireDb();
-    const touches = await db
-      .selectFrom("growth.attribution_touches")
-      .select(["id", "person_id", "campaign_id", "campaign_version_id", "touch_type", "occurred_at", "created_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("person_id", "=", personId)
-      .orderBy("occurred_at", "asc")
-      .execute();
-    const conversions = await db
-      .selectFrom("growth.conversion_events")
-      .select([
-        "id",
-        "person_id",
-        "campaign_id",
-        "campaign_version_id",
-        "conversion_type",
-        "order_id",
-        "amount_minor",
-        "currency",
-        "occurred_at",
-        "created_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("person_id", "=", personId)
-      .orderBy("occurred_at", "asc")
-      .execute();
+    // P1.5-058 (P1.3 FIX1 mirror): see requireCampaign() — both attribution
+    // tables are RLS-enrolled (058), so the pair reads in one tenant context.
+    const { touches, conversions } = await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const touches = await trx
+        .selectFrom("growth.attribution_touches")
+        .select(["id", "person_id", "campaign_id", "campaign_version_id", "touch_type", "occurred_at", "created_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("person_id", "=", personId)
+        .orderBy("occurred_at", "asc")
+        .execute();
+      const conversions = await trx
+        .selectFrom("growth.conversion_events")
+        .select([
+          "id",
+          "person_id",
+          "campaign_id",
+          "campaign_version_id",
+          "conversion_type",
+          "order_id",
+          "amount_minor",
+          "currency",
+          "occurred_at",
+          "created_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("person_id", "=", personId)
+        .orderBy("occurred_at", "asc")
+        .execute();
+      return { touches, conversions };
+    });
     return {
       personId,
       touches: touches.map((row) => ({
@@ -367,14 +388,18 @@ export class GrowthController {
   async listIntents(@Param("campaignId") campaignId: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     await this.requireCampaign(tenant.id, campaignId);
-    const rows = await this.requireDb()
-      .selectFrom("communication.message_intents")
-      .select(["id", "campaign_id", "campaign_version_id", "channel", "purpose_key", "status", "scheduled_for", "created_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("campaign_id", "=", campaignId)
-      .orderBy("created_at", "desc")
-      .limit(200)
-      .execute();
+    // P1.5-058 (P1.3 FIX1 mirror): see requireCampaign()
+    // (message_intents enrolled in 042, same fail-closed shape).
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("communication.message_intents")
+        .select(["id", "campaign_id", "campaign_version_id", "channel", "purpose_key", "status", "scheduled_for", "created_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("campaign_id", "=", campaignId)
+        .orderBy("created_at", "desc")
+        .limit(200)
+        .execute(),
+    );
     return {
       items: rows.map((row) => ({
         id: row.id,

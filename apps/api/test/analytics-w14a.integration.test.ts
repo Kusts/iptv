@@ -910,4 +910,54 @@ describe.skipIf(!hasDb)("Wave 14 Analytics/Control Center (requires TEST_DATABAS
     const healedSummary = await injectRaw({ method: "GET", url: "/v1/control-center/summary", token: tokenA });
     expect(healedSummary.json<{ dataQualityOverall: string }>().dataQualityOverall).toBe("OK");
   }, 30000);
+
+  it("F14-SQL: a genuinely aborted statement degrades one family without sinking the rest", async () => {
+    // P15-FIX1: failFamilySql issues a REAL invalid statement inside the REF
+    // family. Without the per-family SAVEPOINT this aborts the shared
+    // transaction (25P02): every later family fails and the endpoint answers
+    // 400. With the savepoint the transaction is restored and the result
+    // stays a partial DEGRADED payload.
+    const recomputed = await injectRaw({
+      method: "POST",
+      url: "/v1/analytics/recompute",
+      token: tokenA,
+      payload: { failFamilySql: "REF" },
+    });
+    expect(recomputed.statusCode).toBe(201);
+    expect(recomputed.json<{ degradedFamilies: string[] }>().degradedFamilies).toEqual(["REF"]);
+
+    // FUL and AI run AFTER REF in the family loop: their snapshots prove the
+    // transaction survived the aborted statement (no 25P02 cascade).
+    const ful = await injectRaw({
+      method: "GET",
+      url: `/v1/metrics/ful.success_rate_bps?${windowQuery()}`,
+      token: tokenA,
+    });
+    expect(ful.statusCode).toBe(200);
+    expect(ful.json<{ points: unknown[] }>().points.length).toBeGreaterThan(0);
+
+    const ai = await injectRaw({
+      method: "GET",
+      url: `/v1/metrics/ai.runs?${windowQuery()}`,
+      token: tokenA,
+    });
+    expect(ai.statusCode).toBe(200);
+    expect(ai.json<{ points: unknown[] }>().points.length).toBeGreaterThan(0);
+
+    // Earlier families kept their snapshots too.
+    const revenue = await injectRaw({
+      method: "GET",
+      url: `/v1/metrics/sales.settled_revenue_minor?${windowQuery()}`,
+      token: tokenA,
+    });
+    expect(revenue.statusCode).toBe(200);
+    expect(revenue.json<{ points: unknown[] }>().points.length).toBeGreaterThan(0);
+
+    // Healthy recompute clears the marker: idempotent recovery.
+    const healed = await injectRaw({ method: "POST", url: "/v1/analytics/recompute", token: tokenA, payload: {} });
+    expect(healed.statusCode).toBe(201);
+    expect(healed.json<{ degradedFamilies: string[] }>().degradedFamilies).toEqual([]);
+    const healedSummary = await injectRaw({ method: "GET", url: "/v1/control-center/summary", token: tokenA });
+    expect(healedSummary.json<{ dataQualityOverall: string }>().dataQualityOverall).toBe("OK");
+  }, 30000);
 });

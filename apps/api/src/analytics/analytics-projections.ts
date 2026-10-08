@@ -1,4 +1,5 @@
-import type { Kysely } from "kysely";
+import { sql } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import type { Database } from "@iptv/database";
 import { newId } from "@iptv/domain";
 import { METRIC_DEFINITIONS, isMetricFamily } from "./analytics-catalog.js";
@@ -15,9 +16,11 @@ import { normalizeMrrMinor, toMinorStrict } from "../finance/finance-math.js";
  *   today UTC).
  * - Idempotent: replay deletes + re-inserts the window's own rows (the
  *   snapshots are a replaceable read-model, deliberately NOT append-only).
- * - F14: every family runs inside its own try/catch — one failing family
- *   is recorded in `degradedFamilies` (plus a DEGRADED marker snapshot for
- *   its primary metric) and never aborts the other families.
+ * - F14: every family runs behind its own SAVEPOINT inside a shared
+ *   transaction — one failing family (even a genuinely aborted SQL
+ *   statement) is rolled back to its savepoint, recorded in
+ *   `degradedFamilies` (plus a DEGRADED marker snapshot for its primary
+ *   metric) and never aborts the other families.
  *
  * Finance formulas are REUSED from `../finance/finance-math.js`
  * (`normalizeMrrMinor`, `toMinorStrict`) — never re-derived here.
@@ -32,6 +35,13 @@ export interface RecomputeWindow {
    * degraded path end-to-end. Never affects other families' snapshots.
    */
   failFamily?: string;
+  /**
+   * Real-SQL fault-injection (tests + manual drills): when set to a family
+   * name, that family issues an invalid statement — exercising the F14
+   * degraded path against a genuinely aborted statement (the savepoint
+   * recovery path), not just the JS-throw path.
+   */
+  failFamilySql?: string;
 }
 
 export interface RecomputeResult {
@@ -48,7 +58,10 @@ interface Point {
   valueMinor: string | null;
 }
 
-type Db = Kysely<Database>;
+// P1.5-058: Kysely pool OR tenant transaction — the controller runs the
+// recompute inside `withTenantTransaction` (fact tables are RLS-enrolled),
+// while tests keep calling with a plain pool.
+type Db = Kysely<Database> | Transaction<Database>;
 
 const OPEN_TICKET_STATUSES = [
   "NEW",
@@ -87,9 +100,15 @@ function tallyByDay(rows: Array<{ at: Date }>, days: Date[]): Map<string, number
   return counts;
 }
 
-function failIfInjected(window: RecomputeWindow, family: string): void {
+async function failIfInjected(db: Db, window: RecomputeWindow, family: string): Promise<void> {
   if (window.failFamily === family) {
     throw new Error(`injected failure for family ${family}`);
+  }
+  if (window.failFamilySql === family) {
+    // Genuinely aborted statement: without the per-family SAVEPOINT below,
+    // this would poison the shared transaction (25P02) and sink every
+    // family after it.
+    await sql.raw("SELECT * FROM analytics.nonexistent_table_for_f14_drill").execute(db);
   }
 }
 
@@ -116,7 +135,7 @@ async function ensureDefinitions(db: Db, tenantId: string): Promise<void> {
 }
 
 async function projectAcq(db: Db, tenantId: string, days: Date[], points: Point[], window: RecomputeWindow): Promise<void> {
-  failIfInjected(window, "ACQ");
+  await failIfInjected(db, window, "ACQ");
   const touches = await db
     .selectFrom("growth.attribution_touches")
     .select(["occurred_at as at"])
@@ -135,7 +154,7 @@ async function projectAcq(db: Db, tenantId: string, days: Date[], points: Point[
     }
   }
   // growth.scheduled_intents gauge lives on the ACQ outreach queue.
-  failIfInjected(window, "ACQ");
+  await failIfInjected(db, window, "ACQ");
   const scheduled = await db
     .selectFrom("communication.message_intents")
     .select((eb) => eb.fn.countAll().as("n"))
@@ -151,7 +170,7 @@ async function projectAcq(db: Db, tenantId: string, days: Date[], points: Point[
 }
 
 async function projectTrial(db: Db, tenantId: string, days: Date[], points: Point[], window: RecomputeWindow): Promise<void> {
-  failIfInjected(window, "TRIAL");
+  await failIfInjected(db, window, "TRIAL");
   const trials = await db
     .selectFrom("trial.trials")
     .select(["id", "created_at as at", "activated_at"])
@@ -206,7 +225,7 @@ async function projectTrial(db: Db, tenantId: string, days: Date[], points: Poin
 }
 
 async function projectSales(db: Db, tenantId: string, days: Date[], points: Point[], window: RecomputeWindow): Promise<void> {
-  failIfInjected(window, "SALES");
+  await failIfInjected(db, window, "SALES");
   const orders = await db
     .selectFrom("commerce.orders")
     .select(["settled_at as at", "settled_amount_minor", "order_type", "net_amount_minor"])
@@ -245,7 +264,7 @@ async function projectSales(db: Db, tenantId: string, days: Date[], points: Poin
 }
 
 async function projectFin(db: Db, tenantId: string, days: Date[], points: Point[], window: RecomputeWindow): Promise<void> {
-  failIfInjected(window, "FIN");
+  await failIfInjected(db, window, "FIN");
   // FIN-01 via finance-math (same normalization as the finance overview):
   // active recurring components → monthly equivalent. MRR is NOT cash.
   const activeSubs = await db
@@ -303,7 +322,7 @@ async function projectFin(db: Db, tenantId: string, days: Date[], points: Point[
 }
 
 async function projectBill(db: Db, tenantId: string, days: Date[], points: Point[], window: RecomputeWindow): Promise<void> {
-  failIfInjected(window, "BILL");
+  await failIfInjected(db, window, "BILL");
   const active = await db
     .selectFrom("subscription.subscriptions")
     .select((eb) => eb.fn.countAll().as("n"))
@@ -319,7 +338,7 @@ async function projectBill(db: Db, tenantId: string, days: Date[], points: Point
 }
 
 async function projectRet(db: Db, tenantId: string, days: Date[], points: Point[], window: RecomputeWindow): Promise<void> {
-  failIfInjected(window, "RET");
+  await failIfInjected(db, window, "RET");
   const open = await db
     .selectFrom("renewal.recovery_tasks")
     .select((eb) => eb.fn.countAll().as("n"))
@@ -344,7 +363,7 @@ async function projectRet(db: Db, tenantId: string, days: Date[], points: Point[
 }
 
 async function projectSup(db: Db, tenantId: string, days: Date[], points: Point[], window: RecomputeWindow): Promise<void> {
-  failIfInjected(window, "SUP");
+  await failIfInjected(db, window, "SUP");
   const open = await db
     .selectFrom("support.support_tickets")
     .select((eb) => eb.fn.countAll().as("n"))
@@ -413,7 +432,7 @@ async function projectSup(db: Db, tenantId: string, days: Date[], points: Point[
 }
 
 async function projectRef(db: Db, tenantId: string, days: Date[], points: Point[], window: RecomputeWindow): Promise<void> {
-  failIfInjected(window, "REF");
+  await failIfInjected(db, window, "REF");
   const referrals = await db
     .selectFrom("referral.referrals")
     .select(["created_at as at", "confirmed_at"])
@@ -432,7 +451,7 @@ async function projectRef(db: Db, tenantId: string, days: Date[], points: Point[
 }
 
 async function projectFul(db: Db, tenantId: string, days: Date[], points: Point[], window: RecomputeWindow): Promise<void> {
-  failIfInjected(window, "FUL");
+  await failIfInjected(db, window, "FUL");
   // FUL-01: succeeded / terminalized (succeeded + failed + cancelled).
   // human_required is NOT terminal while the operation can resume.
   const ops = await db
@@ -471,7 +490,7 @@ async function projectFul(db: Db, tenantId: string, days: Date[], points: Point[
 }
 
 async function projectAi(db: Db, tenantId: string, days: Date[], points: Point[], window: RecomputeWindow): Promise<void> {
-  failIfInjected(window, "AI");
+  await failIfInjected(db, window, "AI");
   const runs = await db
     .selectFrom("agent.agent_runs")
     .select(["created_at as at"])
@@ -518,6 +537,9 @@ export async function recomputeAnalytics(db: Db, tenantId: string, window: Recom
   if (window.failFamily !== undefined && !isMetricFamily(window.failFamily)) {
     throw new Error(`unknown family for failFamily: ${window.failFamily}`);
   }
+  if (window.failFamilySql !== undefined && !isMetricFamily(window.failFamilySql)) {
+    throw new Error(`unknown family for failFamilySql: ${window.failFamilySql}`);
+  }
   const { from, to } = defaultWindow(window);
   if (to.getTime() - from.getTime() > 93 * 86_400_000) {
     throw new Error("recompute window exceeds 93 days");
@@ -538,10 +560,35 @@ export async function recomputeAnalytics(db: Db, tenantId: string, window: Recom
 
   const points: Point[] = [];
   const degradedFamilies: string[] = [];
+  // F14 under a shared transaction: a SQL failure inside one family (e.g.
+  // statement_timeout) aborts the whole transaction — every later statement
+  // fails with 25P02 until ROLLBACK, so sibling families would sink with it
+  // and the controller would answer 400. Each family therefore runs behind
+  // its own SAVEPOINT: on failure we roll back to the savepoint (restoring
+  // a usable transaction) and continue. A plain pool caller has no shared
+  // transaction — every statement is already independent — so savepoints
+  // are skipped there.
+  const inTransaction = db.isTransaction;
+  const savepointOf = (family: string): string =>
+    `sp_family_${family.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
   for (const [family, project] of Object.entries(FAMILY_PROJECTORS)) {
+    const sp = savepointOf(family);
     try {
+      if (inTransaction) {
+        await sql.raw(`SAVEPOINT "${sp}"`).execute(db);
+      }
       await project(db, tenantId, days, points, window);
+      if (inTransaction) {
+        await sql.raw(`RELEASE SAVEPOINT "${sp}"`).execute(db);
+      }
     } catch {
+      if (inTransaction) {
+        // Restore the transaction before touching it again; both steps are
+        // best-effort so a double-fault still records the family as
+        // degraded instead of escaping as a 400.
+        await sql.raw(`ROLLBACK TO SAVEPOINT "${sp}"`).execute(db).catch(() => undefined);
+        await sql.raw(`RELEASE SAVEPOINT "${sp}"`).execute(db).catch(() => undefined);
+      }
       degradedFamilies.push(family);
       points.push({
         key: FAMILY_PRIMARY_METRIC[family] as string,

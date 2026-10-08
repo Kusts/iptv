@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandActor, CommandResult } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -58,7 +58,11 @@ function idempotencyKeyOf(req: FastifyRequest): string | undefined {
  *
  * Writes go through the `CommandBus`; reads join the item to its
  * `current_version_id` row (the read model — old versions stay append-only
- * history). Search is plain ILIKE/tag matching over current versions
+ * history). Reads run inside `withTenantTransaction` (actor tenant): the
+ * tables below are RLS-enrolled (migration 057, fail-closed when
+ * `app.tenant_id` is unset), so pool-level selects under `iptv_app` would
+ * return empty silently after cutover. The explicit `tenant_id =`
+ * predicates stay as defense-in-depth alongside the RLS policy. Search is plain ILIKE/tag matching over current versions
  * (pg_trgm/FTS deliberately deferred). `suggest_for_ticket` is a labeled
  * token-overlap heuristic, never a verified answer.
  */
@@ -135,28 +139,32 @@ export class KnowledgeController {
   ) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    let select = this.requireDb()
-      .selectFrom("knowledge.knowledge_corrections")
-      .select([
-        "id",
-        "knowledge_item_id",
-        "target_version_id",
-        "proposed_text",
-        "status",
-        "applied_in_version_id",
-        "created_at",
-        "updated_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "desc")
-      .limit(limit);
-    if (query.status !== undefined) {
-      select = select.where("status", "=", query.status);
-    }
-    if (query.itemId !== undefined) {
-      select = select.where("knowledge_item_id", "=", query.itemId);
-    }
-    const rows = await select.execute();
+    // P1.5-057 (P1.3 FIX1 mirror): tenant-scoped read inside the request
+    // tenant's context — direct reads fail-closed under `iptv_app`.
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) => {
+      let select = trx
+        .selectFrom("knowledge.knowledge_corrections")
+        .select([
+          "id",
+          "knowledge_item_id",
+          "target_version_id",
+          "proposed_text",
+          "status",
+          "applied_in_version_id",
+          "created_at",
+          "updated_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("created_at", "desc")
+        .limit(limit);
+      if (query.status !== undefined) {
+        select = select.where("status", "=", query.status);
+      }
+      if (query.itemId !== undefined) {
+        select = select.where("knowledge_item_id", "=", query.itemId);
+      }
+      return select.execute();
+    });
     return {
       corrections: rows.map((r) => ({
         id: r.id,
@@ -198,16 +206,19 @@ export class KnowledgeController {
   async listGaps(@Query() query: { status?: string; limit?: string }, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    let select = this.requireDb()
-      .selectFrom("knowledge.knowledge_gaps")
-      .select(["id", "question", "support_ticket_id", "status", "created_at", "updated_at"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "desc")
-      .limit(limit);
-    if (query.status !== undefined) {
-      select = select.where("status", "=", query.status);
-    }
-    const rows = await select.execute();
+    // P1.5-057 (P1.3 FIX1 mirror): see listCorrections().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) => {
+      let select = trx
+        .selectFrom("knowledge.knowledge_gaps")
+        .select(["id", "question", "support_ticket_id", "status", "created_at", "updated_at"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("created_at", "desc")
+        .limit(limit);
+      if (query.status !== undefined) {
+        select = select.where("status", "=", query.status);
+      }
+      return select.execute();
+    });
     return {
       gaps: rows.map((r) => ({
         id: r.id,
@@ -243,13 +254,16 @@ export class KnowledgeController {
   @RequirePermission("knowledge.read")
   async listGapCandidates(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const rows = await this.requireDb()
-      .selectFrom("knowledge.knowledge_research_candidates")
-      .select(["id", "knowledge_gap_id", "knowledge_item_id", "status", "created_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("knowledge_gap_id", "=", id)
-      .orderBy("created_at", "desc")
-      .execute();
+    // P1.5-057 (P1.3 FIX1 mirror): see listCorrections().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("knowledge.knowledge_research_candidates")
+        .select(["id", "knowledge_gap_id", "knowledge_item_id", "status", "created_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("knowledge_gap_id", "=", id)
+        .orderBy("created_at", "desc")
+        .execute(),
+    );
     return {
       candidates: rows.map((r) => ({
         id: r.id,
@@ -287,34 +301,37 @@ export class KnowledgeController {
       throw new HttpException({ code: "INVALID_TYPE", message: `unknown knowledge type: ${query.type}` }, 400);
     }
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    let select = this.requireDb()
-      .selectFrom("knowledge.knowledge_items")
-      .innerJoin("knowledge.knowledge_versions", (join) =>
-        join
-          .onRef("knowledge.knowledge_versions.id", "=", "knowledge.knowledge_items.current_version_id")
-          .on("knowledge.knowledge_versions.tenant_id", "=", tenant.id),
-      )
-      .select([
-        "knowledge.knowledge_items.id",
-        "knowledge.knowledge_items.status",
-        "knowledge.knowledge_items.knowledge_type",
-        "knowledge.knowledge_items.canonical_key",
-        "knowledge.knowledge_versions.version_no",
-        "knowledge.knowledge_versions.content_text",
-        "knowledge.knowledge_versions.structured_content_json",
-        "knowledge.knowledge_items.freshness_score",
-        "knowledge.knowledge_items.updated_at",
-      ])
-      .where("knowledge.knowledge_items.tenant_id", "=", tenant.id)
-      .orderBy("knowledge.knowledge_items.updated_at", "desc")
-      .limit(limit);
-    if (query.type !== undefined) {
-      select = select.where("knowledge.knowledge_items.knowledge_type", "=", query.type);
-    }
-    if (query.status !== undefined) {
-      select = select.where("knowledge.knowledge_items.status", "=", query.status);
-    }
-    const rows = await select.execute();
+    // P1.5-057 (P1.3 FIX1 mirror): see listCorrections().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) => {
+      let select = trx
+        .selectFrom("knowledge.knowledge_items")
+        .innerJoin("knowledge.knowledge_versions", (join) =>
+          join
+            .onRef("knowledge.knowledge_versions.id", "=", "knowledge.knowledge_items.current_version_id")
+            .on("knowledge.knowledge_versions.tenant_id", "=", tenant.id),
+        )
+        .select([
+          "knowledge.knowledge_items.id",
+          "knowledge.knowledge_items.status",
+          "knowledge.knowledge_items.knowledge_type",
+          "knowledge.knowledge_items.canonical_key",
+          "knowledge.knowledge_versions.version_no",
+          "knowledge.knowledge_versions.content_text",
+          "knowledge.knowledge_versions.structured_content_json",
+          "knowledge.knowledge_items.freshness_score",
+          "knowledge.knowledge_items.updated_at",
+        ])
+        .where("knowledge.knowledge_items.tenant_id", "=", tenant.id)
+        .orderBy("knowledge.knowledge_items.updated_at", "desc")
+        .limit(limit);
+      if (query.type !== undefined) {
+        select = select.where("knowledge.knowledge_items.knowledge_type", "=", query.type);
+      }
+      if (query.status !== undefined) {
+        select = select.where("knowledge.knowledge_items.status", "=", query.status);
+      }
+      return select.execute();
+    });
     // Tag matching over the current version's `structured_content.tags`
     // array (ILIKE/tag match only — pg_trgm/FTS deliberately deferred).
     const filtered =
@@ -348,28 +365,31 @@ export class KnowledgeController {
   @RequirePermission("knowledge.read")
   async get(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const row = await this.requireDb()
-      .selectFrom("knowledge.knowledge_items")
-      .innerJoin("knowledge.knowledge_versions", (join) =>
-        join
-          .onRef("knowledge.knowledge_versions.id", "=", "knowledge.knowledge_items.current_version_id")
-          .on("knowledge.knowledge_versions.tenant_id", "=", tenant.id),
-      )
-      .select([
-        "knowledge.knowledge_items.id",
-        "knowledge.knowledge_items.status",
-        "knowledge.knowledge_items.knowledge_type",
-        "knowledge.knowledge_items.canonical_key",
-        "knowledge.knowledge_versions.version_no",
-        "knowledge.knowledge_versions.content_text",
-        "knowledge.knowledge_versions.structured_content_json",
-        "knowledge.knowledge_items.freshness_score",
-        "knowledge.knowledge_items.created_at",
-        "knowledge.knowledge_items.updated_at",
-      ])
-      .where("knowledge.knowledge_items.tenant_id", "=", tenant.id)
-      .where("knowledge.knowledge_items.id", "=", id)
-      .executeTakeFirst();
+    // P1.5-057 (P1.3 FIX1 mirror): see listCorrections().
+    const row = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("knowledge.knowledge_items")
+        .innerJoin("knowledge.knowledge_versions", (join) =>
+          join
+            .onRef("knowledge.knowledge_versions.id", "=", "knowledge.knowledge_items.current_version_id")
+            .on("knowledge.knowledge_versions.tenant_id", "=", tenant.id),
+        )
+        .select([
+          "knowledge.knowledge_items.id",
+          "knowledge.knowledge_items.status",
+          "knowledge.knowledge_items.knowledge_type",
+          "knowledge.knowledge_items.canonical_key",
+          "knowledge.knowledge_versions.version_no",
+          "knowledge.knowledge_versions.content_text",
+          "knowledge.knowledge_versions.structured_content_json",
+          "knowledge.knowledge_items.freshness_score",
+          "knowledge.knowledge_items.created_at",
+          "knowledge.knowledge_items.updated_at",
+        ])
+        .where("knowledge.knowledge_items.tenant_id", "=", tenant.id)
+        .where("knowledge.knowledge_items.id", "=", id)
+        .executeTakeFirst(),
+    );
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "knowledge item not found in this tenant" }, 404);
     }
@@ -400,32 +420,35 @@ export class KnowledgeController {
     }
     const limit = Math.min(Math.max(Number(query.limit ?? 20) || 20, 1), 100);
     const like = `%${needle}%`;
-    const rows = await this.requireDb()
-      .selectFrom("knowledge.knowledge_items")
-      .innerJoin("knowledge.knowledge_versions", (join) =>
-        join
-          .onRef("knowledge.knowledge_versions.id", "=", "knowledge.knowledge_items.current_version_id")
-          .on("knowledge.knowledge_versions.tenant_id", "=", tenant.id),
-      )
-      .select([
-        "knowledge.knowledge_items.id",
-        "knowledge.knowledge_items.status",
-        "knowledge.knowledge_items.knowledge_type",
-        "knowledge.knowledge_items.canonical_key",
-        "knowledge.knowledge_versions.version_no",
-        "knowledge.knowledge_versions.content_text",
-      ])
-      .where("knowledge.knowledge_items.tenant_id", "=", tenant.id)
-      .where((eb) =>
-        eb.or([
-          eb("knowledge.knowledge_versions.content_text", "ilike", like),
-          eb("knowledge.knowledge_items.canonical_key", "ilike", like),
-        ]),
-      )
-      .where("knowledge.knowledge_items.status", "not in", ["DEPRECATED", "REJECTED"])
-      .orderBy("knowledge.knowledge_items.updated_at", "desc")
-      .limit(limit)
-      .execute();
+    // P1.5-057 (P1.3 FIX1 mirror): see listCorrections().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("knowledge.knowledge_items")
+        .innerJoin("knowledge.knowledge_versions", (join) =>
+          join
+            .onRef("knowledge.knowledge_versions.id", "=", "knowledge.knowledge_items.current_version_id")
+            .on("knowledge.knowledge_versions.tenant_id", "=", tenant.id),
+        )
+        .select([
+          "knowledge.knowledge_items.id",
+          "knowledge.knowledge_items.status",
+          "knowledge.knowledge_items.knowledge_type",
+          "knowledge.knowledge_items.canonical_key",
+          "knowledge.knowledge_versions.version_no",
+          "knowledge.knowledge_versions.content_text",
+        ])
+        .where("knowledge.knowledge_items.tenant_id", "=", tenant.id)
+        .where((eb) =>
+          eb.or([
+            eb("knowledge.knowledge_versions.content_text", "ilike", like),
+            eb("knowledge.knowledge_items.canonical_key", "ilike", like),
+          ]),
+        )
+        .where("knowledge.knowledge_items.status", "not in", ["DEPRECATED", "REJECTED"])
+        .orderBy("knowledge.knowledge_items.updated_at", "desc")
+        .limit(limit)
+        .execute(),
+    );
     return {
       items: rows.map((r) => ({
         id: r.id,
@@ -443,46 +466,54 @@ export class KnowledgeController {
   @RequirePermission("knowledge.read")
   async suggestForTicket(@Param("ticketId") ticketId: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
-    const ticket = await db
-      .selectFrom("support.support_tickets")
-      .select(["id", "summary", "category"])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", ticketId)
-      .executeTakeFirst();
-    if (ticket === undefined) {
+    // P1.5-057 (P1.3 FIX1 mirror): one tenant transaction for the ticket +
+    // problems + candidates reads (trial.controller.ts bundled pattern).
+    const bundled = await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const ticket = await trx
+        .selectFrom("support.support_tickets")
+        .select(["id", "summary", "category"])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", ticketId)
+        .executeTakeFirst();
+      if (ticket === undefined) {
+        return null;
+      }
+      const problems = await trx
+        .selectFrom("support.ticket_problem_links")
+        .innerJoin("support.problems", (join) =>
+          join
+            .onRef("support.problems.id", "=", "support.ticket_problem_links.problem_id")
+            .on("support.problems.tenant_id", "=", tenant.id),
+        )
+        .select(["support.problems.title"])
+        .where("support.ticket_problem_links.tenant_id", "=", tenant.id)
+        .where("support.ticket_problem_links.support_ticket_id", "=", ticketId)
+        .execute();
+      const candidates = await trx
+        .selectFrom("knowledge.knowledge_items")
+        .innerJoin("knowledge.knowledge_versions", (join) =>
+          join
+            .onRef("knowledge.knowledge_versions.id", "=", "knowledge.knowledge_items.current_version_id")
+            .on("knowledge.knowledge_versions.tenant_id", "=", tenant.id),
+        )
+        .select([
+          "knowledge.knowledge_items.id",
+          "knowledge.knowledge_items.knowledge_type",
+          "knowledge.knowledge_versions.content_text",
+        ])
+        .where("knowledge.knowledge_items.tenant_id", "=", tenant.id)
+        .where("knowledge.knowledge_items.status", "not in", ["DEPRECATED", "REJECTED"])
+        .orderBy("knowledge.knowledge_items.updated_at", "desc")
+        .limit(200)
+        .execute();
+      return { ticket, problems, candidates };
+    });
+    if (bundled === null) {
       throw new HttpException({ code: "NOT_FOUND", message: "ticket not found in this tenant" }, 404);
     }
-    const problems = await db
-      .selectFrom("support.ticket_problem_links")
-      .innerJoin("support.problems", (join) =>
-        join
-          .onRef("support.problems.id", "=", "support.ticket_problem_links.problem_id")
-          .on("support.problems.tenant_id", "=", tenant.id),
-      )
-      .select(["support.problems.title"])
-      .where("support.ticket_problem_links.tenant_id", "=", tenant.id)
-      .where("support.ticket_problem_links.support_ticket_id", "=", ticketId)
-      .execute();
+    const { ticket, problems, candidates } = bundled;
     const queryText = [ticket.summary, ticket.category ?? "", ...problems.map((p) => p.title)].join(" ");
     const terms = tokenize(queryText);
-    const candidates = await db
-      .selectFrom("knowledge.knowledge_items")
-      .innerJoin("knowledge.knowledge_versions", (join) =>
-        join
-          .onRef("knowledge.knowledge_versions.id", "=", "knowledge.knowledge_items.current_version_id")
-          .on("knowledge.knowledge_versions.tenant_id", "=", tenant.id),
-      )
-      .select([
-        "knowledge.knowledge_items.id",
-        "knowledge.knowledge_items.knowledge_type",
-        "knowledge.knowledge_versions.content_text",
-      ])
-      .where("knowledge.knowledge_items.tenant_id", "=", tenant.id)
-      .where("knowledge.knowledge_items.status", "not in", ["DEPRECATED", "REJECTED"])
-      .orderBy("knowledge.knowledge_items.updated_at", "desc")
-      .limit(200)
-      .execute();
     const ranked = rankSuggestions(
       terms,
       candidates.map((c) => ({ id: c.id, text: `${c.content_text ?? ""}` })),

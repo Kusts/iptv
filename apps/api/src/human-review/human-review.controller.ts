@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
 import { AuthGuard } from "../auth/auth.guard.js";
@@ -69,8 +69,12 @@ function send<T>(result: CommandResult<T>): T {
 /**
  * Tenant-scoped HumanReview queue + decision endpoints. Every write goes
  * through the `CommandBus` (permission-gated, validated, audited, with
- * domain event + outbox in the same transaction). Queue reads are plain
- * tenant-scoped selects — no command needed for reads.
+ * domain event + outbox in the same transaction). Queue reads run inside
+ * `withTenantTransaction` (actor tenant): `agent.human_review_requests` is
+ * RLS-enrolled (migration 057, fail-closed when `app.tenant_id` is unset),
+ * so pool-level selects under `iptv_app` would return empty silently after
+ * cutover. The explicit `tenant_id =` predicates stay as defense-in-depth
+ * alongside the RLS policy.
  */
 @Controller("v1/human-reviews")
 export class HumanReviewController {
@@ -118,24 +122,28 @@ export class HumanReviewController {
     } else {
       throw new HttpException({ code: "INVALID_STATUS", message: `unknown status: ${status}` }, 400);
     }
-    const rows = await this.requireDb()
-      .selectFrom("agent.human_review_requests")
-      .select([
-        "id",
-        "status",
-        "review_mode",
-        "reason",
-        "priority",
-        "resource_type",
-        "resource_id",
-        "summary",
-        "created_at",
-        "resolved_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("status", "in", wanted)
-      .orderBy("created_at", "asc")
-      .execute();
+    // P1.5-057 (P1.3 FIX1 mirror): tenant-scoped read inside the request
+    // tenant's context — direct reads fail-closed under `iptv_app`.
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("agent.human_review_requests")
+        .select([
+          "id",
+          "status",
+          "review_mode",
+          "reason",
+          "priority",
+          "resource_type",
+          "resource_id",
+          "summary",
+          "created_at",
+          "resolved_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("status", "in", wanted)
+        .orderBy("created_at", "asc")
+        .execute(),
+    );
     return {
       reviews: rows.map((r) => ({
         id: r.id,
@@ -229,7 +237,6 @@ export class HumanReviewController {
       throw new HttpException({ code: plan.code, message: plan.message }, plan.status);
     }
     const wanted = plan.wanted;
-    const db = this.requireDb();
     const at = new Date();
     const decision = await this.policies.resolve(HITL_SLA_POLICY_FAMILY, { tenantId: tenant.id });
     const policy = resolveSlaPolicy(decision.configured ? (decision.value as Record<string, unknown>) : null);
@@ -237,105 +244,111 @@ export class HumanReviewController {
       ? decision.provenance.map((s) => s.ref).join("+")
       : "default-v1";
 
+    // P1.5-057 (P1.3 FIX1 mirror): one tenant transaction for all queue
+    // reads below (trial.controller.ts bundled pattern) — direct reads
+    // fail-closed under `iptv_app`. The SLA policy resolution above keeps
+    // its own transaction (PolicyResolver boundary, unchanged).
     const collected: CenterItemInput[] = [];
-    if (wanted === null || wanted === "human_review") {
-      const reviews = await db
-        .selectFrom("agent.human_review_requests")
-        .select(["id", "review_mode", "reason", "priority", "summary", "created_at", "sla_due_at"])
-        .where("tenant_id", "=", tenant.id)
-        .where("status", "in", [...OPEN_REVIEW_STATUSES])
-        .orderBy("created_at", "asc")
-        .execute();
-      for (const r of reviews) {
-        collected.push({
-          source: "human_review",
-          id: r.id,
-          kind: `${r.review_mode}/${r.reason}`,
-          summary: r.summary,
-          priority: r.priority,
-          createdAt: r.created_at,
-          slaDueAt: r.sla_due_at,
-          deepLink: `/v1/human-reviews/${r.id}`,
-        });
+    await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      if (wanted === null || wanted === "human_review") {
+        const reviews = await trx
+          .selectFrom("agent.human_review_requests")
+          .select(["id", "review_mode", "reason", "priority", "summary", "created_at", "sla_due_at"])
+          .where("tenant_id", "=", tenant.id)
+          .where("status", "in", [...OPEN_REVIEW_STATUSES])
+          .orderBy("created_at", "asc")
+          .execute();
+        for (const r of reviews) {
+          collected.push({
+            source: "human_review",
+            id: r.id,
+            kind: `${r.review_mode}/${r.reason}`,
+            summary: r.summary,
+            priority: r.priority,
+            createdAt: r.created_at,
+            slaDueAt: r.sla_due_at,
+            deepLink: `/v1/human-reviews/${r.id}`,
+          });
+        }
       }
-    }
-    if (wanted === null || wanted === "comm_exception") {
-      const rows = await db
-        .selectFrom("communication.exceptions")
-        .select(["id", "kind", "reason", "from_address", "created_at"])
-        .where("tenant_id", "=", tenant.id)
-        .where("status", "=", "OPEN")
-        .orderBy("created_at", "asc")
-        .execute();
-      for (const r of rows) {
-        collected.push({
-          source: "comm_exception",
-          id: r.id,
-          kind: r.kind,
-          summary: r.reason ?? (r.from_address === null ? "unmatched inbound" : `unmatched inbound from ${r.from_address}`),
-          priority: null,
-          createdAt: r.created_at,
-          deepLink: `/v1/communications/exceptions/${r.id}`,
-        });
+      if (wanted === null || wanted === "comm_exception") {
+        const rows = await trx
+          .selectFrom("communication.exceptions")
+          .select(["id", "kind", "reason", "from_address", "created_at"])
+          .where("tenant_id", "=", tenant.id)
+          .where("status", "=", "OPEN")
+          .orderBy("created_at", "asc")
+          .execute();
+        for (const r of rows) {
+          collected.push({
+            source: "comm_exception",
+            id: r.id,
+            kind: r.kind,
+            summary: r.reason ?? (r.from_address === null ? "unmatched inbound" : `unmatched inbound from ${r.from_address}`),
+            priority: null,
+            createdAt: r.created_at,
+            deepLink: `/v1/communications/exceptions/${r.id}`,
+          });
+        }
       }
-    }
-    if (wanted === null || wanted === "billing_exception") {
-      const rows = await db
-        .selectFrom("billing.exceptions")
-        .select(["id", "kind", "reason", "created_at"])
-        .where("tenant_id", "=", tenant.id)
-        .where("status", "=", "OPEN")
-        .orderBy("created_at", "asc")
-        .execute();
-      for (const r of rows) {
-        collected.push({
-          source: "billing_exception",
-          id: r.id,
-          kind: r.kind,
-          summary: r.reason ?? r.kind,
-          priority: null,
-          createdAt: r.created_at,
-          deepLink: `/v1/billing/exceptions/${r.id}`,
-        });
+      if (wanted === null || wanted === "billing_exception") {
+        const rows = await trx
+          .selectFrom("billing.exceptions")
+          .select(["id", "kind", "reason", "created_at"])
+          .where("tenant_id", "=", tenant.id)
+          .where("status", "=", "OPEN")
+          .orderBy("created_at", "asc")
+          .execute();
+        for (const r of rows) {
+          collected.push({
+            source: "billing_exception",
+            id: r.id,
+            kind: r.kind,
+            summary: r.reason ?? r.kind,
+            priority: null,
+            createdAt: r.created_at,
+            deepLink: `/v1/billing/exceptions/${r.id}`,
+          });
+        }
       }
-    }
-    if (wanted === null || wanted === "recovery_task") {
-      const rows = await db
-        .selectFrom("renewal.recovery_tasks")
-        .select(["id", "reason", "subscription_id", "created_at"])
-        .where("tenant_id", "=", tenant.id)
-        .where("status", "=", "OPEN")
-        .orderBy("created_at", "asc")
-        .execute();
-      for (const r of rows) {
-        collected.push({
-          source: "recovery_task",
-          id: r.id,
-          kind: `recovery/${r.reason}`,
-          summary: `recovery ${r.reason} for subscription ${r.subscription_id}`,
-          priority: null,
-          createdAt: r.created_at,
-          deepLink: `/v1/recovery-tasks/${r.id}`,
-        });
+      if (wanted === null || wanted === "recovery_task") {
+        const rows = await trx
+          .selectFrom("renewal.recovery_tasks")
+          .select(["id", "reason", "subscription_id", "created_at"])
+          .where("tenant_id", "=", tenant.id)
+          .where("status", "=", "OPEN")
+          .orderBy("created_at", "asc")
+          .execute();
+        for (const r of rows) {
+          collected.push({
+            source: "recovery_task",
+            id: r.id,
+            kind: `recovery/${r.reason}`,
+            summary: `recovery ${r.reason} for subscription ${r.subscription_id}`,
+            priority: null,
+            createdAt: r.created_at,
+            deepLink: `/v1/recovery-tasks/${r.id}`,
+          });
+        }
       }
-    }
-    if (plan.includeProviderOperations) {
-      // Minimal select on purpose: `requested_payload_json`,
-      // `result_summary_json`, `provider_account_id`, `entity_id`,
-      // `correlation_id` and any adapter error text are never read here.
-      const rows = await db
-        .selectFrom("provider.provider_operations")
-        .select(["id", "action", "requested_at"])
-        .where("tenant_id", "=", tenant.id)
-        .where("status", "=", PROVIDER_OPERATION_HUMAN_REQUIRED_STATUS)
-        .orderBy("requested_at", "asc")
-        .execute();
-      for (const r of rows) {
-        collected.push(
-          providerOperationCenterItem({ id: r.id, action: r.action, requestedAt: r.requested_at }),
-        );
+      if (plan.includeProviderOperations) {
+        // Minimal select on purpose: `requested_payload_json`,
+        // `result_summary_json`, `provider_account_id`, `entity_id`,
+        // `correlation_id` and any adapter error text are never read here.
+        const rows = await trx
+          .selectFrom("provider.provider_operations")
+          .select(["id", "action", "requested_at"])
+          .where("tenant_id", "=", tenant.id)
+          .where("status", "=", PROVIDER_OPERATION_HUMAN_REQUIRED_STATUS)
+          .orderBy("requested_at", "asc")
+          .execute();
+        for (const r of rows) {
+          collected.push(
+            providerOperationCenterItem({ id: r.id, action: r.action, requestedAt: r.requested_at }),
+          );
+        }
       }
-    }
+    });
     collected.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     return {
       items: collected.map((item) => {

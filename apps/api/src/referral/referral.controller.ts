@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult, CommandActor } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -54,7 +54,11 @@ function idempotencyKeyOf(req: FastifyRequest): string | undefined {
 /**
  * Wave 12 Referral + Rewards surface. Writes go through the `CommandBus`
  * (owning context for attribution/qualification/issue/redeem/gift-pass);
- * reads are plain tenant-scoped selects shaped to the OpenAPI contract.
+ * reads run inside `withTenantTransaction` (actor tenant): the tables below
+ * are RLS-enrolled (migration 058, fail-closed when `app.tenant_id` is
+ * unset), so pool-level selects under `iptv_app` would return empty
+ * silently after cutover. The explicit `tenant_id =` predicates stay as
+ * defense-in-depth alongside the RLS policy.
  * Referral writes reuse the acquisition permission (`crm.lead.write`);
  * reward redemption creates an order, so it requires
  * `commerce.order.write`. No new permission keys (no migration in slice).
@@ -74,13 +78,16 @@ export class ReferralController {
   }
 
   private async requireCustomer(tenantId: string, customerId: string): Promise<void> {
-    const db = this.requireDb();
-    const row = await db
-      .selectFrom("crm.customers")
-      .select(["id"])
-      .where("tenant_id", "=", tenantId)
-      .where("id", "=", customerId)
-      .executeTakeFirst();
+    // P1.5-058 (P1.3 FIX1 mirror): tenant-scoped read inside the request
+    // tenant's context — direct reads fail-closed under `iptv_app`.
+    const row = await withTenantTransaction(this.requireDb(), tenantId, (trx) =>
+      trx
+        .selectFrom("crm.customers")
+        .select(["id"])
+        .where("tenant_id", "=", tenantId)
+        .where("id", "=", customerId)
+        .executeTakeFirst(),
+    );
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "customer not found" }, 404);
     }
@@ -116,23 +123,26 @@ export class ReferralController {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     await this.requireCustomer(tenant.id, customerId);
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    const rows = await this.requireDb()
-      .selectFrom("referral.referrals")
-      .select([
-        "id",
-        "program_id",
-        "advocate_customer_id",
-        "referred_person_id",
-        "referral_code",
-        "status",
-        "created_at",
-        "confirmed_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("advocate_customer_id", "=", customerId)
-      .orderBy("created_at", "desc")
-      .limit(limit)
-      .execute();
+    // P1.5-058 (P1.3 FIX1 mirror): see requireCustomer().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("referral.referrals")
+        .select([
+          "id",
+          "program_id",
+          "advocate_customer_id",
+          "referred_person_id",
+          "referral_code",
+          "status",
+          "created_at",
+          "confirmed_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("advocate_customer_id", "=", customerId)
+        .orderBy("created_at", "desc")
+        .limit(limit)
+        .execute(),
+    );
     return {
       items: rows.map((row) => ({
         id: row.id,
@@ -152,21 +162,24 @@ export class ReferralController {
   @RequirePermission("crm.person.read")
   async getReferral(@Param("referralId") referralId: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const row = await this.requireDb()
-      .selectFrom("referral.referrals")
-      .select([
-        "id",
-        "program_id",
-        "advocate_customer_id",
-        "referred_person_id",
-        "referral_code",
-        "status",
-        "created_at",
-        "confirmed_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", referralId)
-      .executeTakeFirst();
+    // P1.5-058 (P1.3 FIX1 mirror): see requireCustomer().
+    const row = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("referral.referrals")
+        .select([
+          "id",
+          "program_id",
+          "advocate_customer_id",
+          "referred_person_id",
+          "referral_code",
+          "status",
+          "created_at",
+          "confirmed_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", referralId)
+        .executeTakeFirst(),
+    );
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "referral not found" }, 404);
     }
@@ -207,26 +220,29 @@ export class ReferralController {
   async listCustomerRewards(@Param("customerId") customerId: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     await this.requireCustomer(tenant.id, customerId);
-    const rows = await this.requireDb()
-      .selectFrom("loyalty.rewards")
-      .select([
-        "id",
-        "customer_id",
-        "reward_definition_id",
-        "status",
-        "economic_value_minor",
-        "estimated_cost_minor",
-        "currency",
-        "available_at",
-        "redeemed_at",
-        "expires_at",
-        "created_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("customer_id", "=", customerId)
-      .orderBy("created_at", "desc")
-      .limit(200)
-      .execute();
+    // P1.5-058 (P1.3 FIX1 mirror): see requireCustomer().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("loyalty.rewards")
+        .select([
+          "id",
+          "customer_id",
+          "reward_definition_id",
+          "status",
+          "economic_value_minor",
+          "estimated_cost_minor",
+          "currency",
+          "available_at",
+          "redeemed_at",
+          "expires_at",
+          "created_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("customer_id", "=", customerId)
+        .orderBy("created_at", "desc")
+        .limit(200)
+        .execute(),
+    );
     return {
       items: rows.map((row) => ({
         id: row.id,
@@ -251,24 +267,27 @@ export class ReferralController {
   @RequirePermission("crm.person.read")
   async getReward(@Param("rewardId") rewardId: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const row = await this.requireDb()
-      .selectFrom("loyalty.rewards")
-      .select([
-        "id",
-        "customer_id",
-        "reward_definition_id",
-        "status",
-        "economic_value_minor",
-        "estimated_cost_minor",
-        "currency",
-        "available_at",
-        "redeemed_at",
-        "expires_at",
-        "created_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", rewardId)
-      .executeTakeFirst();
+    // P1.5-058 (P1.3 FIX1 mirror): see requireCustomer().
+    const row = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("loyalty.rewards")
+        .select([
+          "id",
+          "customer_id",
+          "reward_definition_id",
+          "status",
+          "economic_value_minor",
+          "estimated_cost_minor",
+          "currency",
+          "available_at",
+          "redeemed_at",
+          "expires_at",
+          "created_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", rewardId)
+        .executeTakeFirst(),
+    );
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "reward not found" }, 404);
     }
@@ -317,24 +336,27 @@ export class ReferralController {
     }
     // Shape the success body to the OpenAPI `Reward` contract.
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const row = await this.requireDb()
-      .selectFrom("loyalty.rewards")
-      .select([
-        "id",
-        "customer_id",
-        "reward_definition_id",
-        "status",
-        "economic_value_minor",
-        "estimated_cost_minor",
-        "currency",
-        "available_at",
-        "redeemed_at",
-        "expires_at",
-        "created_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", result.data.rewardId)
-      .executeTakeFirstOrThrow();
+    // P1.5-058 (P1.3 FIX1 mirror): see requireCustomer().
+    const row = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("loyalty.rewards")
+        .select([
+          "id",
+          "customer_id",
+          "reward_definition_id",
+          "status",
+          "economic_value_minor",
+          "estimated_cost_minor",
+          "currency",
+          "available_at",
+          "redeemed_at",
+          "expires_at",
+          "created_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", result.data.rewardId)
+        .executeTakeFirstOrThrow(),
+    );
     return {
       id: row.id,
       customerId: row.customer_id,
@@ -373,22 +395,25 @@ export class ReferralController {
     }
     // Shape the success body to the OpenAPI `GiftPass` contract.
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const row = await this.requireDb()
-      .selectFrom("loyalty.gift_passes")
-      .select([
-        "id",
-        "issued_to_customer_id",
-        "code",
-        "status",
-        "benefit_json",
-        "expires_at",
-        "redeemed_by_person_id",
-        "redeemed_at",
-        "created_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", result.data.giftPassId)
-      .executeTakeFirstOrThrow();
+    // P1.5-058 (P1.3 FIX1 mirror): see requireCustomer().
+    const row = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("loyalty.gift_passes")
+        .select([
+          "id",
+          "issued_to_customer_id",
+          "code",
+          "status",
+          "benefit_json",
+          "expires_at",
+          "redeemed_by_person_id",
+          "redeemed_at",
+          "created_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", result.data.giftPassId)
+        .executeTakeFirstOrThrow(),
+    );
     return {
       id: row.id,
       code: row.code,

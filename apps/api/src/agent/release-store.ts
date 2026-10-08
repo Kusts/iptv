@@ -31,6 +31,10 @@ export class KyselyAgentReleaseStore implements AgentReleaseStore {
     if (this.db === null) {
       return this.fallback.getPublished(key);
     }
+    // P1.5-058: GLOBAL catalog read (`agent.agent_releases` — no tenant_id,
+    // no RLS by design) intentionally WITHOUT `withTenantTransaction`: the
+    // release lookup runs pre-context (pipeline harness path), so an RLS
+    // policy could only fail-closed every evaluation.
     const row = await this.db
       .selectFrom("agent.agent_releases")
       .select(["key", "version", "profile", "system_prompt", "developer_prompt", "model", "allowed_tools", "status"])

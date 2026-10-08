@@ -939,6 +939,9 @@ export interface AcademyContentRow {
 
 export async function listAcademyContent(ctx: CommandHandlerContext): Promise<AcademyContentRow[]> {
   const trx = requireTrx(ctx);
+  // P1.5-058: GLOBAL catalog read (no tenant predicate — same curriculum
+  // for every tenant). Runs inside the command's tenant transaction; the
+  // table carries no RLS by design, so no separate context is needed.
   const rows = await trx
     .selectFrom("partners.learning_content")
     .select(["id", "topic_key", "title", "position"])
@@ -952,6 +955,7 @@ export async function getContentByTopicKey(
   topicKey: string,
 ): Promise<AcademyContentRow | null> {
   const trx = requireTrx(ctx);
+  // P1.5-058: GLOBAL catalog read — see listAcademyContent().
   const row = await trx
     .selectFrom("partners.learning_content")
     .select(["id", "topic_key", "title", "position"])
