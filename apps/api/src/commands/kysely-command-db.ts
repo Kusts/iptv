@@ -1,8 +1,9 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Kysely, Transaction } from "kysely";
+import { sql } from "kysely";
 import { buildAuditRow } from "@iptv/auth";
 import type { Database } from "@iptv/database";
-import { withTenantTransaction } from "@iptv/database";
+import { readTenantSetting, withTenantTransaction } from "@iptv/database";
 import { newId, now } from "@iptv/domain";
 import type { CommandResult } from "@iptv/domain";
 import type {
@@ -19,10 +20,6 @@ import type {
   StoredReviewRequest,
 } from "./command-bus.js";
 import type { AuditEventInput } from "@iptv/auth";
-
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as { code?: string }).code === "23505";
-}
 
 function toStored(tenantId: string, row: {
   id: string;
@@ -126,6 +123,20 @@ function toStoredCapability(row: {
 
 /** Kysely-backed `AppTx`: every write lands in the caller's transaction. */
 export class KyselyAppTx implements AppTx {
+  /**
+   * Buffered bus triples (053): `emitDomainEvent` + `enqueueOutbox` only
+   * stage rows in memory; the single `platform.append_bus_rows` producer call
+   * per triple happens in `writeAudit` (the bus always audits after the
+   * handler, in the same transaction) or audit-less at `withTransaction`
+   * commit for direct-applier flows without the bus. Buffering keeps the
+   * event/outbox/audit triple atomic in ONE producer call while preserving
+   * the pass-through `domainEventId` handlers rely on (client-generated, no
+   * round trip). `nextAggregateVersion` sees staged versions, so N emits for
+   * one aggregate in one transaction sequence correctly.
+   */
+  private readonly pendingEvents = new Map<string, NewDomainEvent>();
+  private readonly pendingOutbox: NewOutboxMessage[] = [];
+
   constructor(
     private readonly trx: Transaction<Database>,
     private readonly tenantId: string,
@@ -133,6 +144,39 @@ export class KyselyAppTx implements AppTx {
 
   innerDb(): Transaction<Database> {
     return this.trx;
+  }
+
+  /**
+   * Narrow cross-tenant exception for PARTNER policy (053 split): the command
+   * bus always runs under the ACTOR's tenant, but an authorized PARTNER
+   * publish targets ANOTHER tenant's row. RLS `WITH CHECK` would refuse that
+   * insert (and the version lookup would go blind and restart at 1), so the
+   * target-scoped statements run with `app.tenant_id` temporarily set to the
+   * TARGET tenant -- restored in `finally` before any bus producer runs, so
+   * the audit/outbox triple still lands under the command tenant. Refuses
+   * loudly for any other scope: only PARTNER documents may name a tenant
+   * other than the command's (no generic cross-tenant opening).
+   */
+  private async runAsPolicyTargetTenant<T>(
+    scope: string,
+    targetTenantId: string | null,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (targetTenantId === null || targetTenantId === this.tenantId) {
+      return fn();
+    }
+    if (scope !== "PARTNER") {
+      throw new Error(
+        `refusing cross-tenant policy access for scope ${scope}: only PARTNER documents may target another tenant`,
+      );
+    }
+    const prior = (await readTenantSetting(this.trx)) ?? this.tenantId;
+    await sql`SELECT set_config('app.tenant_id', ${targetTenantId}, true)`.execute(this.trx);
+    try {
+      return await fn();
+    } finally {
+      await sql`SELECT set_config('app.tenant_id', ${prior}, true)`.execute(this.trx);
+    }
   }
 
   async emitDomainEvent(input: NewDomainEvent): Promise<{ domainEventId: string }> {
@@ -143,28 +187,11 @@ export class KyselyAppTx implements AppTx {
         `stale aggregate version for ${e.aggregate_type}/${e.aggregate_id}: expected ${version}, envelope carries ${e.aggregate_version}`,
       );
     }
-    const inserted = await this.trx
-      .insertInto("platform.domain_events")
-      .values({
-        id: newId(),
-        event_id: e.event_id,
-        tenant_id: this.tenantId,
-        event_type: e.event_type,
-        aggregate_type: e.aggregate_type,
-        aggregate_id: e.aggregate_id,
-        aggregate_version: e.aggregate_version,
-        occurred_at: new Date(e.occurred_at),
-        recorded_at: new Date(e.recorded_at),
-        correlation_id: e.correlation_id,
-        causation_id: e.causation_id ?? null,
-        actor_type: e.actor.type,
-        actor_id: e.actor.id,
-        schema_version: e.schema_version,
-        data_json: e.data,
-      })
-      .returning("id")
-      .executeTakeFirstOrThrow();
-    return { domainEventId: inserted.id };
+    // Client-generated id, staged until the flush (writeAudit, or
+    // audit-less at withTransaction commit for direct-applier flows).
+    const domainEventId = newId();
+    this.pendingEvents.set(domainEventId, input);
+    return { domainEventId };
   }
 
   async nextAggregateVersion(aggregateType: string, aggregateId: string): Promise<number> {
@@ -178,47 +205,106 @@ export class KyselyAppTx implements AppTx {
       .limit(1)
       .executeTakeFirst();
     // `aggregate_version` is bigint: node-pg returns it as a string.
-    return Number(prev?.aggregate_version ?? 0) + 1;
+    let version = Number(prev?.aggregate_version ?? 0) + 1;
+    // Staged (not yet flushed) triples are invisible to the SELECT above: a
+    // handler emitting N events for one aggregate in one transaction would
+    // otherwise compute version 1 N times and collide at flush. Bump past
+    // anything already staged for this aggregate (053 buffering).
+    for (const staged of this.pendingEvents.values()) {
+      const e = staged.envelope;
+      if (
+        e.aggregate_type === aggregateType &&
+        e.aggregate_id === aggregateId &&
+        e.aggregate_version >= version
+      ) {
+        version = e.aggregate_version + 1;
+      }
+    }
+    return version;
   }
 
   async enqueueOutbox(input: NewOutboxMessage): Promise<void> {
-    await this.trx
-      .insertInto("platform.outbox_messages")
-      .values({
-        id: newId(),
-        tenant_id: this.tenantId,
-        domain_event_id: input.domainEventId,
-        topic: input.topic,
-        message_key: input.messageKey ?? null,
-        payload_json: input.payload,
-        headers_json: input.headers ?? {},
-        state: "PENDING",
-        attempt_count: 0,
-        next_attempt_at: now(),
-        published_at: null,
-        last_error_code: null,
-        created_at: now(),
-      })
-      .execute();
+    if (!this.pendingEvents.has(input.domainEventId)) {
+      throw new Error(
+        `enqueueOutbox references an unstaged domain event: ${input.domainEventId}`,
+      );
+    }
+    this.pendingOutbox.push(input);
   }
 
   async writeAudit(input: AuditEventInput): Promise<void> {
     const row = buildAuditRow(input);
-    await this.trx
-      .insertInto("platform.audit_log")
-      .values({
-        id: newId(),
-        tenant_id: row.tenant_id,
-        actor_type: row.actor_type,
-        actor_id: row.actor_id,
-        action_key: row.action_key,
-        resource_type: row.resource_type,
-        resource_id: row.resource_id,
-        correlation_id: row.correlation_id,
-        metadata_json: row.metadata_json,
-        occurred_at: now(),
-      })
-      .execute();
+    if (row.tenant_id !== this.tenantId) {
+      throw new Error("audit tenant does not match the command transaction tenant");
+    }
+    await this.flushStagedTriples({
+      id: newId(),
+      actorType: row.actor_type,
+      actorId: row.actor_id,
+      actionKey: row.action_key,
+      resourceType: row.resource_type,
+      resourceId: row.resource_id,
+      correlationId: row.correlation_id,
+      metadataJson: row.metadata_json,
+      occurredAt: now(),
+    });
+  }
+
+  /**
+   * Flush staged bus triples through `platform.append_bus_rows` (one producer
+   * call per triple, same transaction). The bus always passes its command
+   * audit (attached to the first triple; standalone audit row when nothing
+   * was emitted). Direct-applier flows (provider/trial dispatchers drive
+   * `withTransaction` without the bus, so no audit exists) flush with `null`
+   * at commit -- the event+PENDING-outbox pair still lands atomically.
+   */
+  async flushStagedTriples(
+    audit: {
+      id: string;
+      actorType: string;
+      actorId: string | null;
+      actionKey: string;
+      resourceType: string;
+      resourceId: string | null;
+      correlationId: string | null;
+      metadataJson: Record<string, unknown>;
+      occurredAt: Date;
+    } | null,
+  ): Promise<void> {
+    const staged = this.pendingOutbox.map((outbox) => {
+      const event = this.pendingEvents.get(outbox.domainEventId);
+      if (event === undefined) {
+        throw new Error(
+          `enqueueOutbox references an unstaged domain event: ${outbox.domainEventId}`,
+        );
+      }
+      return { event, outbox };
+    });
+    this.pendingEvents.clear();
+    this.pendingOutbox.length = 0;
+    if (staged.length === 0) {
+      if (audit === null) {
+        return;
+      }
+      // No emitted events (early-out / not_found paths still audit): the
+      // standalone producer owns the row; no direct table write.
+      await sql`select platform.audit_write(${this.tenantId}::uuid, ${audit.actorType}, ${audit.actorId}, ${audit.actionKey}, ${audit.resourceType}, ${audit.resourceId}, ${audit.correlationId}, ${JSON.stringify(audit.metadataJson)}::jsonb)`.execute(
+        this.trx,
+      );
+      return;
+    }
+    let attached = audit;
+    for (const { event, outbox } of staged) {
+      const e = event.envelope;
+      const current = attached;
+      attached = null;
+      // The bus triple (event + PENDING outbox + audit) in ONE producer call.
+      // Direct inserts into the three tables are prohibited here: under
+      // `iptv_app` the outbox table carries no grant/policy at all (050).
+      await sql`select platform.append_bus_rows(${this.tenantId}::uuid, ${e.event_id}::uuid, ${e.event_type}, ${e.aggregate_type}, ${e.aggregate_id}::uuid, ${e.aggregate_version}, ${new Date(e.occurred_at).toISOString()}::timestamptz, ${new Date(e.recorded_at).toISOString()}::timestamptz, ${e.correlation_id}::uuid, ${e.causation_id ?? null}, ${e.actor.type}, ${e.actor.id ?? null}, ${e.schema_version}, ${JSON.stringify(e.data)}::jsonb, ${newId()}::uuid, ${outbox.topic}, ${outbox.messageKey ?? null}, ${JSON.stringify(outbox.payload)}::jsonb, ${JSON.stringify(outbox.headers ?? {})}::jsonb, ${current?.id ?? null}, ${current?.actorType ?? null}, ${current?.actorId ?? null}, ${current?.actionKey ?? null}, ${current?.resourceType ?? null}, ${current?.resourceId ?? null}, ${current?.correlationId ?? null}, ${current !== null ? JSON.stringify(current.metadataJson) : null}, ${current?.occurredAt.toISOString() ?? null})`.execute(
+        this.trx,
+      );
+    }
   }
 
   async createReviewRequest(input: NewReviewRequest): Promise<StoredReviewRequest> {
@@ -343,6 +429,10 @@ export class KyselyAppTx implements AppTx {
   }
 
   async nextPolicyVersion(family: string, scope: string, tenantId: string | null): Promise<number> {
+    // PARTNER publishes targeting another tenant read the version counter
+    // under the TARGET tenant (own-tenant rows are invisible cross-tenant
+    // under RLS, so an unscoped read would restart at 1 and collide).
+    return this.runAsPolicyTargetTenant(scope, tenantId, async () => {
     let query = this.trx
       .selectFrom("platform.policy_documents")
       .select("version")
@@ -356,9 +446,14 @@ export class KyselyAppTx implements AppTx {
         : query.where("tenant_id", "=", tenantId);
     const prev = await query.executeTakeFirst();
     return Number(prev?.version ?? 0) + 1;
+    });
   }
 
   async createPolicyDocument(input: NewPolicyDocument): Promise<StoredPolicyDocument> {
+    // PARTNER publishes targeting another tenant insert under the TARGET
+    // tenant (RLS WITH CHECK refuses cross-tenant inserts in the command
+    // tenant's context). Any non-PARTNER cross-tenant target throws inside.
+    return this.runAsPolicyTargetTenant(input.scope, input.tenantId, async () => {
     const row = await this.trx
       .insertInto("platform.policy_documents")
       .values({
@@ -387,6 +482,7 @@ export class KyselyAppTx implements AppTx {
       ])
       .executeTakeFirstOrThrow();
     return toStoredPolicy(row);
+    });
   }
 
   async listPublishedPolicies(
@@ -395,6 +491,59 @@ export class KyselyAppTx implements AppTx {
     partnerId?: string,
   ): Promise<StoredPolicyDocument[]> {
     const partner = partnerId ?? tenantId;
+    if (partner !== tenantId) {
+      // Named-partner layer under RLS: another tenant's PARTNER rows are
+      // invisible in the command tenant's context, so the own layers
+      // (PLATFORM globals + TENANT rows) read here and the exact named
+      // partner's PARTNER layer (PUBLISHED, same family) reads under the
+      // PARTNER's tenant instead -- never a cross-tenant wildcard. Any
+      // non-PARTNER misuse throws inside.
+      const own = await this.trx
+        .selectFrom("platform.policy_documents")
+        .select([
+          "id",
+          "tenant_id",
+          "family",
+          "scope",
+          "class",
+          "version",
+          "status",
+          "document",
+          "published_at",
+        ])
+        .where("family", "=", family)
+        .where("status", "=", "PUBLISHED")
+        .where((eb) =>
+          eb.or([
+            eb.and([eb("scope", "=", "PLATFORM"), eb("tenant_id", "is", null)]),
+            eb.and([eb("scope", "=", "TENANT"), eb("tenant_id", "=", tenantId)]),
+          ]),
+        )
+        .orderBy("version", "desc")
+        .execute();
+      const partnerRows = await this.runAsPolicyTargetTenant("PARTNER", partner, () =>
+        this.trx
+          .selectFrom("platform.policy_documents")
+          .select([
+            "id",
+            "tenant_id",
+            "family",
+            "scope",
+            "class",
+            "version",
+            "status",
+            "document",
+            "published_at",
+          ])
+          .where("family", "=", family)
+          .where("status", "=", "PUBLISHED")
+          .where("scope", "=", "PARTNER")
+          .where("tenant_id", "=", partner)
+          .orderBy("version", "desc")
+          .execute(),
+      );
+      return [...own, ...partnerRows].map(toStoredPolicy);
+    }
     const rows = await this.trx
       .selectFrom("platform.policy_documents")
       .select([
@@ -560,9 +709,17 @@ export class KyselyCommandDb implements DbPort {
   }
 
   async withTransaction<T>(tenantId: string, fn: (tx: AppTx) => Promise<T>): Promise<T> {
-    return withTenantTransaction(this.requireDb(), tenantId, async (trx) =>
-      fn(new KyselyAppTx(trx, tenantId)),
-    );
+    return withTenantTransaction(this.requireDb(), tenantId, async (trx) => {
+      const tx = new KyselyAppTx(trx, tenantId);
+      const out = await fn(tx);
+      // Direct-applier flows (dispatchers drive `withTransaction` without
+      // the bus) never call writeAudit: flush their staged triples audit-less
+      // here, in the same transaction. Bus flows already flushed (no-op).
+      // When `fn` throws, this line is skipped and staged rows die with the
+      // rollback -- the original error propagates untouched.
+      await tx.flushStagedTriples(null);
+      return out;
+    });
   }
 
   async claimIdempotency(input: {
@@ -571,68 +728,33 @@ export class KyselyCommandDb implements DbPort {
     key: string;
     requestHash: string;
   }): Promise<IdempotencyClaim> {
-    const db = this.requireDb();
-    try {
-      await db
-        .insertInto("platform.idempotency_keys")
-        .values({
-          id: newId(),
-          tenant_id: input.tenantId,
-          scope: input.scope,
-          idempotency_key: input.key,
-          request_hash: input.requestHash,
-          resource_type: null,
-          resource_id: null,
-          response_status: null,
-          response_json: null,
-          state: "IN_PROGRESS",
-          locked_until: null,
-          created_at: now(),
-          completed_at: null,
-          expires_at: null,
-        })
-        .execute();
-      return { status: "claimed" };
-    } catch (err) {
-      if (!isUniqueViolation(err)) {
-        throw err;
-      }
-    }
-    const row = await db
-      .selectFrom("platform.idempotency_keys")
-      .select(["state", "request_hash", "response_status", "response_json"])
-      .where("tenant_id", "=", input.tenantId)
-      .where("scope", "=", input.scope)
-      .where("idempotency_key", "=", input.key)
-      .executeTakeFirst();
+    // Pool-level (no tenant context yet): the SECURITY DEFINER producer owns
+    // the read-modify-write; no direct table access under `iptv_app`.
+    const result = await sql<{
+      o_status: string;
+      o_response_status: number | null;
+      o_response_json: CommandResult;
+    }>`select * from platform.idempotency_claim(${input.tenantId}::uuid, ${input.scope}, ${input.key}, ${input.requestHash})`.execute(
+      this.requireDb(),
+    );
+    const row = result.rows[0];
     if (row === undefined) {
-      throw new Error("idempotency claim lost race");
+      throw new Error("idempotency claim returned no row");
     }
-    if (row.state === "SUCCEEDED") {
-      if (row.request_hash === input.requestHash) {
-        return {
-          status: "replay",
-          responseStatus: row.response_status,
-          response: row.response_json as CommandResult,
-        };
-      }
+    if (row.o_status === "replay") {
+      return {
+        status: "replay",
+        responseStatus: row.o_response_status,
+        response: row.o_response_json,
+      };
+    }
+    if (row.o_status === "conflict") {
       return { status: "conflict" };
     }
-    if (row.state === "FAILED" && row.request_hash === input.requestHash) {
-      // Retry after a failed attempt reclaims the key.
-      await db
-        .updateTable("platform.idempotency_keys")
-        .set({ state: "IN_PROGRESS", response_status: null, response_json: null, completed_at: null })
-        .where("tenant_id", "=", input.tenantId)
-        .where("scope", "=", input.scope)
-        .where("idempotency_key", "=", input.key)
-        .execute();
-      return { status: "claimed" };
+    if (row.o_status === "in_progress") {
+      return { status: "in_progress" };
     }
-    if (row.state === "FAILED") {
-      return { status: "conflict" };
-    }
-    return { status: "in_progress" };
+    return { status: "claimed" };
   }
 
   async finishIdempotency(input: {
@@ -643,17 +765,8 @@ export class KyselyCommandDb implements DbPort {
     responseStatus: number | null;
     response: CommandResult;
   }): Promise<void> {
-    await this.requireDb()
-      .updateTable("platform.idempotency_keys")
-      .set({
-        state: input.state,
-        response_status: input.responseStatus,
-        response_json: input.response,
-        completed_at: now(),
-      })
-      .where("tenant_id", "=", input.tenantId)
-      .where("scope", "=", input.scope)
-      .where("idempotency_key", "=", input.key)
-      .execute();
+    await sql`select platform.idempotency_finish(${input.tenantId}::uuid, ${input.scope}, ${input.key}, ${input.state}, ${input.responseStatus}, ${JSON.stringify(input.response)}::jsonb)`.execute(
+      this.requireDb(),
+    );
   }
 }

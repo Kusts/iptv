@@ -10,11 +10,14 @@ import { createHash } from "node:crypto";
  * authenticates the provider, and the `:tenantKey` path segment maps to the
  * tenant via `communication.tenant_channels` (never from payload content).
  *
- * Pipeline: verify → durable inbox (insert-once) → 202 fast ack → async
- * normalize (`message.ingest`). Wave 2 runs the normalize stage inline in
- * this process (local DB work only, no slow provider calls); `?defer=1`
- * skips inline processing so a worker/test can poll via `drainPending`.
- * A Hatchet worker handoff replaces the inline stage in a later wave.
+ * Pipeline: resolve (pre-context, ACTIVE row for the secret check) → local
+ * timing-safe verify → ATOMIC accept (`communication.accept_waha_delivery`
+ * re-locks the routing row FOR UPDATE, revalidates ACTIVE, and inserts the
+ * inbox row in the same transaction, closing the resolve-then-insert TOCTOU)
+ * → 202 fast ack → async normalize (`message.ingest`). A mid-flight DISABLE
+ * (or a routing key re-pointed to another tenant) refuses the accept and
+ * 404s like an unknown endpoint. `?defer=1` skips inline processing so a
+ * worker/test can poll via `drainPending`.
  */
 @Controller("v1/webhooks")
 export class WahaWebhookController {
@@ -49,18 +52,34 @@ export class WahaWebhookController {
       normalized.kind === "message"
         ? `waha:${normalized.externalId}`
         : `waha-unknown:${createHash("sha256").update(JSON.stringify(body ?? null), "utf8").digest("hex").slice(0, 24)}`;
-    const accepted = await this.webhooks.acceptRaw({
+    const accepted = await this.webhooks.acceptAtomic({
       tenantId: channel.tenantId,
+      tenantKey,
       channel: channel.channel,
       externalEventId,
       payload: body,
     });
+    if (accepted === null) {
+      // Routing changed mid-flight (DISABLED or re-pointed after the secret
+      // check): fail closed exactly like an unknown endpoint, with zero
+      // inbox rows written.
+      recordWebhookReceived("waha", "unknown_tenant");
+      throw new HttpException({ code: "NOT_FOUND", message: "unknown webhook endpoint" }, 404);
+    }
     if (!accepted.inserted) {
       recordWebhookReceived("waha", "duplicate");
       return { accepted: true, deduped: true };
     }
     if (defer !== "1") {
-      await this.webhooks.processRow(channel.tenantId, accepted.inboxId, body);
+      // Inline claims the row first (054 `inbox_claim_by_id`): when the
+      // scheduler drain already owns it, the claim returns zero rows and the
+      // inline path skips `processRow`, acking idempotently -- exactly one
+      // processor ever owns a row, never double-processing.
+      const inline = await this.webhooks.processInline(channel.tenantId, accepted.inboxId, body, "inline:waha");
+      if (!inline.claimed) {
+        recordWebhookReceived("waha", "duplicate");
+        return { accepted: true, deduped: true };
+      }
     }
     recordWebhookReceived("waha", "accepted");
     return { accepted: true, deduped: false };

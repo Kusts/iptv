@@ -9,7 +9,7 @@ import {
   type PolicyClass,
   type ResolutionStep,
 } from "@iptv/domain";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import type { StoredPolicyDocument } from "../commands/command-bus.js";
 
 /**
@@ -30,46 +30,127 @@ export class KyselyPolicyRepository implements PolicyRepository {
     if (this.db === null) {
       return [];
     }
+    // Tenant-context read (053): `platform.policy_documents` is RLS-enrolled
+    // with the 048 split (global defaults + own-tenant rows). A pool-level
+    // SELECT with no `app.tenant_id` would silently drop the tenant layers
+    // and resolve on platform defaults only, so the caller's tenant rides
+    // along explicitly -- same wrap as the Asaas chargeback lookup.
+    //
+    // Named-partner layer under RLS: another tenant's PARTNER rows are
+    // invisible under the caller's context, so the own layers (PLATFORM
+    // globals + TENANT rows) read under the caller and the exact named
+    // partner's PARTNER layer (PUBLISHED, same family) reads under the
+    // PARTNER's tenant instead -- never a cross-tenant wildcard. The visible
+    // set matches the pre-RLS resolution exactly; pair authorization above
+    // this port (which partner a tenant may name) is unchanged.
     const partner = partnerId ?? tenantId;
-    const rows = await this.db
-      .selectFrom("platform.policy_documents")
-      .select([
-        "id",
-        "tenant_id",
-        "family",
-        "scope",
-        "class",
-        "version",
-        "status",
-        "document",
-        "published_at",
-      ])
-      .where("family", "=", family)
-      .where("status", "=", "PUBLISHED")
-      .where((eb) =>
-        eb.or([
-          eb.and([eb("scope", "=", "PLATFORM"), eb("tenant_id", "is", null)]),
-          eb.and([eb("scope", "=", "TENANT"), eb("tenant_id", "=", tenantId)]),
-          eb.and([eb("scope", "=", "PARTNER"), eb("tenant_id", "=", partner)]),
-        ]),
-      )
-      .orderBy("version", "desc")
-      .execute();
-    return rows.map((row) => ({
-      id: row.id,
-      tenantId: row.tenant_id,
-      family: row.family,
-      scope: row.scope,
-      class: row.class,
-      version: Number(row.version),
-      status: row.status,
-      document:
-        row.document !== null && typeof row.document === "object" && !Array.isArray(row.document)
-          ? (row.document as Record<string, unknown>)
-          : {},
-      publishedAt: row.published_at,
-    }));
+    if (partner === tenantId) {
+      return withTenantTransaction(this.db, tenantId, async (trx) => {
+        const rows = await trx
+          .selectFrom("platform.policy_documents")
+          .select([
+            "id",
+            "tenant_id",
+            "family",
+            "scope",
+            "class",
+            "version",
+            "status",
+            "document",
+            "published_at",
+          ])
+          .where("family", "=", family)
+          .where("status", "=", "PUBLISHED")
+          .where((eb) =>
+            eb.or([
+              eb.and([eb("scope", "=", "PLATFORM"), eb("tenant_id", "is", null)]),
+              eb.and([eb("scope", "=", "TENANT"), eb("tenant_id", "=", tenantId)]),
+              eb.and([eb("scope", "=", "PARTNER"), eb("tenant_id", "=", partner)]),
+            ]),
+          )
+          .orderBy("version", "desc")
+          .execute();
+        return rows.map(mapPolicyRow);
+      });
+    }
+    const db = this.db;
+    const own = await withTenantTransaction(db, tenantId, async (trx) => {
+      const rows = await trx
+        .selectFrom("platform.policy_documents")
+        .select([
+          "id",
+          "tenant_id",
+          "family",
+          "scope",
+          "class",
+          "version",
+          "status",
+          "document",
+          "published_at",
+        ])
+        .where("family", "=", family)
+        .where("status", "=", "PUBLISHED")
+        .where((eb) =>
+          eb.or([
+            eb.and([eb("scope", "=", "PLATFORM"), eb("tenant_id", "is", null)]),
+            eb.and([eb("scope", "=", "TENANT"), eb("tenant_id", "=", tenantId)]),
+          ]),
+        )
+        .orderBy("version", "desc")
+        .execute();
+      return rows.map(mapPolicyRow);
+    });
+    const partnerRows = await withTenantTransaction(db, partner, async (trx) => {
+      const rows = await trx
+        .selectFrom("platform.policy_documents")
+        .select([
+          "id",
+          "tenant_id",
+          "family",
+          "scope",
+          "class",
+          "version",
+          "status",
+          "document",
+          "published_at",
+        ])
+        .where("family", "=", family)
+        .where("status", "=", "PUBLISHED")
+        .where("scope", "=", "PARTNER")
+        .where("tenant_id", "=", partner)
+        .orderBy("version", "desc")
+        .execute();
+      return rows.map(mapPolicyRow);
+    });
+    return [...own, ...partnerRows];
   }
+}
+
+function mapPolicyRow(row: {
+  id: string;
+  tenant_id: string | null;
+  family: string;
+  scope: string;
+  class: string;
+  version: number | string;
+  status: string;
+  document: unknown;
+  published_at: Date | null;
+}): StoredPolicyDocument {
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    family: row.family,
+    scope: row.scope,
+    class: row.class,
+    version: Number(row.version),
+    status: row.status,
+    document:
+      row.document !== null && typeof row.document === "object" && !Array.isArray(row.document)
+        ? (row.document as Record<string, unknown>)
+        : {},
+    publishedAt: row.published_at,
+  };
 }
 
 export interface ResolveContext {
