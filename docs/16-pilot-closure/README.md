@@ -81,6 +81,12 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 | `P6a` CI + sessão | security-scans/adversarial/audit-gate + P6-SECURITY.md (localStorage explícito) | DONE (tester PASS) |
 | `P6b` DR/obs/load | drill 91s + OTLP + alertas 16/16 + p95s + P6-*.md | DONE (tester PASS) |
 
+## P7 status
+
+| Slice | Escopo | Estado |
+|---|---|---|
+| `P7` rehearsal + drills | fluxo simulado + 105/105 + 9 drills + pool handler + wraps comms/copilot + C9 | DONE (tester PASS) |
+
 ## Artefatos finais (C9 + PLAN — acompanhar aqui)
 
 RLS inventory · Worker inventory · Integration certification register ·

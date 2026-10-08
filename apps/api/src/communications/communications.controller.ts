@@ -12,6 +12,7 @@ import {
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
 import type { Database } from "@iptv/database";
+import { withTenantTransaction } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -61,7 +62,11 @@ function idempotencyKeyOf(req: FastifyRequest): string | undefined {
 /**
  * Wave 2 Communications surface. Manual replies / takeover / return / close
  * go through the `CommandBus` as HUMAN actions (`conversation.reply`).
- * Reads are plain tenant-scoped selects.
+ * Reads are plain tenant-scoped selects inside `withTenantTransaction`
+ * (actor tenant): `communication.*` tables are RLS-enrolled (migration 042,
+ * fail-closed when `app.tenant_id` is unset), so pool-level selects under
+ * `iptv_app` would return empty silently. The explicit `tenant_id =`
+ * predicates stay as defense-in-depth alongside the RLS policy.
  */
 @Controller("v1/communications")
 export class CommunicationsController {
@@ -94,28 +99,31 @@ export class CommunicationsController {
   async listConversations(@Req() req: FastifyRequest, @Query() query: { limit?: string; offset?: string; status?: string }) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const { limit, offset } = pagination(query);
-    let qb = this.requireDb()
-      .selectFrom("communication.conversations")
-      .select(["id", "person_id", "channel", "status", "control_mode", "last_message_at", "created_at"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("last_message_at", "desc")
-      .limit(limit)
-      .offset(offset);
-    if (query.status !== undefined) {
-      qb = qb.where("status", "=", query.status);
-    }
-    const rows = await qb.execute();
-    return {
-      conversations: rows.map((r) => ({
-        id: r.id,
-        personId: r.person_id,
-        channel: r.channel,
-        status: r.status,
-        controlMode: r.control_mode,
-        lastMessageAt: r.last_message_at?.toISOString() ?? null,
-        createdAt: r.created_at.toISOString(),
-      })),
-    };
+    const status = query.status;
+    return withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      let qb = trx
+        .selectFrom("communication.conversations")
+        .select(["id", "person_id", "channel", "status", "control_mode", "last_message_at", "created_at"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("last_message_at", "desc")
+        .limit(limit)
+        .offset(offset);
+      if (status !== undefined) {
+        qb = qb.where("status", "=", status);
+      }
+      const rows = await qb.execute();
+      return {
+        conversations: rows.map((r) => ({
+          id: r.id,
+          personId: r.person_id,
+          channel: r.channel,
+          status: r.status,
+          controlMode: r.control_mode,
+          lastMessageAt: r.last_message_at?.toISOString() ?? null,
+          createdAt: r.created_at.toISOString(),
+        })),
+      };
+    });
   }
 
   @Get("conversations/:id")
@@ -123,43 +131,44 @@ export class CommunicationsController {
   @RequirePermission("conversation.reply")
   async getConversation(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
-    const row = await db
-      .selectFrom("communication.conversations")
-      .select(["id", "person_id", "channel", "external_thread_id", "status", "control_mode", "last_message_at", "created_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", id)
-      .executeTakeFirst();
-    if (row === undefined) {
-      throw new HttpException({ code: "NOT_FOUND", message: "conversation not found" }, 404);
-    }
-    const last = await db
-      .selectFrom("communication.messages")
-      .select(["id", "direction", "sender_type", "body_text", "occurred_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("conversation_id", "=", id)
-      .orderBy("occurred_at", "desc")
-      .limit(1)
-      .executeTakeFirst();
-    return {
-      id: row.id,
-      personId: row.person_id,
-      channel: row.channel,
-      externalThreadId: row.external_thread_id,
-      status: row.status,
-      controlMode: row.control_mode,
-      lastMessageAt: row.last_message_at?.toISOString() ?? null,
-      createdAt: row.created_at.toISOString(),
-      lastMessage: last
-        ? {
-            id: last.id,
-            direction: last.direction,
-            senderType: last.sender_type,
-            bodyText: last.body_text,
-            occurredAt: last.occurred_at.toISOString(),
-          }
-        : null,
-    };
+    return withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const row = await trx
+        .selectFrom("communication.conversations")
+        .select(["id", "person_id", "channel", "external_thread_id", "status", "control_mode", "last_message_at", "created_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", id)
+        .executeTakeFirst();
+      if (row === undefined) {
+        throw new HttpException({ code: "NOT_FOUND", message: "conversation not found" }, 404);
+      }
+      const last = await trx
+        .selectFrom("communication.messages")
+        .select(["id", "direction", "sender_type", "body_text", "occurred_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("conversation_id", "=", id)
+        .orderBy("occurred_at", "desc")
+        .limit(1)
+        .executeTakeFirst();
+      return {
+        id: row.id,
+        personId: row.person_id,
+        channel: row.channel,
+        externalThreadId: row.external_thread_id,
+        status: row.status,
+        controlMode: row.control_mode,
+        lastMessageAt: row.last_message_at?.toISOString() ?? null,
+        createdAt: row.created_at.toISOString(),
+        lastMessage: last
+          ? {
+              id: last.id,
+              direction: last.direction,
+              senderType: last.sender_type,
+              bodyText: last.body_text,
+              occurredAt: last.occurred_at.toISOString(),
+            }
+          : null,
+      };
+    });
   }
 
   @Get("conversations/:id/messages")
@@ -171,33 +180,33 @@ export class CommunicationsController {
     @Query() query: { limit?: string; offset?: string },
   ) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
-    const conv = await db
-      .selectFrom("communication.conversations")
-      .select(["id"])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", id)
-      .executeTakeFirst();
-    if (conv === undefined) {
-      throw new HttpException({ code: "NOT_FOUND", message: "conversation not found" }, 404);
-    }
     const { limit, offset } = pagination(query);
-    const rows = await db
-      .selectFrom("communication.messages")
-      .select(["id", "direction", "sender_type", "content_type", "body_text", "external_message_id", "occurred_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("conversation_id", "=", id)
-      .orderBy("occurred_at", "asc")
-      .limit(limit)
-      .offset(offset)
-      .execute();
+    return withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const conv = await trx
+        .selectFrom("communication.conversations")
+        .select(["id"])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", id)
+        .executeTakeFirst();
+      if (conv === undefined) {
+        throw new HttpException({ code: "NOT_FOUND", message: "conversation not found" }, 404);
+      }
+      const rows = await trx
+        .selectFrom("communication.messages")
+        .select(["id", "direction", "sender_type", "content_type", "body_text", "external_message_id", "occurred_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("conversation_id", "=", id)
+        .orderBy("occurred_at", "asc")
+        .limit(limit)
+        .offset(offset)
+        .execute();
     // Latest delivery attempt per message (ordered by attempt_no DESC), or
     // null when no delivery exists. Tenant-scoped: never exposes another
     // tenant's deliveries. Additive field matching the OpenAPI Message
     // `deliveryStatus` concept (`string | null`).
     const latestByMessage = new Map<string, string>();
     if (rows.length > 0) {
-      const deliveries = await db
+      const deliveries = await trx
         .selectFrom("communication.message_deliveries")
         .select(["message_id", "status", "attempt_no"])
         .where("tenant_id", "=", tenant.id)
@@ -226,6 +235,7 @@ export class CommunicationsController {
         deliveryStatus: latestByMessage.get(r.id) ?? null,
       })),
     };
+    });
   }
 
   @Post("conversations/:id/send-manual")
@@ -298,28 +308,30 @@ export class CommunicationsController {
   async listExceptions(@Req() req: FastifyRequest, @Query() query: { limit?: string; offset?: string; status?: string }) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const { limit, offset } = pagination(query);
-    let qb = this.requireDb()
-      .selectFrom("communication.exceptions")
-      .select(["id", "kind", "status", "channel", "external_message_id", "from_address", "reason", "created_at"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "desc")
-      .limit(limit)
-      .offset(offset);
     const status = query.status ?? "OPEN";
-    qb = qb.where("status", "=", status);
-    const rows = await qb.execute();
-    return {
-      exceptions: rows.map((r) => ({
-        id: r.id,
-        kind: r.kind,
-        status: r.status,
-        channel: r.channel,
-        externalMessageId: r.external_message_id,
-        fromAddress: r.from_address,
-        reason: r.reason,
-        createdAt: r.created_at.toISOString(),
-      })),
-    };
+    return withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const rows = await trx
+        .selectFrom("communication.exceptions")
+        .select(["id", "kind", "status", "channel", "external_message_id", "from_address", "reason", "created_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("status", "=", status)
+        .orderBy("created_at", "desc")
+        .limit(limit)
+        .offset(offset)
+        .execute();
+      return {
+        exceptions: rows.map((r) => ({
+          id: r.id,
+          kind: r.kind,
+          status: r.status,
+          channel: r.channel,
+          externalMessageId: r.external_message_id,
+          fromAddress: r.from_address,
+          reason: r.reason,
+          createdAt: r.created_at.toISOString(),
+        })),
+      };
+    });
   }
 
   @Post("exceptions/:id/resolve")

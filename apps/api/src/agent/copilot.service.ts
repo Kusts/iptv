@@ -2,6 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import type { Kysely } from "kysely";
 import type { Database } from "@iptv/database";
+import { withTenantTransaction } from "@iptv/database";
 import { newId } from "@iptv/domain";
 import type { CommandActor } from "@iptv/domain";
 import { CommandBus } from "../commands/command-bus.js";
@@ -192,8 +193,8 @@ export class CopilotService {
   // ------------------------------------------------------------------
 
   async buildContext(tenantId: string, actor: CommandActor, screen: CopilotScreen): Promise<CopilotContextResponse> {
-    const db = this.requireDb();
-    const sections: CopilotSection[] = [];
+    return withTenantTransaction(this.requireDb(), tenantId, async (db) => {
+      const sections: CopilotSection[] = [];
 
     if (hasPermission(actor, "support.ticket.read")) {
       const counts = await db
@@ -347,6 +348,7 @@ export class CopilotService {
     }
 
     return { route: screen.route, sections, generatedAt: new Date().toISOString() };
+    });
   }
 
   // ------------------------------------------------------------------
@@ -542,15 +544,16 @@ export class CopilotService {
         body: { status: "denied", message: "Você não tem permissão para solicitar revisão humana.", command },
       };
     }
-    const db = this.requireDb();
     const hash = inputHash(input);
-    const open = await db
-      .selectFrom("agent.human_review_requests")
-      .select(["id", "context_json"])
-      .where("tenant_id", "=", tenantId)
-      .where("resource_type", "=", "copilot_command")
-      .where("status", "in", OPEN_REVIEW_STATUSES)
-      .execute();
+    const open = await withTenantTransaction(this.requireDb(), tenantId, (trx) =>
+      trx
+        .selectFrom("agent.human_review_requests")
+        .select(["id", "context_json"])
+        .where("tenant_id", "=", tenantId)
+        .where("resource_type", "=", "copilot_command")
+        .where("status", "in", OPEN_REVIEW_STATUSES)
+        .execute(),
+    );
     const existing = open.find((r) => {
       const ctx = (r.context_json ?? {}) as Record<string, unknown>;
       return ctx["copilotCommand"] === command && ctx["copilotInputHash"] === hash;
@@ -608,13 +611,24 @@ export class CopilotService {
     if (!UUID_RE.test(reviewId)) {
       return { http: 400, body: { status: "invalid", message: "reviewId inválido.", command } };
     }
-    const db = this.requireDb();
-    const review = await db
-      .selectFrom("agent.human_review_requests")
-      .select(["id", "status", "resource_type", "requested_by_id", "context_json"])
-      .where("tenant_id", "=", tenantId)
-      .where("id", "=", reviewId)
-      .executeTakeFirst();
+    const db = await withTenantTransaction(this.requireDb(), tenantId, async (trx) => {
+      const review = await trx
+        .selectFrom("agent.human_review_requests")
+        .select(["id", "status", "resource_type", "requested_by_id", "context_json"])
+        .where("tenant_id", "=", tenantId)
+        .where("id", "=", reviewId)
+        .executeTakeFirst();
+      const approval = await trx
+        .selectFrom("agent.human_review_actions")
+        .select(["action_type", "actor_user_id"])
+        .where("tenant_id", "=", tenantId)
+        .where("human_review_request_id", "=", reviewId)
+        .where("action_type", "in", ["APPROVE", "REJECT"])
+        .orderBy("created_at", "desc")
+        .executeTakeFirst();
+      return { review, approval };
+    });
+    const { review, approval } = db;
     if (review === undefined || review.resource_type !== "copilot_command") {
       return { http: 404, body: { status: "not_found", message: "Revisão não encontrada neste tenant.", command } };
     }
@@ -631,14 +645,6 @@ export class CopilotService {
         body: { status: "stale", message: `Revisão ainda não aprovada (status ${review.status}).`, command },
       };
     }
-    const approval = await db
-      .selectFrom("agent.human_review_actions")
-      .select(["action_type", "actor_user_id"])
-      .where("tenant_id", "=", tenantId)
-      .where("human_review_request_id", "=", reviewId)
-      .where("action_type", "in", ["APPROVE", "REJECT"])
-      .orderBy("created_at", "desc")
-      .executeTakeFirst();
     if (approval === undefined || approval.action_type !== "APPROVE") {
       return { http: 409, body: { status: "stale", message: "Revisão não foi aprovada.", command } };
     }
@@ -702,18 +708,20 @@ export class CopilotService {
     actorUserId: string,
   ): Promise<boolean> {
     try {
-      await this.requireDb()
-        .insertInto("agent.copilot_review_consumptions")
-        .values({
-          id: newId(),
-          tenant_id: tenantId,
-          human_review_request_id: reviewId,
-          command,
-          command_hash: commandHash,
-          consumed_by_actor_id: actorUserId,
-          consumed_at: new Date(),
-        })
-        .execute();
+      await withTenantTransaction(this.requireDb(), tenantId, (trx) =>
+        trx
+          .insertInto("agent.copilot_review_consumptions")
+          .values({
+            id: newId(),
+            tenant_id: tenantId,
+            human_review_request_id: reviewId,
+            command,
+            command_hash: commandHash,
+            consumed_by_actor_id: actorUserId,
+            consumed_at: new Date(),
+          })
+          .execute(),
+      );
       return true;
     } catch (err) {
       if (isUniqueViolation(err)) {
@@ -724,11 +732,13 @@ export class CopilotService {
   }
 
   private async releaseConsumption(tenantId: string, reviewId: string): Promise<void> {
-    await this.requireDb()
-      .deleteFrom("agent.copilot_review_consumptions")
-      .where("tenant_id", "=", tenantId)
-      .where("human_review_request_id", "=", reviewId)
-      .execute();
+    await withTenantTransaction(this.requireDb(), tenantId, (trx) =>
+      trx
+        .deleteFrom("agent.copilot_review_consumptions")
+        .where("tenant_id", "=", tenantId)
+        .where("human_review_request_id", "=", reviewId)
+        .execute(),
+    );
   }
 
   /**
@@ -748,12 +758,14 @@ export class CopilotService {
     if (typeof ticketId !== "string" || !UUID_RE.test(ticketId)) {
       return null;
     }
-    const row = await this.requireDb()
-      .selectFrom("support.support_tickets")
-      .select(["status"])
-      .where("tenant_id", "=", tenantId)
-      .where("id", "=", ticketId)
-      .executeTakeFirst();
+    const row = await withTenantTransaction(this.requireDb(), tenantId, (trx) =>
+      trx
+        .selectFrom("support.support_tickets")
+        .select(["status"])
+        .where("tenant_id", "=", tenantId)
+        .where("id", "=", ticketId)
+        .executeTakeFirst(),
+    );
     if (row === undefined) {
       return "Registro não encontrado neste tenant.";
     }

@@ -1,4 +1,4 @@
-export { createDb } from "./db.js";
+export { attachPoolErrorHandler, createDb, sanitizeDbErrorMessage } from "./db.js";
 export type { DbConfig } from "./db.js";
 export {
   assertTenantId,
