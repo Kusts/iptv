@@ -67,6 +67,12 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 | `P4a` revenue-ops | /crm /trials /billing /fulfillment /renewals /inventory + helper + NAV | DONE (tester PASS 116) |
 | `P4b` growth/admin | /growth /referrals /resellers /finance /analytics + ext copilot/lar + NAV | DONE (tester PASS 122) |
 
+## P5 status
+
+| Slice | Escopo | Estado |
+|---|---|---|
+| `P5` matriz G/F | `pilot-evidence.yaml` + gate + `P5-RELEASE-E2E.md` (33 PASS + G07/F12 BLOCKED operator) | DONE (tester PASS) |
+
 ## Artefatos finais (C9 + PLAN — acompanhar aqui)
 
 RLS inventory · Worker inventory · Integration certification register ·
