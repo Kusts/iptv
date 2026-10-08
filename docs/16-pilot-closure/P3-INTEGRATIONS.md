@@ -47,3 +47,18 @@
 - MK purchase: BLOCKED → G07.
 - No `CERTIFIED` / `CERTIFIED_WITH_LIMITATIONS` / `DEGRADED` claim exists for any
   capability in this repository (cf. `integrations-capability-status.md` § Reading the rows).
+
+## Refund policy — MANUAL (operator decision 2026-10-08)
+
+Refunds are **never executed automatically**: the system records the request,
+requires second-human approval (self-approval forbidden), and executes only on
+explicit human decision — and the operator decision is that the money movement
+itself is performed **by the user** (dashboard/API do provider), with the
+system reconciling afterwards. Rationale, proven live in Sandbox
+(`evidence/p3-asaas-sandbox/live-refund-*.md`): the full governance path
+(request→review→approve→execute→reconcile, stale/self-approval rejections,
+over-refund rejection, `KNOWN_NOT_APPLIED` with zero false ledger) is green;
+Asaas Sandbox refuses PIX refunds outright and boleto is non-refundable by
+provider rule — so no sandbox path can demonstrate `SUCCEEDED`, and no code
+change can fix that. The `SUCCEEDED` demonstration moves to the production
+canary M4/M5 with explicit authorization.
