@@ -92,3 +92,75 @@ jobs:
           sudo apt-get install -y -qq postgresql-client
           DATABASE_URL="postgresql://iptv:iptv@localhost:5432/iptv_guards" \
             bash scripts/run_outbox_role_negative_tests.sh
+
+  # P6 security gates (CODER-P6A): jobs NOVOS — `build` e
+  # `outbox-050-role-guards` acima seguem intocados.
+  security-scans:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks detect cobre o histórico inteiro, não só o HEAD.
+          fetch-depth: 0
+      - name: Secret scan (gitleaks 8.24.0 pinado, sem segredos em logs)
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          # --redact: valores casados nunca aparecem nos logs (só RuleID/arquivo/linha).
+          /tmp/gitleaks detect --source . --config .gitleaks.toml --redact --verbose
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - run: pnpm install --frozen-lockfile
+      - name: Dependency audit gate (high/critical novos vs tests/security/audit-baseline.json)
+        run: python scripts/ci-audit-gate.py
+      - name: CI security-gates self-test
+        run: python tests/security/test_ci_security_gates.py
+
+  # Suites adversariais críticas em job próprio (F09 prompt-injection +
+  # F10 isolamento de tenant). Service PG próprio: são suites de
+  # integração que aplicam migrations num banco descartável.
+  adversarial:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: iptv_test
+          POSTGRES_USER: iptv
+          POSTGRES_PASSWORD: iptv
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U iptv -d iptv_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Adversarial suites (agent-shadow + model-failure + tenant-context)
+        run: >
+          pnpm --filter @iptv/api exec vitest run
+          test/agent-shadow-approval.integration.test.ts
+          test/agent-model-failure.test.ts
+          test/rls-tenant-context.integration.test.ts
+        env:
+          TEST_DATABASE_URL: postgresql://iptv:iptv@localhost:5432/iptv_test

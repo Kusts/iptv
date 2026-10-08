@@ -1,26 +1,26 @@
-# @iptv/observability — W1-12 telemetry skeleton
+# @iptv/observability — OpenTelemetry traces/logs/metrics (env-gated)
 
 OpenTelemetry traces/logs/metrics with end-to-end correlation, plus the
 Langfuse boundary (interface only).
 
-## DECISION: api-only default, SDK optional
+## DECISION: env-gated OTLP, noop default
 
-This package depends **only on `@opentelemetry/api` (pinned `1.9.1`)**.
-With no OTLP endpoint configured the API stays on its global no-op
-tracer: `withSpan` runs the wrapped function directly with effectively
-zero overhead and **zero network calls**. The full SDK
-(`@opentelemetry/sdk-trace-node` + `@opentelemetry/exporter-trace-otlp-http`
-+ metrics reader) is loaded via dynamic `import()` **only** inside
+This package ships the OTLP SDK + exporters
+(`@opentelemetry/sdk-trace-node@1.30.1`, `sdk-metrics@1.30.1`,
+`sdk-logs@0.57.2`, OTLP/HTTP exporters `@0.57.2`) as **installed
+dependencies**, but providers are constructed **only** inside
 `initObservability()` when `OTEL_EXPORTER_OTLP_ENDPOINT` is set **and**
-`OTEL_SDK_DISABLED=false`. Those packages are therefore optional at
-runtime: missing deps/config never break boot — the bootstrap catches and
-keeps the noop path with a logged warning.
+`OTEL_SDK_DISABLED=false`. With no endpoint configured the API stays on its
+global no-op tracer: `withSpan` runs the wrapped function directly with
+effectively zero overhead and **zero network calls**, counters stay
+in-process only, and `emitLog` writes stdout JSON without exporting. Missing
+config never breaks boot — the bootstrap catches and keeps the noop path
+with a logged warning. `shutdownObservability()` flushes exporters and
+returns to the noop path (used by the proof script and tests).
 
-**Upgrade path:** `pnpm add` the SDK + OTLP exporter packages, then fill in
-`configureOtlp()` (NodeTracerProvider + OTLPTraceExporter + registration,
-plus a PeriodicExportingMetricReader when an OTLP metrics endpoint is set —
-otherwise metrics stay in-process only). No call site changes: every
-consumer uses `withSpan` / `recordCommandExecuted` / `recordWebhookReceived`.
+Proven end-to-end (`scripts/otlp-proof.mjs` against a local stub receiver):
+1 trace (809 B) + metric export (3 reqs, 3585 B) + 1 log (845 B) — see
+`docs/16-pilot-closure/P6-OBSERVABILITY.md`.
 
 ## Correlation
 
@@ -37,7 +37,10 @@ consumer uses `withSpan` / `recordCommandExecuted` / `recordWebhookReceived`.
   (provider, tenant).
 - Metrics: in-process `commands_executed_total{command,code}` +
   `webhooks_received_total{provider,outcome}` counters (`readCounters()` for
-  ops/tests); OTLP metric export only when an endpoint is configured.
+  ops/tests), mirrored to OTLP counters when an endpoint is configured.
+- Logs: `emitLog(level, msg, attrs)` — one sanitized JSON line to stdout
+  always, plus an OTLP log record when enabled (same attribute denylist:
+  never payloads, secrets, tokens, bodies or PII).
 
 ## Langfuse
 
@@ -46,5 +49,6 @@ dependency, no network**. Real tracing of agent runs lands after Wave-0
 certification and is never constructed by default.
 
 Env: `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SDK_DISABLED` (default `"true"`),
+`OTEL_METRIC_EXPORT_INTERVAL_MS` (default `60000`, min `1000`),
 `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` (future placeholders, commented
 in `.env.example`).

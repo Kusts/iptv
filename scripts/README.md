@@ -35,3 +35,21 @@ or WSL.
 `DATABASE_URL=postgresql://... ./scripts/run_pg_fixture_tests.sh` — same as
 above plus `db/seeds/*.sql`, each applied **twice** to prove the pilot seed is
 idempotent. Requires a disposable database as well.
+
+## P6b — DR, observability, load (needs bash + docker; `load/` needs node)
+
+- `scripts/backup-dr.sh` — encrypted scheduled backup + simulated-offsite DR
+  drill (`backup`/`offsite-put`/`offsite-get`/`drill`/`schedule`/`keygen`;
+  AES-256-GCM via `scripts/backup-crypto.mjs`, key only from
+  `$BACKUP_CRYPTO_KEY_FILE`). Full procedure + RPO decision in
+  `docs/16-pilot-closure/P6-DR.md`.
+- `scripts/ops-alert-check.sh <container> <db-user> <db-name> [api-base-url] [backup-dir]` —
+  executable pilot alert sweep (16 checks: API/DB/outbox/lease/inbox/UNKNOWN/
+  provider/HITL/reconcile/backup; exit 0 clear, 1 breach). Thresholds in
+  `docs/16-pilot-closure/P6-OBSERVABILITY.md`.
+- `scripts/otlp-proof.mjs` — OTLP end-to-end proof against a local stub
+  receiver (1 trace + metrics + 1 log).
+- `scripts/load/api-load.mjs` — closed-loop HTTP capacity probe (p50/p95/p99
+  per path). `scripts/load/outbox-volume.sh` — scratch DB + synthetic volume:
+  proves `outbox_lease_recovery_idx` by plan + claim throughput. Methodology
+  + numbers + gaps in `docs/16-pilot-closure/P6-PERFORMANCE.md`.

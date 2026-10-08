@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   disableObservabilityForTests,
+  emitLog,
   extractTraceId,
   initObservability,
   injectTraceparent,
@@ -10,6 +11,7 @@ import {
   recordWebhookReceived,
   resetCountersForTests,
   sanitizeAttributes,
+  shutdownObservability,
   withSpan,
 } from "../src/index.js";
 
@@ -76,6 +78,28 @@ describe("metrics", () => {
     expect(counters["commands_executed_total{code=ok,command=trial.expire_due}"]).toBe(2);
     expect(counters["commands_executed_total{code=precondition_failed,command=order.expire_due}"]).toBe(1);
     expect(counters["webhooks_received_total{outcome=accepted,provider=waha}"]).toBe(1);
+  });
+
+  it("record helpers stay noop-safe when OTLP is disabled (no throw, local count kept)", () => {
+    disableObservabilityForTests();
+    resetCountersForTests();
+    expect(() => recordCommandExecuted("trial.expire_due", "ok")).not.toThrow();
+    expect(() => recordWebhookReceived("asaas", "accepted")).not.toThrow();
+    expect(readCounters()["commands_executed_total{code=ok,command=trial.expire_due}"]).toBe(1);
+  });
+});
+
+describe("emitLog + shutdown", () => {
+  it("emitLog writes without throwing on the noop path", () => {
+    disableObservabilityForTests();
+    expect(() => emitLog("info", "p6b noop log probe", { component: "test" })).not.toThrow();
+    expect(() => emitLog("error", "secret must not throw", { apiToken: "shh" })).not.toThrow();
+  });
+
+  it("shutdown without init resolves and keeps the noop path", async () => {
+    disableObservabilityForTests();
+    await expect(shutdownObservability()).resolves.toBeUndefined();
+    expect(() => emitLog("warn", "after shutdown")).not.toThrow();
   });
 });
 
