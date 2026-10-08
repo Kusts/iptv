@@ -102,11 +102,19 @@ describe.skipIf(!hasDb)("Legacy outbox drain quiescence (requires TEST_DATABASE_
     const { eventId } = await seedClaimableRow();
     const transport = new LocalTransport();
     const drainer = new OutboxDrainer(db, transport);
-    const result = await drainer.drain(25);
-    expect(result.claimed).toBeGreaterThanOrEqual(1);
-    expect(result.published).toBeGreaterThanOrEqual(1);
-    expect(result.eventIds).toContain(eventId);
-    expect(transport.published.map((e) => e.event_id)).toContain(eventId);
+    // The CI database is shared across test files, so other suites may leave
+    // older PENDING rows ahead of ours (oldest-first claim, bounded batch).
+    // Drain until the seeded row is published (or the backlog budget runs
+    // out) instead of assuming a single batch reaches it.
+    let seen = false;
+    for (let attempt = 0; attempt < 10 && !seen; attempt += 1) {
+      const result = await drainer.drain(500);
+      expect(result.claimed).toBeGreaterThanOrEqual(1);
+      seen =
+        result.eventIds.includes(eventId) ||
+        transport.published.some((e) => e.event_id === eventId);
+    }
+    expect(seen).toBe(true);
     const state = drainer.getDrainState();
     expect(state).toMatchObject({ enabled: true, inFlight: 0 });
     expect(state.totalDrains).toBeGreaterThanOrEqual(1);
