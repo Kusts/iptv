@@ -180,6 +180,13 @@ async function findConfirmationTransactionId(
 export const chargeCreateInput = z.object({
   orderId: z.string().uuid(),
   paymentMethod: z.string().trim().min(1).max(64).default("PIX"),
+  /**
+   * Provider `billingType` threaded to the Asaas `/payments` payload
+   * (default `PIX`). Validated by enum — a forged value fails closed at
+   * parse time, never reaching the provider. `paymentMethod` stays a local
+   * label only.
+   */
+  billingType: z.enum(["PIX", "BOLETO"]).default("PIX"),
   idempotencyKey: z.string().trim().min(1).max(200).optional(),
   dueAt: z.string().datetime({ offset: true }).optional(),
   // NOTE (GAP-LOOP-1): no `providerCustomerId` field exists here by design.
@@ -334,6 +341,7 @@ function handleChargeCreateFactory(deps: BillingCommandDeps) {
         currency: order.currency,
         payer: { personId: order.person_id },
         providerCustomerId: customerBinding.external_customer_id,
+        billingType: input.billingType,
       });
     } catch {
       await trx
