@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- docs(pilot): refund MANUAL policy (operator decision) + Asaas sandbox refund evidence (`evidence/p3-asaas-sandbox/live-refund-*.md`): governance path green live (request→2º-humano→execute→reconcile, anti-self/stale/over-refund, KNOWN_NOT_APPLIED sem efeito falso); provider recusa refund PIX/boleto no Sandbox — SUCCEEDED movido para canary M4/M5.
+
 - feat(integrations): loop Asaas via API em lane scratch (`evidence/p3-asaas-sandbox/live-loop-api.md`): provision→order→charge (fail-closed sem binding)→pagamento sandbox→receiveInCash→webhook 202/202-deduped→reconcile idempotente→PAID + ledger balanceado + 1 efeito. Parado antes do refund (exige RECEIVED via dashboard).
 
 - feat(pilot): rebuild da lane piloto no main atual (001–060, `evidence/rls-pilot/rebuild-060.md`): preservadas 8 linhas (tenant/users/creds/memberships/channel/exceptions OPEN, mesmos ids, hash copiado); migrate 60/60; 051 re-ativada (WORKER gen 3, loop healthy); smoke verde local + público.
