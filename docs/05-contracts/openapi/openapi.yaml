@@ -4888,6 +4888,12 @@ components:
           - BOLETO
           - CARD
           - OTHER
+        billingType:
+          type: string
+          enum:
+          - PIX
+          - BOLETO
+          description: Provider billing type threaded to Asaas /payments (default PIX when omitted)
         dueAt:
           type:
           - string

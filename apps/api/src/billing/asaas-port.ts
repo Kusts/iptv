@@ -21,6 +21,9 @@ import { withSpan } from "@iptv/observability";
 
 export type AsaasEffect = "KNOWN_APPLIED" | "KNOWN_NOT_APPLIED" | "UNKNOWN";
 
+/** Provider `/payments` billing types supported by this slice (default `PIX`). */
+export type AsaasBillingType = "PIX" | "BOLETO";
+
 export interface PixChargeRequest {
   chargeId: string;
   valueMinor: bigint;
@@ -35,6 +38,11 @@ export interface PixChargeRequest {
    * explicit step, never inferred.
    */
   providerCustomerId?: string | null;
+  /**
+   * Provider `billingType` for `/payments` (default `PIX`). Validated
+   * (PIX|BOLETO) before any I/O — a forged value throws instead of posting.
+   */
+  billingType?: AsaasBillingType;
   /**
    * `YYYY-MM-DD` due date for the charge (required by `/payments`). Defaults
    * to tomorrow (UTC) when omitted/blank; a malformed explicit value throws
@@ -291,6 +299,25 @@ export function resolveProvisionDocument(
     );
   }
   return digits;
+}
+
+/**
+ * Resolve the provider `billingType`, defaulting to `PIX`. An explicit value
+ * must be PIX|BOLETO (case-insensitive, trimmed) — anything else throws
+ * before any I/O so a forged billing type can never reach the provider.
+ */
+export function resolveBillingType(explicit: unknown): AsaasBillingType {
+  if (explicit === undefined || explicit === null) {
+    return "PIX";
+  }
+  if (typeof explicit !== "string" || explicit.trim().length === 0) {
+    return "PIX";
+  }
+  const normalized = explicit.trim().toUpperCase();
+  if (normalized === "PIX" || normalized === "BOLETO") {
+    return normalized;
+  }
+  throw new Error(`asaas: billingType must be PIX or BOLETO (got ${JSON.stringify(explicit)})`);
 }
 
 /** Tomorrow (UTC) as `YYYY-MM-DD` — the default `/payments` due date. */
@@ -569,10 +596,11 @@ export class RealAsaasAdapter implements AsaasPort {
   }
 
   async createPixCharge(input: PixChargeRequest): Promise<PixChargeResult> {
-    // Asaas PIX: value is decimal major units; format from minor units
+    // Asaas charge: value is decimal major units; format from minor units
     // without float arithmetic (BRL has 2 fraction digits — enforced above,
     // so the /100n formatting below is exact for every accepted input).
     requireBrlCurrency(input.currency, "pix charge");
+    const billingType = resolveBillingType(input.billingType);
     const major = `${input.valueMinor / 100n}.${(input.valueMinor % 100n).toString().padStart(2, "0")}`;
     // Customer binding (P3): `/payments` requires `customer` + `dueDate`.
     // The stub sends the proven binding when one exists and nothing otherwise
@@ -584,7 +612,7 @@ export class RealAsaasAdapter implements AsaasPort {
         ? input.providerCustomerId.trim()
         : null;
     const body: Record<string, unknown> = {
-      billingType: "PIX",
+      billingType,
       value: major,
       dueDate: resolveDueDate(input.dueDate),
       externalReference: input.chargeId,
@@ -628,7 +656,7 @@ export class RealAsaasAdapter implements AsaasPort {
       effect: "KNOWN_APPLIED",
       providerChargeId: providerId,
       qrCode: typeof json?.pixQrCode === "string" ? json.pixQrCode : null,
-      detail: "asaas: pix charge accepted",
+      detail: `asaas: ${billingType.toLowerCase()} charge accepted`,
     };
   }
 

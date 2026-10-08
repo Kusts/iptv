@@ -21,8 +21,8 @@ import {
   webhookAmountMatchesCharge,
 } from "../src/commerce/money-math.js";
 import { normalizeAsaasPayload } from "../src/billing/asaas-normalizer.js";
-import { EchoAsaasAdapter, RealAsaasAdapter, isSyntheticProviderReference, provenExternalChargeId, resolveAsaasPort, type AsaasPort, type RefundRequest } from "../src/billing/asaas-port.js";
-import { registerBillingCommands } from "../src/billing/billing.commands.js";
+import { EchoAsaasAdapter, RealAsaasAdapter, isSyntheticProviderReference, provenExternalChargeId, resolveAsaasPort, resolveBillingType, type AsaasPort, type RefundRequest } from "../src/billing/asaas-port.js";
+import { chargeCreateInput, registerBillingCommands } from "../src/billing/billing.commands.js";
 import type { CommandBus } from "../src/commands/command-bus.js";
 import {
   chargebackReversalEntries,
@@ -558,6 +558,108 @@ describe("P3 Real Asaas adapter customer binding (mocked fetch, no network)", ()
     });
     expect(created.effect).toBe("UNKNOWN");
     expect(created.providerChargeId).toBe("unknown-charge-p3-4");
+  });
+});
+
+describe("BOLETO billingType (mocked fetch, no network)", () => {
+  const API_KEY = "test-key-not-a-secret";
+  const BASE_URL = "https://sandbox.test";
+
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let originalFetch: typeof fetch | undefined;
+
+  beforeEach(() => {
+    process.env["ASAAS_API_KEY"] = API_KEY;
+    process.env["ASAAS_BASE_URL"] = BASE_URL;
+    originalFetch = globalThis.fetch;
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    delete process.env["ASAAS_API_KEY"];
+    delete process.env["ASAAS_BASE_URL"];
+    globalThis.fetch = originalFetch as typeof fetch;
+    vi.restoreAllMocks();
+  });
+
+  function jsonResponse(status: number, body: unknown): Response {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+    } as Response;
+  }
+
+  function lastPostBody(): Record<string, unknown> {
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    return JSON.parse(String(init.body)) as Record<string, unknown>;
+  }
+
+  it("posts billingType BOLETO with explicit dueDate passthrough", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { id: "pay_boleto_1" }));
+    const port = new RealAsaasAdapter();
+    const created = await port.createPixCharge({
+      chargeId: "charge-boleto-1",
+      valueMinor: 1990n,
+      currency: "BRL",
+      payer: { personId: "person-1" },
+      providerCustomerId: "cus_sandbox_disposable_1",
+      billingType: "BOLETO",
+      dueDate: "2026-11-15",
+    });
+    expect(created.effect).toBe("KNOWN_APPLIED");
+    expect(created.providerChargeId).toBe("pay_boleto_1");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/payments`);
+    expect(init.method).toBe("POST");
+    expect(lastPostBody()).toMatchObject({
+      billingType: "BOLETO",
+      value: "19.90",
+      customer: "cus_sandbox_disposable_1",
+      dueDate: "2026-11-15",
+      externalReference: "charge-boleto-1",
+    });
+    expect(created.detail).not.toContain(API_KEY);
+  });
+
+  it("defaults to PIX when billingType is omitted (no regression)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { id: "pay_default_1", pixQrCode: "qr" }));
+    const port = new RealAsaasAdapter();
+    const created = await port.createPixCharge({
+      chargeId: "charge-default-1",
+      valueMinor: 100n,
+      currency: "BRL",
+      payer: { personId: "person-1" },
+      providerCustomerId: "cus_x",
+    });
+    expect(created.effect).toBe("KNOWN_APPLIED");
+    expect(lastPostBody()["billingType"]).toBe("PIX");
+    expect(resolveBillingType(undefined)).toBe("PIX");
+    expect(resolveBillingType(null)).toBe("PIX");
+  });
+
+  it("rejects a forged billingType before any provider I/O", async () => {
+    expect(() => resolveBillingType("CARD")).toThrow(/billingType must be PIX or BOLETO/);
+    const port = new RealAsaasAdapter();
+    await expect(
+      port.createPixCharge({
+        chargeId: "charge-forged-1",
+        valueMinor: 100n,
+        currency: "BRL",
+        payer: { personId: "person-1" },
+        providerCustomerId: "cus_x",
+        billingType: "CARD" as never,
+      }),
+    ).rejects.toThrow(/billingType must be PIX or BOLETO/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("charge.create input validates billingType (enum, default PIX)", () => {
+    const orderId = "11111111-1111-4111-8111-111111111111";
+    expect(chargeCreateInput.parse({ orderId }).billingType).toBe("PIX");
+    expect(chargeCreateInput.parse({ orderId, billingType: "BOLETO" }).billingType).toBe("BOLETO");
+    expect(() => chargeCreateInput.parse({ orderId, billingType: "CARD" })).toThrow();
   });
 });
 
