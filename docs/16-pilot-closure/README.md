@@ -87,6 +87,12 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 |---|---|---|
 | `P7` rehearsal + drills | fluxo simulado + 105/105 + 9 drills + pool handler + wraps comms/copilot + C9 | DONE (tester PASS) |
 
+## P8 status
+
+| Slice | Escopo | Estado |
+|---|---|---|
+| `P8` wraps + runbook | context-builder/pipeline/commerce/crm-lookup wraps + rehearsal 7/7 + `P8-PILOT.md` | DONE código (tester PASS); OPERAÇÃO do piloto = ato do operador |
+
 ## Artefatos finais (C9 + PLAN — acompanhar aqui)
 
 RLS inventory · Worker inventory · Integration certification register ·

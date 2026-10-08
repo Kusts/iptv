@@ -1,6 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import type { ContextBundle } from "@iptv/ai-runtime";
 import { PolicyResolver } from "../policy/policy-resolver.js";
 
@@ -35,7 +35,13 @@ export class ContextBuilder {
 
   async build(tenantId: string, conversationId: string): Promise<ContextBundle | null> {
     const db = this.requireDb();
-    const conv = await db
+    // RLS-enrolled reads (042 identity/communication, 057 human-review):
+    // every table below fail-closes without `app.tenant_id`, so the whole
+    // assembly runs inside `withTenantTransaction` (actor tenant). The
+    // explicit `tenant_id =` predicates stay as defense-in-depth alongside
+    // the RLS policy. Policy resolution already wraps its own read (053).
+    return withTenantTransaction(db, tenantId, async (trx) => {
+    const conv = await trx
       .selectFrom("communication.conversations")
       .select(["id", "person_id", "channel", "status", "control_mode"])
       .where("tenant_id", "=", tenantId)
@@ -44,14 +50,14 @@ export class ContextBuilder {
     if (conv === undefined) {
       return null;
     }
-    const person = await db
+    const person = await trx
       .selectFrom("identity.persons")
       .select(["id", "canonical_name", "locale"])
       .where("tenant_id", "=", tenantId)
       .where("id", "=", conv.person_id)
       .executeTakeFirst();
 
-    const recentDesc = await db
+    const recentDesc = await trx
       .selectFrom("communication.messages")
       .select(["direction", "sender_type", "body_text", "occurred_at"])
       .where("tenant_id", "=", tenantId)
@@ -61,7 +67,7 @@ export class ContextBuilder {
       .execute();
 
     const now = new Date();
-    const suppressions = await db
+    const suppressions = await trx
       .selectFrom("communication.communication_suppressions")
       .select(["id"])
       .where("tenant_id", "=", tenantId)
@@ -71,7 +77,7 @@ export class ContextBuilder {
       .where((eb) => eb.or([eb("ends_at", "is", null), eb("ends_at", ">", now)]))
       .limit(1)
       .execute();
-    const denied = await db
+    const denied = await trx
       .selectFrom("communication.communication_preferences")
       .select(["id"])
       .where("tenant_id", "=", tenantId)
@@ -81,7 +87,7 @@ export class ContextBuilder {
       .limit(1)
       .execute();
 
-    const reviews = await db
+    const reviews = await trx
       .selectFrom("agent.human_review_requests")
       .select(["id"])
       .where("tenant_id", "=", tenantId)
@@ -116,5 +122,6 @@ export class ContextBuilder {
       suppressionsActive: suppressions.length > 0 || denied.length > 0,
       openReviewCount: reviews.length,
     };
+    });
   }
 }
