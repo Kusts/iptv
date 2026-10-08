@@ -61,6 +61,13 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 |---|---|---|
 | `P3` integrações | Asaas software + stub customer; WAHA código/sintético; CINEVISION/MK/Infisical gates; Hatchet BLOCKED; register + `P3-INTEGRATIONS.md` + `evidence/p3-*/` | DONE sem live (tester PASS; lives = gates de operador: B1/B2, M1/M2, G07, Steps 3/6–9, F12) |
 
+## P4 status
+
+| Slice | Escopo | Estado |
+|---|---|---|
+| `P4a` revenue-ops | /crm /trials /billing /fulfillment /renewals /inventory + helper + NAV | DONE (tester PASS 116) |
+| `P4b` growth/admin | /growth /referrals /resellers /finance /analytics + ext copilot/lar + NAV | DONE (tester PASS 122) |
+
 ## Artefatos finais (C9 + PLAN — acompanhar aqui)
 
 RLS inventory · Worker inventory · Integration certification register ·
