@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- feat(integrations): loop Asaas via API em lane scratch (`evidence/p3-asaas-sandbox/live-loop-api.md`): provision→order→charge (fail-closed sem binding)→pagamento sandbox→receiveInCash→webhook 202/202-deduped→reconcile idempotente→PAID + ledger balanceado + 1 efeito. Parado antes do refund (exige RECEIVED via dashboard).
+
 - feat(pilot): rebuild da lane piloto no main atual (001–060, `evidence/rls-pilot/rebuild-060.md`): preservadas 8 linhas (tenant/users/creds/memberships/channel/exceptions OPEN, mesmos ids, hash copiado); migrate 60/60; 051 re-ativada (WORKER gen 3, loop healthy); smoke verde local + público.
 
 - feat(billing): GAP-LOOP-1 vínculo pessoa→customer Asaas (migration `060_billing_customer_provider_binding` + prova `db/tests/027`): tabela `billing.customer_provider_bindings` (UNIQUE tenant-scoped `(person,provider)` + `(provider,external id)` documentados, RLS `tenant_isolation`, sem BYPASSRLS/outbox); `charge.create` auto-resolve o binding pela pessoa do pedido (sem campo forged no request) e falha fechado sem binding (precondition explícita, nunca PENDING silencioso); comando explícito `billing.customer_provision` (+ `POST /v1/billing-customers/provision` e OpenAPI) idempotente — Sandbox/echo aceitam o CPF de teste documentado (`SANDBOX_TEST_DOCUMENT_CPF`), produção sem documento real recusa com `DOCUMENT_REQUIRED` e nunca inventa; LGPD sem coluna de documento nesta slice (documento só in-transit). `charge_provider_bindings.external_customer_id` agora carrega o vínculo resolvido.
