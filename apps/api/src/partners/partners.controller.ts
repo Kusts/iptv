@@ -9,9 +9,9 @@ import {
   Req,
   UseGuards,
 } from "@nestjs/common";
-import type { Kysely } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import { sql } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult, CommandActor } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -76,8 +76,14 @@ function toPublicAccount(row: AccountRow): Record<string, unknown> {
 /**
  * Wave 13 Partners/Resellers surface. Writes go through the `CommandBus`
  * (owning context for accounts, direct-edge hierarchy, prepaid credit,
- * orders and Academy gates); reads are plain tenant-scoped selects
- * shaped to the OpenAPI contract.
+ * orders and Academy gates); tenant reads run inside
+ * `withTenantTransaction` (actor tenant): the tables below are RLS-enrolled
+ * (migration 058, fail-closed when `app.tenant_id` is unset), so pool-level
+ * selects under `iptv_app` would return empty silently after cutover. The
+ * explicit `tenant_id =` predicates stay as defense-in-depth alongside the
+ * RLS policy. The Academy catalog read (`listAcademyContent`) is the one
+ * exception: `partners.learning_content` is GLOBAL (no tenant_id, no RLS by
+ * 058 design) and stays a direct pool read.
  *
  * Permission reuse (no new keys, no migration in this slice):
  * B2B-lifecycle writes/reads reuse `crm.lead.write` / `crm.person.read`
@@ -113,12 +119,16 @@ export class PartnersController {
   }
 
   private async requireAccount(tenantId: string, accountId: string): Promise<AccountRow> {
-    const row = await this.requireDb()
-      .selectFrom("partners.partner_accounts")
-      .select(["id", "display_name", "account_type", "status", "linked_tenant_id", "created_at", "updated_at"])
-      .where("tenant_id", "=", tenantId)
-      .where("id", "=", accountId)
-      .executeTakeFirst();
+    // P1.5-058 (P1.3 FIX1 mirror): tenant-scoped read inside the request
+    // tenant's context — direct reads fail-closed under `iptv_app`.
+    const row = await withTenantTransaction(this.requireDb(), tenantId, (trx) =>
+      trx
+        .selectFrom("partners.partner_accounts")
+        .select(["id", "display_name", "account_type", "status", "linked_tenant_id", "created_at", "updated_at"])
+        .where("tenant_id", "=", tenantId)
+        .where("id", "=", accountId)
+        .executeTakeFirst(),
+    );
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "partner account not found" }, 404);
     }
@@ -141,13 +151,16 @@ export class PartnersController {
   @RequirePermission("crm.person.read")
   async listAccounts(@Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const rows = await this.requireDb()
-      .selectFrom("partners.partner_accounts")
-      .select(["id", "display_name", "account_type", "status", "linked_tenant_id", "created_at", "updated_at"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "asc")
-      .limit(200)
-      .execute();
+    // P1.5-058 (P1.3 FIX1 mirror): see requireAccount().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("partners.partner_accounts")
+        .select(["id", "display_name", "account_type", "status", "linked_tenant_id", "created_at", "updated_at"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("created_at", "asc")
+        .limit(200)
+        .execute(),
+    );
     return { items: rows.map(toPublicAccount) };
   }
 
@@ -217,8 +230,9 @@ export class PartnersController {
     return send(result);
   }
 
-  private async creditBalance(tenantId: string, accountId: string): Promise<{ currency: string; ledgerMinor: string; reservedMinor: string; availableMinor: string }[]> {
-    const db = this.requireDb();
+  // P1.5-058: balance helper takes the caller's tenant transaction (all three
+  // callers already run inside `withTenantTransaction`); never opens its own.
+  private async creditBalance(db: Transaction<Database>, tenantId: string, accountId: string): Promise<{ currency: string; ledgerMinor: string; reservedMinor: string; availableMinor: string }[]> {
     const ledger = await sql<{ currency: string; total: string }>`
       SELECT currency, COALESCE(SUM(amount_minor), 0)::text AS total
       FROM partners.reseller_credit_entries
@@ -281,7 +295,11 @@ export class PartnersController {
   async getCredits(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     await this.requireAccount(tenant.id, id);
-    return { partnerAccountId: id, balances: await this.creditBalance(tenant.id, id) };
+    // P1.5-058 (P1.3 FIX1 mirror): see requireAccount().
+    const balances = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      this.creditBalance(trx, tenant.id, id),
+    );
+    return { partnerAccountId: id, balances };
   }
 
   @Post("partners/price-books")
@@ -311,23 +329,26 @@ export class PartnersController {
   @RequirePermission("crm.person.read")
   async getOrder(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const row = await this.requireDb()
-      .selectFrom("partners.reseller_orders")
-      .select([
-        "id",
-        "partner_account_id",
-        "price_book_id",
-        "quantity",
-        "unit_price_minor",
-        "total_minor",
-        "currency",
-        "status",
-        "credit_reservation_id",
-        "settled_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", id)
-      .executeTakeFirst();
+    // P1.5-058 (P1.3 FIX1 mirror): see requireAccount().
+    const row = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("partners.reseller_orders")
+        .select([
+          "id",
+          "partner_account_id",
+          "price_book_id",
+          "quantity",
+          "unit_price_minor",
+          "total_minor",
+          "currency",
+          "status",
+          "credit_reservation_id",
+          "settled_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", id)
+        .executeTakeFirst(),
+    );
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "reseller order not found" }, 404);
     }
@@ -356,61 +377,65 @@ export class PartnersController {
   async getNetwork(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     await this.requireAccount(tenant.id, id);
-    const db = this.requireDb();
-    const children = await db
-      .selectFrom("partners.partner_relationships as rel")
-      .innerJoin("partners.partner_accounts as child", (join) =>
-        join.onRef("child.tenant_id", "=", "rel.tenant_id").onRef("child.id", "=", "rel.child_account_id"),
-      )
-      .select([
-        "child.id",
-        "child.display_name",
-        "child.account_type",
-        "child.status",
-        "child.linked_tenant_id",
-        "child.created_at",
-        "child.updated_at",
-      ])
-      .where("rel.tenant_id", "=", tenant.id)
-      .where("rel.parent_account_id", "=", id)
-      .where("rel.status", "=", "ACTIVE")
-      .orderBy("child.created_at", "asc")
-      .execute();
-    const items: Record<string, unknown>[] = [];
-    for (const child of children) {
-      const balances = await this.creditBalance(tenant.id, child.id);
-      const orders = await db
-        .selectFrom("partners.reseller_orders")
-        .select(["id", "status", "total_minor", "currency"])
-        .where("tenant_id", "=", tenant.id)
-        .where("partner_account_id", "=", child.id)
+    // P1.5-058 (P1.3 FIX1 mirror): see requireAccount() — the whole
+    // aggregate (children + per-child balances/orders/progress) reads in
+    // one tenant context.
+    return withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const children = await trx
+        .selectFrom("partners.partner_relationships as rel")
+        .innerJoin("partners.partner_accounts as child", (join) =>
+          join.onRef("child.tenant_id", "=", "rel.tenant_id").onRef("child.id", "=", "rel.child_account_id"),
+        )
+        .select([
+          "child.id",
+          "child.display_name",
+          "child.account_type",
+          "child.status",
+          "child.linked_tenant_id",
+          "child.created_at",
+          "child.updated_at",
+        ])
+        .where("rel.tenant_id", "=", tenant.id)
+        .where("rel.parent_account_id", "=", id)
+        .where("rel.status", "=", "ACTIVE")
+        .orderBy("child.created_at", "asc")
         .execute();
-      const settled = orders.filter((order) => order.status === "SETTLED");
-      const progress = await db
-        .selectFrom("partners.learning_progress")
-        .select(["id"])
-        .where("tenant_id", "=", tenant.id)
-        .where("partner_account_id", "=", child.id)
-        .where("status", "=", "COMPLETED")
-        .execute();
-      items.push({
-        ...toPublicAccount({
-          id: child.id,
-          display_name: child.display_name,
-          account_type: child.account_type,
-          status: child.status,
-          linked_tenant_id: child.linked_tenant_id,
-          created_at: child.created_at,
-          updated_at: child.updated_at,
-        }),
-        balances,
-        orderCount: orders.length,
-        settledOrderCount: settled.length,
-        settledTotalMinor: settled.reduce((sum, order) => sum + BigInt(String(order.total_minor)), 0n).toString(),
-        completedTopics: progress.length,
-      });
-    }
-    return { partnerAccountId: id, directChildren: items };
+      const items: Record<string, unknown>[] = [];
+      for (const child of children) {
+        const balances = await this.creditBalance(trx, tenant.id, child.id);
+        const orders = await trx
+          .selectFrom("partners.reseller_orders")
+          .select(["id", "status", "total_minor", "currency"])
+          .where("tenant_id", "=", tenant.id)
+          .where("partner_account_id", "=", child.id)
+          .execute();
+        const settled = orders.filter((order) => order.status === "SETTLED");
+        const progress = await trx
+          .selectFrom("partners.learning_progress")
+          .select(["id"])
+          .where("tenant_id", "=", tenant.id)
+          .where("partner_account_id", "=", child.id)
+          .where("status", "=", "COMPLETED")
+          .execute();
+        items.push({
+          ...toPublicAccount({
+            id: child.id,
+            display_name: child.display_name,
+            account_type: child.account_type,
+            status: child.status,
+            linked_tenant_id: child.linked_tenant_id,
+            created_at: child.created_at,
+            updated_at: child.updated_at,
+          }),
+          balances,
+          orderCount: orders.length,
+          settledOrderCount: settled.length,
+          settledTotalMinor: settled.reduce((sum, order) => sum + BigInt(String(order.total_minor)), 0n).toString(),
+          completedTopics: progress.length,
+        });
+      }
+      return { partnerAccountId: id, directChildren: items };
+    });
   }
 
   /** 360 view: account + lifecycle + credits + orders + Academy progress. */
@@ -420,62 +445,71 @@ export class PartnersController {
   async getSummary(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const account = await this.requireAccount(tenant.id, id);
-    const db = this.requireDb();
-    const balances = await this.creditBalance(tenant.id, id);
-    const orders = await db
-      .selectFrom("partners.reseller_orders")
-      .select(["id", "status", "total_minor", "currency", "settled_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("partner_account_id", "=", id)
-      .orderBy("created_at", "desc")
-      .limit(200)
-      .execute();
-    const content = await db
-      .selectFrom("partners.learning_content")
-      .select(["id", "topic_key", "title", "position"])
-      .orderBy("position", "asc")
-      .execute();
-    const progress = await db
-      .selectFrom("partners.learning_progress")
-      .select(["content_id", "status", "completed_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("partner_account_id", "=", id)
-      .execute();
-    const byContent = new Map(progress.map((row) => [row.content_id, row]));
-    const capabilities = await db
-      .selectFrom("partners.partner_capabilities")
-      .select(["capability_key", "status"])
-      .where("tenant_id", "=", tenant.id)
-      .where("partner_account_id", "=", id)
-      .execute();
-    return {
-      account: toPublicAccount(account),
-      balances,
-      orders: orders.map((order) => ({
-        id: order.id,
-        status: order.status,
-        totalMinor: String(order.total_minor),
-        currency: order.currency,
-        settledAt: order.settled_at?.toISOString() ?? null,
-      })),
-      academy: {
-        totalTopics: content.length,
-        completedTopics: progress.filter((row) => row.status === "COMPLETED").length,
-        topics: content.map((topic) => ({
-          topicKey: topic.topic_key,
-          title: topic.title,
-          status: byContent.get(topic.id)?.status ?? "NOT_STARTED",
-          completedAt: byContent.get(topic.id)?.completed_at?.toISOString() ?? null,
+    // P1.5-058 (P1.3 FIX1 mirror): see requireAccount(). The Academy
+    // catalog read below (`learning_content`) is GLOBAL (no RLS by 058
+    // design) and stays readable inside the tenant context — no separate
+    // pool read needed.
+    return withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const balances = await this.creditBalance(trx, tenant.id, id);
+      const orders = await trx
+        .selectFrom("partners.reseller_orders")
+        .select(["id", "status", "total_minor", "currency", "settled_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("partner_account_id", "=", id)
+        .orderBy("created_at", "desc")
+        .limit(200)
+        .execute();
+      const content = await trx
+        .selectFrom("partners.learning_content")
+        .select(["id", "topic_key", "title", "position"])
+        .orderBy("position", "asc")
+        .execute();
+      const progress = await trx
+        .selectFrom("partners.learning_progress")
+        .select(["content_id", "status", "completed_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("partner_account_id", "=", id)
+        .execute();
+      const byContent = new Map(progress.map((row) => [row.content_id, row]));
+      const capabilities = await trx
+        .selectFrom("partners.partner_capabilities")
+        .select(["capability_key", "status"])
+        .where("tenant_id", "=", tenant.id)
+        .where("partner_account_id", "=", id)
+        .execute();
+      return {
+        account: toPublicAccount(account),
+        balances,
+        orders: orders.map((order) => ({
+          id: order.id,
+          status: order.status,
+          totalMinor: String(order.total_minor),
+          currency: order.currency,
+          settledAt: order.settled_at?.toISOString() ?? null,
         })),
-      },
-      capabilities: capabilities.map((row) => ({ capabilityKey: row.capability_key, status: row.status })),
-    };
+        academy: {
+          totalTopics: content.length,
+          completedTopics: progress.filter((row) => row.status === "COMPLETED").length,
+          topics: content.map((topic) => ({
+            topicKey: topic.topic_key,
+            title: topic.title,
+            status: byContent.get(topic.id)?.status ?? "NOT_STARTED",
+            completedAt: byContent.get(topic.id)?.completed_at?.toISOString() ?? null,
+          })),
+        },
+        capabilities: capabilities.map((row) => ({ capabilityKey: row.capability_key, status: row.status })),
+      };
+    });
   }
 
   @Get("academy/content")
   @UseGuards(AuthGuard, PermissionsGuard)
   @RequirePermission("crm.person.read")
   async listAcademyContent() {
+    // P1.5-058: GLOBAL catalog (`partners.learning_content` — no tenant_id,
+    // no RLS by design) intentionally WITHOUT `withTenantTransaction`: the
+    // same curriculum serves every tenant and the read must work pre-context.
+    // Tenant progress stays behind the RLS-enrolled `learning_progress`.
     const rows = await this.requireDb()
       .selectFrom("partners.learning_content")
       .select(["id", "topic_key", "title", "position"])

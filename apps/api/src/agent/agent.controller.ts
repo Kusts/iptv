@@ -12,7 +12,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandActor } from "@iptv/domain";
 import type { FastifyRequest, FastifyReply } from "fastify";
@@ -78,8 +78,11 @@ export class AgentController {
     if (typeof conversationId !== "string" || !UUID_RE.test(conversationId)) {
       throw new HttpException({ code: "INVALID_CONVERSATION", message: "conversationId (uuid) is required" }, 400);
     }
-    const rows = await this.requireDb()
-      .selectFrom("agent.agent_runs")
+    // P1.5-057 (P1.3 FIX1 mirror): tenant-scoped read inside the request
+    // tenant's context — direct reads fail-closed under `iptv_app`.
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("agent.agent_runs")
       .select([
         "id",
         "conversation_id",
@@ -98,7 +101,8 @@ export class AgentController {
       .where("tenant_id", "=", tenant.id)
       .where("conversation_id", "=", conversationId)
       .orderBy("created_at", "desc")
-      .execute();
+      .execute(),
+    );
     return {
       runs: rows.map((r) => ({
         id: r.id,

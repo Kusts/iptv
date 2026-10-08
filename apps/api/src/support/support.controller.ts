@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandActor, CommandResult } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -69,10 +69,14 @@ function toIso(value: Date | null): string | null {
  * Wave 8 Support surface: tickets + incidents + problems.
  *
  * Writes go through the `CommandBus` (permission-gated, validated,
- * audited, registry-listed events in the same transaction). Reads are
- * plain tenant-scoped selects — including read-only diagnostics joins
- * (conversation context, linked incidents/problems, attempts, observed
- * solution outcomes with trial refs) that never mutate another context.
+ * audited, registry-listed events in the same transaction). Reads run inside
+ * `withTenantTransaction` (actor tenant): the tables below are RLS-enrolled
+ * (migration 057, fail-closed when `app.tenant_id` is unset), so pool-level
+ * selects under `iptv_app` would return empty silently after cutover. The
+ * explicit `tenant_id =` predicates stay as defense-in-depth alongside the
+ * RLS policy. This covers the read-only diagnostics joins too (conversation
+ * context, linked incidents/problems, attempts, observed solution outcomes
+ * with trial refs) that never mutate another context.
  */
 @Controller("v1")
 export class SupportController {
@@ -175,8 +179,11 @@ export class SupportController {
   @RequirePermission("support.ticket.read")
   async getTechnicalAccess(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const row = await this.requireDb()
-      .selectFrom("support.technical_access_grants")
+    // P1.5-057 (P1.3 FIX1 mirror): tenant-scoped read inside the request
+    // tenant's context — direct reads fail-closed under `iptv_app`.
+    const row = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("support.technical_access_grants")
       .select([
         "id",
         "person_id",
@@ -191,7 +198,8 @@ export class SupportController {
       ])
       .where("tenant_id", "=", tenant.id)
       .where("id", "=", id)
-      .executeTakeFirst();
+      .executeTakeFirst(),
+    );
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "technical access grant not found" }, 404);
     }
@@ -218,19 +226,22 @@ export class SupportController {
   ) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    let select = this.requireDb()
-      .selectFrom("support.technical_access_grants")
-      .select(["id", "person_id", "support_ticket_id", "reason", "status", "granted_at", "expires_at"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "desc")
-      .limit(limit);
-    if (query.personId !== undefined) {
-      select = select.where("person_id", "=", query.personId);
-    }
-    if (query.ticketId !== undefined) {
-      select = select.where("support_ticket_id", "=", query.ticketId);
-    }
-    const rows = await select.execute();
+    // P1.5-057 (P1.3 FIX1 mirror): see getTechnicalAccess().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) => {
+      let select = trx
+        .selectFrom("support.technical_access_grants")
+        .select(["id", "person_id", "support_ticket_id", "reason", "status", "granted_at", "expires_at"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("created_at", "desc")
+        .limit(limit);
+      if (query.personId !== undefined) {
+        select = select.where("person_id", "=", query.personId);
+      }
+      if (query.ticketId !== undefined) {
+        select = select.where("support_ticket_id", "=", query.ticketId);
+      }
+      return select.execute();
+    });
     return {
       grants: rows.map((r) => ({
         id: r.id,
@@ -250,14 +261,17 @@ export class SupportController {
   async myWork(@Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const auth = req.auth as NonNullable<FastifyRequest["auth"]>;
-    const rows = await this.requireDb()
-      .selectFrom("support.support_tickets")
-      .select(["id", "status", "priority", "summary", "person_id", "created_at", "updated_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("assignee_user_id", "=", auth.userId)
-      .where("status", "in", OPEN_TICKET_STATUSES)
-      .orderBy("created_at", "asc")
-      .execute();
+    // P1.5-057 (P1.3 FIX1 mirror): see getTechnicalAccess().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("support.support_tickets")
+        .select(["id", "status", "priority", "summary", "person_id", "created_at", "updated_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("assignee_user_id", "=", auth.userId)
+        .where("status", "in", OPEN_TICKET_STATUSES)
+        .orderBy("created_at", "asc")
+        .execute(),
+    );
     return {
       tickets: rows.map((r) => ({
         id: r.id,
@@ -283,22 +297,25 @@ export class SupportController {
       throw new HttpException({ code: "INVALID_STATUS", message: `unknown status: ${query.status}` }, 400);
     }
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    let select = this.requireDb()
-      .selectFrom("support.support_tickets")
-      .select(["id", "status", "priority", "summary", "person_id", "assignee_user_id", "created_at", "resolved_at"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "desc")
-      .limit(limit);
-    if (query.status !== undefined) {
-      select = select.where("status", "=", query.status);
-    }
-    if (query.assignee !== undefined) {
-      select = select.where("assignee_user_id", "=", query.assignee);
-    }
-    if (query.personId !== undefined) {
-      select = select.where("person_id", "=", query.personId);
-    }
-    const rows = await select.execute();
+    // P1.5-057 (P1.3 FIX1 mirror): see getTechnicalAccess().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) => {
+      let select = trx
+        .selectFrom("support.support_tickets")
+        .select(["id", "status", "priority", "summary", "person_id", "assignee_user_id", "created_at", "resolved_at"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("created_at", "desc")
+        .limit(limit);
+      if (query.status !== undefined) {
+        select = select.where("status", "=", query.status);
+      }
+      if (query.assignee !== undefined) {
+        select = select.where("assignee_user_id", "=", query.assignee);
+      }
+      if (query.personId !== undefined) {
+        select = select.where("person_id", "=", query.personId);
+      }
+      return select.execute();
+    });
     return {
       tickets: rows.map((r) => ({
         id: r.id,
@@ -318,9 +335,12 @@ export class SupportController {
   @RequirePermission("support.ticket.read")
   async getTicket(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
-    const ticket = await db
-      .selectFrom("support.support_tickets")
+    // P1.5-057 (P1.3 FIX1 mirror): one tenant transaction for the ticket +
+    // all diagnostics reads (trial.controller.ts bundled pattern) — direct
+    // reads fail-closed under `iptv_app`.
+    const bundled = await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const ticket = await trx
+        .selectFrom("support.support_tickets")
       .select([
         "id",
         "person_id",
@@ -341,55 +361,60 @@ export class SupportController {
       .where("id", "=", id)
       .executeTakeFirst();
     if (ticket === undefined) {
-      throw new HttpException({ code: "NOT_FOUND", message: "ticket not found in this tenant" }, 404);
+      return null;
     }
     // Diagnostics context: read-only joins, never mutations.
-    const [incidents, problems, attempts, outcomes, conversation] = await Promise.all([
-      db
-        .selectFrom("support.ticket_incident_links")
-        .innerJoin("support.incidents", (join) =>
-          join
-            .onRef("support.incidents.id", "=", "support.ticket_incident_links.incident_id")
-            .on("support.incidents.tenant_id", "=", tenant.id),
-        )
-        .select(["support.incidents.id", "support.incidents.status", "support.incidents.severity", "support.incidents.title"])
-        .where("support.ticket_incident_links.tenant_id", "=", tenant.id)
-        .where("support.ticket_incident_links.support_ticket_id", "=", id)
-        .execute(),
-      db
-        .selectFrom("support.ticket_problem_links")
-        .innerJoin("support.problems", (join) =>
-          join
-            .onRef("support.problems.id", "=", "support.ticket_problem_links.problem_id")
-            .on("support.problems.tenant_id", "=", tenant.id),
-        )
-        .select(["support.problems.id", "support.problems.status", "support.problems.title"])
-        .where("support.ticket_problem_links.tenant_id", "=", tenant.id)
-        .where("support.ticket_problem_links.support_ticket_id", "=", id)
-        .execute(),
-      db
-        .selectFrom("support.solution_attempts")
-        .select(["id", "solution_id", "procedure_key", "attempt_no", "actor_type", "outcome", "completed_at"])
-        .where("tenant_id", "=", tenant.id)
-        .where("support_ticket_id", "=", id)
-        .orderBy("attempt_no", "asc")
-        .execute(),
-      db
-        .selectFrom("knowledge.solution_outcomes")
-        .select(["id", "solution_id", "trial_id", "outcome", "context_fingerprint", "observed_at"])
-        .where("tenant_id", "=", tenant.id)
-        .where("support_ticket_id", "=", id)
-        .orderBy("observed_at", "desc")
-        .execute(),
+    const incidents = await trx
+      .selectFrom("support.ticket_incident_links")
+      .innerJoin("support.incidents", (join) =>
+        join
+          .onRef("support.incidents.id", "=", "support.ticket_incident_links.incident_id")
+          .on("support.incidents.tenant_id", "=", tenant.id),
+      )
+      .select(["support.incidents.id", "support.incidents.status", "support.incidents.severity", "support.incidents.title"])
+      .where("support.ticket_incident_links.tenant_id", "=", tenant.id)
+      .where("support.ticket_incident_links.support_ticket_id", "=", id)
+      .execute();
+    const problems = await trx
+      .selectFrom("support.ticket_problem_links")
+      .innerJoin("support.problems", (join) =>
+        join
+          .onRef("support.problems.id", "=", "support.ticket_problem_links.problem_id")
+          .on("support.problems.tenant_id", "=", tenant.id),
+      )
+      .select(["support.problems.id", "support.problems.status", "support.problems.title"])
+      .where("support.ticket_problem_links.tenant_id", "=", tenant.id)
+      .where("support.ticket_problem_links.support_ticket_id", "=", id)
+      .execute();
+    const attempts = await trx
+      .selectFrom("support.solution_attempts")
+      .select(["id", "solution_id", "procedure_key", "attempt_no", "actor_type", "outcome", "completed_at"])
+      .where("tenant_id", "=", tenant.id)
+      .where("support_ticket_id", "=", id)
+      .orderBy("attempt_no", "asc")
+      .execute();
+    const outcomes = await trx
+      .selectFrom("knowledge.solution_outcomes")
+      .select(["id", "solution_id", "trial_id", "outcome", "context_fingerprint", "observed_at"])
+      .where("tenant_id", "=", tenant.id)
+      .where("support_ticket_id", "=", id)
+      .orderBy("observed_at", "desc")
+      .execute();
+    const conversation =
       ticket.conversation_id === null
-        ? Promise.resolve(undefined)
-        : db
-            .selectFrom("communication.conversations")
-            .select(["id", "status", "channel", "control_mode"])
-            .where("tenant_id", "=", tenant.id)
-            .where("id", "=", ticket.conversation_id)
-            .executeTakeFirst(),
-    ]);
+        ? undefined
+        : await trx
+          .selectFrom("communication.conversations")
+          .select(["id", "status", "channel", "control_mode"])
+          .where("tenant_id", "=", tenant.id)
+          .where("id", "=", ticket.conversation_id)
+          .executeTakeFirst();
+    return { ticket, incidents, problems, attempts, outcomes, conversation };
+  });
+  if (bundled === null) {
+    throw new HttpException({ code: "NOT_FOUND", message: "ticket not found in this tenant" }, 404);
+  }
+  const { ticket, incidents, problems, attempts, outcomes, conversation } = bundled;
     return {
       ticket: {
         id: ticket.id,
@@ -460,16 +485,19 @@ export class SupportController {
   async listIncidents(@Query() query: { status?: string; limit?: string }, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    let select = this.requireDb()
-      .selectFrom("support.incidents")
-      .select(["id", "status", "severity", "title", "detected_at", "resolved_at"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("detected_at", "desc")
-      .limit(limit);
-    if (query.status !== undefined) {
-      select = select.where("status", "=", query.status);
-    }
-    const rows = await select.execute();
+    // P1.5-057 (P1.3 FIX1 mirror): see getTechnicalAccess().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) => {
+      let select = trx
+        .selectFrom("support.incidents")
+        .select(["id", "status", "severity", "title", "detected_at", "resolved_at"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("detected_at", "desc")
+        .limit(limit);
+      if (query.status !== undefined) {
+        select = select.where("status", "=", query.status);
+      }
+      return select.execute();
+    });
     return {
       incidents: rows.map((r) => ({
         id: r.id,
@@ -495,16 +523,19 @@ export class SupportController {
   async listProblems(@Query() query: { status?: string; limit?: string }, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    let select = this.requireDb()
-      .selectFrom("support.problems")
-      .select(["id", "status", "title", "resolved_at"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "desc")
-      .limit(limit);
-    if (query.status !== undefined) {
-      select = select.where("status", "=", query.status);
-    }
-    const rows = await select.execute();
+    // P1.5-057 (P1.3 FIX1 mirror): see getTechnicalAccess().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) => {
+      let select = trx
+        .selectFrom("support.problems")
+        .select(["id", "status", "title", "resolved_at"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("created_at", "desc")
+        .limit(limit);
+      if (query.status !== undefined) {
+        select = select.where("status", "=", query.status);
+      }
+      return select.execute();
+    });
     return {
       problems: rows.map((r) => ({
         id: r.id,

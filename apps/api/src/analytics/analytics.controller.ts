@@ -10,8 +10,8 @@ import {
   Req,
   UseGuards,
 } from "@nestjs/common";
-import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import type { Kysely, Transaction } from "kysely";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import type { FastifyRequest } from "fastify";
 import { AuthGuard } from "../auth/auth.guard.js";
 import { RequirePermission, PermissionsGuard } from "../auth/permissions.guard.js";
@@ -67,6 +67,15 @@ function parseWindow(value: unknown): Date | undefined {
  * `analytics.*` read-model) and degrades instead of failing the operation
  * path (F14). No write here touches a domain table.
  *
+ * Reads run inside `withTenantTransaction` (actor tenant): the fact tables
+ * below are RLS-enrolled (052/055/057 plus growth/communication in 058/042,
+ * fail-closed when `app.tenant_id` is unset), so pool-level selects under
+ * `iptv_app` would return empty silently after cutover. The explicit
+ * `tenant_id =` predicates stay as defense-in-depth alongside the RLS
+ * policy. Each Control Center section opens its OWN tenant transaction so a
+ * failing section still degrades in isolation (F14) instead of poisoning
+ * the shared summary transaction.
+ *
  * Permission reuse (no new migration): metric reads use `crm.person.read`
  * (all roles — dashboards are operator-facing); the Control Center summary
  * uses `support.ticket.read` (all roles — operation-facing); the recompute
@@ -89,14 +98,24 @@ export class AnalyticsController {
   @Post("analytics/recompute")
   @UseGuards(AuthGuard, PermissionsGuard)
   @RequirePermission("billing.charge.write")
-  async recompute(@Body() body: { from?: unknown; to?: unknown; failFamily?: unknown }, @Req() req: FastifyRequest) {
+  async recompute(@Body() body: { from?: unknown; to?: unknown; failFamily?: unknown; failFamilySql?: unknown }, @Req() req: FastifyRequest) {
     void idempotencyKeyOf(req);
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const from = body.from === undefined ? undefined : parseWindow(body.from);
     const to = body.to === undefined ? undefined : parseWindow(body.to);
     const failFamily = typeof body.failFamily === "string" && body.failFamily.length > 0 ? body.failFamily : undefined;
+    const failFamilySql =
+      typeof body.failFamilySql === "string" && body.failFamilySql.length > 0 ? body.failFamilySql : undefined;
     try {
-      return await recomputeAnalytics(this.requireDb(), tenant.id, { from, to, failFamily });
+      // P1.5-058 (P1.3 FIX1 mirror): fact reads are RLS-enrolled (058/042),
+      // so the recompute runs inside the request tenant's context. The
+      // `analytics.*` read-model writes ride along (no RLS there by design).
+      // P15-FIX1: families are isolated by SAVEPOINT inside this shared
+      // transaction (see recomputeAnalytics) — a SQL failure in one family
+      // degrades it (F14) instead of aborting the whole recompute.
+      return await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+        recomputeAnalytics(trx, tenant.id, { from, to, failFamily, failFamilySql }),
+      );
     } catch (err) {
       throw new HttpException(
         { code: "VALIDATION_FAILED", message: err instanceof Error ? err.message : "recompute failed" },
@@ -110,12 +129,16 @@ export class AnalyticsController {
   @RequirePermission("crm.person.read")
   async catalog(@Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const rows = await this.requireDb()
-      .selectFrom("analytics.metric_definitions")
-      .select(["metric_key", "family", "formula_ref", "formula_version", "unit", "granularity"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("metric_key", "asc")
-      .execute();
+    // P1.5-058 (P1.3 FIX1 mirror): tenant-scoped read inside the request
+    // tenant's context — direct reads fail-closed under `iptv_app`.
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("analytics.metric_definitions")
+        .select(["metric_key", "family", "formula_ref", "formula_version", "unit", "granularity"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("metric_key", "asc")
+        .execute(),
+    );
     const items =
       rows.length > 0
         ? rows.map((r) => ({
@@ -153,15 +176,18 @@ export class AnalyticsController {
     const now = new Date();
     const from = fromRaw === undefined ? new Date(bucketDayUTC(now).getTime() - 29 * 86_400_000) : parseWindow(fromRaw);
     const to = toRaw === undefined ? new Date(bucketDayUTC(now).getTime() + 86_400_000) : parseWindow(toRaw);
-    const rows = await this.requireDb()
-      .selectFrom("analytics.metric_snapshots")
-      .select(["bucket_start", "value_json", "value_minor", "computed_at", "data_quality"])
-      .where("tenant_id", "=", tenant.id)
-      .where("metric_key", "=", key)
-      .where("bucket_start", ">=", from as Date)
-      .where("bucket_start", "<", to as Date)
-      .orderBy("bucket_start", "asc")
-      .execute();
+    // P1.5-058 (P1.3 FIX1 mirror): see catalog().
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("analytics.metric_snapshots")
+        .select(["bucket_start", "value_json", "value_minor", "computed_at", "data_quality"])
+        .where("tenant_id", "=", tenant.id)
+        .where("metric_key", "=", key)
+        .where("bucket_start", ">=", from as Date)
+        .where("bucket_start", "<", to as Date)
+        .orderBy("bucket_start", "asc")
+        .execute(),
+    );
     return {
       key,
       from: (from as Date).toISOString(),
@@ -181,52 +207,55 @@ export class AnalyticsController {
   @RequirePermission("crm.person.read")
   async overview(@Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
-    const metrics: Record<string, {
-      bucket: string;
-      value: Record<string, unknown>;
-      valueMinor: string | null;
-      computedAt: string;
-      dataQuality: string;
-    } | null> = {};
-    let latest: Date | null = null;
-    let degraded = 0;
-    for (const def of METRIC_DEFINITIONS) {
-      const row = await db
-        .selectFrom("analytics.metric_snapshots")
-        .select(["bucket_start", "value_json", "value_minor", "computed_at", "data_quality"])
-        .where("tenant_id", "=", tenant.id)
-        .where("metric_key", "=", def.key)
-        .orderBy("bucket_start", "desc")
-        .limit(1)
-        .executeTakeFirst();
-      if (row === undefined) {
-        metrics[def.key] = null;
-        continue;
+    // P1.5-058 (P1.3 FIX1 mirror): see catalog() — the per-metric latest
+    // reads share one tenant context.
+    return withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const metrics: Record<string, {
+        bucket: string;
+        value: Record<string, unknown>;
+        valueMinor: string | null;
+        computedAt: string;
+        dataQuality: string;
+      } | null> = {};
+      let latest: Date | null = null;
+      let degraded = 0;
+      for (const def of METRIC_DEFINITIONS) {
+        const row = await trx
+          .selectFrom("analytics.metric_snapshots")
+          .select(["bucket_start", "value_json", "value_minor", "computed_at", "data_quality"])
+          .where("tenant_id", "=", tenant.id)
+          .where("metric_key", "=", def.key)
+          .orderBy("bucket_start", "desc")
+          .limit(1)
+          .executeTakeFirst();
+        if (row === undefined) {
+          metrics[def.key] = null;
+          continue;
+        }
+        metrics[def.key] = {
+          bucket: row.bucket_start.toISOString(),
+          value: (row.value_json ?? {}) as Record<string, unknown>,
+          valueMinor: row.value_minor === null ? null : String(row.value_minor),
+          computedAt: row.computed_at.toISOString(),
+          dataQuality: row.data_quality,
+        };
+        if (latest === null || row.computed_at.getTime() > latest.getTime()) {
+          latest = row.computed_at;
+        }
+        if (row.data_quality === "DEGRADED") {
+          degraded += 1;
+        }
       }
-      metrics[def.key] = {
-        bucket: row.bucket_start.toISOString(),
-        value: (row.value_json ?? {}) as Record<string, unknown>,
-        valueMinor: row.value_minor === null ? null : String(row.value_minor),
-        computedAt: row.computed_at.toISOString(),
-        dataQuality: row.data_quality,
+      const tracked = Object.values(metrics).filter((m) => m !== null).length;
+      return {
+        metrics,
+        trackedMetrics: tracked,
+        totalMetrics: METRIC_DEFINITIONS.length,
+        latestComputedAt: latest?.toISOString() ?? null,
+        dataQuality: tracked === 0 ? ("EMPTY" as const) : degraded > 0 ? ("DEGRADED" as const) : ("OK" as const),
+        degradedMetrics: degraded,
       };
-      if (latest === null || row.computed_at.getTime() > latest.getTime()) {
-        latest = row.computed_at;
-      }
-      if (row.data_quality === "DEGRADED") {
-        degraded += 1;
-      }
-    }
-    const tracked = Object.values(metrics).filter((m) => m !== null).length;
-    return {
-      metrics,
-      trackedMetrics: tracked,
-      totalMetrics: METRIC_DEFINITIONS.length,
-      latestComputedAt: latest?.toISOString() ?? null,
-      dataQuality: tracked === 0 ? ("EMPTY" as const) : degraded > 0 ? ("DEGRADED" as const) : ("OK" as const),
-      degradedMetrics: degraded,
-    };
+    });
   }
 
   /**
@@ -242,11 +271,25 @@ export class AnalyticsController {
   async controlCenterSummary(@Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const degradedSections: string[] = [];
-    const operation = await this.operationSection(tenant.id, degradedSections);
-    const business = await this.businessSection(tenant.id, degradedSections);
-    const aiActivity = await this.aiActivitySection(tenant.id, degradedSections);
-    const scheduledWork = await this.scheduledWorkSection(tenant.id, degradedSections);
-    const dataQuality = await this.dataQualitySection(tenant.id, degradedSections);
+    // P1.5-058 (P1.3 FIX1 mirror): each section reads RLS-enrolled fact
+    // tables, so each opens its own tenant transaction — a failing section
+    // degrades in isolation (F14) instead of aborting a shared transaction.
+    const db = this.requireDb();
+    const operation = await withTenantTransaction(db, tenant.id, (trx) =>
+      this.operationSection(trx, tenant.id, degradedSections),
+    );
+    const business = await withTenantTransaction(db, tenant.id, (trx) =>
+      this.businessSection(trx, tenant.id, degradedSections),
+    );
+    const aiActivity = await withTenantTransaction(db, tenant.id, (trx) =>
+      this.aiActivitySection(trx, tenant.id, degradedSections),
+    );
+    const scheduledWork = await withTenantTransaction(db, tenant.id, (trx) =>
+      this.scheduledWorkSection(trx, tenant.id, degradedSections),
+    );
+    const dataQuality = await withTenantTransaction(db, tenant.id, (trx) =>
+      this.dataQualitySection(trx, tenant.id, degradedSections),
+    );
     return {
       operation,
       business,
@@ -263,9 +306,8 @@ export class AnalyticsController {
     };
   }
 
-  private async operationSection(tenantId: string, degradedSections: string[]) {
+  private async operationSection(db: Transaction<Database>, tenantId: string, degradedSections: string[]) {
     try {
-      const db = this.requireDb();
       const at = new Date();
       const decision = await this.policies.resolve(HITL_SLA_POLICY_FAMILY, { tenantId });
       const policy = resolveSlaPolicy(decision.configured ? (decision.value as Record<string, unknown>) : null);
@@ -368,11 +410,10 @@ export class AnalyticsController {
     }
   }
 
-  private async businessSection(tenantId: string, degradedSections: string[]) {
+  private async businessSection(db: Transaction<Database>, tenantId: string, degradedSections: string[]) {
     try {
       // FIN-01/FIN-04 via finance-math (same formulas as the finance
       // overview — reused, not duplicated).
-      const db = this.requireDb();
       const now = new Date();
       const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
       const activeSubs = await db
@@ -460,9 +501,8 @@ export class AnalyticsController {
     }
   }
 
-  private async aiActivitySection(tenantId: string, degradedSections: string[]) {
+  private async aiActivitySection(db: Transaction<Database>, tenantId: string, degradedSections: string[]) {
     try {
-      const db = this.requireDb();
       const since = new Date(Date.now() - 7 * 86_400_000);
       const runs = await db
         .selectFrom("agent.agent_runs")
@@ -481,9 +521,8 @@ export class AnalyticsController {
     }
   }
 
-  private async scheduledWorkSection(tenantId: string, degradedSections: string[]) {
+  private async scheduledWorkSection(db: Transaction<Database>, tenantId: string, degradedSections: string[]) {
     try {
-      const db = this.requireDb();
       const intents = await db
         .selectFrom("communication.message_intents")
         .select(["id", "scheduled_for"])
@@ -513,11 +552,10 @@ export class AnalyticsController {
     }
   }
 
-  private async dataQualitySection(tenantId: string, degradedSections: string[]) {
+  private async dataQualitySection(db: Transaction<Database>, tenantId: string, degradedSections: string[]) {
     try {
       // dashboards.md §14 surface: metric freshness, unknown acquisition,
       // reconciliation gaps — never silent when telemetry is broken.
-      const db = this.requireDb();
       const now = new Date();
       const snapshots = await db
         .selectFrom("analytics.metric_snapshots")
