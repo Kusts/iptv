@@ -440,6 +440,12 @@ export class ProviderDispatcherService {
    * `PROVIDER_OPS_ADAPTER=echo`. Claim and send-frontier are separate
    * commits: a crash between them is recoverable by `recoverOnce`
    * (pre-send → REQUESTED, post-send → VERIFYING).
+   *
+   * P1.4-056: the acquisition runs through the narrow
+   * `provider.dispatch_claim` definer (migration 056) — the ONLY
+   * cross-tenant read on this path — so the tenant-agnostic scheduler tick
+   * and admin drain claim disjoint sets under `iptv_app` exactly as they do
+   * as owner (a direct global SELECT would fail-closed to 0 rows there).
    */
   async drainOnce(budget = 10, overrides: ProviderDispatcherOverrides = {}): Promise<DispatchDrainSummary> {
     const db = this.requireDb();
@@ -449,20 +455,8 @@ export class ProviderDispatcherService {
     const claimToken = buildClaimToken(`provider-dispatcher-${process.pid}`);
     const leaseSecs = Math.max(Math.floor((overrides.leaseMs ?? providerDispatchLeaseMsFromEnv()) / 1000), 1);
     const claimed = await sql<ClaimedOperation>`
-      UPDATE provider.provider_operations AS op SET
-        claimed_by = ${claimToken},
-        claimed_at = now(),
-        lease_expires_at = now() + make_interval(secs => ${leaseSecs}),
-        status = 'QUEUED'
-      WHERE op.id IN (
-        SELECT id FROM provider.provider_operations
-        WHERE status = 'REQUESTED' AND claimed_by IS NULL
-          AND adapter_version = ${SECRET_REQUIRED_ADAPTER_VERSION}
-        ORDER BY requested_at ASC
-        LIMIT ${safeBudget}
-        FOR UPDATE SKIP LOCKED
-      )
-      RETURNING op.id AS id, op.tenant_id AS "tenantId"
+      SELECT o_operation_id AS id, o_tenant_id AS "tenantId"
+      FROM provider.dispatch_claim(${safeBudget}, ${leaseSecs}, ${claimToken})
     `.execute(db);
 
     const summary: DispatchDrainSummary = {
@@ -496,12 +490,18 @@ export class ProviderDispatcherService {
   /**
    * Recover expired dispatch leases with single-statement atomicity (D1).
    *
-   * The SELECT only lists candidates; each row is then resolved by ONE
+   * The list function only lists candidates; each row is then resolved by ONE
    * conditional UPDATE whose WHERE revalidates everything (in-flight status,
    * frontier marker polarity, expired lease, held claim). Zero affected rows
    * means a concurrent dispatcher already moved the row (promoted, resolved,
    * or terminalized) — the row is skipped and never counted. Terminal
    * outcomes never match the WHERE and are never overwritten.
+   *
+   * P1.4-056: candidate detection runs through the READ-ONLY
+   * `provider.dispatch_expired_list` definer (migration 056) — the ONLY
+   * cross-tenant read on this path — so recovery sees expired leases under
+   * `iptv_app` exactly as it does as owner. The per-row resolutions below
+   * stay tenant-scoped (`withTenantTransaction` / command-bus transactions).
    */
   async recoverOnce(budget = 100, overrides: ProviderDispatcherOverrides = {}): Promise<DispatchRecoverSummary> {
     void overrides;
@@ -509,15 +509,9 @@ export class ProviderDispatcherService {
     const commandDb = this.requireCommandDb();
     const safeBudget = Math.min(Math.max(Math.floor(budget), 1), 500);
     const expired = await sql<{ id: string; tenantId: string; status: string; started: boolean }>`
-      SELECT id AS id, tenant_id AS "tenantId", status AS status,
-        (dispatch_started_at IS NOT NULL) AS started
-      FROM provider.provider_operations
-      WHERE status IN ('QUEUED','RUNNING')
-        AND claimed_by IS NOT NULL
-        AND lease_expires_at IS NOT NULL
-        AND lease_expires_at <= now()
-      ORDER BY lease_expires_at ASC
-      LIMIT ${safeBudget}
+      SELECT o_operation_id AS id, o_tenant_id AS "tenantId",
+        o_status AS status, o_started AS started
+      FROM provider.dispatch_expired_list(${safeBudget})
     `.execute(db);
 
     const summary: DispatchRecoverSummary = { released: 0, verifying: 0, operationIds: [] };
@@ -635,6 +629,12 @@ export class ProviderDispatcherService {
    * rows are candidates — synthetic rows and other actions keep their
    * command-path behavior and are never touched here. Idempotent: a repeat
    * pass over converged rows checks nothing (terminal rows never match).
+   *
+   * P1.4-056: candidate detection runs through the READ-ONLY
+   * `provider.dispatch_verifying_list` definer (migration 056) — the ONLY
+   * cross-tenant read on this path — so reconciliation sees VERIFYING rows
+   * under `iptv_app` exactly as it does as owner. The Phase-B outcome writes
+   * stay tenant-scoped (command-bus transactions).
    */
   async reconcileOnce(budget = 100, overrides: ProviderDispatcherOverrides = {}): Promise<DispatchReconcileSummary> {
     const db = this.requireDb();
@@ -658,17 +658,12 @@ export class ProviderDispatcherService {
       adapterVersion: string | null;
       resultSummary: unknown;
     }>`
-      SELECT id AS id, tenant_id AS "tenantId",
-        provider_account_id AS "providerAccountId", entity_id AS "entityId",
-        requested_payload_json AS "requestedPayload", adapter_version AS "adapterVersion",
-        result_summary_json AS "resultSummary"
-      FROM provider.provider_operations
-      WHERE status = 'VERIFYING'
-        AND adapter_version = ${SECRET_REQUIRED_ADAPTER_VERSION}
-        AND action = 'trial.provision'
-        AND entity_type = 'trial'
-      ORDER BY requested_at ASC
-      LIMIT ${safeBudget}
+      SELECT o_operation_id AS id, o_tenant_id AS "tenantId",
+        o_provider_account_id AS "providerAccountId", o_entity_id AS "entityId",
+        o_requested_payload AS "requestedPayload",
+        o_adapter_version AS "adapterVersion",
+        o_result_summary AS "resultSummary"
+      FROM provider.dispatch_verifying_list(${safeBudget})
     `.execute(db).catch(() => null);
     if (candidates === null) {
       return summary;
@@ -835,6 +830,10 @@ export class ProviderDispatcherService {
     // transaction) so an AVAILABLE→UNAVAILABLE flip between request and drain
     // parks HUMAN_REQUIRED instead of sending. The key is injectable for
     // test isolation (default `provider.cinevision` = production behavior).
+    // P1.4-056: this read stays DIRECT (no function, no tenant context) by
+    // design — `platform.capabilities` is a GLOBAL catalog with no RLS (014
+    // design, asserted in 019) and full DML grants already in 053, so it
+    // reads identically as owner and as `iptv_app`.
     const capability = await db
       .selectFrom("platform.capabilities")
       .select(["availability"])
@@ -870,14 +869,18 @@ export class ProviderDispatcherService {
       if (trialGate !== "allow") {
         return await this.parkHumanRequiredFenced(tenantId, op, claimToken);
       }
-      const designatedActive = await db
-        .selectFrom("provider.provider_accounts")
-        .select(["id"])
-        .where("tenant_id", "=", tenantId)
-        .where("id", "=", op.providerAccountId)
-        .where("status", "=", "ACTIVE")
-        .executeTakeFirst()
-        .catch(() => undefined);
+      // P1.4-056: tenant-scoped read inside the claimed tenant's context
+      // (RLS-enrolled since 055 — a direct read would fail-closed under
+      // `iptv_app`).
+      const designatedActive = await withTenantTransaction(db, tenantId, (trx) =>
+        trx
+          .selectFrom("provider.provider_accounts")
+          .select(["id"])
+          .where("tenant_id", "=", tenantId)
+          .where("id", "=", op.providerAccountId)
+          .where("status", "=", "ACTIVE")
+          .executeTakeFirst(),
+      ).catch(() => undefined);
       if (designatedActive === undefined) {
         return await this.parkHumanRequiredFenced(tenantId, op, claimToken);
       }
@@ -1151,22 +1154,26 @@ export class ProviderDispatcherService {
 
   private async loadDispatchable(tenantId: string, operationId: string): Promise<DispatchableOperation | null> {
     const db = this.requireDb();
-    const row = await db
-      .selectFrom("provider.provider_operations")
-      .select([
-        "id",
-        "tenant_id",
-        "provider_account_id",
-        "action",
-        "entity_type",
-        "entity_id",
-        "idempotency_key",
-        "requested_payload_json",
-        "adapter_version",
-      ])
-      .where("tenant_id", "=", tenantId)
-      .where("id", "=", operationId)
-      .executeTakeFirst();
+    // P1.4-056: tenant-scoped read inside the claimed tenant's context so it
+    // survives under `iptv_app` (a direct global read would fail-closed).
+    const row = await withTenantTransaction(db, tenantId, (trx) =>
+      trx
+        .selectFrom("provider.provider_operations")
+        .select([
+          "id",
+          "tenant_id",
+          "provider_account_id",
+          "action",
+          "entity_type",
+          "entity_id",
+          "idempotency_key",
+          "requested_payload_json",
+          "adapter_version",
+        ])
+        .where("tenant_id", "=", tenantId)
+        .where("id", "=", operationId)
+        .executeTakeFirst(),
+    );
     if (row === undefined) {
       return null;
     }
@@ -1227,12 +1234,16 @@ export class ProviderDispatcherService {
       ref = await overrides.loadSecretRef(tenantId, op.providerAccountId);
     } else {
       const db = this.requireDb();
-      const row = await db
-        .selectFrom("provider.provider_accounts")
-        .select(["secret_ref"])
-        .where("tenant_id", "=", tenantId)
-        .where("id", "=", op.providerAccountId)
-        .executeTakeFirst();
+      // P1.4-056: tenant-scoped `secret_ref` load inside the claimed tenant's
+      // context (RLS-enrolled since 055).
+      const row = await withTenantTransaction(db, tenantId, (trx) =>
+        trx
+          .selectFrom("provider.provider_accounts")
+          .select(["secret_ref"])
+          .where("tenant_id", "=", tenantId)
+          .where("id", "=", op.providerAccountId)
+          .executeTakeFirst(),
+      );
       const candidate = (row as { secret_ref: unknown } | undefined)?.secret_ref;
       ref = typeof candidate === "string" ? candidate : null;
     }

@@ -10,7 +10,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -110,40 +110,48 @@ export class CompatibilityController {
     if (query.personId === undefined || query.personId.length === 0) {
       throw new HttpException({ code: "VALIDATION_FAILED", message: "personId is required" }, 400);
     }
+    const personId = query.personId;
     const db = this.requireDb();
-    const observations = await db
-      .selectFrom("trial.compatibility_observations")
-      .select([
-        "id",
-        "trial_id",
-        "device_profile_id",
-        "app_profile_id",
-        "provider_server_key",
-        "procedure_key",
-        "outcome",
-        "observed_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("person_id", "=", query.personId)
-      .orderBy("observed_at", "desc")
-      .limit(50)
-      .execute();
-    const devices = await db
-      .selectFrom("trial.device_profiles")
-      .select(["id", "device_type", "manufacturer", "model", "os_name", "os_version", "last_seen_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("person_id", "=", query.personId)
-      .orderBy("last_seen_at", "desc")
-      .limit(20)
-      .execute();
-    const networks = await db
-      .selectFrom("trial.network_observations")
-      .select(["id", "trial_id", "isp_name", "network_type", "ipv6_state", "dns_profile", "observed_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("person_id", "=", query.personId)
-      .orderBy("observed_at", "desc")
-      .limit(20)
-      .execute();
+    // P1.4-056 (P1.3 FIX1 mirror): tenant-scoped reads inside the request
+    // tenant's context — direct reads fail-closed under `iptv_app`. One
+    // tenant transaction for all three selects.
+    const bundled = await withTenantTransaction(db, tenant.id, async (trx) => {
+      const observations = await trx
+        .selectFrom("trial.compatibility_observations")
+        .select([
+          "id",
+          "trial_id",
+          "device_profile_id",
+          "app_profile_id",
+          "provider_server_key",
+          "procedure_key",
+          "outcome",
+          "observed_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("person_id", "=", personId)
+        .orderBy("observed_at", "desc")
+        .limit(50)
+        .execute();
+      const devices = await trx
+        .selectFrom("trial.device_profiles")
+        .select(["id", "device_type", "manufacturer", "model", "os_name", "os_version", "last_seen_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("person_id", "=", personId)
+        .orderBy("last_seen_at", "desc")
+        .limit(20)
+        .execute();
+      const networks = await trx
+        .selectFrom("trial.network_observations")
+        .select(["id", "trial_id", "isp_name", "network_type", "ipv6_state", "dns_profile", "observed_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("person_id", "=", personId)
+        .orderBy("observed_at", "desc")
+        .limit(20)
+        .execute();
+      return { observations, devices, networks };
+    });
+    const { observations, devices, networks } = bundled;
     const byOutcome: Record<string, number> = {};
     for (const obs of observations) {
       byOutcome[obs.outcome] = (byOutcome[obs.outcome] ?? 0) + 1;
