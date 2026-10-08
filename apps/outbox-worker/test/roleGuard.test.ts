@@ -11,6 +11,12 @@ interface GuardScenario {
   tablePrivTrue?: string;
   /** Function signature forced to non-executable. */
   missingExec?: string;
+  /** Cluster-global parameter ACLs naming the worker (must be 0). */
+  parameterAcls?: number;
+  /** Database objects owned by the worker (must be 0). */
+  ownedObjects?: number;
+  /** Whether has_schema_privilege(platform, CREATE) reads true. */
+  schemaCreate?: boolean;
 }
 
 function makeQuery(scenario: GuardScenario): RoleQuery {
@@ -36,6 +42,15 @@ function makeQuery(scenario: GuardScenario): RoleQuery {
     }
     if (sql.includes("pg_auth_members")) {
       return { rows: [{ n: scenario.memberships ?? 0 }] };
+    }
+    if (sql.includes("pg_parameter_acl")) {
+      return { rows: [{ n: scenario.parameterAcls ?? 0 }] };
+    }
+    if (sql.includes("relowner")) {
+      return { rows: [{ n: scenario.ownedObjects ?? 0 }] };
+    }
+    if (sql.includes("has_schema_privilege")) {
+      return { rows: [{ v: scenario.schemaCreate ?? false }] };
     }
     if (sql.includes("has_table_privilege")) {
       const match = sql.match(/has_table_privilege\('([^']+)', '([^']+)'\)/);
@@ -144,5 +159,39 @@ describe("role guard", () => {
         makeQuery({ missingExec: "platform.outbox_complete(uuid,uuid)" }),
       ),
     ).rejects.toThrow(/lifecycle function/);
+  });
+
+  it("runs the (f)(g)(h) posture checks exactly once each", async () => {
+    let parameter = 0;
+    let ownership = 0;
+    let schema = 0;
+    const counting: RoleQuery = async (sql, params) => {
+      if (sql.includes("pg_parameter_acl")) parameter += 1;
+      if (sql.includes("relowner")) ownership += 1;
+      if (sql.includes("has_schema_privilege")) schema += 1;
+      return makeQuery({})(sql, params);
+    };
+    await assertOutboxWorkerIdentity(counting);
+    expect(parameter).toBe(1);
+    expect(ownership).toBe(1);
+    expect(schema).toBe(1);
+  });
+
+  it("refuses cluster-global parameter privileges for the worker (f)", async () => {
+    await expect(assertOutboxWorkerIdentity(makeQuery({ parameterAcls: 1 }))).rejects.toThrow(
+      /parameter privileges/,
+    );
+  });
+
+  it("refuses worker-owned database objects (g)", async () => {
+    await expect(assertOutboxWorkerIdentity(makeQuery({ ownedObjects: 2 }))).rejects.toThrow(
+      /owns database objects/,
+    );
+  });
+
+  it("refuses CREATE on the platform schema (h)", async () => {
+    await expect(assertOutboxWorkerIdentity(makeQuery({ schemaCreate: true }))).rejects.toThrow(
+      /schema create privilege/,
+    );
   });
 });

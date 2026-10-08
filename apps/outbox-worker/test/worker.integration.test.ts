@@ -80,6 +80,17 @@ describe.skipIf(!hasDb)("outbox worker live rehearsal (requires TEST_DATABASE_UR
     const dedicatedUrl = withDatabase(connectionString as string, databaseName);
     ownerPool = makePool(dedicatedUrl);
     await applyMigrations(dedicatedUrl, { migrationsDir: MIGRATIONS_DIR });
+    // Fresh disposable database seeds the runtime interlock at LEGACY gen 1,
+    // under which outbox_claim refuses ("not WORKER"). Bring the authority
+    // through the forward protocol (LEGACY -> QUIESCING -> WORKER) via the
+    // operator-only set(), naming the observed generation each step; the
+    // unfenced guard passes on a fresh database (zero PUBLISHING rows).
+    await ownerPool.query(
+      `SELECT platform.outbox_runtime_set('LEGACY', 'QUIESCING', 'integration-fixture', 1)`,
+    );
+    await ownerPool.query(
+      `SELECT platform.outbox_runtime_set('QUIESCING', 'WORKER', 'integration-fixture', 2)`,
+    );
     // Temporary password ONLY on this disposable database's session scope —
     // the role is cluster-global, so it is reset to NULL in teardown.
     await ownerPool.query(`ALTER ROLE outbox_worker WITH PASSWORD '${workerPassword}'`);

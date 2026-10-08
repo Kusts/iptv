@@ -48,7 +48,7 @@ packages/
   ai-runtime/      OpenAI-compatible model gateway + deterministic echo fallback
   observability/   OTel tracing/metrics (noop by default)
   workflows/       Hatchet durable workflows adapter (optional)
-db/                migrations (46, append-only), seeds, SQL integration tests
+db/                migrations (append-only, apply all in filename order), seeds, SQL integration tests
 deploy/            Infisical self-host stack, PgBouncer (opt-in compose profile)
 docs/              canonical documentation (authority map below)
 scripts/           validation and test scripts
@@ -74,7 +74,7 @@ Bash/WSL on Windows).
 3. `docker compose up -d postgres` (local-dev defaults `iptv`/`iptv`; keep
    `DATABASE_URL` in sync with any `POSTGRES_*` override)
 4. Provision the schema — the API does NOT apply migrations at boot. Apply
-   all 46 in filename order, e.g. with psql:
+   all migrations in filename order, e.g. with psql:
    `for f in db/migrations/*.sql; do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"; done`
    (`packages/database` also exposes the programmatic runner
    `applyMigrations`; the test suite always applies migrations itself on a

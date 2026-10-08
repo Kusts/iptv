@@ -99,6 +99,14 @@ export class OutboxWorker {
   private readonly metrics: WorkerMetrics;
   private stopRequested = false;
   private inFlight = 0;
+  /**
+   * Batches currently executing `runBatch` (claim + lane fan-out). `stop()`
+   * waits for this AND `inFlight`: `inFlight` alone only covers items
+   * already handed to `processItem`, so a stop landing during the claim
+   * (or between claim and lane start) would otherwise return while the
+   * just-claimed lanes still publish after shutdown reported "stopped".
+   */
+  private activeBatches = 0;
 
   constructor(deps: OutboxWorkerDeps) {
     this.config = deps.config;
@@ -176,8 +184,10 @@ export class OutboxWorker {
       const envelope = parsed.data;
 
       // Publish with heartbeat: while publish is pending, renew the lease
-      // every renewAfterMs (bounded by maxRenews). Between renewals, abort
-      // early when a stop was requested.
+      // every renewAfterMs (bounded by maxRenews). Renewal continues during
+      // a graceful drain: `stop()` waits for the batch to settle, and the
+      // lease must stay alive until it does — stopping renewals early
+      // would let a slow final publish lose its lease mid-drain.
       let settled = false;
       let resolveSettled: () => void = () => undefined;
       const settledPromise = new Promise<void>((resolve) => {
@@ -204,7 +214,7 @@ export class OutboxWorker {
           } finally {
             if (timer !== undefined) clearTimeout(timer);
           }
-          if (settled || this.stopRequested) break;
+          if (settled) break;
           if (renewals >= this.config.maxRenews) break;
           let n = 0;
           try {
@@ -280,7 +290,21 @@ export class OutboxWorker {
     }
   }
 
+  /**
+   * One bounded claim → publish → complete/fail batch. Tracked by
+   * `activeBatches` so `stop()` can wait for the whole batch (lanes of
+   * already-claimed rows are finished, never abandoned to clear state).
+   */
   async runOnce(): Promise<BatchOutcome> {
+    this.activeBatches += 1;
+    try {
+      return await this.runBatch();
+    } finally {
+      this.activeBatches -= 1;
+    }
+  }
+
+  private async runBatch(): Promise<BatchOutcome> {
     const batchStart = this.clock();
     const rows = await this.rpc.claim(
       this.config.batchSize,
@@ -348,15 +372,16 @@ export class OutboxWorker {
   }
 
   /**
-   * Graceful stop: no new claims, await in-flight up to shutdownTimeoutMs,
-   * then return and let live leases expire (reclaim finishes them later).
+   * Graceful stop: no new claims, await the current batch (claimed lanes
+   * finish publishing) and in-flight items up to shutdownTimeoutMs, then
+   * return and let live leases expire (reclaim finishes them later).
    * NEVER forces outcomes to clear state.
    */
   async stop(): Promise<void> {
     this.stopRequested = true;
     this.metrics.shutdownState = "draining";
     const deadline = Date.now() + this.config.shutdownTimeoutMs;
-    while (this.inFlight > 0 && Date.now() < deadline) {
+    while ((this.inFlight > 0 || this.activeBatches > 0) && Date.now() < deadline) {
       await this.sleep(50);
     }
     this.metrics.shutdownState = "stopped";

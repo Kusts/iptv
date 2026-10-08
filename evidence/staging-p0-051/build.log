@@ -1,0 +1,451 @@
+ Image iptv-staging-migrate:local Building 
+ Image iptv-staging-api:local Building 
+ Image iptv-staging-web:local Building 
+ Image iptv-staging-outbox-worker:local Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 1.92kB 0.0s done
+#1 DONE 0.0s
+
+#2 [migrate internal] load build definition from Dockerfile
+#2 transferring dockerfile: 7.68kB 0.1s done
+#2 ...
+
+#3 [web internal] load build definition from Dockerfile
+#3 transferring dockerfile: 3.77kB 0.2s done
+#3 DONE 0.7s
+
+#4 [outbox-worker internal] load build definition from Dockerfile
+#4 transferring dockerfile: 3.71kB 0.1s done
+#4 DONE 0.8s
+
+#2 [migrate internal] load build definition from Dockerfile
+#2 DONE 1.2s
+
+#5 [web] resolve image config for docker-image://docker.io/docker/dockerfile:1
+#5 ...
+
+#2 [api internal] load build definition from Dockerfile
+#2 DONE 1.2s
+
+#5 [outbox-worker] resolve image config for docker-image://docker.io/docker/dockerfile:1
+#5 ...
+
+#6 [auth] docker/dockerfile:pull token for registry-1.docker.io
+#6 DONE 0.0s
+
+#5 [api] resolve image config for docker-image://docker.io/docker/dockerfile:1
+#5 DONE 2.2s
+
+#7 [web] docker-image://docker.io/docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+#7 resolve docker.io/docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+#7 resolve docker.io/docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e 0.5s done
+#7 resolve docker.io/docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e 0.5s done
+#7 CACHED
+
+#8 [api internal] load metadata for docker.io/library/node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+#8 DONE 0.7s
+
+#9 [api internal] load .dockerignore
+#9 transferring context:
+#9 transferring context: 940B done
+#9 DONE 0.4s
+
+#10 [web internal] load build context
+#10 DONE 0.0s
+
+#11 [web base 1/3] FROM docker.io/library/node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+#11 resolve docker.io/library/node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+#11 ...
+
+#12 [outbox-worker internal] load build context
+#12 DONE 0.0s
+
+#11 [api base 1/3] FROM docker.io/library/node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+#11 resolve docker.io/library/node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 0.9s done
+#11 DONE 1.1s
+
+#10 [web internal] load build context
+#10 ...
+
+#12 [outbox-worker internal] load build context
+#12 transferring context: 7.42kB 0.0s done
+#12 DONE 0.5s
+
+#13 [api internal] load build context
+#13 ...
+
+#10 [web internal] load build context
+#10 transferring context: 3.93kB 0.4s done
+#10 DONE 1.1s
+
+#13 [api internal] load build context
+#13 transferring context: 24.92kB 1.3s done
+#13 transferring context: 24.92kB 1.3s done
+#13 DONE 2.4s
+
+#13 [migrate internal] load build context
+#13 DONE 2.4s
+
+#14 [outbox-worker build 1/3] COPY apps/outbox-worker apps/outbox-worker
+#14 CACHED
+
+#15 [outbox-worker deps  7/14] COPY packages/auth/package.json packages/auth/package.json
+#15 CACHED
+
+#16 [outbox-worker runtime  4/17] COPY apps/web/package.json apps/web/package.json
+#16 CACHED
+
+#17 [outbox-worker deps 12/14] COPY packages/secrets/package.json packages/secrets/package.json
+#17 CACHED
+
+#18 [outbox-worker base 3/3] RUN corepack enable && corepack prepare pnpm@10.15.0 --activate && pnpm --version
+#18 CACHED
+
+#19 [outbox-worker deps 14/14] RUN pnpm install --frozen-lockfile
+#19 CACHED
+
+#20 [outbox-worker runtime 10/17] COPY packages/database/package.json packages/database/package.json
+#20 CACHED
+
+#21 [outbox-worker runtime 13/17] COPY packages/secrets/package.json packages/secrets/package.json
+#21 CACHED
+
+#22 [outbox-worker deps 11/14] COPY packages/observability/package.json packages/observability/package.json
+#22 CACHED
+
+#23 [outbox-worker runtime  3/17] COPY apps/api/package.json apps/api/package.json
+#23 CACHED
+
+#24 [outbox-worker deps  3/14] COPY apps/web/package.json apps/web/package.json
+#24 CACHED
+
+#25 [outbox-worker runtime  6/17] COPY apps/outbox-worker/package.json apps/outbox-worker/package.json
+#25 CACHED
+
+#26 [outbox-worker deps  2/14] COPY apps/api/package.json apps/api/package.json
+#26 CACHED
+
+#27 [outbox-worker deps 13/14] COPY packages/workflows/package.json packages/workflows/package.json
+#27 CACHED
+
+#28 [outbox-worker runtime  7/17] COPY packages/ai-runtime/package.json packages/ai-runtime/package.json
+#28 CACHED
+
+#29 [outbox-worker runtime 11/17] COPY packages/domain/package.json packages/domain/package.json
+#29 CACHED
+
+#30 [outbox-worker deps  5/14] COPY apps/outbox-worker/package.json apps/outbox-worker/package.json
+#30 CACHED
+
+#31 [outbox-worker deps  4/14] COPY apps/browser-worker/package.json apps/browser-worker/package.json
+#31 CACHED
+
+#32 [outbox-worker build 3/3] RUN pnpm --filter @iptv/outbox-worker... build
+#32 CACHED
+
+#33 [outbox-worker deps 10/14] COPY packages/domain/package.json packages/domain/package.json
+#33 CACHED
+
+#34 [outbox-worker deps  8/14] COPY packages/config/package.json packages/config/package.json
+#34 CACHED
+
+#35 [outbox-worker runtime  8/17] COPY packages/auth/package.json packages/auth/package.json
+#35 CACHED
+
+#36 [outbox-worker deps  9/14] COPY packages/database/package.json packages/database/package.json
+#36 CACHED
+
+#37 [outbox-worker runtime 1/3] WORKDIR /app
+#37 CACHED
+
+#38 [outbox-worker runtime  9/17] COPY packages/config/package.json packages/config/package.json
+#38 CACHED
+
+#39 [outbox-worker runtime  2/17] COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json ./
+#39 CACHED
+
+#40 [outbox-worker runtime 14/17] COPY packages/workflows/package.json packages/workflows/package.json
+#40 CACHED
+
+#41 [outbox-worker deps  6/14] COPY packages/ai-runtime/package.json packages/ai-runtime/package.json
+#41 CACHED
+
+#42 [outbox-worker runtime  5/17] COPY apps/browser-worker/package.json apps/browser-worker/package.json
+#42 CACHED
+
+#43 [outbox-worker deps  1/14] COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json tsconfig.base.json ./
+#43 CACHED
+
+#44 [outbox-worker runtime 16/17] COPY --from=build /app/apps/outbox-worker/dist ./apps/outbox-worker/dist
+#44 CACHED
+
+#45 [outbox-worker runtime 12/17] COPY packages/observability/package.json packages/observability/package.json
+#45 CACHED
+
+#46 [outbox-worker build 2/3] COPY packages packages
+#46 CACHED
+
+#47 [outbox-worker base 2/3] WORKDIR /app
+#47 CACHED
+
+#48 [outbox-worker runtime 15/17] RUN pnpm install --frozen-lockfile --prod --ignore-scripts --filter "@iptv/outbox-worker..."
+#48 CACHED
+
+#49 [outbox-worker runtime 17/17] COPY --from=build /app/packages/domain/dist ./packages/domain/dist
+#49 CACHED
+
+#50 [web deps  4/13] COPY apps/browser-worker/package.json apps/browser-worker/package.json
+#50 CACHED
+
+#51 [web deps 10/13] COPY packages/observability/package.json packages/observability/package.json
+#51 CACHED
+
+#52 [web deps 12/13] COPY packages/workflows/package.json packages/workflows/package.json
+#52 CACHED
+
+#18 [web base 3/3] RUN corepack enable && corepack prepare pnpm@10.15.0 --activate && pnpm --version
+#18 CACHED
+
+#53 [web deps  1/13] COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json tsconfig.base.json ./
+#53 CACHED
+
+#54 [web deps  3/13] COPY apps/web/package.json apps/web/package.json
+#54 CACHED
+
+#55 [web deps 13/13] RUN pnpm install --frozen-lockfile
+#55 CACHED
+
+#56 [web deps  7/13] COPY packages/config/package.json packages/config/package.json
+#56 CACHED
+
+#57 [web deps  8/13] COPY packages/database/package.json packages/database/package.json
+#57 CACHED
+
+#58 [web deps 11/13] COPY packages/secrets/package.json packages/secrets/package.json
+#58 CACHED
+
+#59 [web deps  6/13] COPY packages/auth/package.json packages/auth/package.json
+#59 CACHED
+
+#60 [web deps  2/13] COPY apps/api/package.json apps/api/package.json
+#60 CACHED
+
+#61 [web deps  9/13] COPY packages/domain/package.json packages/domain/package.json
+#61 CACHED
+
+#47 [web base 2/3] WORKDIR /app
+#47 CACHED
+
+#62 [web build 1/2] COPY apps/web apps/web
+#62 CACHED
+
+#63 [web deps  5/13] COPY packages/ai-runtime/package.json packages/ai-runtime/package.json
+#63 CACHED
+
+#64 [web build 2/2] RUN pnpm --filter @iptv/web build
+#64 CACHED
+
+#37 [web runtime 1/3] WORKDIR /app
+#37 CACHED
+
+#65 [web runtime 2/3] COPY --from=build --chown=node:node /app/apps/web/.next/standalone ./
+#65 CACHED
+
+#66 [outbox-worker] exporting to image
+#66 exporting layers 0.0s done
+#66 ...
+
+#67 [api deps  3/13] COPY apps/web/package.json apps/web/package.json
+#67 CACHED
+
+#18 [api base 3/3] RUN corepack enable && corepack prepare pnpm@10.15.0 --activate && pnpm --version
+#18 CACHED
+
+#68 [api deps  2/13] COPY apps/api/package.json apps/api/package.json
+#68 CACHED
+
+#69 [api build 1/4] COPY tsconfig.base.json ./
+#69 CACHED
+
+#70 [api deps  6/13] COPY packages/auth/package.json packages/auth/package.json
+#70 CACHED
+
+#71 [api runtime 22/23] COPY --from=build /app/packages/workflows/dist ./packages/workflows/dist
+#71 CACHED
+
+#47 [api base 2/3] WORKDIR /app
+#47 CACHED
+
+#72 [api deps  4/13] COPY apps/browser-worker/package.json apps/browser-worker/package.json
+#72 CACHED
+
+#73 [api build 3/4] COPY packages packages
+#73 CACHED
+
+#74 [api build 4/4] RUN pnpm --filter @iptv/api... build
+#74 CACHED
+
+#75 [api runtime 16/23] COPY --from=build /app/packages/auth/dist ./packages/auth/dist
+#75 CACHED
+
+#76 [api runtime 14/23] COPY --from=build /app/apps/api/dist ./apps/api/dist
+#76 CACHED
+
+#77 [api build 2/4] COPY apps/api apps/api
+#77 CACHED
+
+#78 [api runtime 21/23] COPY --from=build /app/packages/secrets/dist ./packages/secrets/dist
+#78 CACHED
+
+#79 [api runtime 19/23] COPY --from=build /app/packages/domain/dist ./packages/domain/dist
+#79 CACHED
+
+#80 [api deps 11/13] COPY packages/secrets/package.json packages/secrets/package.json
+#80 CACHED
+
+#81 [api deps  1/13] COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json ./
+#81 CACHED
+
+#82 [api deps 13/13] RUN pnpm install --frozen-lockfile
+#82 CACHED
+
+#83 [api deps  7/13] COPY packages/config/package.json packages/config/package.json
+#83 CACHED
+
+#84 [api deps  5/13] COPY packages/ai-runtime/package.json packages/ai-runtime/package.json
+#84 CACHED
+
+#85 [api runtime 13/23] RUN pnpm install --frozen-lockfile --prod --ignore-scripts --filter "@iptv/api..."
+#85 CACHED
+
+#86 [api deps 10/13] COPY packages/observability/package.json packages/observability/package.json
+#86 CACHED
+
+#87 [api runtime 20/23] COPY --from=build /app/packages/observability/dist ./packages/observability/dist
+#87 CACHED
+
+#88 [api deps 12/13] COPY packages/workflows/package.json packages/workflows/package.json
+#88 CACHED
+
+#89 [api runtime 15/23] COPY --from=build /app/packages/ai-runtime/dist ./packages/ai-runtime/dist
+#89 CACHED
+
+#90 [api runtime 17/23] COPY --from=build /app/packages/config/dist ./packages/config/dist
+#90 CACHED
+
+#91 [api deps  8/13] COPY packages/database/package.json packages/database/package.json
+#91 CACHED
+
+#92 [api runtime 18/23] COPY --from=build /app/packages/database/dist ./packages/database/dist
+#92 CACHED
+
+#93 [api deps  9/13] COPY packages/domain/package.json packages/domain/package.json
+#93 CACHED
+
+#94 [api runtime 23/23] COPY db/migrations ./db/migrations
+#94 CACHED
+
+#66 [outbox-worker] exporting to image
+#66 exporting manifest sha256:7106e62856b8d773645bf22a94cd9c687dc0b46af62686c9f298cb30a5af2ea7
+#66 exporting manifest sha256:7106e62856b8d773645bf22a94cd9c687dc0b46af62686c9f298cb30a5af2ea7 0.2s done
+#66 exporting config sha256:12e92011537d69e8077649bc2f53daddb5b046b7a4f16c347054ed7d401bc77f
+#66 exporting config sha256:12e92011537d69e8077649bc2f53daddb5b046b7a4f16c347054ed7d401bc77f 0.8s done
+#66 exporting attestation manifest sha256:826d8181e32dc0ef94ed28b5ddbddba9f25acc4b1c099adb9136e95866d4c9ce
+#66 exporting attestation manifest sha256:826d8181e32dc0ef94ed28b5ddbddba9f25acc4b1c099adb9136e95866d4c9ce 1.1s done
+#66 exporting manifest list sha256:a31a4e1a023c2eb081b826a2eae3a207763c9614541008a5b2c5c6d5d317f6b2
+#66 exporting manifest list sha256:a31a4e1a023c2eb081b826a2eae3a207763c9614541008a5b2c5c6d5d317f6b2 1.2s done
+#66 naming to docker.io/library/iptv-staging-outbox-worker:local
+#66 ...
+
+#95 [web runtime 3/3] COPY --from=build --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
+#95 DONE 4.8s
+
+#66 [outbox-worker] exporting to image
+#66 naming to docker.io/library/iptv-staging-outbox-worker:local 0.2s done
+#66 unpacking to docker.io/library/iptv-staging-outbox-worker:local
+#66 unpacking to docker.io/library/iptv-staging-outbox-worker:local 0.3s done
+#66 DONE 5.3s
+
+#96 [web] exporting to image
+#96 ...
+
+#97 [migrate] exporting to image
+#97 ...
+
+#98 [api] exporting to image
+#98 ...
+
+#99 [outbox-worker] resolving provenance for metadata file
+#99 DONE 0.2s
+
+#96 [web] exporting to image
+#96 exporting layers 12.4s done
+#96 exporting manifest sha256:fc0a682ec0fe476dc3156e053d22fd76a107b6bf335f224491300574345c1d7e
+#96 exporting manifest sha256:fc0a682ec0fe476dc3156e053d22fd76a107b6bf335f224491300574345c1d7e 0.5s done
+#96 exporting config sha256:f2c248579fb3449a250eb828f9cbd183ff7a11b9c6ef1cc01e82be2ec0ebc985
+#96 exporting config sha256:f2c248579fb3449a250eb828f9cbd183ff7a11b9c6ef1cc01e82be2ec0ebc985 0.4s done
+#96 exporting attestation manifest sha256:0bf147749e8a9642b1863ddf9107684a5d3eda0a6fb91feadf070f2e9df91e04
+#96 exporting attestation manifest sha256:0bf147749e8a9642b1863ddf9107684a5d3eda0a6fb91feadf070f2e9df91e04 0.6s done
+#96 exporting manifest list sha256:f83ab9bae0cbcd148db4aac86bbb8a46b75cbd49ab45d71482504febbf60b45c
+#96 exporting manifest list sha256:f83ab9bae0cbcd148db4aac86bbb8a46b75cbd49ab45d71482504febbf60b45c 0.5s done
+#96 naming to docker.io/library/iptv-staging-web:local
+#96 naming to docker.io/library/iptv-staging-web:local 0.1s done
+#96 unpacking to docker.io/library/iptv-staging-web:local
+#96 unpacking to docker.io/library/iptv-staging-web:local 4.8s done
+#96 DONE 20.0s
+
+#97 [migrate] exporting to image
+#97 ...
+
+#100 [web] resolving provenance for metadata file
+#100 DONE 0.1s
+
+#97 [migrate] exporting to image
+#97 ...
+
+#98 [api] exporting to image
+#98 exporting layers 36.6s done
+#98 exporting manifest sha256:ae3c78b2dd393bf4313cb9101f47efe59bcb7a23eaa34c8c3dc2755a61a56c73
+#98 exporting manifest sha256:ae3c78b2dd393bf4313cb9101f47efe59bcb7a23eaa34c8c3dc2755a61a56c73 0.7s done
+#98 exporting config sha256:21b3c913cbd86d02ad96801ff3e0e5f2815b1e7d4f29f620dccc25f8e10d29ab
+#98 exporting config sha256:21b3c913cbd86d02ad96801ff3e0e5f2815b1e7d4f29f620dccc25f8e10d29ab 0.8s done
+#98 exporting attestation manifest sha256:5df1066b3a8b2ce124eef0f013be53dd2fb695846d8dc30b5730998f4490d982
+#98 exporting attestation manifest sha256:5df1066b3a8b2ce124eef0f013be53dd2fb695846d8dc30b5730998f4490d982 0.9s done
+#98 exporting manifest list sha256:1da991679ab7e5a81bff5bcd66caf588600ef9deb1418c23ef7c5bc93f296c69
+#98 exporting manifest list sha256:1da991679ab7e5a81bff5bcd66caf588600ef9deb1418c23ef7c5bc93f296c69 0.7s done
+#98 naming to docker.io/library/iptv-staging-api:local
+#98 naming to docker.io/library/iptv-staging-api:local 0.2s done
+#98 unpacking to docker.io/library/iptv-staging-api:local
+#98 ...
+
+#97 [migrate] exporting to image
+#97 exporting layers 37.0s done
+#97 exporting manifest sha256:636adf015e204a23f3b7026aeed9c2ff715809e67d3a5d4d9bfd3747c26c5e2d 0.8s done
+#97 exporting config sha256:33516469e6cf20befabb60120fa004930caca5570d23d5596b1d6c1c106fd383 0.8s done
+#97 exporting attestation manifest sha256:8fc53001500bde2abc75488b873ca738fe1c64be915c631721ba57e12b9eacee 0.8s done
+#97 exporting manifest list sha256:fd0f7596801eaff3427d2be3cbda96f8daf0928455081c45f107831b949b7982 0.7s done
+#97 naming to docker.io/library/iptv-staging-migrate:local 0.2s done
+#97 unpacking to docker.io/library/iptv-staging-migrate:local
+#97 unpacking to docker.io/library/iptv-staging-migrate:local 43.2s done
+#97 ...
+
+#98 [api] exporting to image
+#98 unpacking to docker.io/library/iptv-staging-api:local 43.3s done
+#98 ...
+
+#97 [migrate] exporting to image
+#97 DONE 84.9s
+
+#98 [api] exporting to image
+#98 DONE 84.6s
+
+#101 [migrate] resolving provenance for metadata file
+#101 DONE 1.7s
+
+#102 [api] resolving provenance for metadata file
+#102 DONE 0.3s
+ Image iptv-staging-migrate:local Built 
+ Image iptv-staging-api:local Built 
+ Image iptv-staging-web:local Built 
+ Image iptv-staging-outbox-worker:local Built 
+BUILD_EXIT=True

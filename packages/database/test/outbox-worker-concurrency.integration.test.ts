@@ -70,6 +70,17 @@ describe.skipIf(!hasDb)("outbox worker concurrency (requires TEST_DATABASE_URL)"
     poolA = makePool(dedicatedUrl);
     poolB = makePool(dedicatedUrl);
     await applyMigrations(dedicatedUrl, { migrationsDir: MIGRATIONS_DIR });
+    // Fresh disposable database seeds the runtime interlock at LEGACY gen 1,
+    // under which outbox_claim refuses ("not WORKER"). Bring the authority
+    // through the forward protocol (LEGACY -> QUIESCING -> WORKER) via the
+    // operator-only set(), naming the observed generation each step; the
+    // unfenced guard passes on a fresh database (zero PUBLISHING rows).
+    await ownerPool.query(
+      `SELECT platform.outbox_runtime_set('LEGACY', 'QUIESCING', 'integration-fixture', 1)`,
+    );
+    await ownerPool.query(
+      `SELECT platform.outbox_runtime_set('QUIESCING', 'WORKER', 'integration-fixture', 2)`,
+    );
   }, 180_000);
 
   afterAll(async () => {

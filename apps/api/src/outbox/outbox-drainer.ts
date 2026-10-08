@@ -22,12 +22,13 @@ export interface LegacyDrainState {
 
 const LEGACY_DRAIN_DISABLED_MESSAGE = "legacy outbox drain is disabled (LEGACY_OUTBOX_DRAIN_ENABLED=0)";
 const LEGACY_DRAIN_ENV_ERROR = 'invalid environment configuration: LEGACY_OUTBOX_DRAIN_ENABLED must be "0" or "1"';
+const LEGACY_DRAIN_MODE_MESSAGE = "legacy outbox drain is disabled (runtime mode is not LEGACY)";
 const QUIESCENCE_TIMEOUT_MESSAGE = "legacy outbox drain quiescence timeout (drain still in flight)";
 
-/** Thrown when the legacy drain path is invoked while disabled via env gate. */
+/** Thrown when the legacy drain path is invoked while disabled via env gate or runtime mode. */
 export class LegacyOutboxDrainDisabledError extends Error {
-  constructor() {
-    super(LEGACY_DRAIN_DISABLED_MESSAGE);
+  constructor(reason: "env" | "mode" = "env") {
+    super(reason === "mode" ? LEGACY_DRAIN_MODE_MESSAGE : LEGACY_DRAIN_DISABLED_MESSAGE);
     this.name = "LegacyOutboxDrainDisabledError";
   }
 }
@@ -46,6 +47,23 @@ export function isLegacyOutboxDrainEnabled(env: NodeJS.ProcessEnv = process.env)
     return false;
   }
   throw new Error(LEGACY_DRAIN_ENV_ERROR);
+}
+
+/**
+ * Live-interlock read (migration 051, C-LEGACY-GATE): the runtime mode is
+ * authoritative in the database (`platform.outbox_runtime_mode()`), never
+ * in a copied env var. Resolves ONLY in `LEGACY`; `QUIESCING`/`WORKER` —
+ * or any unexpected value — reuse the same disabled error the env gate
+ * raises (the controller maps it to 409), with a fixed message that never
+ * echoes the observed value. The env kill-switch
+ * (`LEGACY_OUTBOX_DRAIN_ENABLED=0`) stays as defense in depth and is
+ * checked BEFORE this (a disabled env never touches the database).
+ */
+export async function assertLegacyRuntimeMode(db: Kysely<Database>): Promise<void> {
+  const res = await sql<{ mode: string }>`SELECT platform.outbox_runtime_mode() AS mode`.execute(db);
+  if (res.rows[0]?.mode !== "LEGACY") {
+    throw new LegacyOutboxDrainDisabledError("mode");
+  }
 }
 
 const CLAIMABLE = ["PENDING", "FAILED"] as const;
@@ -70,6 +88,12 @@ const CLAIMABLE = ["PENDING", "FAILED"] as const;
  * protocol can see — rows left `PUBLISHING`-with-lease by the new worker
  * are NOT reclaimable by this drainer, so rollback requires zero
  * `PUBLISHING` rows or a forward-fix.
+ *
+ * Live-interlock (migration 051, C-LEGACY-GATE): `drain()` additionally
+ * consults `platform.outbox_runtime_mode()` before every drain and
+ * proceeds only in `LEGACY` (`QUIESCING`/`WORKER` reuse the same disabled
+ * error as the env gate). The database — not a copied env var — decides
+ * who may publish; the env kill-switch stays as defense in depth.
  */
 @Injectable()
 export class OutboxDrainer {
@@ -133,6 +157,12 @@ export class OutboxDrainer {
     this.activeDrains += 1;
     this.totalDrains += 1;
     try {
+      // Live-interlock AFTER the env gate, BEFORE any claim: the database
+      // decides who may publish on every attempt. It lives inside the
+      // gauge `try` so a refused mode releases the gauge exactly like any
+      // other DB failure (attempt counted, nothing left in flight). Full
+      // revocation of legacy access arrives with the P1 RLS cutover, not here.
+      await assertLegacyRuntimeMode(this.requireDb());
       return await this.drainInner(limit);
     } finally {
       this.activeDrains -= 1;
