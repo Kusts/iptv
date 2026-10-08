@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Inject, Injectable } from "@nestjs/common";
-import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { sql, type Kysely } from "kysely";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { newId } from "@iptv/domain";
 import type { CommandActor } from "@iptv/domain";
 import { withSpan } from "@iptv/observability";
@@ -52,12 +52,26 @@ export class AsaasWebhookService {
     return this.db;
   }
 
+  /**
+   * Pre-context channel lookup via `billing.resolve_tenant_channel`
+   * (`SECURITY DEFINER`, migration 052). A direct `SELECT` on
+   * `billing.tenant_channels` runs under the caller's RLS context, so
+   * under `iptv_app` with no `app.tenant_id` set yet it fail-closes to 0
+   * rows and every webhook 404s. The definer function bypasses RLS for this
+   * single narrow lookup (tenant_key → channel row, ACTIVE only); the
+   * resolved `tenantId` then feeds the tenant context for all subsequent
+   * tenant-scoped work.
+   */
   async resolveChannel(tenantKey: string): Promise<AsaasChannel | null> {
-    const row = await this.requireDb()
-      .selectFrom("billing.tenant_channels")
-      .select(["tenant_id", "webhook_secret_hash", "status"])
-      .where("tenant_key", "=", tenantKey)
-      .executeTakeFirst();
+    const result = await sql<{
+      tenant_id: string;
+      channel: string;
+      webhook_secret_hash: string | null;
+      status: string;
+    }>`select * from billing.resolve_tenant_channel(${tenantKey})`.execute(
+      this.requireDb(),
+    );
+    const row = result.rows[0];
     if (row === undefined || row.status !== "ACTIVE") {
       return null;
     }
@@ -154,25 +168,37 @@ export class AsaasWebhookService {
     });
   }
 
+  /**
+   * Tenant-scoped payment lookup for the chargeback path. MUST run inside
+   * `withTenantTransaction`: both tables are RLS-enrolled (migration 052,
+   * fail-closed when `app.tenant_id` is unset), so a pool-level SELECT under
+   * `iptv_app` with no tenant context returns 0 rows and the chargeback
+   * silently degrades to the unknown-charge fallback (PROCESSED, no
+   * CHARGEBACK status, no loss posting). The command path itself
+   * (`bus.execute` → `withTransaction`) is already tenant-scoped; only this
+   * pre-command lookup needed the wrap.
+   */
   private async findPaymentForExternalCharge(tenantId: string, externalChargeId: string): Promise<string | null> {
     const db = this.requireDb();
-    const binding = await db
-      .selectFrom("billing.charge_provider_bindings")
-      .select(["charge_id"])
-      .where("tenant_id", "=", tenantId)
-      .where("provider", "=", "ASAAS")
-      .where("external_charge_id", "=", externalChargeId)
-      .executeTakeFirst();
-    if (binding === undefined) {
-      return null;
-    }
-    const payment = await db
-      .selectFrom("billing.payments")
-      .select(["id"])
-      .where("tenant_id", "=", tenantId)
-      .where("charge_id", "=", binding.charge_id)
-      .executeTakeFirst();
-    return payment?.id ?? null;
+    return withTenantTransaction(db, tenantId, async (trx) => {
+      const binding = await trx
+        .selectFrom("billing.charge_provider_bindings")
+        .select(["charge_id"])
+        .where("tenant_id", "=", tenantId)
+        .where("provider", "=", "ASAAS")
+        .where("external_charge_id", "=", externalChargeId)
+        .executeTakeFirst();
+      if (binding === undefined) {
+        return null;
+      }
+      const payment = await trx
+        .selectFrom("billing.payments")
+        .select(["id"])
+        .where("tenant_id", "=", tenantId)
+        .where("charge_id", "=", binding.charge_id)
+        .executeTakeFirst();
+      return payment?.id ?? null;
+    });
   }
 
   /** Poll/process entry point for deferred rows (tests + future worker). */
