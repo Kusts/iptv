@@ -452,6 +452,115 @@ describe("Wave 5 Real Asaas adapter (mocked fetch, no network)", () => {
   });
 });
 
+describe("P3 Real Asaas adapter customer binding (mocked fetch, no network)", () => {
+  const API_KEY = "test-key-not-a-secret";
+  const BASE_URL = "https://sandbox.test";
+
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let originalFetch: typeof fetch | undefined;
+
+  beforeEach(() => {
+    process.env["ASAAS_API_KEY"] = API_KEY;
+    process.env["ASAAS_BASE_URL"] = BASE_URL;
+    originalFetch = globalThis.fetch;
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    delete process.env["ASAAS_API_KEY"];
+    delete process.env["ASAAS_BASE_URL"];
+    globalThis.fetch = originalFetch as typeof fetch;
+    vi.restoreAllMocks();
+  });
+
+  function jsonResponse(status: number, body: unknown): Response {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+    } as Response;
+  }
+
+  function lastPostBody(): Record<string, unknown> {
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    return JSON.parse(String(init.body)) as Record<string, unknown>;
+  }
+
+  it("includes the bound customer in the /payments payload and applies on 2xx-with-id", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { id: "pay_live_1", pixQrCode: "qr" }));
+    const port = new RealAsaasAdapter();
+    const created = await port.createPixCharge({
+      chargeId: "charge-p3-1",
+      valueMinor: 1990n,
+      currency: "BRL",
+      payer: { personId: "person-1" },
+      providerCustomerId: "cus_sandbox_disposable_1",
+      dueDate: "2026-10-09",
+    });
+    expect(created.effect).toBe("KNOWN_APPLIED");
+    expect(created.providerChargeId).toBe("pay_live_1");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/payments`);
+    expect(init.method).toBe("POST");
+    expect(lastPostBody()).toMatchObject({
+      billingType: "PIX",
+      value: "19.90",
+      customer: "cus_sandbox_disposable_1",
+      dueDate: "2026-10-09",
+      externalReference: "charge-p3-1",
+    });
+    expect(created.detail).not.toContain(API_KEY);
+  });
+
+  it("omits customer when no binding exists (provider rejects, never invented)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(400, { errors: [{ code: "invalid_customer" }] }));
+    const port = new RealAsaasAdapter();
+    const created = await port.createPixCharge({
+      chargeId: "charge-p3-2",
+      valueMinor: 100n,
+      currency: "BRL",
+      payer: { personId: "person-1" },
+    });
+    expect(created.effect).toBe("KNOWN_NOT_APPLIED");
+    expect(created.providerChargeId).toBe("rejected-charge-p3-2");
+    const body = lastPostBody();
+    expect(body).not.toHaveProperty("customer");
+    expect(body["dueDate"]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("maps 2xx-with-customer but without a provider id to UNKNOWN", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { customer: "cus_x", value: "1.00" }));
+    const port = new RealAsaasAdapter();
+    const created = await port.createPixCharge({
+      chargeId: "charge-p3-3",
+      valueMinor: 100n,
+      currency: "BRL",
+      payer: { personId: "person-1" },
+      providerCustomerId: "cus_x",
+    });
+    expect(created.effect).toBe("UNKNOWN");
+    expect(created.providerChargeId).toBe("unknown-charge-p3-3");
+    expect(lastPostBody()["customer"]).toBe("cus_x");
+  });
+
+  it("maps transport errors with a customer binding to UNKNOWN", async () => {
+    const timeout = new Error("timed out");
+    timeout.name = "TimeoutError";
+    fetchMock.mockRejectedValueOnce(timeout);
+    const port = new RealAsaasAdapter();
+    const created = await port.createPixCharge({
+      chargeId: "charge-p3-4",
+      valueMinor: 100n,
+      currency: "BRL",
+      payer: { personId: "person-1" },
+      providerCustomerId: "cus_x",
+    });
+    expect(created.effect).toBe("UNKNOWN");
+    expect(created.providerChargeId).toBe("unknown-charge-p3-4");
+  });
+});
+
 describe("MVP-ASAAS-02 review findings: adapter guards (mocked fetch, no network)", () => {
   const API_KEY = "test-key-not-a-secret";
   const BASE_URL = "https://sandbox.test";

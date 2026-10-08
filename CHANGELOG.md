@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- feat(integrations): P3 certificação honesta (Asaas software 7/7 + stub com customer + units 55/55; WAHA código/sintético 37/37; Hatchet 9/9 BLOCKED sem env; CINEVISION/MK/Infisical = gates de operador em `P3-INTEGRATIONS.md`; register sem CERTIFIED falso; `evidence/p3-*/report.md`): tester PASS. PIX-live (B1/B2), M1/M2, G07, Steps 3/6–9 e F12 aguardam operador/ambiente.
+
 - feat(agent): P2 runtime próprio reconciliado (ADR-0026 KEEP_CURRENT_HARNESS condicionado; ADR-0020 superseded; baseline 08 reescrita sem claim SDK): eval fixtures 08–16 + thresholds (críticas 100% p/ AUTO); budgets/timeouts/fallback no harness (retry TRANSIENT, deadline total, rebuild de contexto, fallback 1-tentativa só p/ indisponibilidade); ai-runtime 35/35 + agent.unit 12/12. Tester PASS. Hatchet: sem servidor/token neste ambiente — gate W0-04 NÃO certificável aqui; LocalWorkflowAdapter segue não-durável com claims honestos e F12 BLOCKED até certificação (decisão jev keep_local_honest).
 
 - feat(rls): P1.5 growth/partners (`058_rls_operational_growth_partners`, prova `025`): USAGE+DML `iptv_app` + `tenant_isolation` (USING+WITH CHECK) nas 24 tabelas tenant (referral 4 + loyalty 4 + growth 7 + partners 9 incl. `learning_progress`); 3 GLOBALs com grants SELECT-only SEM RLS e exceção documentada (`agent.agent_releases` lido pré-contexto pelo release-store, `partners.learning_content{,_versions}` catálogo curado; `message_intents`/`scheduled_contacts` já enroladas em 042, sem re-enrolar); wraps `withTenantTransaction` nos leitores TENANT de referral/growth/partners/analytics (espelho P1.3; leitores GLOBAL intocados por desenho). Provas: 025 PASS em PG fresco 001–058 + regressão 024/022; typecheck + testes tocados verdes.
