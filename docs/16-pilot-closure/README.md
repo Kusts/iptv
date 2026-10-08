@@ -45,6 +45,7 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 | `P1.3` billing+finance (Tier 0, dinheiro-primeiro) | resolver `billing.tenant_channels` (043-shaped) + charges/payments/refunds/bindings/reconciliation + ledger/transactions/allocations/reversals + provas adversariais | DONE nesta sessão: 052 + 017/018 + wraps + rehearsal 5/5 sob `iptv_app` (tester PASS; reviewer final indisponível — self-review planner, re-review no PR); follow-ups P1-exit recorded (webhook-e2e, TOCTOU, sweep) |
 | `P1.2` platform spine | inbox, idempotency, audit, domain events, global/hybrid catalogs (outbox feito) | DONE nesta sessão: 053 + 054 + 019/020/021 (tester PASS + reviewer APPROVED) |
 | `P1.4–P1.6` | transacional → operacional → analítico + runtimes cross-tenant por tabela | P1.4 + P1.5 DONE; P1.6 DONE (059 + 026, tester PASS) — RLS cobre 149 - globals; resta P1-exit (cutover) |
+| `P1-exit` | wraps residuais + matriz A/B + staging cutover + PgBouncer | DONE: parte 1 (matriz 16/16, tester PASS) + parte 2 (staging 059 A/B 4/4 direto/pooler, runbook CONDICIONAL); sem tester/reviewer independente na parte 2 — revalidar no merge |
 
 ## Artefatos finais (C9 + PLAN — acompanhar aqui)
 
