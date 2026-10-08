@@ -156,6 +156,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # turbo `test` tem dependsOn ^build, mas este job invoca o vitest
+      # direto (bypass do turbo): sem build prévio, `@iptv/database` não tem
+      # dist/ e o resolve falha. Build das deps primeiro (mesma ordem).
+      - run: pnpm build --filter @iptv/api...
       - name: Adversarial suites (agent-shadow + model-failure + tenant-context)
         run: >
           pnpm --filter @iptv/api exec vitest run

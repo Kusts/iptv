@@ -18,6 +18,14 @@
 > not-yet-cut-over production API refuses to boot by design, so the guard
 > proves the CONFIGURED identity only — it does not prove the connected
 > role's effective privileges, enable RLS, or complete the cutover.
+> UPDATE 2026-10-08 (STAGING-CUTOVER, branch `closure/p1-cutover`): the full
+> 059 tree was rehearsed on a disposable staging lane (`-p iptv-cutover`,
+> fresh volume, migrate 59/59, api as `iptv_app`, A/B 4/4 direct + 4/4 via
+> PgBouncer, drain-state `enabled:true,inFlight:0`, runtime `LEGACY`) — see
+> "Staging cutover rehearsal (2026-10-08)" below and
+> `evidence/rls-cutover/report.md`. Staging is CERTIFIED for this tree;
+> production global cutover is CONDITIONAL on the checklist in that section
+> (operator-owned items remain).
 > Source: `docs/spikes/rls-pooling-spike.md`, migrations `041`/`042`/`043`/`047`,
 > `db/tests/006`/`007`/`008`/`009`/`012`.
 
@@ -120,7 +128,16 @@ Get-Content -Raw "db\tests\007_rls_app_role_pilot.sql" `
 
 ## Cutover checklist (step 3 gate, all required before switching)
 
-> ⛔ GLOBAL CUTOVER IS BLOCKED. `crm`, `communication` (041/042: 13
+> ⛔ GLOBAL CUTOVER WAS BLOCKED THROUGH 047/049 — NOW CONDITIONAL (2026-10-08).
+> The per-domain sequence below has since landed through 059 (`crm`,
+> `communication`, `control` + `identity`, `platform` spine/outbox/scheduler,
+> `billing` + `finance`, transactional, provider boundary, operational,
+> analytical — migrations 041–059 with SQL proofs 006–009, 012–013, 015–026),
+> and the full tree passed a disposable-staging rehearsal (see "Staging
+> cutover rehearsal (2026-10-08)"). What remains for PRODUCTION is the
+> operator checklist in that section — do NOT cut over production until every
+> item there is signed off. The original block rationale is kept below as
+> history (it still explains what a premature switch would do).
 > tenant-scoped tables) and `control` + `identity` (047: 3 identity tables +
 > `feature_flags` hybrid + global grants) are RLS-enrolled or granted. Every
 > other domain (`platform`, `billing`, `finance`, `trial`, `subscription`,
@@ -169,6 +186,70 @@ pre-context reads rerouted through `SECURITY DEFINER` resolvers; see the
    fail-closed with no context, cross-tenant write blocked, owner sees all.
 6. Keep the owner string on the migration job only; audit that no app
    deployment still carries it.
+
+## Staging cutover rehearsal (2026-10-08, branch `closure/p1-cutover`)
+
+Disposable-lane rehearsal of the GLOBAL cutover on the full 059 tree — the
+procedure to repeat for every release candidate, and the gate record for
+production. Full log: `evidence/rls-cutover/report.md`. Prior lane
+(`iptv-staging-p0`, 051 tree) stays documented in
+`evidence/staging-p0-051/report.md`.
+
+### Order (never reorder; never touch the dev volume or another live lane)
+
+1. Isolated project (`-p iptv-cutover`, own volumes/network; host ports must
+   not collide with a live lane — here `3101/3100`), `compose config --quiet`.
+2. `build migrate api web` → `up -d postgres` (fresh volume, Healthy).
+3. `run --rm migrate` (owner `DATABASE_URL` only) → `applied=59 skipped=0`.
+   Non-zero exit stops the rollout; `restart: "no"` is load-bearing.
+4. Position role passwords (`ALTER ROLE iptv_app / <owner>` via stdin, never
+   in repo/logs) → `up -d api web`.
+5. Verify: `/v1/health` 200, `/v1/health/ready` 200
+   `{"status":"ok","checks":{"database":"ok"}}`, web `/` 200.
+6. Prove sessions/roles in PG: API pool = `iptv_app` only (+ the probe's own
+   owner session), `BYPASSRLS` = owner only, outbox runtime `LEGACY` gen 1,
+   zero unfenced `PUBLISHING` rows.
+7. Seeds (transacionadas, hoje verdes sobre 059) → A/B fixture → 4/4 isolation
+   as `iptv_app` with per-transaction `SET LOCAL`: A=1, B=1, no-context=0,
+   cross-tenant write → `42501`; owner sees all.
+8. `drain-state` (minted platform-admin session, destroyed after):
+   `enabled:true,inFlight:0` with runtime `LEGACY` — the legacy drain holds
+   publishing. Do NOT start the `outbox` profile here: activation is the
+   separate 051-interlock procedure (staging-deploy § Outbox worker activation).
+9. PgBouncer cert: local gitignored `deploy/pgbouncer/userlist.staging.txt`
+   (SCRAM plaintext, same rule as dev `userlist.txt`), `--profile pooling`
+   `up -d pgbouncer`, repeat readiness + the full A/B matrix THROUGH the
+   pooler (`pool_mode=transaction` + `DISCARD ALL`): identical 4/4, no context
+   leak across sequential transactions. Migrations/owner stay DIRECT.
+
+### Rollback (this lane)
+
+`down -v` on the isolated project only (destroys only `iptv-cutover_*`
+volumes). App-image rollback = previous validated tag (schema is append-only,
+never reverted). Data rollback = forward-fix migration, or restore WITH
+owners (never `--no-owner` — see staging-deploy § Rollback). No production
+rollback may restore owner credentials into the API env (the boot guard
+refuses it by design).
+
+### Production conditions (ALL required; operator/Planner sign-off)
+
+1. Real secret path: `APP_DATABASE_URL` (+ `outbox_worker` when its slice
+   activates) distributed via Infisical/operator vault — never `.env` values
+   from staging; rotate role passwords at cutover time.
+2. Outbox activation decision explicit: EITHER legacy drain stays enabled
+   (`LEGACY`, scheduler policy decided) OR the 051-interlock activation is
+   rehearsed with data (happy publish, fail/retry, reclaim) — never both
+   publishers live, never neither without a decision.
+3. Backup/restore drill on a prod-like cluster with the 050/051 ownership
+   boundary verified POST-restore (STAGING-P0 proved the procedure, not your
+   cluster).
+4. TLS fronting/DNS + monitoring/alerts (`/ready` 503, inbox-stuck > 15 min,
+   `PUBLISHING`-with-lease growth) in place before traffic.
+5. Image pins recorded (digests/tags) for api/web/migrate; `migrate no-op`
+   (`applied=0`) proven on redeploy.
+6. Analytical/operational read paths (059/057-058 views under effective
+   `iptv_app`) accepted against production-shaped volume — staging proved
+   correctness, not plan shapes under load.
 
 ## Pre-context lookups (migration 043, 2026-09-29)
 
