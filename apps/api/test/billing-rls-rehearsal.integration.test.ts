@@ -246,6 +246,19 @@ describe.skipIf(!hasDb)("Billing RLS rehearsal under iptv_app (requires TEST_DAT
   }
 
   async function createCharge(as: CommandActor, orderId: string): Promise<{ chargeId: string; providerChargeId: string }> {
+    // GAP-LOOP-1: charge.create auto-resolves the person's Asaas binding.
+    const provisionOwner = await ownerDb
+      .selectFrom("commerce.orders")
+      .select(["person_id"])
+      .where("tenant_id", "=", as.tenantId)
+      .where("id", "=", orderId)
+      .executeTakeFirstOrThrow();
+    const provisioned = await ownerBus.execute(as, "billing.customer_provision", {
+      personId: provisionOwner.person_id,
+    });
+    if (!provisioned.ok) {
+      throw new Error(`customer.provision failed: ${JSON.stringify(provisioned)}`);
+    }
     const created = await ownerBus.execute<{ id: string; status: string; providerChargeId: string | null }>(
       as,
       "charge.create",

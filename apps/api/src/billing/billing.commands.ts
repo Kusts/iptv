@@ -37,6 +37,15 @@ import { evaluateOrderSettlement } from "./settlement.js";
  *   Payment = CONFIRMED movement ONLY (never pending/failed). `PAID` on a
  *   charge is external evidence that causes canonical confirmation after
  *   validation + idempotency — never a confirmation by itself.
+ * - Customer binding (GAP-LOOP-1): `charge.create` auto-resolves the proven
+ *   Asaas `customer` id from `billing.customer_provider_bindings` by the
+ *   order's person — the request carries NO provider field (anti-spoofing).
+ *   Without a binding the create fails closed with an explicit
+ *   `precondition_failed` (never a silent PENDING); the explicit
+ *   `billing.customer_provision` command owns binding creation (sandbox/echo
+ *   accept the documented test document, production refuses without a real
+ *   CPF/CNPJ via `DOCUMENT_REQUIRED` and never invents one; documents travel
+ *   in-transit only, never persisted).
  * - Webhook amounts/currency are NEVER trusted: they must equal the
  *   internal charge row exactly, or the delivery becomes a `billing`
  *   exception (never a confirmation). Dedupe is `(tenant, asaas, provider
@@ -173,6 +182,11 @@ export const chargeCreateInput = z.object({
   paymentMethod: z.string().trim().min(1).max(64).default("PIX"),
   idempotencyKey: z.string().trim().min(1).max(200).optional(),
   dueAt: z.string().datetime({ offset: true }).optional(),
+  // NOTE (GAP-LOOP-1): no `providerCustomerId` field exists here by design.
+  // The Asaas customer id is auto-resolved from `customer_provider_bindings`
+  // by the order's person inside the handler — never accepted from the
+  // request (anti-spoofing). Zod strips unknown keys, so a forged field is
+  // dropped, never honored.
 });
 export type ChargeCreateInput = z.infer<typeof chargeCreateInput>;
 
@@ -243,6 +257,23 @@ function handleChargeCreateFactory(deps: BillingCommandDeps) {
     if (amountMinor <= 0n) {
       return { ok: false, code: "precondition_failed", message: "order net is zero; nothing to collect" };
     }
+    // GAP-LOOP-1 auto-resolve: the proven Asaas customer id comes from the
+    // person's binding — never from the request. Fail closed BEFORE any
+    // charge row exists (no silent PENDING without an operator path).
+    const customerBinding = await trx
+      .selectFrom("billing.customer_provider_bindings")
+      .select(["external_customer_id"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("person_id", "=", order.person_id)
+      .where("provider", "=", "ASAAS")
+      .executeTakeFirst();
+    if (customerBinding === undefined) {
+      return {
+        ok: false,
+        code: "precondition_failed",
+        message: `no Asaas customer binding for person ${order.person_id}; run billing.customer_provision first (production requires a real CPF/CNPJ document)`,
+      };
+    }
     const chargeId = newId();
     const at = now();
     // Duplicate-safe insert: on conflict the tx stays healthy (a caught
@@ -302,6 +333,7 @@ function handleChargeCreateFactory(deps: BillingCommandDeps) {
         valueMinor: amountMinor,
         currency: order.currency,
         payer: { personId: order.person_id },
+        providerCustomerId: customerBinding.external_customer_id,
       });
     } catch {
       await trx
@@ -333,7 +365,7 @@ function handleChargeCreateFactory(deps: BillingCommandDeps) {
         tenant_id: ctx.tenantId,
         charge_id: chargeId,
         provider: "ASAAS",
-        external_customer_id: null,
+        external_customer_id: customerBinding.external_customer_id,
         external_charge_id: created.providerChargeId,
         status_raw: created.effect === "KNOWN_APPLIED" ? "ACCEPTED" : "UNKNOWN",
         last_synced_at: at,
@@ -382,6 +414,140 @@ function handleChargeCreateFactory(deps: BillingCommandDeps) {
       return { ok: true, data: { id: chargeId, status: "PROCESSING", providerChargeId: created.providerChargeId, effectUncertain: true } };
     }
     return { ok: true, data: { id: chargeId, status: "PROCESSING", providerChargeId: created.providerChargeId, effectUncertain: false } };
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Customer <-> provider binding (GAP-LOOP-1, explicit provision)
+// ---------------------------------------------------------------------------
+
+export const customerProvisionInput = z.object({
+  personId: z.string().uuid(),
+  /**
+   * CPF/CNPJ in-transit only (digits or formatted, max 20 chars) — NEVER
+   * persisted (LGPD: no document column exists in this slice). Omitted means
+   * "no real document available": sandbox/echo resolve the documented test
+   * constant, production fails closed with `DOCUMENT_REQUIRED`.
+   */
+  document: z.string().trim().min(1).max(20).optional(),
+});
+export type CustomerProvisionInput = z.infer<typeof customerProvisionInput>;
+
+function handleCustomerProvisionFactory(deps: BillingCommandDeps) {
+  return async (
+    ctx: CommandHandlerContext,
+    input: CustomerProvisionInput,
+  ): Promise<
+    CommandResult<{ id: string; personId: string; providerCustomerId: string; provisioned: boolean }>
+  > => {
+    const trx = requireTrx(ctx);
+    const person = await trx
+      .selectFrom("identity.persons")
+      .select(["id", "canonical_name"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("id", "=", input.personId)
+      .executeTakeFirst();
+    if (person === undefined) {
+      return { ok: false, code: "not_found", message: "person not found in this tenant" };
+    }
+    // Idempotent: a binding already exists for this (tenant, person, ASAAS).
+    const existing = await trx
+      .selectFrom("billing.customer_provider_bindings")
+      .select(["id", "external_customer_id"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("person_id", "=", input.personId)
+      .where("provider", "=", "ASAAS")
+      .executeTakeFirst();
+    if (existing !== undefined) {
+      return {
+        ok: true,
+        data: {
+          id: existing.id,
+          personId: input.personId,
+          providerCustomerId: existing.external_customer_id,
+          provisioned: false,
+        },
+      };
+    }
+    const port = deps.asaasPort ?? resolveAsaasPort(asaasAdapterNameFromEnv());
+    let created;
+    try {
+      created = await port.createCustomer({
+        personId: input.personId,
+        name: person.canonical_name ?? `customer-${input.personId}`,
+        document: input.document ?? null,
+      });
+    } catch (err) {
+      // Fail-closed with zero provider I/O: misconfiguration and, in
+      // production, `DOCUMENT_REQUIRED` (no real document supplied).
+      const message = err instanceof Error ? err.message : "provider customer provisioning failed";
+      return { ok: false, code: "precondition_failed", message };
+    }
+    if (created.effect !== "KNOWN_APPLIED" || created.providerCustomerId === null) {
+      return {
+        ok: false,
+        code: "precondition_failed",
+        message:
+          created.effect === "KNOWN_NOT_APPLIED"
+            ? `provider rejected customer provisioning for person ${input.personId} (${created.detail})`
+            : `customer provisioning effect unknown for person ${input.personId}; retry explicitly (no binding persisted)`,
+      };
+    }
+    // Duplicate-safe insert: on conflict the tx stays healthy and the loser
+    // observes the winner (same pattern as charge/refund creation).
+    const at = now();
+    const inserted = await trx
+      .insertInto("billing.customer_provider_bindings")
+      .values({
+        id: newId(),
+        tenant_id: ctx.tenantId,
+        person_id: input.personId,
+        provider: "ASAAS",
+        external_customer_id: created.providerCustomerId,
+        created_at: at,
+        updated_at: at,
+      })
+      .onConflict((oc) => oc.columns(["tenant_id", "person_id", "provider"]).doNothing())
+      .returning(["id"])
+      .executeTakeFirst();
+    if (inserted === undefined) {
+      const raced = await trx
+        .selectFrom("billing.customer_provider_bindings")
+        .select(["id", "external_customer_id"])
+        .where("tenant_id", "=", ctx.tenantId)
+        .where("person_id", "=", input.personId)
+        .where("provider", "=", "ASAAS")
+        .executeTakeFirstOrThrow();
+      return {
+        ok: true,
+        data: {
+          id: raced.id,
+          personId: input.personId,
+          providerCustomerId: raced.external_customer_id,
+          provisioned: false,
+        },
+      };
+    }
+    await emitBilling(ctx, {
+      eventType: "customer.created.v1",
+      aggregateType: "customer",
+      aggregateId: inserted.id,
+      data: {
+        binding_id: inserted.id,
+        person_id: input.personId,
+        provider: "ASAAS",
+        provider_customer_id: created.providerCustomerId,
+      },
+    });
+    return {
+      ok: true,
+      data: {
+        id: inserted.id,
+        personId: input.personId,
+        providerCustomerId: created.providerCustomerId,
+        provisioned: true,
+      },
+    };
   };
 }
 
@@ -1441,6 +1607,20 @@ export function registerBillingCommands(bus: CommandBus, deps: BillingCommandDep
     auditResource: "charge",
     input: chargeCreateInput,
     handler: handleChargeCreateFactory(deps),
+  });
+  bus.register<
+    CustomerProvisionInput,
+    { id: string; personId: string; providerCustomerId: string; provisioned: boolean }
+  >({
+    name: "billing.customer_provision",
+    // Reuses `billing.charge.write`: provisioning owns the customer side of
+    // the charge surface. No new permission key (avoids permission-catalog
+    // surgery across 012/013 + ROLE_PERMISSIONS for a same-surface step).
+    permission: "billing.charge.write",
+    auditAction: "billing.customer_provision",
+    auditResource: "customer_provider_binding",
+    input: customerProvisionInput,
+    handler: handleCustomerProvisionFactory(deps),
   });
   bus.register<WebhookConfirmInput, { outcome: "confirmed" | "duplicate" | "exception"; paymentId: string | null; exceptionId: string | null }>({
     name: "charge.webhook_confirm",

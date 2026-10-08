@@ -860,6 +860,17 @@ export interface BillingChargeProviderBindingsTable {
   created_at: Date;
 }
 
+/** Mirrors `billing.customer_provider_bindings` (migration 060, GAP-LOOP-1). */
+export interface BillingCustomerProviderBindingsTable {
+  id: string;
+  tenant_id: string;
+  person_id: string;
+  provider: string;
+  external_customer_id: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
 /** Mirrors `billing.charge_attempts` (migration 005, append-only). */
 export interface BillingChargeAttemptsTable {
   id: string;
@@ -2015,6 +2026,7 @@ export interface Database {
   "commerce.price_snapshots": CommercePriceSnapshotsTable;
   "billing.charges": BillingChargesTable;
   "billing.charge_provider_bindings": BillingChargeProviderBindingsTable;
+  "billing.customer_provider_bindings": BillingCustomerProviderBindingsTable;
   "billing.charge_attempts": BillingChargeAttemptsTable;
   "billing.payments": BillingPaymentsTable;
   "billing.refund_requests": BillingRefundRequestsTable;

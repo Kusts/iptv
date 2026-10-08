@@ -84,6 +84,26 @@ export interface RefundResult {
   detail: string;
 }
 
+export interface CustomerProvisionRequest {
+  personId: string;
+  /** Display name sent as the provider `name` (Asaas requires it). */
+  name: string;
+  /**
+   * CPF/CNPJ digits (formatted or raw) carried in-transit ONLY — never
+   * persisted (LGPD: no document column exists on `identity.persons` nor on
+   * any billing binding table in this slice). Null/omitted means "no real
+   * document available": sandbox/echo resolve the documented test constant,
+   * production refuses with `DOCUMENT_REQUIRED` and NEVER invents one.
+   */
+  document?: string | null;
+}
+
+export interface CustomerProvisionResult {
+  effect: AsaasEffect;
+  providerCustomerId: string | null;
+  detail: string;
+}
+
 export interface RefundStatusQuery {
   providerRefundId: string;
 }
@@ -91,6 +111,7 @@ export interface RefundStatusQuery {
 export interface AsaasPort {
   readonly name: string;
   createPixCharge(input: PixChargeRequest): Promise<PixChargeResult>;
+  createCustomer(input: CustomerProvisionRequest): Promise<CustomerProvisionResult>;
   getCharge(query: ChargeStatusQuery): Promise<ChargeStatusResult>;
   executeRefund(input: RefundRequest): Promise<RefundResult>;
   getRefund(query: RefundStatusQuery): Promise<RefundResult>;
@@ -231,6 +252,47 @@ function mapPaymentStatusToRefund(raw: string): AsaasEffect {
 
 const DUE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * Sandbox-only test CPF (Asaas homologação accepts it; see the sandbox
+ * docs). Used ONLY when the configured base URL is a sandbox one AND no
+ * real document was supplied. NEVER sent to a non-sandbox base: production
+ * without a real document fails closed with `DOCUMENT_REQUIRED` instead.
+ */
+export const SANDBOX_TEST_DOCUMENT_CPF = "11144477735";
+
+/** True when the Asaas base URL points at the sandbox environment. */
+export function isSandboxBaseUrl(baseUrl: string): boolean {
+  return baseUrl.toLowerCase().includes("sandbox");
+}
+
+/**
+ * Resolve the CPF/CNPJ digits a customer provision may send to the provider.
+ * Sandbox resolves a missing document to the documented test constant;
+ * production (any non-sandbox base) throws `DOCUMENT_REQUIRED` when no real
+ * document is available and validates CPF (11) / CNPJ (14) digit length —
+ * it NEVER invents a document.
+ */
+export function resolveProvisionDocument(
+  document: string | null | undefined,
+  baseUrl: string,
+): string {
+  const digits = typeof document === "string" ? document.replace(/\D/g, "") : "";
+  if (isSandboxBaseUrl(baseUrl)) {
+    return digits.length > 0 ? digits : SANDBOX_TEST_DOCUMENT_CPF;
+  }
+  if (digits.length === 0) {
+    throw new Error(
+      "asaas: DOCUMENT_REQUIRED — production customer provisioning needs a real CPF/CNPJ document (never invented; sandbox accepts the documented test constant)",
+    );
+  }
+  if (digits.length !== 11 && digits.length !== 14) {
+    throw new Error(
+      `asaas: document must be CPF (11 digits) or CNPJ (14 digits), got ${digits.length} digits`,
+    );
+  }
+  return digits;
+}
+
 /** Tomorrow (UTC) as `YYYY-MM-DD` — the default `/payments` due date. */
 function defaultDueDate(): string {
   return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -281,6 +343,17 @@ function isTimeout(err: unknown): boolean {
 /** Deterministic synthetic adapter: no network, no credentials. */
 export class EchoAsaasAdapter implements AsaasPort {
   readonly name = "echo";
+
+  async createCustomer(input: CustomerProvisionRequest): Promise<CustomerProvisionResult> {
+    // Synthetic-local by design: the id is namespaced `echo-cus-` (never a
+    // real provider id) and any in-transit document is ignored — echo never
+    // touches the provider, so no document is ever needed nor sent.
+    return {
+      effect: "KNOWN_APPLIED",
+      providerCustomerId: `echo-cus-${input.personId}`,
+      detail: "echo: synthetic customer accepted",
+    };
+  }
 
   async createPixCharge(input: PixChargeRequest): Promise<PixChargeResult> {
     const mode = envMode("ASAAS_ECHO_CREATE", "ok");
@@ -442,6 +515,57 @@ export class RealAsaasAdapter implements AsaasPort {
       json = null;
     }
     return { ok: res.ok, status: res.status, json };
+  }
+
+  async createCustomer(input: CustomerProvisionRequest): Promise<CustomerProvisionResult> {
+    const cfg = this.config();
+    if (cfg === null) {
+      throw new Error("asaas is not configured (ASAAS_API_KEY/ASAAS_BASE_URL)");
+    }
+    // Sandbox-guarded document: sandbox resolves a missing document to the
+    // documented test constant; production throws DOCUMENT_REQUIRED (never
+    // invents) — the command maps that to an explicit precondition failure
+    // with zero provider I/O.
+    const document = resolveProvisionDocument(input.document, cfg.baseUrl);
+    const name = input.name.trim().length > 0 ? input.name.trim() : `customer-${input.personId}`;
+    let response: { ok: boolean; status: number; json: unknown };
+    try {
+      response = await this.postJson("/customers", { name, cpfCnpj: document });
+    } catch {
+      return {
+        effect: "UNKNOWN",
+        providerCustomerId: null,
+        detail: "asaas: customer create transport error, effect unknown (no binding persisted)",
+      };
+    }
+    if (!response.ok) {
+      // 4xx = provider refused (no customer created); 5xx = uncertain.
+      if (response.status >= 500) {
+        return {
+          effect: "UNKNOWN",
+          providerCustomerId: null,
+          detail: `asaas: customer create status ${response.status}, effect unknown (no binding persisted)`,
+        };
+      }
+      return {
+        effect: "KNOWN_NOT_APPLIED",
+        providerCustomerId: null,
+        detail: `asaas: customer create rejected with status ${response.status}`,
+      };
+    }
+    const record = asRecordOrNull(response.json);
+    const providerId =
+      typeof record?.["id"] === "string" && (record["id"] as string).trim().length > 0
+        ? (record["id"] as string).trim()
+        : null;
+    if (providerId === null) {
+      return {
+        effect: "UNKNOWN",
+        providerCustomerId: null,
+        detail: "asaas: customer create response without provider id, effect unknown (no binding persisted)",
+      };
+    }
+    return { effect: "KNOWN_APPLIED", providerCustomerId: providerId, detail: "asaas: customer accepted" };
   }
 
   async createPixCharge(input: PixChargeRequest): Promise<PixChargeResult> {
@@ -727,6 +851,10 @@ export function tracedAsaasPort(inner: AsaasPort): AsaasPort {
     createPixCharge: (input) =>
       withSpan("asaas.create_pix_charge", { adapter: inner.name, operation: "create_pix_charge" }, () =>
         inner.createPixCharge(input),
+      ),
+    createCustomer: (input) =>
+      withSpan("asaas.create_customer", { adapter: inner.name, operation: "create_customer" }, () =>
+        inner.createCustomer(input),
       ),
     getCharge: (query) =>
       withSpan("asaas.get_charge", { adapter: inner.name, operation: "get_charge" }, () => inner.getCharge(query)),

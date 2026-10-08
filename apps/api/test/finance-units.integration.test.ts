@@ -203,6 +203,19 @@ describe.skipIf(!hasDb)("Wave 10 Finance/Unit-Economics (requires TEST_DATABASE_
         updated_at: new Date(),
       })
       .execute();
+    // GAP-LOOP-1: charge.create auto-resolves the person's Asaas binding.
+    const provisionOwner = await db
+      .selectFrom("commerce.orders")
+      .select(["person_id"])
+      .where("tenant_id", "=", tenantA)
+      .where("id", "=", orderId)
+      .executeTakeFirstOrThrow();
+    const provisioned = await bus.execute(actor(), "billing.customer_provision", {
+      personId: provisionOwner.person_id,
+    });
+    if (!provisioned.ok) {
+      throw new Error(`customer.provision failed: ${JSON.stringify(provisioned)}`);
+    }
     const created = await bus.execute<{ id: string; status: string; providerChargeId: string | null }>(
       actor(),
       "charge.create",

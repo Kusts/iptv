@@ -562,6 +562,34 @@ paths:
                 $ref: '#/components/schemas/Charge'
         '409':
           $ref: '#/components/responses/Conflict'
+  /v1/billing-customers/provision:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags:
+      - Billing
+      operationId: provisionBillingCustomer
+      description: Provisions the Asaas customer for a person and persists the (tenant, person, ASAAS) binding. Idempotent per person. Sandbox accepts the documented test document; production refuses without a real CPF/CNPJ document (DOCUMENT_REQUIRED) and never invents one. Documents travel in-transit only and are never persisted.
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProvisionBillingCustomerRequest'
+      responses:
+        '201':
+          description: Customer binding provisioned (or already existed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingCustomerBinding'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /v1/payments/{paymentId}/refund-requests:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -4865,6 +4893,44 @@ components:
           - string
           - 'null'
           format: date-time
+    ProvisionBillingCustomerRequest:
+      type: object
+      required:
+      - personId
+      properties:
+        personId:
+          type: string
+          format: uuid
+          description: Person owning the binding (tenant-scoped)
+        document:
+          type:
+          - string
+          - 'null'
+          description: CPF/CNPJ in-transit only, never persisted; omit to use the sandbox test document (production refuses without a real document)
+    BillingCustomerBinding:
+      type: object
+      required:
+      - id
+      - personId
+      - provider
+      - providerCustomerId
+      - provisioned
+      properties:
+        id:
+          type: string
+          format: uuid
+        personId:
+          type: string
+          format: uuid
+        provider:
+          type: string
+          enum:
+          - ASAAS
+        providerCustomerId:
+          type: string
+        provisioned:
+          type: boolean
+          description: False when the binding already existed (idempotent no-op)
     Charge:
       type: object
       required:

@@ -870,7 +870,7 @@ describe("MVP-ASAAS-02 command → adapter wiring (stub transaction, no DB)", ()
     const boom = () => {
       throw new Error("stub port must not be called on this path");
     };
-    return { name, createPixCharge: boom, getCharge: boom, executeRefund: boom, getRefund: boom };
+    return { name, createPixCharge: boom, createCustomer: boom, getCharge: boom, executeRefund: boom, getRefund: boom };
   }
 
   function approvedRefundRequest(): unknown {
@@ -1293,6 +1293,7 @@ describe("MVP-ASAAS-02 command → adapter wiring (stub transaction, no DB)", ()
     const port: AsaasPort = {
       name: "echo",
       createPixCharge: fail("createPixCharge"),
+      createCustomer: fail("createCustomer"),
       getCharge: fail("getCharge"),
       executeRefund: fail("executeRefund"),
       getRefund: fail("getRefund"),
@@ -1337,6 +1338,7 @@ describe("MVP-ASAAS-02 command → adapter wiring (stub transaction, no DB)", ()
     const port: AsaasPort = {
       name: "echo",
       createPixCharge: fail("createPixCharge"),
+      createCustomer: fail("createCustomer"),
       getCharge: fail("getCharge"),
       executeRefund: fail("executeRefund"),
       getRefund: fail("getRefund"),
@@ -1391,6 +1393,7 @@ describe("MVP-ASAAS-02 command → adapter wiring (stub transaction, no DB)", ()
     const port: AsaasPort = {
       name: "echo",
       createPixCharge: fail("createPixCharge"),
+      createCustomer: fail("createCustomer"),
       getCharge: fail("getCharge"),
       executeRefund: fail("executeRefund"),
       getRefund: fail("getRefund"),
@@ -1456,6 +1459,7 @@ describe("MVP-ASAAS-02 command → adapter wiring (stub transaction, no DB)", ()
     const port: AsaasPort = {
       name: "real",
       createPixCharge: fail("createPixCharge"),
+      createCustomer: fail("createCustomer"),
       getCharge: fail("getCharge"),
       executeRefund: fail("executeRefund"),
       getRefund: fail("getRefund"),

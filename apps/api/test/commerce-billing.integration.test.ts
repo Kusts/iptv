@@ -183,6 +183,19 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
   }
 
   async function createCharge(orderId: string): Promise<{ chargeId: string; providerChargeId: string }> {
+    // GAP-LOOP-1: charge.create auto-resolves the person's Asaas binding.
+    const provisionOwner = await db
+      .selectFrom("commerce.orders")
+      .select(["person_id"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", orderId)
+      .executeTakeFirstOrThrow();
+    const provisioned = await bus.execute(actor(), "billing.customer_provision", {
+      personId: provisionOwner.person_id,
+    });
+    if (!provisioned.ok) {
+      throw new Error(`customer.provision failed: ${JSON.stringify(provisioned)}`);
+    }
     const created = await bus.execute<{ id: string; status: string; providerChargeId: string | null }>(
       actor(),
       "charge.create",
@@ -862,18 +875,15 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
     expect(expired.data.expired).toContain(quoted.data.id);
 
     const { orderId } = await quoteAndSubmit(personId, planId, 1);
-    const created = await bus.execute<{ id: string }>(actor(), "charge.create", { orderId });
-    if (!created.ok) {
-      throw new Error("charge create failed");
-    }
+    const { chargeId } = await createCharge(orderId);
     await db
       .updateTable("billing.charges")
       .set({ due_at: new Date(Date.now() - 1000) })
       .where("tenant_id", "=", tenantId)
-      .where("id", "=", created.data.id)
+      .where("id", "=", chargeId)
       .execute();
     const expiredCharges = await bus.execute<{ expired: string[] }>(actor(), "charge.expire_due", {});
-    expect(expiredCharges).toMatchObject({ ok: true, data: { expired: [created.data.id] } });
+    expect(expiredCharges).toMatchObject({ ok: true, data: { expired: [chargeId] } });
   });
 
   it("tenant isolation: another tenant cannot see or mutate this tenant's orders", async () => {
