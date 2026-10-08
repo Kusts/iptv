@@ -18,6 +18,17 @@ const NAV = [
   { href: "/hitl", label: "Centro HITL" },
   { href: "/provider-operations", label: "Operações de Provider" },
   { href: "/copilot", label: "Copilot" },
+  { href: "/crm", label: "CRM" },
+  { href: "/trials", label: "Trials" },
+  { href: "/billing", label: "Cobrança" },
+  { href: "/fulfillment", label: "Ativação" },
+  { href: "/renewals", label: "Renovações" },
+  { href: "/inventory", label: "Inventário" },
+  { href: "/growth", label: "Growth" },
+  { href: "/referrals", label: "Indicações" },
+  { href: "/resellers", label: "Revendas" },
+  { href: "/finance", label: "Finanças" },
+  { href: "/analytics", label: "Analytics" },
 ];
 
 export function Shell({ children }: { children: React.ReactNode }): React.JSX.Element {
