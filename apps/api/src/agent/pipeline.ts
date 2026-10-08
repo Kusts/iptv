@@ -1,6 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import {
   AgentHarness,
   ToolRegistry,
@@ -63,6 +63,11 @@ function agentActor(tenantId: string, permissions: string[]): CommandActor {
  *   the pipeline never upgrades a gate/policy denial).
  * - Resume: human approve → revalidate conversation state → `message.send_manual`
  *   (the SAME command the frontend uses); reject → discard logged.
+ * - Direct reads/writes on RLS-enrolled tables (`communication.*`,
+ *   `agent.agent_runs`/`agent.agent_tasks`) run inside
+ *   `withTenantTransaction` (actor tenant); bus-owned writes stay in-tx
+ *   under the bus itself. `agent.agent_releases` is a GLOBAL catalog read
+ *   (no RLS by design) and stays unwrapped.
  */
 @Injectable()
 export class AgentPipeline {
@@ -92,12 +97,18 @@ export class AgentPipeline {
       return { evaluated: false, reason: "no_db" };
     }
     const db = this.requireDb();
-    const conv = await db
-      .selectFrom("communication.conversations")
-      .select(["id", "status", "control_mode"])
-      .where("tenant_id", "=", input.tenantId)
-      .where("id", "=", input.conversationId)
-      .executeTakeFirst();
+    // RLS-enrolled read (042): `communication.conversations` fail-closes
+    // without `app.tenant_id`, so the pre-check runs inside
+    // `withTenantTransaction` (actor tenant). Predicate stays as
+    // defense-in-depth.
+    const conv = await withTenantTransaction(db, input.tenantId, (trx) =>
+      trx
+        .selectFrom("communication.conversations")
+        .select(["id", "status", "control_mode"])
+        .where("tenant_id", "=", input.tenantId)
+        .where("id", "=", input.conversationId)
+        .executeTakeFirst(),
+    );
     if (conv === undefined) {
       return { evaluated: false, reason: "not_found" };
     }
@@ -150,45 +161,51 @@ export class AgentPipeline {
 
     const runId = newId();
     const release = await this.releases.getPublished(DEFAULT_RELEASE_KEY);
-    await db
-      .insertInto("agent.agent_runs")
-      .values({
-        id: runId,
-        tenant_id: input.tenantId,
-        conversation_id: input.conversationId,
-        release_key: DEFAULT_RELEASE_KEY,
-        release_version: release?.version ?? 1,
-        mode,
-        model: result.usage.model,
-        status: "PROPOSED",
-        proposal_kind: proposal.kind,
-        proposal_label: proposal.label,
-        proposal_text: proposal.text,
-        tool_calls_json: JSON.stringify(result.toolCalls),
-        usage_json: JSON.stringify(result.usage),
-        trace_json: JSON.stringify(result.trace),
-        human_review_request_id: null,
-        created_at: now(),
-        decided_at: null,
-      })
-      .execute();
-    for (const call of result.toolCalls) {
-      await db
-        .insertInto("agent.agent_tasks")
+    // RLS-enrolled writes (057): `agent.agent_runs` / `agent.agent_tasks`
+    // fail-closed (WITH CHECK) without `app.tenant_id`, so the run + its
+    // task rows persist atomically inside one `withTenantTransaction`
+    // (actor tenant). Predicates/values unchanged — same rows as before.
+    await withTenantTransaction(db, input.tenantId, async (trx) => {
+      await trx
+        .insertInto("agent.agent_runs")
         .values({
-          id: newId(),
+          id: runId,
           tenant_id: input.tenantId,
-          run_id: runId,
-          kind: "specialist_tool",
-          tool_name: call.name,
-          status: call.status === "SUCCEEDED" ? "SUCCEEDED" : "FAILED",
-          input_json: JSON.stringify({ conversation_id: input.conversationId }),
-          output_json: JSON.stringify({ status: call.status, failure_kind: call.failureKind }),
+          conversation_id: input.conversationId,
+          release_key: DEFAULT_RELEASE_KEY,
+          release_version: release?.version ?? 1,
+          mode,
+          model: result.usage.model,
+          status: "PROPOSED",
+          proposal_kind: proposal.kind,
+          proposal_label: proposal.label,
+          proposal_text: proposal.text,
+          tool_calls_json: JSON.stringify(result.toolCalls),
+          usage_json: JSON.stringify(result.usage),
+          trace_json: JSON.stringify(result.trace),
+          human_review_request_id: null,
           created_at: now(),
-          completed_at: now(),
+          decided_at: null,
         })
         .execute();
-    }
+      for (const call of result.toolCalls) {
+        await trx
+          .insertInto("agent.agent_tasks")
+          .values({
+            id: newId(),
+            tenant_id: input.tenantId,
+            run_id: runId,
+            kind: "specialist_tool",
+            tool_name: call.name,
+            status: call.status === "SUCCEEDED" ? "SUCCEEDED" : "FAILED",
+            input_json: JSON.stringify({ conversation_id: input.conversationId }),
+            output_json: JSON.stringify({ status: call.status, failure_kind: call.failureKind }),
+            created_at: now(),
+            completed_at: now(),
+          })
+          .execute();
+      }
+    });
 
     if (mode === "LIVE") {
       // Certified autonomous path only: send through the SAME command the
@@ -237,12 +254,14 @@ export class AgentPipeline {
       await this.markRun(input.tenantId, runId, "FAILED");
       return { evaluated: true, runId, mode, reviewId: null, sent: false };
     }
-    await db
-      .updateTable("agent.agent_runs")
-      .set({ human_review_request_id: review.data.id })
-      .where("tenant_id", "=", input.tenantId)
-      .where("id", "=", runId)
-      .execute();
+    await withTenantTransaction(db, input.tenantId, (trx) =>
+      trx
+        .updateTable("agent.agent_runs")
+        .set({ human_review_request_id: review.data.id })
+        .where("tenant_id", "=", input.tenantId)
+        .where("id", "=", runId)
+        .execute(),
+    );
     return { evaluated: true, runId, mode, reviewId: review.data.id, sent: false };
   }
 
@@ -256,12 +275,27 @@ export class AgentPipeline {
     | { ok: false; code: "not_found" | "forbidden" | "validation_failed" | "precondition_failed"; message: string }
   > {
     const db = this.requireDb();
-    const run = await db
-      .selectFrom("agent.agent_runs")
-      .select(["id", "conversation_id", "status", "proposal_kind", "proposal_text"])
-      .where("tenant_id", "=", input.tenantId)
-      .where("human_review_request_id", "=", input.reviewId)
-      .executeTakeFirst();
+    // RLS-enrolled reads (057 run lookup + 042 conversation revalidation):
+    // both fail-close without `app.tenant_id`, so they run together inside
+    // one `withTenantTransaction` (actor tenant). Predicates unchanged.
+    const { run, conv } = await withTenantTransaction(db, input.tenantId, async (trx) => {
+      const run = await trx
+        .selectFrom("agent.agent_runs")
+        .select(["id", "conversation_id", "status", "proposal_kind", "proposal_text"])
+        .where("tenant_id", "=", input.tenantId)
+        .where("human_review_request_id", "=", input.reviewId)
+        .executeTakeFirst();
+      const conv =
+        run === undefined || run.conversation_id === null
+          ? undefined
+          : await trx
+              .selectFrom("communication.conversations")
+              .select(["id", "status", "control_mode"])
+              .where("tenant_id", "=", input.tenantId)
+              .where("id", "=", run.conversation_id)
+              .executeTakeFirst();
+      return { run, conv };
+    });
     if (run === undefined || run.conversation_id === null) {
       return { ok: false, code: "not_found", message: "agent run not found for this review" };
     }
@@ -269,12 +303,6 @@ export class AgentPipeline {
       return { ok: false, code: "precondition_failed", message: `agent run is already ${run.status}` };
     }
     // Stale-approval revalidation under current state.
-    const conv = await db
-      .selectFrom("communication.conversations")
-      .select(["id", "status", "control_mode"])
-      .where("tenant_id", "=", input.tenantId)
-      .where("id", "=", run.conversation_id)
-      .executeTakeFirst();
     if (conv === undefined || CLOSED_STATUSES.includes(conv.status)) {
       await this.markRun(input.tenantId, run.id, "SUPERSEDED");
       return { ok: false, code: "precondition_failed", message: "stale approval: conversation is closed" };
@@ -326,22 +354,28 @@ export class AgentPipeline {
     if (!rejected.ok) {
       return { ok: false, code: rejected.code, message: rejected.message };
     }
-    await db
-      .updateTable("agent.agent_runs")
-      .set({ status: "DISCARDED", decided_at: now() })
-      .where("tenant_id", "=", input.tenantId)
-      .where("human_review_request_id", "=", input.reviewId)
-      .where("status", "=", "PROPOSED")
-      .execute();
+    await withTenantTransaction(db, input.tenantId, (trx) =>
+      trx
+        .updateTable("agent.agent_runs")
+        .set({ status: "DISCARDED", decided_at: now() })
+        .where("tenant_id", "=", input.tenantId)
+        .where("human_review_request_id", "=", input.reviewId)
+        .where("status", "=", "PROPOSED")
+        .execute(),
+    );
     return { ok: true };
   }
 
   private async markRun(tenantId: string, runId: string, status: "SENT" | "DISCARDED" | "FAILED" | "SUPERSEDED"): Promise<void> {
-    await this.requireDb()
-      .updateTable("agent.agent_runs")
-      .set({ status, decided_at: now() })
-      .where("tenant_id", "=", tenantId)
-      .where("id", "=", runId)
-      .execute();
+    // RLS-enrolled write (057): `agent.agent_runs` WITH CHECK fail-closes
+    // without `app.tenant_id`.
+    await withTenantTransaction(this.requireDb(), tenantId, (trx) =>
+      trx
+        .updateTable("agent.agent_runs")
+        .set({ status, decided_at: now() })
+        .where("tenant_id", "=", tenantId)
+        .where("id", "=", runId)
+        .execute(),
+    );
   }
 }

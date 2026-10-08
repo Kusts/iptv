@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -61,8 +61,12 @@ function idempotencyKeyOf(req: FastifyRequest): string | undefined {
 /**
  * Wave 5 Commerce surface. Writes go through the `CommandBus` (owning
  * context for Order economics; SETTLED is reachable only via the billing
- * settlement service — there is no `order.settle` route). Reads are plain
- * tenant-scoped selects.
+ * settlement service — there is no `order.settle` route). Reads run inside
+ * `withTenantTransaction` (actor tenant): `commerce.orders` /
+ * `commerce.order_items` are RLS-enrolled (migration 055, fail-closed when
+ * `app.tenant_id` is unset), so pool-level selects under `iptv_app` would
+ * return empty silently. The explicit `tenant_id =` predicates stay as
+ * defense-in-depth alongside the RLS policy.
  */
 @Controller("v1/orders")
 export class CommerceController {
@@ -127,48 +131,50 @@ export class CommerceController {
   @RequirePermission("billing.read")
   async get(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const order = await this.requireDb()
-      .selectFrom("commerce.orders")
-      .select([
-        "id",
-        "person_id",
-        "customer_id",
-        "order_type",
-        "status",
-        "currency",
-        "gross_amount_minor",
-        "discount_amount_minor",
-        "reward_amount_minor",
-        "net_amount_minor",
-        "settled_amount_minor",
-        "created_at",
-        "awaiting_payment_at",
-        "settled_at",
-        "cancelled_at",
-        "expires_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", id)
-      .executeTakeFirst();
-    if (order === undefined) {
-      throw new HttpException({ code: "NOT_FOUND", message: "order not found" }, 404);
-    }
-    const items = await this.requireDb()
-      .selectFrom("commerce.order_items")
-      .select([
-        "id",
-        "item_type",
-        "sellable_type",
-        "sellable_id",
-        "quantity",
-        "unit_price_minor",
-        "gross_minor",
-        "net_minor",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("order_id", "=", id)
-      .execute();
-    return { order, items };
+    return withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const order = await trx
+        .selectFrom("commerce.orders")
+        .select([
+          "id",
+          "person_id",
+          "customer_id",
+          "order_type",
+          "status",
+          "currency",
+          "gross_amount_minor",
+          "discount_amount_minor",
+          "reward_amount_minor",
+          "net_amount_minor",
+          "settled_amount_minor",
+          "created_at",
+          "awaiting_payment_at",
+          "settled_at",
+          "cancelled_at",
+          "expires_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", id)
+        .executeTakeFirst();
+      if (order === undefined) {
+        throw new HttpException({ code: "NOT_FOUND", message: "order not found" }, 404);
+      }
+      const items = await trx
+        .selectFrom("commerce.order_items")
+        .select([
+          "id",
+          "item_type",
+          "sellable_type",
+          "sellable_id",
+          "quantity",
+          "unit_price_minor",
+          "gross_minor",
+          "net_minor",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("order_id", "=", id)
+        .execute();
+      return { order, items };
+    });
   }
 
   @Get()
@@ -177,16 +183,18 @@ export class CommerceController {
   async list(@Query() query: { limit?: string; offset?: string; status?: string }, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const { limit, offset } = pagination(query);
-    let select = this.requireDb()
-      .selectFrom("commerce.orders")
-      .select(["id", "person_id", "status", "currency", "net_amount_minor", "settled_amount_minor", "created_at"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "desc")
-      .limit(limit)
-      .offset(offset);
-    if (typeof query.status === "string" && query.status.length > 0) {
-      select = select.where("status", "=", query.status);
-    }
-    return { orders: await select.execute() };
+    return withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      let select = trx
+        .selectFrom("commerce.orders")
+        .select(["id", "person_id", "status", "currency", "net_amount_minor", "settled_amount_minor", "created_at"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("created_at", "desc")
+        .limit(limit)
+        .offset(offset);
+      if (typeof query.status === "string" && query.status.length > 0) {
+        select = select.where("status", "=", query.status);
+      }
+      return { orders: await select.execute() };
+    });
   }
 }
