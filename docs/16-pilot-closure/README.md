@@ -47,6 +47,14 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 | `P1.4–P1.6` | transacional → operacional → analítico + runtimes cross-tenant por tabela | P1.4 + P1.5 DONE; P1.6 DONE (059 + 026, tester PASS) — RLS cobre 149 - globals; resta P1-exit (cutover) |
 | `P1-exit` | wraps residuais + matriz A/B + staging cutover + PgBouncer | DONE: parte 1 (matriz 16/16, tester PASS) + parte 2 (staging 059 A/B 4/4 direto/pooler, runbook CONDICIONAL); sem tester/reviewer independente na parte 2 — revalidar no merge |
 
+## P2 status
+
+| Slice | Escopo | Estado |
+|---|---|---|
+| `P2a` ADR + evals | ADR-0026 KEEP + 08 reescrita + fixtures 08–16 + thresholds | DONE (tester PASS) |
+| `P2b` budgets/fallback | budgets/timeouts/fallback no harness + 18 testes | DONE (tester PASS 35/35) |
+| `P2c` Hatchet gate | certificação W0-04 | NÃO certificável neste ambiente (sem servidor/token); local honesto + F12 BLOCKED (jev) |
+
 ## Artefatos finais (C9 + PLAN — acompanhar aqui)
 
 RLS inventory · Worker inventory · Integration certification register ·

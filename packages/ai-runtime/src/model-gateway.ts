@@ -17,9 +17,74 @@ export interface ModelCompletion {
   usage: { inputTokens: number; outputTokens: number };
 }
 
+/**
+ * Completion options. `signal` carries the caller's per-call timeout (the
+ * harness always provides one); direct callers that omit it get the
+ * gateway's own internal timeout instead, so EVERY model call is bounded.
+ */
+export interface ModelCompletionOpts {
+  model: string;
+  maxTokens: number;
+  signal?: AbortSignal;
+}
+
 export interface ModelGatewayPort {
   readonly name: string;
-  complete(messages: ModelMessage[], opts: { model: string; maxTokens: number }): Promise<ModelCompletion>;
+  complete(messages: ModelMessage[], opts: ModelCompletionOpts): Promise<ModelCompletion>;
+}
+
+/**
+ * Classified gateway failure, per the tool-failure taxonomy vocabulary:
+ * - TRANSIENT: timeout/abort, 429, 5xx, transport error — the harness may
+ *   retry within its attempt budget, then try the fallback gateway once.
+ * - FATAL: 4xx (non-429), empty completion, safety post-check failure —
+ *   never retried, never falls back (a fallback cannot fix a bad or
+ *   unsafe answer; retrying an unsafe output is forbidden).
+ */
+export class ModelGatewayError extends Error {
+  readonly kind: "TRANSIENT" | "FATAL";
+
+  constructor(message: string, kind: "TRANSIENT" | "FATAL") {
+    super(message);
+    this.name = "ModelGatewayError";
+    this.kind = kind;
+  }
+}
+
+/** True for retryable (TRANSIENT) gateway failures, including legacy plain Errors. */
+export function isTransientGatewayError(err: unknown): boolean {
+  if (err instanceof ModelGatewayError) {
+    return err.kind === "TRANSIENT";
+  }
+  // Legacy/unknown errors (e.g. stubs throwing plain Errors, unexpected
+  // provider shapes) fail closed as FATAL: no blind retry, no fallback.
+  return false;
+}
+
+/**
+ * Run `task` with a REAL timeout: the timer aborts the controller (so a
+ * signal-respecting fetch actually cancels) and rejects TRANSIENT.
+ * Clears the timer on settle; `timer.unref` keeps it from holding the loop.
+ */
+export async function runWithTimeout<T>(timeoutMs: number, task: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onTimeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new ModelGatewayError(`model gateway call timed out after ${timeoutMs}ms`, "TRANSIENT"));
+    }, Math.max(0, timeoutMs));
+    if (typeof timer === "object" && typeof (timer as { unref?: unknown }).unref === "function") {
+      (timer as unknown as { unref(): void }).unref();
+    }
+  });
+  try {
+    return await Promise.race([task(controller.signal), onTimeout]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 /**
@@ -75,7 +140,10 @@ const TOOL_REQUEST_PATTERNS = [/meus?\s+dados|meu\s+cadastro|my\s+(data|account|
 export class EchoModelGateway implements ModelGatewayPort {
   readonly name = "echo";
 
-  async complete(messages: ModelMessage[], opts: { model: string; maxTokens: number }): Promise<ModelCompletion> {
+  async complete(messages: ModelMessage[], opts: ModelCompletionOpts): Promise<ModelCompletion> {
+    if (opts.signal?.aborted === true) {
+      throw new ModelGatewayError("echo gateway call aborted (timeout/cancelled)", "TRANSIENT");
+    }
     const userBlock = messages.filter((m) => m.role === "user").map((m) => m.content).join("\n") ?? "";
     const inbound = extractInbound(userBlock);
     const suppressionActive = /suppression_active:\s*true/i.test(userBlock);
@@ -161,39 +229,82 @@ export class OpenAICompatGateway implements ModelGatewayPort {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   readonly defaultModel: string;
+  /** Internal per-call timeout applied when the caller passes no signal. Default 15_000ms. */
+  readonly timeoutMs: number;
 
-  constructor(opts: OpenAiCompatOptions) {
+  constructor(opts: OpenAiCompatOptions & { timeoutMs?: number }) {
     if (opts.apiKey.length === 0) {
       throw new Error("OPENAI_API_KEY is required for the OpenAI-compatible gateway");
     }
     this.apiKey = opts.apiKey;
     this.baseUrl = opts.baseUrl.replace(/\/$/, "");
     this.defaultModel = opts.model;
+    this.timeoutMs = opts.timeoutMs ?? 15_000;
   }
 
-  async complete(messages: ModelMessage[], opts: { model: string; maxTokens: number }): Promise<ModelCompletion> {
-    const res = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
-      body: JSON.stringify({
-        model: opts.model || this.defaultModel,
-        max_tokens: opts.maxTokens,
-        messages: messages.map((m) => ({ role: m.role, content: m.content })),
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`model gateway rejected completion: HTTP ${res.status}`);
+  async complete(messages: ModelMessage[], opts: ModelCompletionOpts): Promise<ModelCompletion> {
+    if (opts.signal !== undefined) {
+      return this.doComplete(messages, opts.model, opts.maxTokens, opts.signal);
     }
-    const body = (await res.json()) as {
+    // No caller signal: bound the call with the gateway's own real timeout.
+    return runWithTimeout(this.timeoutMs, (signal) => this.doComplete(messages, opts.model, opts.maxTokens, signal));
+  }
+
+  private async doComplete(
+    messages: ModelMessage[],
+    model: string,
+    maxTokens: number,
+    signal: AbortSignal,
+  ): Promise<ModelCompletion> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+        body: JSON.stringify({
+          model: model || this.defaultModel,
+          max_tokens: maxTokens,
+          messages: messages.map((m) => ({ role: m.role, content: m.content })),
+        }),
+        signal,
+      });
+    } catch (err) {
+      // Abort (our timeout/cancel) and transport failures are TRANSIENT:
+      // worth one retry inside the harness attempt budget, never silent.
+      throw new ModelGatewayError(
+        `model gateway transport failure: ${err instanceof Error ? err.message : String(err)}`,
+        "TRANSIENT",
+      );
+    }
+    if (!res.ok) {
+      // 429 / 5xx may clear on retry; other 4xx are caller-side (FATAL).
+      const transient = res.status === 429 || (res.status >= 500 && res.status <= 599);
+      throw new ModelGatewayError(
+        `model gateway rejected completion: HTTP ${res.status}`,
+        transient ? "TRANSIENT" : "FATAL",
+      );
+    }
+    let body: {
       choices?: Array<{ message?: { content?: unknown } }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
+    try {
+      body = (await res.json()) as {
+        choices?: Array<{ message?: { content?: unknown } }>;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      };
+    } catch (err) {
+      throw new ModelGatewayError(
+        `model gateway returned malformed JSON: ${err instanceof Error ? err.message : String(err)}`,
+        "TRANSIENT",
+      );
+    }
     const text = body.choices?.[0]?.message?.content;
     if (typeof text !== "string" || text.length === 0) {
-      throw new Error("model gateway returned an empty completion");
+      throw new ModelGatewayError("model gateway returned an empty completion", "FATAL");
     }
     if (looksLikeInjection(text) || looksLikeSecret(text)) {
-      throw new Error("model output failed the safety post-check");
+      throw new ModelGatewayError("model output failed the safety post-check", "FATAL");
     }
     return {
       text,

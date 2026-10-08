@@ -23,8 +23,10 @@ Accepted/superseded decisions are authoritative together with the v1.0 implement
 | 0017 | Evolution API provisional | **Superseded by 0018** |
 | 0018 | WAHA primary gateway | Accepted |
 | 0019 | Hatchet durable workflows | Accepted with Wave 0 certification gate |
-| 0020 | OpenAI Agents SDK TypeScript harness | Accepted |
+| 0020 | OpenAI Agents SDK TypeScript harness | **Superseded by 0026 (direction)** |
 | 0021 | Neon PostgreSQL pilot | Accepted |
 | 0022 | Cloudflare R2 | Accepted |
 | 0023 | Platform-owned Agent Runtime | Accepted |
 | 0024 | Pre-implementation state/event contract reconciliation | Accepted |
+| 0025 | Canonical domain authority | Accepted |
+| 0026 | Keep platform-owned agent harness (conditional) | Accepted — keep conditional |
