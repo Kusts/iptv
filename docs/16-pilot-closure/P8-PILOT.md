@@ -6,8 +6,9 @@
 
 ## Entrada (tudo antes de qualquer tráfego real)
 
-- [ ] PRs #12–#26 mergeados em ordem, CI verde na main.
+- [ ] PRs de closure conhecidos (#12–#36) integrados; PR #37 (reconciliação de evidências) revisado/mergeado; CI verde no HEAD final da main. Confirmar novamente no GitHub — números de PR não substituem revisão/CI.
 - [ ] Staging rehearsal repetido pós-merge (P1-exit parte 2 + P7) com API `iptv_app`.
+- [ ] Fechar os bloqueios técnicos em `RELEASE-CLOSURE-STATUS.md` antes de entrada; qualquer exceção deve estar explicitamente permitida pela SPEC e registrar owner, mitigação e prazo de revisão. A simples decisão de operador não transforma implementação não durável em F12 PASS.
 - [ ] Gates de operador com decisão explícita — **todos seguem abertos**:
       **B1 (Asaas sandbox→canary)** PARCIAL ao vivo em 2026-10-08
       (`evidence/p3-asaas-sandbox/live-b1.md`: customer descartável + charge
@@ -26,8 +27,8 @@
       dedupe/LID/triage PASS ao vivo; restam multi-sessão, reconnect profundo
       e restriction/timelock). **M2 (WAHA)** NÃO executado
       (`evidence/p3-waha/m2-drill.md`: drill manual = ato do operador).
-      **G07 (MK)**, **Steps 3/6–9 (CINEVISION)** e **F12 (Hatchet ou
-      local-honesto aceito)** permanecem gates; legal/provider/tax
+      **G07 (MK)**, **Steps 3/6–9 (CINEVISION)** e **F12 (runtime durável
+      certificado; `LocalWorkflowAdapter` não é substituto)** permanecem gates; legal/provider/tax
       (SPEC §12.4, M1–M4) também.
 - [ ] Observabilidade ativa (P6) + alertas + `TEST_DATABASE_URL` documentada p/ reruns.
 - [ ] `pilot-evidence.yaml`: re-run integral com `last_run` real por ID
