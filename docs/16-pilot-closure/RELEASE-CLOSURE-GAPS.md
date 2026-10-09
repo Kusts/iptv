@@ -6,7 +6,7 @@ ou o baseline.
 
 ## Bloqueios de engenharia
 
-1. **Segurança da auditoria/dependências:** PR #38 (`closure/security-hardening-20261009`, HEAD `9ef38b8`) corrige advisories alcançáveis (Fastify nested runtime, PostCSS, sharp e source-map-js) e parsing fail-closed; CI completo verde, revisão humana pendente. Restam dois advisories critical de `tinypool` via Vitest 3 (dev/CI) e um high do Jaeger propagator não usado; exige migração Vitest 3→4 e decisão sobre OpenTelemetry, sem exceção formal atual com owner/revisão.
+1. **Segurança da auditoria/dependências:** PR #38 (`closure/security-hardening-20261009`, `9ef38b8`) corrige Fastify nested runtime, PostCSS, sharp, source-map-js e endurece o parser; PR #41 (`closure/security-vitest4-20261009`, `bfbf66f`) migra Vitest 3→4.1.11 e remove os criticals de tinypool. CI de ambos verde e audit atual local: 4 findings (1 high Jaeger, 3 moderate), 0 critical. Revisão humana/merge pendentes. O finding high de Jaeger requer owner, mitigação e prazo de revisão antes de security closure; run com DB anterior não terminou limpo por timeout de teardown preexistente, e 320 testes DB-gated não foram executados no run sem banco.
 2. **F12 durable workflow:** PR #39 (`closure/workflow-honesty-20261009`, HEAD `32bde15`) remove a declaração falsa de durabilidade; CI completo verde e review automatizado recebido, revisão humana pendente. Pesquisa em fontes oficiais confirma que o package name e variáveis de ambiente atuais no main estão incompatíveis com SDK TypeScript publicado (`@hatchet-dev/typescript-sdk`, `HATCHET_CLIENT_TOKEN`). PR #39 não corrige wiring/env, não integra producer/worker e não certifica Hatchet. F12 exige integração real conforme ADR-0019 e execução de crash/replay/retry/HITL/idempotência/concurrency/tenant-isolation.
 3. **CINEVISION writes:** nenhuma operação de criação está implementada. Observar contrato legítimo primeiro, depois adapter, readback, dispatcher, `UNKNOWN`/reconciliation e canário; manter manual até certificação.
 4. **Segurança de exposição:** rate limit de login/cadastro e security headers (CSP/frame policy etc.) não estão provados no ingress efetivo. Sem prova de controles do gateway ou restrição privada do piloto, não expor publicamente.
@@ -26,21 +26,26 @@ ou o baseline.
   2026-10-09 comprovou as citações primárias `test:` (184/184), não os arquivos
   `evidence:` históricos; reexecutar evidência que corresponda ao requisito,
   sem alterar `last_run` por inferência.
-- PR #37 contém a reconciliação de evidências e aguarda revisão/merge humano.
-- A CI da main (`2f181e8`) é anterior ao PR #37 e à correção candidata de
-  segurança; a CI da branch #37 (`4736707a`) está verde, mas não incorpora a
-  branch de segurança.
-- Issues abertas #1, #4, #7 e #27 existem; não criar duplicatas. Revisar
-  aplicabilidade/obsolescência após fechar os gates diretamente relacionados.
+- PR #37 contém reconciliação de evidências + matriz/gaps e aguarda revisão/merge humano; HEAD atual `5f19d0f`.
+- PRs abertos adicionais: #38 dependências + audit fail-closed (CI verde), #39 correção do claim de durabilidade (CI verde), #41 Vitest 4 (CI verde). Todos aguardam revisão humana e integração; nenhum foi merged.
+- A CI da main (`2f181e8`) é anterior ao PR #37 e às correções candidatas de
+  segurança; a CI atual da branch #37 (`5f19d0f`, runs `37987568579` e
+  `37987575978`) está verde, mas não incorpora os branches #38/#41.
+- Issues abertas #1, #4, #7, #27 e #40 existem; não criar duplicatas. Issue #40
+  pede alternate-path permission/effect evals; avaliar sua relação com os
+  gates P5/F09/F10 e definir um caso estreito antes de tratá-la como requisito
+  bloqueador (sem ampliar escopo por referência acadêmica isolada).
+  Revisar aplicabilidade/obsolescência após fechar os gates relacionados.
 
 ## Próxima sequência curta
 
-1. Obter revisão humana e integrar PRs #37–#39 somente pelo fluxo normal (sem merge automático).
-2. Corrigir SDK/env wiring e integrar uma fatia Hatchet real; depois certificar restart/crash, preservando ADRs.
-3. Fazer CINEVISION por contrato observado antes de código.
-4. Reexecutar suites do sistema em lane descartável; em paralelo seguro, coletar
+1. Obter revisão humana e integrar PRs #37, #38, #39 e #41 somente pelo fluxo normal (sem merge automático); issue #40 segue separada.
+2. Registrar exceção de risco do advisory Jaeger com owner/mitigação/prazo, ou remover/corrigir por slice própria.
+3. Corrigir SDK/env wiring e integrar uma fatia Hatchet real; depois certificar restart/crash, preservando ADRs.
+4. Fazer CINEVISION por contrato observado antes de código.
+5. Reexecutar suites do sistema em lane descartável; em paralelo seguro, coletar
    somente as evidências externas autorizadas (Asaas, WAHA, MK).
-5. Revalidar staging, DR, observabilidade, frontend e performance no candidato;
+6. Revalidar staging, DR, observabilidade, frontend e performance no candidato;
    atualizar matriz e readiness com evidência direta.
 
 Nenhuma dessas linhas autoriza tráfego real, compra, refund, mensagem a cliente,

@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- docs(pilot): atualiza RELEASE-CLOSURE-STATUS/GAPS após GitHub recheck: PRs #37/#38/#39/#41 continuam abertos, CI verde nos HEADs declarados, issue #40 mantida separada; auditoria atual candidata: 0 critical, 1 high Jaeger, 3 moderate. Sem merge ou promoção de readiness.
+
 - docs(pilot): cria matriz única RELEASE-CLOSURE-STATUS e gaps deduplicados; reconcilia status P3/P8 e substitui referências superadas de PRs/migrations. Status atual permanece ENGINEERING BLOCKED; não promove piloto nem capability.
 
 - docs(integrations): reconcilia o gate Hatchet com pesquisa nas fontes oficiais 2026-10-09: pacote publicado `@hatchet-dev/typescript-sdk` e variáveis `HATCHET_CLIENT_*`; a documentação/código atual ainda referencia package/env antigos. PR #39 corrige apenas o falso claim de durabilidade; integração e F12 seguem bloqueados.
