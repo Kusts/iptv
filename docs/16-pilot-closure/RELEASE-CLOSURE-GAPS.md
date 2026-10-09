@@ -6,8 +6,8 @@ ou o baseline.
 
 ## Bloqueios de engenharia
 
-1. **Segurança da auditoria/dependências:** PR #38 (`closure/security-hardening-20261009`, HEAD `9ef38b8`) corrige advisories alcançáveis (Fastify nested runtime, PostCSS, sharp e source-map-js) e parsing fail-closed; CI ainda estava em execução na última consulta e revisão humana permanece pendente. Restam dois advisories critical de `tinypool` via Vitest 3 (dev/CI) e um high do Jaeger propagator não usado; exige migração Vitest 3→4 e decisão sobre OpenTelemetry, sem exceção formal atual com owner/revisão.
-2. **F12 durable workflow:** PR #39 (`closure/workflow-honesty-20261009`, HEAD `32bde15`) remove a declaração falsa de durabilidade e mantém fail-closed; testes locais 11/11 e review aprovado, CI pendente na última consulta. Isso não implementa/injeta Hatchet. Depois do PR, integrar o runtime aceito na ADR-0019 e executar a suíte de crash/replay/retry/HITL/idempotência/concurrency/tenant-isolation; F12 permanece BLOCKED.
+1. **Segurança da auditoria/dependências:** PR #38 (`closure/security-hardening-20261009`, HEAD `9ef38b8`) corrige advisories alcançáveis (Fastify nested runtime, PostCSS, sharp e source-map-js) e parsing fail-closed; CI completo verde, revisão humana pendente. Restam dois advisories critical de `tinypool` via Vitest 3 (dev/CI) e um high do Jaeger propagator não usado; exige migração Vitest 3→4 e decisão sobre OpenTelemetry, sem exceção formal atual com owner/revisão.
+2. **F12 durable workflow:** PR #39 (`closure/workflow-honesty-20261009`, HEAD `32bde15`) remove a declaração falsa de durabilidade; CI completo verde e review automatizado recebido, revisão humana pendente. Pesquisa em fontes oficiais confirma que o package name e variáveis de ambiente atuais no main estão incompatíveis com SDK TypeScript publicado (`@hatchet-dev/typescript-sdk`, `HATCHET_CLIENT_TOKEN`). PR #39 não corrige wiring/env, não integra producer/worker e não certifica Hatchet. F12 exige integração real conforme ADR-0019 e execução de crash/replay/retry/HITL/idempotência/concurrency/tenant-isolation.
 3. **CINEVISION writes:** nenhuma operação de criação está implementada. Observar contrato legítimo primeiro, depois adapter, readback, dispatcher, `UNKNOWN`/reconciliation e canário; manter manual até certificação.
 4. **Segurança de exposição:** rate limit de login/cadastro e security headers (CSP/frame policy etc.) não estão provados no ingress efetivo. Sem prova de controles do gateway ou restrição privada do piloto, não expor publicamente.
 5. **Frontend E2E:** falta browser E2E da versão candidata cobrindo estados, permissões, responsividade e integração backend nos fluxos do escopo.
@@ -35,9 +35,8 @@ ou o baseline.
 
 ## Próxima sequência curta
 
-1. Fechar/PR/CI da fatia de segurança, incluindo revisão independente e CI.
-2. Corrigir F12 tecnicamente, preservando ADRs e certificando restart/crash;
-   fazer em branch própria.
+1. Obter revisão humana e integrar PRs #37–#39 somente pelo fluxo normal (sem merge automático).
+2. Corrigir SDK/env wiring e integrar uma fatia Hatchet real; depois certificar restart/crash, preservando ADRs.
 3. Fazer CINEVISION por contrato observado antes de código.
 4. Reexecutar suites do sistema em lane descartável; em paralelo seguro, coletar
    somente as evidências externas autorizadas (Asaas, WAHA, MK).
