@@ -245,12 +245,12 @@
   limitations: nenhuma além de last_run
 - id: F12
   status: BLOCKED
-  test: 'nenhum (adapter Hatchet é construction-only; LocalWorkflowAdapter perde fila no restart por desenho)'
+  test: 'nenhum (adapter Hatchet construction-only; desde 2026-10-09 enqueue falha fechado e nunca afirma durable; LocalWorkflowAdapter perde fila no restart por desenho)'
   environment: nenhum (BLOCKED — sem instância Hatchet; nada a executar)
-  evidence: 'evidence/p3-hatchet/report.md (9/9 LIVE-BLOCKED: sem instância, sem SDK, sem mapeamento real)'
-  last_run: 2026-10-07 (sonda P2C-HATCHET)
+  evidence: 'evidence/p3-hatchet/report.md (9/9 LIVE-BLOCKED: sem instância, sem SDK, sem mapeamento real); bug de contrato corrigido: enqueue lançava {durable:true} sem run e agora falha fechado (packages/workflows/test/workflows.unit.test.ts)'
+  last_run: 2026-10-07 (sonda P2C-HATCHET); fix de contrato 2026-10-09 (unit, sem gate externo)
   owner: operator
-  limitations: resume durável impossível neste ambiente; fallback Inngest exige decisão própria
+  limitations: resume durável impossível neste ambiente (bloqueio externo permanece); falso claim durable:true sem run removido; fallback Inngest exige decisão própria
   unblock: decisão adotar-vs-manter-local + instância Hatchet real + SDK pinado + mapeamento workflow-name real + gate de 9 itens (cold-engine startup cf. upstream #4778, noisy-tenant, provider-down)
 - id: F13
   status: PASS

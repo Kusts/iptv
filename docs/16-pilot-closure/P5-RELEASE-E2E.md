@@ -31,7 +31,10 @@
     `multidomain-dispatch` (license echo) — sem efeito econômico real.
   - **F12** (crash-resume durável) → Hatchet 9/9 LIVE-BLOCKED
     (`evidence/p3-hatchet/report.md`); adapter construction-only, SDK ausente,
-    sem instância. Desbloqueio: decisão adotar-vs-manter-local + instância +
+    sem instância. O falso claim de contrato do stub (`enqueue` retornava
+    `{ durable: true }` sem criar run) foi corrigido em 2026-10-09 falhando
+    fechado; o bloqueio permanece por certificação externa, não por este bug.
+    Desbloqueio: decisão adotar-vs-manter-local + instância +
     SDK pinado + mapeamento real + gate de 9 itens.
 - **Zero UNKNOWN / NOT_MAPPED** nos gates MVP-PILOT (gate python impõe).
 

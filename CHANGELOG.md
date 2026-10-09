@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- fix(workflows): `enqueue` do `HatchetWorkflowAdapter` falha fechado — removido o stub construction-only que descartava o payload e retornava `{ durable: true }` sem criar nenhum run durável (claim desonesto já mapeado em `evidence/p3-hatchet/report.md`:45); a chamada agora lança erro descritivo (`not certified (W0-04 gate pending) … refusing to enqueue`) e nunca afirma durabilidade nem descarta a tarefa em silêncio (diferente do local, não há fila em memória atrás deste adapter). ADR-0019 preservada (Hatchet selecionado, gateado): zero integração de SDK nova, zero chamada de serviço, `createWorkflowAdapter` e o fallback local inalterados. Provas: `packages/workflows` typecheck + build + lint + testes focused (`enqueue` rejeita em vez de resolver; validação de nome vazio preservada). F12 segue BLOCKED com dono operator (certificação externa W0-04), agora preciso que o bug de contrato está corrigido.
+
 - docs(pilot): M2 fallback manual + capping (`evidence/p3-waha/m2-drill.md`: estado saudável lido ao vivo, procedimento de degradação/retomada; drill executado = ato do operador) + persistência do tunnel via Startup (tarefa agendada negada sem admin).
 
 - feat(integrations): M1-live WAHA (`evidence/p3-waha/m1-live.md`): sessão/restart/outbound/inbound/auth/dedupe/LID/triage provados ao vivo contra Contabo (conflito era 2ª instância na Hostinger, removida); webhook restaurado, ambiente devolvido.
