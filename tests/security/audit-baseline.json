@@ -1,96 +1,17 @@
 {
-  "generated": "2026-10-08",
+  "generated": "2026-10-09",
   "tool": "pnpm audit --json",
   "threshold": "high",
   "policy": "Bloqueia high/critical NOVOS (fora desta lista). Moderate/low são report-only. Entradas somem sozinhas quando o upstream corrige (viram STALE, sem falhar).",
+  "note": "Slice SECURITY-DEPS-VITEST4-20261009 (branch closure/security-vitest4-20261009, follow-up da closure/security-hardening-20261009): upgrade Vitest 3 -> 4 em todos os workspaces (`vitest: ^4.1.11`, resolvido 4.1.11 no lockfile) removeu do lockfile os advisories 1193683/1193684 (vitest e @vitest/mocker moderates, GHSA path traversal via @vitest/mocker redirect mock, patched em >=4.1.11) e os 2 critical do tinypool 1241260 (GHSA-5gmw-xhrv-c9v3) e 1241261 (GHSA-85c8-ppgw-ccpr) — a linha Vitest 4 não depende mais de tinypool (grep tinypool no pnpm-lock.yaml: 0 hits; antes vitest@3.2.7 -> @vitest/runner -> tinypool@1.1.1). Os 2 critical saíram desta baseline porque foram RESOLVIDOS de verdade na árvore nova (verificado por `pnpm audit --json` ao vivo: 4 advisories, 0 critical), não por mute. Permanencem somente o high/critical restante que exigem trabalho fora desta fatia (detalhe abaixo).",
   "acknowledged": {
-    "1241260": {
-      "severity": "critical",
-      "module": "tinypool",
-      "url": "https://github.com/advisories/GHSA-5gmw-xhrv-c9v3",
-      "path": "apps__api>vitest>tinypool",
-      "reason": "dev-only: worker pool do vitest em testes locais/CI. Exploit exige execução de código já dentro do processo de teste.",
-      "followup": "bump do vitest quando tinypool>=2.1.2 fluir"
-    },
-    "1241261": {
-      "severity": "critical",
-      "module": "tinypool",
-      "url": "https://github.com/advisories/GHSA-85c8-ppgw-ccpr",
-      "path": "apps__api>vitest>tinypool",
-      "reason": "dev-only: idem 1241260 (RCE em run() options do pool de teste).",
-      "followup": "bump do vitest quando tinypool>=2.1.2 fluir"
-    },
-    "1124252": {
-      "severity": "high",
-      "module": "postcss",
-      "url": "https://github.com/advisories/GHSA-6g55-p6wh-862q",
-      "path": "apps__web>next>postcss",
-      "reason": "build-time: parsing de CSS próprio no build Next. Sem CSS de atacante no pipeline.",
-      "followup": "bump do next quando postcss>=8.5.12 fluir"
-    },
-    "1139510": {
-      "severity": "high",
-      "module": "postcss",
-      "url": "https://github.com/advisories/GHSA-r28c-9q8g-f849",
-      "path": "apps__web>next>postcss",
-      "reason": "build-time: source-map auto-loading sobre mapas próprios. Idem 1124252.",
-      "followup": "bump do next quando postcss corrigido fluir"
-    },
-    "1240641": {
-      "severity": "high",
-      "module": "fastify",
-      "url": "https://github.com/advisories/GHSA-667r-xxjv-c9mm",
-      "path": "apps__api>@nestjs/platform-fastify>fastify",
-      "reason": "runtime HTTP da API (request body replacement via async validation). Upgrade exige bump peer-compatível do NestJS — mudança runtime fora desta slice; revalidado a cada CI.",
-      "followup": "slice dedicada de upgrade fastify/nest com regressão"
-    },
-    "1240642": {
-      "severity": "high",
-      "module": "fastify",
-      "url": "https://github.com/advisories/GHSA-p68q-wchp-6fh7",
-      "path": "apps__api>@nestjs/platform-fastify>fastify",
-      "reason": "runtime HTTP da API (auth bypass via URLs malformadas). Auth é server-side (AuthGuard global + PermissionsGuard) sem trust em path cru; idem 1240641 para o upgrade.",
-      "followup": "slice dedicada de upgrade fastify/nest com regressão"
-    },
-    "1240643": {
-      "severity": "high",
-      "module": "fastify",
-      "url": "https://github.com/advisories/GHSA-hwr6-493r-vm6h",
-      "path": "apps__api>@nestjs/platform-fastify>fastify",
-      "reason": "runtime HTTP da API (validation bypass). Validação de domínio é server-side nas camadas de comando; idem 1240641 para o upgrade.",
-      "followup": "slice dedicada de upgrade fastify/nest com regressão"
-    },
-    "1240644": {
-      "severity": "high",
-      "module": "fastify",
-      "url": "https://github.com/advisories/GHSA-9q9j-q6p8-xq58",
-      "path": "apps__api>@nestjs/platform-fastify>fastify",
-      "reason": "runtime HTTP da API (header validation bypass). Idem 1240641 para o upgrade.",
-      "followup": "slice dedicada de upgrade fastify/nest com regressão"
-    },
-    "1241209": {
-      "severity": "high",
-      "module": "source-map-js",
-      "url": "https://github.com/advisories/GHSA-68fv-2mgg-jv7q",
-      "path": "apps__api>vitest>vite>postcss>source-map-js",
-      "reason": "dev-only: DoS de event-loop via source-map no toolchain de teste. Sem source-map de atacante.",
-      "followup": "bump do vitest quando correção fluir"
-    },
-    "1241331": {
-      "severity": "high",
-      "module": "sharp",
-      "url": "https://github.com/advisories/GHSA-wq5f-xc86-pv6w",
-      "path": "apps__web>next>sharp",
-      "reason": "build-time: librsvg via next/image no build. Sem imagem de atacante no pipeline de build.",
-      "followup": "bump do next/sharp quando correção fluir"
-    },
     "1124011": {
       "severity": "high",
       "module": "@opentelemetry/propagator-jaeger",
       "url": "https://github.com/advisories/GHSA-45rx-2jwx-cxfr",
       "path": "packages__observability>@opentelemetry/sdk-trace-node>@opentelemetry/propagator-jaeger",
       "reason": "transitive-only: veio com o SDK de trace (P6b) e nunca é importado/registrado no código (propagação é só W3C traceparent); o DoS exige JaegerPropagator processando header malformado, inalcançável aqui.",
-      "followup": "remover via pnpm override se virar alcançável; some sozinho quando o SDK dropar a dep"
+      "followup": "patch (>=2.9.0) exige bump do @opentelemetry/sdk-trace-node (hoje fixado em 1.30.1) e é major de um transitive não usado; sem urgência. Some sozinho quando o SDK dropar a dep."
     }
   }
 }

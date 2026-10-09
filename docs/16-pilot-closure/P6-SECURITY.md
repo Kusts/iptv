@@ -15,7 +15,7 @@
 | S3 | Suites adversariais em job próprio | NOVO, verde (17/17) | job `adversarial`; §4 |
 | S4 | Migration/proof PG tests na CI | Existente, sem mudança | job `build` (`run_pg_fixture_tests.sh`) + `outbox-050-role-guards`; sem lacuna — nenhum job novo |
 | S5 | Contracts/docs gates | Existente, sem mudança | `validate_docs.py`, `test_contracts.py`, `test_seed_contract.py` no `build` (+ guarda no self-test) |
-| S6 | Self-test dos gates P6 | NOVO, verde (6/6) | `tests/security/test_ci_security_gates.py`, roda no `security-scans` |
+| S6 | Self-test dos gates P6 | NOVO, verde (18/18) | `tests/security/test_ci_security_gates.py`, roda no `security-scans` |
 | S7 | Branch governance | Compensação (protection indisponível) | §5 |
 | S8 | Sessão localStorage vs HttpOnly | DECIDIDO: manter localStorage no pilot (aceitação explícita) | §6 |
 | S9 | CORS | Revisado, sem achado bloqueante | §7 |
@@ -58,22 +58,76 @@
   `pnpm audit --json` contra `tests/security/audit-baseline.json` e **falha
   só em high/critical NOVO**; entradas resolvidas upstream viram aviso
   STALE sem quebrar o build.
-- Baseline 2026-10-08: 19 advisories (9 moderate, **8 high, 2 critical** —
-  os 10 reconhecidos com `reason` + `followup` cada):
+- Gate fail-closed contra falha operacional (patch desta branch): saída
+  vazia do `pnpm audit` (comando morto: registry fora, shim ausente, rc != 0),
+  JSON malformado e JSON estruturalmente inválido (não-objeto, sem
+  `advisories` ou `advisories` não-dict) agora **FALHAM** com exit 1. Antes,
+  `pnpm audit --json` morto com stdout vazio era interpretado como `{}` e
+  produziria **PASS** indevido. O exit code do pnpm (!= 0 quando há
+  vulnerabilidades, inclusive as reconhecidas) **não** decide o gate — o
+  veredito vem do conteúdo do JSON; PASS só com JSON válido e zero
+  high/critical fora da baseline (advisory nunca é mutado).
+- Revisão da validação estrutural (fail-closed em 2 níveis, patch desta
+  branch): a checagem anterior cobria só o formato externo, então payload
+  como `{"advisories":{"999":{"title":"x"}},"metadata":{"vulnerabilities":{"high":1}}}`
+  **passava** — severidade ausente não é blocking e `metadata` não era
+  conferido. Agora: (1) todo registro em `advisories` precisa ser objeto com
+  `severity` não-vazia do enum conhecido (`info`/`low`/`moderate`/`high`/
+  `critical`) — auditamos TODAS as severidades, não só high/critical;
+  (2) `metadata.vulnerabilities` precisa existir, com contador inteiro
+  não-negativo para cada severidade do enum, sem campos desconhecidos;
+  (3) os contadores precisam reconciliar 1:1 com os registros de
+  `advisories` (contrato verificado contra saída real do
+  `pnpm audit --json`, pnpm 10.15.0). Qualquer dado ausente, desconhecido ou
+  inconsistente **FALHA** — o gate não decide sobre payload incompleto.
+  Exit code != 0 do pnpm com payload válido e reconcilido continua
+  legítimo e não decide o gate.
+- Baseline 2026-10-09 (pós-overrides `pnpm.overrides` no root, drift
+  conferido a cada CI pelo gate): **8 advisories — 5 moderate (report-only),
+  3 high/critical reconhecidos com `reason` + `followup`**:
   - `tinypool` critical ×2 (via vitest): **dev-only** (pool de workers do
-    runner de teste; exploit exige código já no processo de teste).
-    Follow-up: bump do vitest quando `tinypool>=2.1.2` fluir.
-  - `fastify` high ×4 (via `@nestjs/platform-fastify`, **runtime da API**:
-    body replacement, auth bypass via URL malformada, validation bypasses).
-    Reconhecidos porque o upgrade exige bump peer-compatível do NestJS —
-    mudança runtime com regressão, fora desta slice. Revalidados a cada
-    CI; qualquer advisory novo falha o gate.
-    Follow-up: slice dedicada de upgrade fastify/nest com regressão.
-  - `postcss` high ×2, `sharp` high ×1 (via next): **build-time** (CSS/imagem
-    próprios no build; sem input de atacante no pipeline).
-  - `source-map-js` high ×1 (via vitest/vite): **dev-only**.
-  - `next` moderate ×2 (cache poisoning SSG/ISR): report-only pelo threshold.
-- Resultado local: `AUDIT-GATE PASS: nenhum high/critical novo` (exit 0).
+    runner de teste; exploit exige código já no processo de teste). Só
+    resolve com migração **Vitest 3 → 4** (`tinypool>=2.1.2` é major de
+    tinypool; vitest 3.2.7 fixa `^1.1.1` no lockfile).
+  - `@opentelemetry/propagator-jaeger` high ×1 (transitive-only do SDK de
+    trace 1.30.1): nunca importado/registrado no código (propagação é só W3C
+    traceparent); o DoS exige JaegerPropagator processando header
+    malformado — inalcançável aqui; sai com bump do SDK.
+  - moderate report-only (threshold high): `@opentelemetry/core`,
+    `vitest`, `@vitest/mocker` e `next` ×2 (cache poisoning SSG/ISR).
+  - **Resolvidos in-place nesta branch** (removidos da baseline):
+    `fastify` high ×4 (override `^5.12.5` via `@nestjs/platform-fastify`),
+    `postcss` high ×2 (`^8.5.23`), `sharp` high ×1 (`^0.35.5`),
+    `source-map-js` high ×1 (`^1.2.2`).
+- Resultado local: `AUDIT-GATE PASS: nenhum high/critical novo` (exit 0;
+  8 totais, 3 high/critical, 3 ack, 0 novos).
+- **Follow-up VITEST4 executado neste repo** (branch
+  `closure/security-vitest4-20261009`, sobre o HEAD 9ef38b8 do PR #38):
+  Vitest 3 → 4 nos 12 workspaces (`vitest: ^4.1.11`; lockfile resolve
+  **vitest 4.1.11** + `@vitest/*` 4.1.11; `vite` segue **7.3.6**, dentro do
+  peer `^6||^7||^8`). A linha Vitest 4 **não depende mais de `tinypool`**
+  (`grep tinypool pnpm-lock.yaml`: 0 ocorrências), então saem da árvore:
+  - `vitest` + `@vitest/mocker` moderate (path traversal via redirect mock,
+    patched em `>=4.1.11` — é exatamente o piso mínimo exigido);
+  - `tinypool` critical ×2 (`GHSA-5gmw-xhrv-c9v3`,
+    `GHSA-85c8-ppgw-ccpr`) — **removidos da baseline por resolução real**
+    (não mute): `pnpm audit --json` vivo passa a reportar **4 advisories,
+    0 critical**.
+  - Estado atual do gate (validado ao vivo): **4 totais — 3 moderate
+    report-only (`@opentelemetry/core`, `next` ×2) + 1 high reconhecido
+    (`propagator-jaeger`)**; `AUDIT-GATE PASS` (exit 0; 1 high/critical,
+    1 ack, 0 novos). A baseline encolheu para o único achado high/critical
+    que ainda exige trabalho fora desta fatia.
+  - Sem adaptação de config: os 11 `vitest.config.ts` só usam
+    `include`/`testTimeout`/`maxWorkers`/`hookTimeout`/`environment`
+    (`jsdom`, já dependência própria de `apps/web`) — todos válidos em
+    Vitest 4. Regressão medida: **1175 testes unitários verdes** sem
+    `TEST_DATABASE_URL` (320 de integração *skipped* por
+    `describe.skipIf(!hasDb)`) e, com banco descartável fresco, zero
+    falha de teste — `@iptv/api` **916/916**, `@iptv/database` **28/28**,
+    `@iptv/outbox-worker` **60/60** (ressalva de exit: o run com DB não
+    encerra limpo no teardown do outbox-worker — §12.1); `pnpm build`
+    12/12; lint 12/12; typecheck 20/20.
 
 ## 4. Suites adversariais (job `adversarial`, PG próprio descartável)
 
@@ -194,8 +248,23 @@ Sem achado.
 
 - `gitleaks detect --source . --config .gitleaks.toml --redact` (8.24.0,
   119 commits): **no leaks found**, exit 0.
-- `python scripts/ci-audit-gate.py`: **PASS** (19 totais, 10 ack, 0 novos).
-- `python tests/security/test_ci_security_gates.py`: **6/6 OK**.
+- `python scripts/ci-audit-gate.py`: **PASS** (8 totais, 3 high/critical,
+  3 ack, 0 novos) — incluindo o patch fail-closed: saída vazia/JSON
+  inválido/sem `advisories` falham; exit code != 0 do pnpm com advisories
+  válidos não decide o gate (veredito pelo JSON). Payload real do registry
+  reconciliado 1:1 (`metadata.vulnerabilities` vs registros); controle
+  negativo com a mesma saída real adulterada (severidade `HIGH` +
+  contador inflado) → FAIL.
+- `python tests/security/test_ci_security_gates.py`: **18/18 OK** (6
+  anteriores + 12 de estresse do gate com `subprocess.run` mockado, sem
+  rede: comando morto + saída vazia, JSON malformado, JSON inválido
+  estruturalmente/sem advisories, advisory sem severidade (payload
+  adversarial do revisor `{"999":{"title":"x"}}`), severidade
+  desconhecida/não-string, registro advisory não-objeto, contador de
+  `metadata.vulnerabilities` divergente dos registros, metadata/
+  vulnerabilities ausente, campo do enum faltando, contador
+  negativo/string/float/bool, campo desconhecido, audit válido com achado
+  novo → falha, audit válido com achados reconhecidos → PASS).
 - `python -c yaml.safe_load(ci.yml)`: 4 jobs
   (`build`, `outbox-050-role-guards`, `security-scans`, `adversarial`).
 - Adversariais em PG scratch descartável: **17/17** (container removido).
@@ -204,10 +273,54 @@ Sem achado.
 - CI existente intocada: diff do workflow só **adiciona** jobs; `build` e
   `outbox-050-role-guards` byte-idênticos.
 
+### 12.1 Validação do follow-up Vitest 4 (branch `closure/security-vitest4-20261009`)
+
+- Instalação: `pnpm install` atualizou o lockfile (vitest 4.1.11 +
+  `@vitest/*` 4.1.11; `vite` 7.3.6 mantido; **tinypool removido** da árvore)
+  e `pnpm install --frozen-lockfile` reprova o lockfile sincronizado
+  (exit 0). Escopo da mudança: 12 `package.json` (faixa
+  `"vitest": "^3.2.4"` → `"^4.1.11"`), lockfile e baseline de audit.
+  Nenhum `vitest.config.ts` precisou de adaptação (nada de breaking change
+  verificada nas configs em uso).
+- `python scripts/ci-audit-gate.py`: **PASS** (4 totais, 1 high/critical,
+  1 ack, 0 novos). Baseline encolhida só pelos 2 critical do tinypool
+  comprovadamente ausentes do lockfile novo (STALE→removido); nenhum mute.
+- `python tests/security/test_ci_security_gates.py`: 18/18 OK.
+- `pnpm lint` 12/12, `pnpm typecheck` 20/20, `pnpm build` 12/12.
+- `pnpm test` sem `TEST_DATABASE_URL`: 20/20 tasks; **1175 passed**,
+  **320 skipped** (todos `*.integration.test.ts` sob
+  `describe.skipIf(!hasDb)`).
+- `pnpm test` com banco descartável **frio e vazio** criado só para a
+  validação (descartado depois): **zero falha de teste de aplicação** —
+  `@iptv/api` 77 arquivos / **916 testes passed**, `@iptv/database`
+  **28/28**, `@iptv/outbox-worker` **60/60**. O run completo, porém,
+  **não encerrou com exit limpo**: com a suíte completa em paralelo, o
+  `afterAll` de `apps/outbox-worker/test/worker.integration.test.ts`
+  estoura o `hookTimeout` default de 10s neste host lento — a falha é de
+  **teardown/exit do comando, não de asserção**, portanto o run com DB
+  **não é verde de ponta a ponta** (testes verdes, comando vermelho no
+  teardown).
+- A falha de teardown é **pré-existente e não é regressão desta slice**:
+  reproduzida IDÊNTICA no worktree principal com **Vitest 3** (controle
+  A/B), sem o upgrade — mesmo `afterAll`/`hookTimeout`. Fica como
+  candidato a follow-up de higiene (`hookTimeout: 120_000` espelhando
+  `apps/api` e `packages/database`).
+
 ## Follow-ups (fora desta slice)
 
-1. Slice dedicada de upgrade fastify/nest (4 high runtime, §3).
-2. Security headers + rate-limit na API (§8, §11).
-3. Reduzir TTL de sessão / rotação (§6).
-4. `CODEOWNERS` + proteção de branch quando o plano GitHub permitir (§5).
-5. Dataset red-team de prompt-injection (§4).
+1. ~~Migração **Vitest 3 → 4** (resolve `tinypool` critical ×2 e os moderates
+   `vitest`/`@vitest/mocker`; `tinypool>=2.1.2` é major — slice dedicada com
+   regressão; §3).~~ **FEITO** em `closure/security-vitest4-20261009`
+   (PR-followup do #38): vitest 4.1.11 nos 12 workspaces, baseline podada
+   para 1 high/critical, gate PASS, regressão sem falha de teste — com o
+   run de DB sem exit limpo no teardown do outbox-worker (§3, §12.1).
+2. Manutenção dos `pnpm.overrides` desta branch (fastify/postcss/sharp/
+   source-map-js): remover cada override quando o bump nativo do dependente
+   (nest/next/vitest) fluir com a correção, para não deixar pin transitivo
+   defasado (§3).
+3. Bump `@opentelemetry/sdk-trace-node` quando major viável (resolve
+   `propagator-jaeger` high; hoje 1.30.1, §3).
+4. Security headers + rate-limit na API (§8, §11).
+5. Reduzir TTL de sessão / rotação (§6).
+6. `CODEOWNERS` + proteção de branch quando o plano GitHub permitir (§5).
+7. Dataset red-team de prompt-injection (§4).
