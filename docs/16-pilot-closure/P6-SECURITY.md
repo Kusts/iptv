@@ -101,6 +101,33 @@
     `source-map-js` high ×1 (`^1.2.2`).
 - Resultado local: `AUDIT-GATE PASS: nenhum high/critical novo` (exit 0;
   8 totais, 3 high/critical, 3 ack, 0 novos).
+- **Follow-up VITEST4 executado neste repo** (branch
+  `closure/security-vitest4-20261009`, sobre o HEAD 9ef38b8 do PR #38):
+  Vitest 3 → 4 nos 12 workspaces (`vitest: ^4.1.11`; lockfile resolve
+  **vitest 4.1.11** + `@vitest/*` 4.1.11; `vite` segue **7.3.6**, dentro do
+  peer `^6||^7||^8`). A linha Vitest 4 **não depende mais de `tinypool`**
+  (`grep tinypool pnpm-lock.yaml`: 0 ocorrências), então saem da árvore:
+  - `vitest` + `@vitest/mocker` moderate (path traversal via redirect mock,
+    patched em `>=4.1.11` — é exatamente o piso mínimo exigido);
+  - `tinypool` critical ×2 (`GHSA-5gmw-xhrv-c9v3`,
+    `GHSA-85c8-ppgw-ccpr`) — **removidos da baseline por resolução real**
+    (não mute): `pnpm audit --json` vivo passa a reportar **4 advisories,
+    0 critical**.
+  - Estado atual do gate (validado ao vivo): **4 totais — 3 moderate
+    report-only (`@opentelemetry/core`, `next` ×2) + 1 high reconhecido
+    (`propagator-jaeger`)**; `AUDIT-GATE PASS` (exit 0; 1 high/critical,
+    1 ack, 0 novos). A baseline encolheu para o único achado high/critical
+    que ainda exige trabalho fora desta fatia.
+  - Sem adaptação de config: os 11 `vitest.config.ts` só usam
+    `include`/`testTimeout`/`maxWorkers`/`hookTimeout`/`environment`
+    (`jsdom`, já dependência própria de `apps/web`) — todos válidos em
+    Vitest 4. Regressão medida: **1175 testes unitários verdes** sem
+    `TEST_DATABASE_URL` (320 de integração *skipped* por
+    `describe.skipIf(!hasDb)`) e, com banco descartável fresco, zero
+    falha de teste — `@iptv/api` **916/916**, `@iptv/database` **28/28**,
+    `@iptv/outbox-worker` **60/60** (ressalva de exit: o run com DB não
+    encerra limpo no teardown do outbox-worker — §12.1); `pnpm build`
+    12/12; lint 12/12; typecheck 20/20.
 
 ## 4. Suites adversariais (job `adversarial`, PG próprio descartável)
 
@@ -246,11 +273,47 @@ Sem achado.
 - CI existente intocada: diff do workflow só **adiciona** jobs; `build` e
   `outbox-050-role-guards` byte-idênticos.
 
+### 12.1 Validação do follow-up Vitest 4 (branch `closure/security-vitest4-20261009`)
+
+- Instalação: `pnpm install` atualizou o lockfile (vitest 4.1.11 +
+  `@vitest/*` 4.1.11; `vite` 7.3.6 mantido; **tinypool removido** da árvore)
+  e `pnpm install --frozen-lockfile` reprova o lockfile sincronizado
+  (exit 0). Escopo da mudança: 12 `package.json` (faixa
+  `"vitest": "^3.2.4"` → `"^4.1.11"`), lockfile e baseline de audit.
+  Nenhum `vitest.config.ts` precisou de adaptação (nada de breaking change
+  verificada nas configs em uso).
+- `python scripts/ci-audit-gate.py`: **PASS** (4 totais, 1 high/critical,
+  1 ack, 0 novos). Baseline encolhida só pelos 2 critical do tinypool
+  comprovadamente ausentes do lockfile novo (STALE→removido); nenhum mute.
+- `python tests/security/test_ci_security_gates.py`: 18/18 OK.
+- `pnpm lint` 12/12, `pnpm typecheck` 20/20, `pnpm build` 12/12.
+- `pnpm test` sem `TEST_DATABASE_URL`: 20/20 tasks; **1175 passed**,
+  **320 skipped** (todos `*.integration.test.ts` sob
+  `describe.skipIf(!hasDb)`).
+- `pnpm test` com banco descartável **frio e vazio** criado só para a
+  validação (descartado depois): **zero falha de teste de aplicação** —
+  `@iptv/api` 77 arquivos / **916 testes passed**, `@iptv/database`
+  **28/28**, `@iptv/outbox-worker` **60/60**. O run completo, porém,
+  **não encerrou com exit limpo**: com a suíte completa em paralelo, o
+  `afterAll` de `apps/outbox-worker/test/worker.integration.test.ts`
+  estoura o `hookTimeout` default de 10s neste host lento — a falha é de
+  **teardown/exit do comando, não de asserção**, portanto o run com DB
+  **não é verde de ponta a ponta** (testes verdes, comando vermelho no
+  teardown).
+- A falha de teardown é **pré-existente e não é regressão desta slice**:
+  reproduzida IDÊNTICA no worktree principal com **Vitest 3** (controle
+  A/B), sem o upgrade — mesmo `afterAll`/`hookTimeout`. Fica como
+  candidato a follow-up de higiene (`hookTimeout: 120_000` espelhando
+  `apps/api` e `packages/database`).
+
 ## Follow-ups (fora desta slice)
 
-1. Migração **Vitest 3 → 4** (resolve `tinypool` critical ×2 e os moderates
+1. ~~Migração **Vitest 3 → 4** (resolve `tinypool` critical ×2 e os moderates
    `vitest`/`@vitest/mocker`; `tinypool>=2.1.2` é major — slice dedicada com
-   regressão; §3).
+   regressão; §3).~~ **FEITO** em `closure/security-vitest4-20261009`
+   (PR-followup do #38): vitest 4.1.11 nos 12 workspaces, baseline podada
+   para 1 high/critical, gate PASS, regressão sem falha de teste — com o
+   run de DB sem exit limpo no teardown do outbox-worker (§3, §12.1).
 2. Manutenção dos `pnpm.overrides` desta branch (fastify/postcss/sharp/
    source-map-js): remover cada override quando o bump nativo do dependente
    (nest/next/vitest) fluir com a correção, para não deixar pin transitivo

@@ -3,24 +3,8 @@
   "tool": "pnpm audit --json",
   "threshold": "high",
   "policy": "Bloqueia high/critical NOVOS (fora desta lista). Moderate/low são report-only. Entradas somem sozinhas quando o upstream corrige (viram STALE, sem falhar).",
-  "note": "Slice SECURITY-DEPS-20261009 (branch closure/security-hardening-20261009): via pnpm.overrides no root (fastify ^5.12.5, postcss ^8.5.23, sharp ^0.35.5, source-map-js ^1.2.2) foram resolvidos in-place e REMOVIDOS desta baseline: fastify GHSA-667r/p68q/hwr6/9q9j (nested 5.11.3 de @nestjs/platform-fastify -> 5.12.5), postcss GHSA-6g55/r28c (8.4.31 -> 8.5.28), source-map-js GHSA-68fv (1.2.1 -> 1.2.2), sharp GHSA-wq5f (0.35.4 -> 0.35.5). Permanencem somente os 3 high/critical que exigem trabalho fora desta fatiada (detalhe abaixo).",
+  "note": "Slice SECURITY-DEPS-VITEST4-20261009 (branch closure/security-vitest4-20261009, follow-up da closure/security-hardening-20261009): upgrade Vitest 3 -> 4 em todos os workspaces (`vitest: ^4.1.11`, resolvido 4.1.11 no lockfile) removeu do lockfile os advisories 1193683/1193684 (vitest e @vitest/mocker moderates, GHSA path traversal via @vitest/mocker redirect mock, patched em >=4.1.11) e os 2 critical do tinypool 1241260 (GHSA-5gmw-xhrv-c9v3) e 1241261 (GHSA-85c8-ppgw-ccpr) — a linha Vitest 4 não depende mais de tinypool (grep tinypool no pnpm-lock.yaml: 0 hits; antes vitest@3.2.7 -> @vitest/runner -> tinypool@1.1.1). Os 2 critical saíram desta baseline porque foram RESOLVIDOS de verdade na árvore nova (verificado por `pnpm audit --json` ao vivo: 4 advisories, 0 critical), não por mute. Permanencem somente o high/critical restante que exigem trabalho fora desta fatia (detalhe abaixo).",
   "acknowledged": {
-    "1241260": {
-      "severity": "critical",
-      "module": "tinypool",
-      "url": "https://github.com/advisories/GHSA-5gmw-xhrv-c9v3",
-      "path": "apps__api>vitest>tinypool",
-      "reason": "dev-only: worker pool do vitest em testes locais/CI. Exploit exige execução de código já dentro do processo de teste.",
-      "followup": "bloqueado: vitest 3.2.7 fixa tinypool@^1.1.1 (lockfile), e o patch exige tinypool>=2.1.2 (major de tinypool). Só resolve com migração Vitest 3 -> 4 (também cobre @vitest/mocker e advisories moderate do vitest). Slice dedicada com regressão."
-    },
-    "1241261": {
-      "severity": "critical",
-      "module": "tinypool",
-      "url": "https://github.com/advisories/GHSA-85c8-ppgw-ccpr",
-      "path": "apps__api>vitest>tinypool",
-      "reason": "dev-only: idem 1241260 (RCE em run() options do pool de teste).",
-      "followup": "idem 1241260: requer Vitest 3 -> 4 (tinypool>=2.1.2). Slice dedicada."
-    },
     "1124011": {
       "severity": "high",
       "module": "@opentelemetry/propagator-jaeger",
