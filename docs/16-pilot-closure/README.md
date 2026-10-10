@@ -1,6 +1,6 @@
-# Pilot Closure — Wave 17 (execução)
+# Pilot Closure — Release closure
 
-> Status: **IN_EXECUTION — P0** (2026-10-07)
+> Status: **ENGINEERING BLOCKED** (2026-10-09; ver a matriz única em [`RELEASE-CLOSURE-STATUS.md`](RELEASE-CLOSURE-STATUS.md) e gaps deduplicados em [`RELEASE-CLOSURE-GAPS.md`](RELEASE-CLOSURE-GAPS.md))
 > SPEC de origem: `IPTV Pilot Closure SPEC v1` + `IPTV Pilot Closure PLAN v1`
 > (recebidos do operador nesta sessão; texto integral na proposta, não
 > duplicado aqui).
@@ -59,7 +59,7 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 
 | Slice | Escopo | Estado |
 |---|---|---|
-| `P3` integrações | Asaas software + stub customer; WAHA código/sintético; CINEVISION/MK/Infisical gates; Hatchet BLOCKED; register + `P3-INTEGRATIONS.md` + `evidence/p3-*/` | DONE sem live (tester PASS; lives = gates de operador: B1/B2, M1/M2, G07, Steps 3/6–9, F12) |
+| `P3` integrações | Asaas software + stub customer; WAHA código/sintético; CINEVISION/MK/Infisical gates; Hatchet BLOCKED; register + `P3-INTEGRATIONS.md` + `evidence/p3-*/` | Software slice DONE; live revalidado parcialmente: Asaas B1 PARTIAL (G3 reorder é blocker de engenharia), WAHA M1 PARTIAL/M2 não executado (media/audio é blocker de engenharia); CINEVISION write, MK adapter/G07 e F12 continuam bloqueados |
 
 ## P4 status
 
@@ -72,7 +72,7 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 
 | Slice | Escopo | Estado |
 |---|---|---|
-| `P5` matriz G/F | `pilot-evidence.yaml` + gate + `P5-RELEASE-E2E.md` (33 PASS + G07/F12 BLOCKED operator) | DONE (tester PASS) |
+| `P5` matriz G/F | `pilot-evidence.yaml` + gate + `P5-RELEASE-E2E.md` (32 PASS + G01/G07/F12 BLOCKED; B2 software rerun done, integral gate open) | PARTIAL — software rerun verified; G01 journey proof and operator/integral gates remain |
 
 ## P6 status
 
@@ -91,7 +91,7 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 
 | Slice | Escopo | Estado |
 |---|---|---|
-| `P8` wraps + runbook | context-builder/pipeline/commerce/crm-lookup wraps + rehearsal 7/7 + `P8-PILOT.md` | DONE código (tester PASS); OPERAÇÃO do piloto = ato do operador |
+| `P8` wraps + runbook | context-builder/pipeline/commerce/crm-lookup wraps + rehearsal 7/7 + `P8-PILOT.md` | Code slices DONE; critérios de entrada continuam desmarcados; staging rehearsal pós-candidato e gates de operador não concluídos |
 
 ## Artefatos finais (C9 + PLAN — acompanhar aqui)
 
