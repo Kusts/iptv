@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- fix(browser-worker): tornar determinísticos os testes de timeout do Browser Worker: o orçamento agora só avança depois de sinal explícito de `goto`/`open` e exposição do contexto, evitando que I/O real de diretório/lock consuma os antigos orçamentos de 50/200 ms antes da fase testada. Mantidas as garantias de fechamento, lock livre e zero passos após resolução tardia; timers restaurados em `finally`. Verificação local: `cinevisionCommand.test.ts` 15/15, `@iptv/browser-worker` 192/192, lint, typecheck e build PASS. CI remota do PR ainda será revalidada no HEAD atualizado.
+
 - docs(pilot): atualiza os snapshots de CI: PR #37 HEAD atual `463f1a8` aguarda checks (último HEAD com CI verde registrado: `83c1e4b`); PR #42 tem CI completo verde, ainda sem revisão/merge humano.
 
 - docs(pilot): atualiza a matriz de fechamento com PR #42 OTel 2.x (CI completo verde), audit local candidato sem High/Critical e limites da prova por stub; nenhum PR mergeado ou readiness promovida.
