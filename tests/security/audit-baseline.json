@@ -3,15 +3,6 @@
   "tool": "pnpm audit --json",
   "threshold": "high",
   "policy": "Bloqueia high/critical NOVOS (fora desta lista). Moderate/low são report-only. Entradas somem sozinhas quando o upstream corrige (viram STALE, sem falhar).",
-  "note": "Slice SECURITY-DEPS-VITEST4-20261009 (branch closure/security-vitest4-20261009, follow-up da closure/security-hardening-20261009): upgrade Vitest 3 -> 4 em todos os workspaces (`vitest: ^4.1.11`, resolvido 4.1.11 no lockfile) removeu do lockfile os advisories 1193683/1193684 (vitest e @vitest/mocker moderates, GHSA path traversal via @vitest/mocker redirect mock, patched em >=4.1.11) e os 2 critical do tinypool 1241260 (GHSA-5gmw-xhrv-c9v3) e 1241261 (GHSA-85c8-ppgw-ccpr) — a linha Vitest 4 não depende mais de tinypool (grep tinypool no pnpm-lock.yaml: 0 hits; antes vitest@3.2.7 -> @vitest/runner -> tinypool@1.1.1). Os 2 critical saíram desta baseline porque foram RESOLVIDOS de verdade na árvore nova (verificado por `pnpm audit --json` ao vivo: 4 advisories, 0 critical), não por mute. Permanencem somente o high/critical restante que exigem trabalho fora desta fatia (detalhe abaixo).",
-  "acknowledged": {
-    "1124011": {
-      "severity": "high",
-      "module": "@opentelemetry/propagator-jaeger",
-      "url": "https://github.com/advisories/GHSA-45rx-2jwx-cxfr",
-      "path": "packages__observability>@opentelemetry/sdk-trace-node>@opentelemetry/propagator-jaeger",
-      "reason": "transitive-only: veio com o SDK de trace (P6b) e nunca é importado/registrado no código (propagação é só W3C traceparent); o DoS exige JaegerPropagator processando header malformado, inalcançável aqui.",
-      "followup": "patch (>=2.9.0) exige bump do @opentelemetry/sdk-trace-node (hoje fixado em 1.30.1) e é major de um transitive não usado; sem urgência. Some sozinho quando o SDK dropar a dep."
-    }
-  }
+  "note": "Slice SECURITY-OTEL2-20261009 (branch closure/security-otel2-20261009, sobre o commit bfbf66f do PR #41): geração OpenTelemetry 2.x COERENTE em packages/observability — sdk-trace-node 1.30.1 -> 2.12.0, sdk-metrics 1.30.1 -> 2.12.0, sdk-logs e os 3 exporters OTLP/HTTP 0.57.2 -> 0.223.0, @opentelemetry/api mantido em 1.9.1 (dentro do peer >=1.9.0 <1.10.0 exigido pelo sdk-metrics 2.12.0). Migração de API: spanProcessors no construtor do NodeTracerProvider (addSpanProcessor removido no 2.0) e processors no construtor do LoggerProvider (addLogRecordProcessor removido no sdk-logs 0.223.0; BatchLogRecordProcessor agora recebe { exporter }). O SDK 2.x não depende mais de @opentelemetry/propagator-jaeger (nem de propagator-b3) — grep 'propagator' no pnpm-lock.yaml: 0 ocorrências — então o high 1124011 (GHSA-45rx-2jwx-cxfr) saiu por resolução real na árvore, não por mute; o moderate 1153174 do @opentelemetry/core (1.30.1) também saiu: core/resources 2.12.0 estão fixos na geração 2.x. `pnpm audit --json` ao vivo: 2 advisories, ambos moderate e report-only (next 1241491/1241494, cache poisoning SSG/ISR), 0 high/critical; gate PASS (0 reconhecidos). A baseline fica VAZIA de reconhecidos por intenção — invariante afirmada em tests/security/test_ci_security_gates.py — e qualquer high/critical futuro falha fechado.",
+  "acknowledged": {}
 }

@@ -113,11 +113,12 @@
     `GHSA-85c8-ppgw-ccpr`) — **removidos da baseline por resolução real**
     (não mute): `pnpm audit --json` vivo passa a reportar **4 advisories,
     0 critical**.
-  - Estado atual do gate (validado ao vivo): **4 totais — 3 moderate
-    report-only (`@opentelemetry/core`, `next` ×2) + 1 high reconhecido
-    (`propagator-jaeger`)**; `AUDIT-GATE PASS` (exit 0; 1 high/critical,
-    1 ack, 0 novos). A baseline encolheu para o único achado high/critical
-    que ainda exige trabalho fora desta fatia.
+  - Estado do gate ao fim daquela slice (validado ao vivo): **4 totais —
+    3 moderate report-only (`@opentelemetry/core`, `next` ×2) + 1 high
+    reconhecido (`propagator-jaeger`)**; `AUDIT-GATE PASS` (exit 0; 1
+    high/critical, 1 ack, 0 novos). A baseline havia encolhido para o único
+    achado high/critical que ainda exigia trabalho fora daquela fatia —
+    resolvido depois pelo follow-up OTEL2 abaixo.
   - Sem adaptação de config: os 11 `vitest.config.ts` só usam
     `include`/`testTimeout`/`maxWorkers`/`hookTimeout`/`environment`
     (`jsdom`, já dependência própria de `apps/web`) — todos válidos em
@@ -128,6 +129,41 @@
     `@iptv/outbox-worker` **60/60** (ressalva de exit: o run com DB não
     encerra limpo no teardown do outbox-worker — §12.1); `pnpm build`
     12/12; lint 12/12; typecheck 20/20.
+- **Follow-up OTEL2 executado neste repo** (branch
+  `closure/security-otel2-20261009`, sobre o commit bfbf66f do PR #41):
+  upgrade **coerente para a geração OpenTelemetry 2.x** em
+  `packages/observability` — `sdk-trace-node` 1.30.1 → **2.12.0**,
+  `sdk-metrics` 1.30.1 → **2.12.0**, `sdk-logs` e os três exporters
+  OTLP/HTTP 0.57.2 → **0.223.0**, `@opentelemetry/api` **mantido em 1.9.1**
+  (dentro do peer `>=1.9.0 <1.10.0` do sdk-metrics 2.12.0). Motivo: o
+  primeiro bump (só o trace SDK) quebrou o contrato de tipos — o exporter
+  0.57.2 usa a API 1.x (`instrumentationLibrary`) contra o `sdk-trace-node`
+  2.x — e a prova OTLP enviava **zero bytes de trace**; só a geração
+  completa fecha os dois problemas. Migração de código (duas APIs removidas
+  nas versões novas, ambas em `configureOtlp`): `spanProcessors` no
+  construtor do `NodeTracerProvider` (`addSpanProcessor` removido no 2.0) e
+  `processors` no construtor do `LoggerProvider` (`addLogRecordProcessor`
+  removido no sdk-logs 0.223.0, com `BatchLogRecordProcessor` recebendo
+  `{ exporter }`). Nenhum propagador foi adicionado; nenhum call site de
+  `apps/api`/workers mudou (default continua noop).
+  - Árvore sem resíduo 1.x: lockfile só com `core`/`resources`/
+    `sdk-trace*` 2.12.0 + `sdk-logs`/exporters 0.223.0 + `api` 1.9.1;
+    `grep propagator pnpm-lock.yaml` → 0 ocorrências.
+  - Saem da baseline/árvore **por resolução real**: o high
+    `1124011` (`@opentelemetry/propagator-jaeger`, GHSA-45rx-2jwx-cxfr — o
+    SDK 2.x não depende mais do propagador) e o moderate `1153174`
+    (`@opentelemetry/core` 1.30.1 — core 2.12.0 fixo na geração 2.x).
+  - Estado atual do gate (validado ao vivo): `pnpm audit --json` →
+    **2 advisories, ambos moderate e report-only** (`next` ×2: cache
+    poisoning SSG/ISR), **0 high/critical, 0 reconhecidos**;
+    `AUDIT-GATE PASS`. A baseline fica **VAZIA de reconhecidos por
+    intenção** — invariante explícita no self-test
+    (`test_audit_baseline_empty_is_intentional`: `acknowledged == {}` + nota
+    documentando a intenção; qualquer high/critical futuro falha fechado).
+  - Prova OTLP re-executada e **verde**: `scripts/otlp-proof.mjs` → 1 trace
+    (821 B) + 3 exports de métrica (3585 B) + 1 log (845 B); a mesma prova
+    roda automatizada em `test/otlp-proof.test.ts` (stub loopback, 3 sinais
+    exigidos).
 
 ## 4. Suites adversariais (job `adversarial`, PG próprio descartável)
 
@@ -306,6 +342,35 @@ Sem achado.
   candidato a follow-up de higiene (`hookTimeout: 120_000` espelhando
   `apps/api` e `packages/database`).
 
+### 12.2 Validação do follow-up OTEL 2 (branch `closure/security-otel2-20261009`)
+
+- Escopo: **somente** `packages/observability` (package.json, `src/index.ts`,
+  `test/otlp-proof.test.ts` novo) + `tests/security/` (baseline + self-test) +
+  documentação; nenhum outro package tocado, nenhum propagador adicionado.
+- Instalação: lockfile reescrito para a geração coerente (`core`/`resources`/
+  `sdk-trace*` 2.12.0; `sdk-logs`/exporters 0.223.0; `api` 1.9.1) e
+  `pnpm install --frozen-lockfile` **exit 0**.
+- `python scripts/ci-audit-gate.py`: **PASS** (2 totais, 0 high/critical,
+  0 reconhecidos, 0 novos) — os 2 restantes são moderate `next` report-only.
+- `python tests/security/test_ci_security_gates.py`: 18 → **19 OK**
+  (nova invariante `test_audit_baseline_empty_is_intentional`: baseline real
+  vazia + nota de intenção; casos "reconhecido" seguem cobertos por
+  baseline sintética injetada via tempfile).
+- `@iptv/observability`: `typecheck`, `build`, `lint` e `test` verdes —
+  **13/13** (12 units + prova OTLP automatizada exigindo traces+metrics+logs
+  no stub loopback).
+- `node scripts/otlp-proof.mjs`: **OTLP-PROOF PASS** — `/v1/traces` 1 req /
+  821 B, `/v1/metrics` 3 req / 3585 B, `/v1/logs` 1 req / 845 B.
+- Regressão da árvore: `pnpm lint` 12/12, `pnpm typecheck` 20/20,
+  `pnpm build` 12/12; `pnpm test` **20/20 tasks** (com `--concurrency=2`;
+  sob concorrência plena o `@iptv/web` flakesia com "Timeout waiting for
+  worker to respond" neste host lento e passa isolado 122/122 — falha de
+  ambiente, não de asserção). Sem `TEST_DATABASE_URL`: **608 passed /
+  308 skipped** em `@iptv/api` (37/77 arquivos) e os demais `*.integration.test.ts`
+  *skipped* por `describe.skipIf(!hasDb)` — **nenhum banco foi criado**.
+- Gates Python de docs/contratos: `validate_docs`, `test_contracts`,
+  `test_seed_contract` verdes.
+
 ## Follow-ups (fora desta slice)
 
 1. ~~Migração **Vitest 3 → 4** (resolve `tinypool` critical ×2 e os moderates
@@ -318,8 +383,13 @@ Sem achado.
    source-map-js): remover cada override quando o bump nativo do dependente
    (nest/next/vitest) fluir com a correção, para não deixar pin transitivo
    defasado (§3).
-3. Bump `@opentelemetry/sdk-trace-node` quando major viável (resolve
-   `propagator-jaeger` high; hoje 1.30.1, §3).
+3. ~~Bump `@opentelemetry/sdk-trace-node` quando major viável (resolve
+   `propagator-jaeger` high; hoje 1.30.1, §3).~~ **FEITO** em
+   `closure/security-otel2-20261009` como upgrade **coerente da geração
+   OTel 2.x** (sdk-trace-node + sdk-metrics 2.12.0, sdk-logs/exporters
+   0.223.0, api 1.9.1): high 1124011 e o moderate do core saíram da árvore
+   por resolução real, baseline vazia por intenção, gate PASS e prova OTLP
+   re-executada com os 3 sinais (§3, §12.2).
 4. Security headers + rate-limit na API (§8, §11).
 5. Reduzir TTL de sessão / rotação (§6).
 6. `CODEOWNERS` + proteção de branch quando o plano GitHub permitir (§5).

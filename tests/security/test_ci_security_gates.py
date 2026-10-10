@@ -18,6 +18,8 @@ import importlib.util
 import io
 import json
 import subprocess
+import tempfile
+import contextlib
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -105,6 +107,30 @@ class TestCiSecurityGates(unittest.TestCase):
         ):
             self.assertIn(gate, text)
 
+    def test_audit_baseline_empty_is_intentional(self):
+        # Invariante explícita: desde o upgrade OTel 2 coerente
+        # (`@opentelemetry/sdk-trace-node` 2.12.0 + SDK/logs/exporters
+        # 0.223.0, propagator-jaeger fora da árvore) nenhum high/critical
+        # permanece reconhecido — a baseline real fica VAZIA de propósito.
+        # O teste falha se `acknowledged` voltar a ficar não-vazio (mute
+        # silencioso exige razão+followup por entrada) ou se a nota que
+        # documenta a intenção desaparecer.
+        baseline = json.loads(AUDIT_BASELINE.read_text(encoding="utf-8"))
+        ack = baseline.get("acknowledged")
+        self.assertIsInstance(ack, dict, "acknowledged precisa ser objeto")
+        self.assertEqual(
+            ack,
+            {},
+            "baseline reconhecendo high/critical precisa de nota explícita de intenção",
+        )
+        note = baseline.get("note", "").lower()
+        self.assertIn(
+            "otel",
+            note,
+            "baseline vazia sem nota declarando a intenção = suspeita de mute",
+        )
+        self.assertIn("vazia", note, "nota precisa afirmar que a baseline está vazia")
+
 
 def load_audit_gate():
     spec = importlib.util.spec_from_file_location("ci_audit_gate_under_test", AUDIT_GATE)
@@ -113,22 +139,52 @@ def load_audit_gate():
     return module
 
 
-def run_audit_gate(stdout: str, returncode: int = 0, stderr: str = "") -> int:
-    """Roda `main()` do gate com `pnpm audit` mockado; devolve o exit code."""
+def run_audit_gate(stdout: str, returncode: int = 0, stderr: str = "", baseline: dict | None = None) -> int:
+    """Roda `main()` do gate com `pnpm audit` mockado; devolve o exit code.
+
+    `baseline`: quando passado, é gravado num arquivo temporário e injetado em
+    `BASELINE_PATH` do módulo. Necessário para exercitar "high/critical
+    reconhecido" agora que a baseline real pode estar vazia (upgrade OTel 2
+    removeu o último advisory reconhecido — gate PASS com 0 ack é estado
+    válido, não exceção).
+    """
     gate = load_audit_gate()
     proc = subprocess.CompletedProcess(
         args="pnpm audit --json", returncode=returncode, stdout=stdout, stderr=stderr
     )
-    with mock.patch.object(gate.subprocess, "run", return_value=proc):
-        with redirect_stdout(io.StringIO()):
-            return gate.main()
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(gate.subprocess, "run", return_value=proc))
+        stack.enter_context(redirect_stdout(io.StringIO()))
+        if baseline is not None:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "audit-baseline.json"
+                path.write_text(json.dumps(baseline), encoding="utf-8")
+                stack.enter_context(mock.patch.object(gate, "BASELINE_PATH", path))
+                return gate.main()
+        return gate.main()
 
 
 def acknowledged_keys() -> list[str]:
+    """Chaves reconhecidas na baseline REAL (pode ser vazia: desde o upgrade
+    OTel 2 nenhum high/critical permanece reconhecido — o gate passa com 0)."""
     baseline = json.loads(AUDIT_BASELINE.read_text(encoding="utf-8"))
     ack = baseline.get("acknowledged", {})
-    assert ack, "baseline de audit sem nenhum advisory reconhecido"
     return sorted(ack)
+
+
+def synthetic_acknowledged(keys: list[str]) -> dict:
+    """Baseline sintética reconhecendo `keys` — fixture para os casos que
+    precisam de high/critical reconhecido independente da baseline real."""
+    return {
+        "acknowledged": {
+            key: {
+                "severity": "high",
+                "module": "modulo-falso",
+                "url": "https://github.com/advisories/GHSA-zzzz-zzzz-zzzz",
+            }
+            for key in keys
+        }
+    }
 
 
 def fake_advisory(severity: str = "high") -> dict:
@@ -227,15 +283,20 @@ class TestAuditGateStrictness(unittest.TestCase):
     def test_valid_audit_with_acknowledged_findings_passes(self):
         # Exit code != 0 legítimo (pnpm reporta advisories) + todo
         # high/critical reconhecido na baseline => PASS, sem mutar nada.
-        ack = acknowledged_keys()
-        acknowledged_payload = {
-            key: fake_advisory("high") for key in ack
-        }
+        ack_keys = acknowledged_keys()
+        # Fixture sintética para exercitar "reconhecido" mesmo com a baseline
+        # real vazia (nenhum high/critical reconhecido hoje).
+        synthetic = ["70000001", "70000002"]
+        baseline = synthetic_acknowledged(synthetic)
+        acknowledged_payload = {key: fake_advisory("high") for key in synthetic}
+        if ack_keys:
+            baseline = synthetic_acknowledged([*synthetic, *ack_keys])
+            acknowledged_payload.update({key: fake_advisory("high") for key in ack_keys})
         # moderate fora da baseline é report-only (threshold high): PASS.
         moderate_only = {"88888888": fake_advisory("moderate")}
         with self.subTest(case="só reconhecidos, rc=1"):
             self.assertEqual(
-                run_audit_gate(audit_stdout(acknowledged_payload), returncode=1), 0
+                run_audit_gate(audit_stdout(acknowledged_payload), returncode=1, baseline=baseline), 0
             )
         with self.subTest(case="moderate fora da baseline, rc=1"):
             self.assertEqual(run_audit_gate(audit_stdout(moderate_only), returncode=1), 0)
@@ -280,14 +341,17 @@ class TestAuditGateStrictness(unittest.TestCase):
     def test_vulnerabilities_count_mismatch_fails(self):
         # Contadores de metadata precisam reconciliar com os registros.
         ack = acknowledged_keys()
-        payload = {**{k: fake_advisory("high") for k in ack}}
+        keys = [*ack, "70000010"] if ack else ["70000010"]
+        baseline = synthetic_acknowledged(keys)
+        payload = {k: fake_advisory("high") for k in keys}
         observed = severity_counts(payload)
         high_observed = observed["high"]
         with self.subTest(case="contador acima do reportado"):
             inflated = dict(observed, high=high_observed + 1)
             self.assertEqual(
                 run_audit_gate(
-                    audit_stdout(payload, metadata={"vulnerabilities": inflated})
+                    audit_stdout(payload, metadata={"vulnerabilities": inflated}),
+                    baseline=baseline,
                 ),
                 1,
             )
@@ -295,7 +359,8 @@ class TestAuditGateStrictness(unittest.TestCase):
             deflated = dict(observed, high=high_observed - 1)
             self.assertEqual(
                 run_audit_gate(
-                    audit_stdout(payload, metadata={"vulnerabilities": deflated})
+                    audit_stdout(payload, metadata={"vulnerabilities": deflated}),
+                    baseline=baseline,
                 ),
                 1,
             )
@@ -303,7 +368,8 @@ class TestAuditGateStrictness(unittest.TestCase):
             phantom = dict(observed, moderate=observed["moderate"] + 1)
             self.assertEqual(
                 run_audit_gate(
-                    audit_stdout(payload, metadata={"vulnerabilities": phantom})
+                    audit_stdout(payload, metadata={"vulnerabilities": phantom}),
+                    baseline=baseline,
                 ),
                 1,
             )
@@ -336,14 +402,17 @@ class TestAuditGateStrictness(unittest.TestCase):
         # high/critical reconhecidos na baseline, contadores reconciliados
         # e rc != 0 legítimo => PASS (exit code não decide o gate).
         ack = acknowledged_keys()
-        high_keys = [k for k in ack]
+        high_keys = [*ack, "70000010"] if ack else ["70000010"]
+        baseline = synthetic_acknowledged(high_keys)
         payload = {
             **{k: fake_advisory("high") for k in high_keys},
             "70000001": fake_advisory("info"),
             "70000002": fake_advisory("low"),
             "70000003": fake_advisory("moderate"),
         }
-        self.assertEqual(run_audit_gate(audit_stdout(payload), returncode=1), 0)
+        self.assertEqual(
+            run_audit_gate(audit_stdout(payload), returncode=1, baseline=baseline), 0
+        )
 
 
 if __name__ == "__main__":
