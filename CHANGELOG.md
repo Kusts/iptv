@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- docs(pilot): atualiza a matriz de fechamento com PR #42 OTel 2.x (CI em execução), audit local candidato sem High/Critical e limites da prova por stub; nenhum PR mergeado ou readiness promovida.
+
 - docs(pilot): atualiza RELEASE-CLOSURE-STATUS/GAPS após GitHub recheck: PRs #37/#38/#39/#41 continuam abertos, CI verde nos HEADs declarados, issue #40 mantida separada; auditoria atual candidata: 0 critical, 1 high Jaeger, 3 moderate. Sem merge ou promoção de readiness.
 
 - docs(pilot): cria matriz única RELEASE-CLOSURE-STATUS e gaps deduplicados; reconcilia status P3/P8 e substitui referências superadas de PRs/migrations. Status atual permanece ENGINEERING BLOCKED; não promove piloto nem capability.
