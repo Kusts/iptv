@@ -8,19 +8,22 @@
 # (live/operador), nunca por "não mapeado".
 # last_run honesto: 2026-10-09 = data em que a citação primária `test:` de cada
 # linha PASS foi re-executada (build @iptv/api 9/9 + Vitest alvo 184/184 contra
-# PostgreSQL 17 fresco, sem volume, em loopback). Os arquivos citados em
+# PostgreSQL 17 fresco, sem volume, em loopback) — 32 linhas PASS + a perna
+# inbound de G01 (BLOCKED: falta provar manual reply → outbound entregue 1×).
+# Os arquivos citados em
 # `evidence:` são evidência histórica corroborante e NÃO foram necessariamente
 # re-executados nesta data. BLOCKED mantém a data do último gate executado
 # ou um marcador de data anterior (ex.: `not_rerun_in_this_task`).
 
 - id: G01
-  status: PASS
-  test: 'apps/api/test/golden-loop.integration.test.ts:"legs a-b: inbound WhatsApp → lead/person/conversation → durable trial ACTIVE + binding"'
+  status: BLOCKED
+  test: 'parcial: apps/api/test/golden-loop.integration.test.ts:"legs a-b: inbound WhatsApp → lead/person/conversation → durable trial ACTIVE + binding" prova apenas a persistência inbound; nenhum teste cobre manual reply vinculado à conversa → outbound entregue exatamente 1×'
   environment: integration (TEST_DATABASE_URL descartável; echo gateway, zero live)
-  evidence: código + suíte existente
-  last_run: 2026-10-09
-  owner: coder
-  limitations: 'outbound live já provado em 2026-10-08 (M1, evidence/p3-waha/m1-live.md: 2× sendText 201, 2ª entrega confirmada no telefone com ack=1); residuais M1 = multi-sessão, reconnect profundo e restriction/timelock; suíte usa echo gateway'
+  evidence: 'código + suíte existente (perna inbound apenas); M1 live 2026-10-08 (evidence/p3-waha/m1-live.md) registrou sendText direto do operador, não reply da aplicação vinculado à conversa inbound'
+  last_run: 2026-10-09 (citação primária da perna inbound re-executada no re-run de software)
+  owner: operator
+  limitations: 'jornada única inbound → identity/conversation → manual reply → outbound delivered once não está provada: golden-loop legs a-b para na persistência inbound (trial ACTIVE) e os envios M1 ao vivo foram sendText direto, não reply vinculado; suíte usa echo gateway'
+  unblock: teste determinístico cobrindo a cadeia completa (inbound → identity/conversation → manual reply → outbound entregue exatamente 1×) + evidência live de reply vinculado entregue (ato do operador com sessão/destinatário autorizados)
 - id: G02
   status: PASS
   test: 'apps/api/test/agent-shadow-approval.integration.test.ts:"inbound → SHADOW run persisted + HumanReview created; shadow NEVER sends"'
@@ -69,7 +72,7 @@
   last_run: not_rerun_in_this_task
   owner: operator
   limitations: compra real em fornecedor MK nunca executada; adapter echo/manual apenas
-  unblock: gate G07 do operador — conta/termos do fornecedor + compra controlada de teste + reconciliação de efeito desconhecido + limites de gasto explícitos
+  unblock: 'GATE DE ENGENHARIA: implementar e certificar o adapter real autenticado do Browser Worker (consulta de saldo/produtos, compra, ativação, readback, idempotência e reconciliação de UNKNOWN). DEPOIS, GATE DO OPERADOR: conta/termos do fornecedor + autorização e limites de gasto explícitos + compra controlada de teste + reconciliação do efeito econômico; sem compra real sem autorização.'
 - id: G08
   status: PASS
   test: 'apps/api/test/renewal-retention.integration.test.ts:"full renewal happy path: quote → charge → webhook → renew → new OPEN cycle"'

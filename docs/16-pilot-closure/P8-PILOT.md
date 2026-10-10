@@ -19,10 +19,13 @@
       pelo Sandbox (`evidence/p3-asaas-sandbox/live-refund-pix-exec.md` —
       `KNOWN_NOT_APPLIED`, nenhum refund bem-sucedido). Restam **G1**
       (liquidação PIX fiel via dashboard), **G2** (webhook Asaas→nós via URL
-      pública) e **G3** (reorder dedicado). **B2** re-run de software
-      2026-10-09 (`P5-RELEASE-E2E.md`): apenas as citações primárias `test:`
-      das 33 linhas PASS re-executadas — arquivos `evidence:` históricos NÃO
-      re-executados. **M1 (WAHA)** PARCIAL ao vivo em 2026-10-08
+      pública) e **G3** (reorder dedicado — teste determinístico de software,
+      bloqueio de engenharia). **B2** re-run de software 2026-10-09
+      (`P5-RELEASE-E2E.md`) **CONCLUÍDO**: citações primárias `test:` das 32
+      linhas PASS (+ perna inbound de G01, hoje BLOCKED) re-executadas —
+      arquivos `evidence:` históricos NÃO re-executados; re-run integral
+      (B2 fechado) segue **ABERTO** — caixa abaixo desmarcada.
+      **M1 (WAHA)** PARCIAL ao vivo em 2026-10-08
       (`evidence/p3-waha/m1-live.md`: session/restart/outbound/inbound/auth/
       dedupe/LID/triage PASS ao vivo; restam multi-sessão, reconnect profundo
       e restriction/timelock). **M2 (WAHA)** NÃO executado
@@ -33,14 +36,14 @@
 - [ ] Observabilidade ativa (P6) + alertas + `TEST_DATABASE_URL` documentada p/ reruns.
 - [ ] `pilot-evidence.yaml`: re-run integral com `last_run` real por ID
       (P5 follow-up). Situação em 2026-10-09 (branch
-      `closure/p8-p5-evidence-20261009`): re-run de software executado — 33
-      linhas PASS com `last_run` real (citação primária `test:`
+      `closure/p8-p5-evidence-20261009`): re-run de software executado —
+      32 linhas PASS com `last_run` real (citação primária `test:`
       re-executada: build 9/9 + Vitest 184/184 contra PostgreSQL 17 fresco em
-      loopback); **G07 e F12 seguem BLOCKED** com dono operator; arquivos
-      `evidence:` históricos NÃO foram re-executados. Como "integral"
-      exigiria também a re-execução dos arquivos de evidência e o fechamento
-      dos gates de operador (G07/F12 abertos), a caixa permanece
-      **desmarcada** até decisão do operador.
+      loopback); **G01, G07 e F12 seguem BLOCKED** com dono operator;
+      arquivos `evidence:` históricos NÃO foram re-executados. Como
+      "integral" exigiria também a re-execução dos arquivos de evidência e o
+      fechamento dos gates de operador (G01/G07/F12 abertos), a caixa
+      permanece **desmarcada** até decisão do operador.
 
 ## Operação (tenant interno, canaries com capability-scoped)
 

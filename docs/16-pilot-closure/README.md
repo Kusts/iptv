@@ -59,7 +59,7 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 
 | Slice | Escopo | Estado |
 |---|---|---|
-| `P3` integrações | Asaas software + stub customer; WAHA código/sintético; CINEVISION/MK/Infisical gates; Hatchet BLOCKED; register + `P3-INTEGRATIONS.md` + `evidence/p3-*/` | Software slice DONE; live revalidado parcialmente: Asaas B1 PARTIAL, WAHA M1 PARTIAL/M2 não executado; CINEVISION write e G07/F12 continuam bloqueados |
+| `P3` integrações | Asaas software + stub customer; WAHA código/sintético; CINEVISION/MK/Infisical gates; Hatchet BLOCKED; register + `P3-INTEGRATIONS.md` + `evidence/p3-*/` | Software slice DONE; live revalidado parcialmente: Asaas B1 PARTIAL (G3 reorder é blocker de engenharia), WAHA M1 PARTIAL/M2 não executado (media/audio é blocker de engenharia); CINEVISION write, MK adapter/G07 e F12 continuam bloqueados |
 
 ## P4 status
 
@@ -72,7 +72,7 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 
 | Slice | Escopo | Estado |
 |---|---|---|
-| `P5` matriz G/F | `pilot-evidence.yaml` + gate + `P5-RELEASE-E2E.md` (33 PASS + G07/F12 BLOCKED operator) | DONE (tester PASS) |
+| `P5` matriz G/F | `pilot-evidence.yaml` + gate + `P5-RELEASE-E2E.md` (32 PASS + G01/G07/F12 BLOCKED; B2 software rerun done, integral gate open) | PARTIAL — software rerun verified; G01 journey proof and operator/integral gates remain |
 
 ## P6 status
 

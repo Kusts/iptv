@@ -55,6 +55,24 @@ class TestPilotEvidence(unittest.TestCase):
                 self.assertEqual(e["owner"], "operator", f"{e['id']}: BLOCKED sem dono operator")
                 self.assertTrue(str(e.get("unblock", "")).strip(), f"{e['id']}: BLOCKED sem condição de desbloqueio")
 
+    def test_g01_and_g07_keep_required_engineering_gates(self) -> None:
+        entries = {entry["id"]: entry for entry in load_entries()}
+
+        g01 = entries["G01"]
+        self.assertEqual(g01["status"], "BLOCKED")
+        g01_unblock = str(g01["unblock"]).lower()
+        self.assertIn("manual reply", g01_unblock)
+        self.assertIn("outbound", g01_unblock)
+        self.assertIn("live", g01_unblock)
+
+        g07 = entries["G07"]
+        self.assertEqual(g07["status"], "BLOCKED")
+        g07_unblock = str(g07["unblock"]).lower()
+        self.assertIn("engenharia", g07_unblock)
+        self.assertIn("adapter", g07_unblock)
+        self.assertIn("operador", g07_unblock)
+        self.assertIn("autoriz", g07_unblock)
+
     def test_pass_points_at_test_and_evidence(self) -> None:
         for e in load_entries():
             if e["status"] == "PASS":
