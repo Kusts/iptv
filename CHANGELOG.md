@@ -2,11 +2,11 @@
 
 ## Unreleased - Added
 
-- docs(pilot): atualiza os snapshots de CI: PR #37 HEAD atual `6a6c878` aguarda checks (o HEAD anterior `83c1e4b` passou); PR #42 tem CI completo verde, ainda sem revisão/merge humano.
+- docs(pilot): atualiza os snapshots de CI: PR #37 HEAD atual `463f1a8` aguarda checks (último HEAD com CI verde registrado: `83c1e4b`); PR #42 tem CI completo verde, ainda sem revisão/merge humano.
 
-- docs(pilot): atualiza a matriz de fechamento com PR #42 OTel 2.x (CI em execução), audit local candidato sem High/Critical e limites da prova por stub; nenhum PR mergeado ou readiness promovida.
+- docs(pilot): atualiza a matriz de fechamento com PR #42 OTel 2.x (CI completo verde), audit local candidato sem High/Critical e limites da prova por stub; nenhum PR mergeado ou readiness promovida.
 
-- docs(pilot): atualiza RELEASE-CLOSURE-STATUS/GAPS após GitHub recheck: PRs #37/#38/#39/#41 continuam abertos, CI verde nos HEADs declarados, issue #40 mantida separada; auditoria atual candidata: 0 critical, 1 high Jaeger, 3 moderate. Sem merge ou promoção de readiness.
+- docs(pilot): atualiza RELEASE-CLOSURE-STATUS/GAPS após GitHub recheck anterior ao follow-up OTEL2: PRs #37/#38/#39/#41 abertos, issue #40 separada; audit daquela candidata tinha 0 critical, 1 high Jaeger, 3 moderate (depois removido por resolução real no PR #42). Sem merge ou promoção de readiness.
 
 - docs(pilot): cria matriz única RELEASE-CLOSURE-STATUS e gaps deduplicados; reconcilia status P3/P8 e substitui referências superadas de PRs/migrations. Status atual permanece ENGINEERING BLOCKED; não promove piloto nem capability.
 

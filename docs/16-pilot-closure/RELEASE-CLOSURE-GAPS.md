@@ -26,7 +26,7 @@ ou o baseline.
   2026-10-09 comprovou as citações primárias `test:` (184/184), não os arquivos
   `evidence:` históricos; reexecutar evidência que corresponda ao requisito,
   sem alterar `last_run` por inferência.
-- PR #37 contém reconciliação de evidências + matriz/gaps e aguarda revisão/merge humano; HEAD atual `6a6c878`, CI ainda pendente. HEAD anterior `83c1e4b` teve runs `38000939821`/`38000943392` verdes (histórico, não valida o HEAD atual).
+- PR #37 contém reconciliação de evidências + matriz/gaps e aguarda revisão/merge humano; HEAD atual `463f1a8`, CI ainda pendente. HEAD anterior `83c1e4b` teve runs `38000939821`/`38000943392` verdes (histórico, não valida o HEAD atual).
 - PRs abertos adicionais: #38 dependências + audit fail-closed (CI verde), #39 correção do claim de durabilidade (CI verde), #41 Vitest 4 (CI verde), #42 OTel 2.x coerente (CI completo verde nos runs `38009127852`/`38009131299`). Todos aguardam revisão humana e integração; nenhum foi merged.
 - A CI da main (`2f181e8`) é anterior ao PR #37 e às correções candidatas de
   segurança; CI verde de #37 registrada acima é do HEAD anterior `83c1e4b` e
