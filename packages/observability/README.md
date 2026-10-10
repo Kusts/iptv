@@ -6,9 +6,9 @@ Langfuse boundary (interface only).
 ## DECISION: env-gated OTLP, noop default
 
 This package ships the OTLP SDK + exporters
-(`@opentelemetry/sdk-trace-node@1.30.1`, `sdk-metrics@1.30.1`,
-`sdk-logs@0.57.2`, OTLP/HTTP exporters `@0.57.2`) as **installed
-dependencies**, but providers are constructed **only** inside
+(`@opentelemetry/sdk-trace-node@2.12.0`, `sdk-metrics@2.12.0`,
+`sdk-logs@0.223.0`, OTLP/HTTP exporters `@0.223.0`, `api@1.9.1`) as
+**installed dependencies**, but providers are constructed **only** inside
 `initObservability()` when `OTEL_EXPORTER_OTLP_ENDPOINT` is set **and**
 `OTEL_SDK_DISABLED=false`. With no endpoint configured the API stays on its
 global no-op tracer: `withSpan` runs the wrapped function directly with
@@ -19,8 +19,10 @@ with a logged warning. `shutdownObservability()` flushes exporters and
 returns to the noop path (used by the proof script and tests).
 
 Proven end-to-end (`scripts/otlp-proof.mjs` against a local stub receiver):
-1 trace (809 B) + metric export (3 reqs, 3585 B) + 1 log (845 B) — see
-`docs/16-pilot-closure/P6-OBSERVABILITY.md`.
+1 trace (821 B) + metric export (3 reqs, 3585 B) + 1 log (845 B) — see
+`docs/16-pilot-closure/P6-OBSERVABILITY.md`. The same proof runs automated in
+the package suite (`pnpm --filter @iptv/observability test` →
+`test/otlp-proof.test.ts`, loopback stub, all three signals required).
 
 ## Correlation
 
