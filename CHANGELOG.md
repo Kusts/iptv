@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- docs(pilot): atualiza os snapshots de CI: PR #37 HEAD atual `6a6c878` aguarda checks (o HEAD anterior `83c1e4b` passou); PR #42 tem CI completo verde, ainda sem revisão/merge humano.
+
 - docs(pilot): atualiza a matriz de fechamento com PR #42 OTel 2.x (CI em execução), audit local candidato sem High/Critical e limites da prova por stub; nenhum PR mergeado ou readiness promovida.
 
 - docs(pilot): atualiza RELEASE-CLOSURE-STATUS/GAPS após GitHub recheck: PRs #37/#38/#39/#41 continuam abertos, CI verde nos HEADs declarados, issue #40 mantida separada; auditoria atual candidata: 0 critical, 1 high Jaeger, 3 moderate. Sem merge ou promoção de readiness.
