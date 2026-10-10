@@ -15,7 +15,7 @@
 | S3 | Suites adversariais em job próprio | NOVO, verde (17/17) | job `adversarial`; §4 |
 | S4 | Migration/proof PG tests na CI | Existente, sem mudança | job `build` (`run_pg_fixture_tests.sh`) + `outbox-050-role-guards`; sem lacuna — nenhum job novo |
 | S5 | Contracts/docs gates | Existente, sem mudança | `validate_docs.py`, `test_contracts.py`, `test_seed_contract.py` no `build` (+ guarda no self-test) |
-| S6 | Self-test dos gates P6 | NOVO, verde (18/18) | `tests/security/test_ci_security_gates.py`, roda no `security-scans` |
+| S6 | Self-test dos gates P6 | NOVO, verde (21/21) | `tests/security/test_ci_security_gates.py`, roda no `security-scans` |
 | S7 | Branch governance | Compensação (protection indisponível) | §5 |
 | S8 | Sessão localStorage vs HttpOnly | DECIDIDO: manter localStorage no pilot (aceitação explícita) | §6 |
 | S9 | CORS | Revisado, sem achado bloqueante | §7 |
@@ -238,6 +238,16 @@ Sem achado.
   vulnerabilities ausente, campo do enum faltando, contador
   negativo/string/float/bool, campo desconhecido, audit válido com achado
   novo → falha, audit válido com achados reconhecidos → PASS).
+  **Registro de run desta slice (histórico preservado).** Estado atual
+  nesta branch: **21/21 OK** (6 + 15 de estresse) — finding P2 do review do
+  PR #38 corrigido: as fixtures de `metadata` eram envelopadas duas vezes
+  (`metadata.metadata`) e falhavam todas pelo ramo "vulnerabilities
+  ausente" sem exercitar o alvo; agora `audit_stdout(..., metadata=X)`
+  recebe o VALOR da chave `metadata` (shape real do `pnpm audit --json`) e
+  cada cenário negativo asserta também a MENSAGEM do ramo pretendido na
+  saída além do exit code. Casos novos: fixture no shape real, `metadata`
+  ausente, `vulnerabilities` vazio, full enum com achados reconhecidos →
+  PASS. Validação do momento, não garantia de runs futuros.
 - `python -c yaml.safe_load(ci.yml)`: 4 jobs
   (`build`, `outbox-050-role-guards`, `security-scans`, `adversarial`).
 - Adversariais em PG scratch descartável: **17/17** (container removido).
