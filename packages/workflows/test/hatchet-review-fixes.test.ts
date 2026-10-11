@@ -266,6 +266,121 @@ describe("F12-FIX-01 P2b: stop() during connect() leaves no orphan worker", () =
   });
 });
 
+describe("F12-FIX-02 (a): stop() during registerWorkflows() cleans the partial worker", () => {
+  it("stops the created worker and stays terminal stopped when registration rejects", async () => {
+    let releaseRegister!: () => void;
+    const registerGate = new Promise<void>((resolve) => {
+      releaseRegister = resolve;
+    });
+    let enteredRegister = false;
+    let stopCalls = 0;
+    let stopWorker!: () => void;
+    const workerDone = new Promise<void>((resolve) => {
+      stopWorker = resolve;
+    });
+    const worker: HatchetWorkerHandle = {
+      registerWorkflows: async () => {
+        enteredRegister = true;
+        await registerGate;
+        throw new Error("fake hatchet: transient register failure");
+      },
+      start: () => workerDone,
+      stop: async () => {
+        stopCalls += 1;
+        stopWorker();
+      },
+    };
+    const client: HatchetEngineClient = {
+      declareTask: (opts) => ({
+        taskName: opts.name,
+        runNoWait: async (): Promise<HatchetRunHandle> => ({ runId: "fake-run-x" }),
+      }),
+      createWorker: async () => worker,
+      runs: {
+        cancel: async () => undefined,
+      },
+    };
+    const adapter = testAdapter(
+      { kind: "register-gate-test", connect: async () => client },
+      { attempts: 1 },
+    );
+    adapter.registerHandler("trial.expire_due", async () => undefined);
+    const starting = adapter.start();
+    await sleep(25);
+    // Prove the startup is really parked inside registerWorkflows() before stopping.
+    expect(enteredRegister).toBe(true);
+    const stopping = adapter.stop();
+    releaseRegister();
+    const startOutcome = await starting.then(
+      () => ({ settled: "resolved" }) as const,
+      (err: unknown) => ({ settled: "rejected", message: String(err) }) as const,
+    );
+    await stopping;
+    // The partial worker must have been cleaned up, not orphaned.
+    expect(stopCalls).toBe(1);
+    expect(adapter.started).toBe(false);
+    expect(startOutcome.settled).toBe("rejected");
+    // Terminal: resume requires a new adapter, and stop stays idempotent.
+    await expect(adapter.start()).rejects.toThrow(/stopped/);
+    await adapter.stop();
+    expect(stopCalls).toBe(1);
+  });
+});
+
+describe("F12-FIX-02 (b): failed registration releases for a clean retry", () => {
+  it("cleans the first worker and a retry start adopts exactly one live worker", async () => {
+    const stopCalls: number[] = [];
+    let registers = 0;
+    let created = 0;
+    const makeWorker = (idx: number): HatchetWorkerHandle => {
+      stopCalls[idx] = 0;
+      let stopWorker!: () => void;
+      const done = new Promise<void>((resolve) => {
+        stopWorker = resolve;
+      });
+      return {
+        registerWorkflows: async () => {
+          registers += 1;
+          if (registers === 1) {
+            throw new Error("fake hatchet: transient register failure");
+          }
+        },
+        start: () => done,
+        stop: async () => {
+          stopCalls[idx] = (stopCalls[idx] ?? 0) + 1;
+          stopWorker();
+        },
+      };
+    };
+    const client: HatchetEngineClient = {
+      declareTask: (opts) => ({
+        taskName: opts.name,
+        runNoWait: async (): Promise<HatchetRunHandle> => ({ runId: "fake-run-x" }),
+      }),
+      createWorker: async () => makeWorker(created++),
+      runs: {
+        cancel: async () => undefined,
+      },
+    };
+    const adapter = testAdapter(
+      { kind: "register-retry-test", connect: async () => client },
+      { attempts: 1 },
+    );
+    adapter.registerHandler("trial.expire_due", async () => undefined);
+    await expect(adapter.start()).rejects.toThrow(/register/);
+    // The failed attempt must not orphan its worker.
+    expect(stopCalls[0]).toBe(1);
+    expect(adapter.started).toBe(false);
+    // A fresh start() retries cleanly and adopts exactly one live worker.
+    await adapter.start();
+    expect(adapter.started).toBe(true);
+    expect(created).toBe(2);
+    expect(stopCalls).toEqual([1, 0]);
+    await adapter.stop();
+    expect(stopCalls).toEqual([1, 1]);
+  });
+});
+
 describe("F12-FIX-01 P2c: runAt guard rejects any future instant and invalid dates", () => {
   it("refuses sub-second-future and invalid runAt under a controlled clock, accepts past/present", async () => {
     vi.useFakeTimers();

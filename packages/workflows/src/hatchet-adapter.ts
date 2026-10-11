@@ -243,6 +243,11 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
    * "constructed" so a later `start()` can retry.
    */
   private async runStartup(provider: HatchetClientProvider): Promise<void> {
+    // Partial worker owned by THIS attempt until adoption: every exceptional
+    // exit below (register exhaustion, stop-during-startup, worker-start race)
+    // stops it so no orphan survives. Adoption clears the slot.
+    let partialWorker: HatchetWorkerHandle | null = null;
+    let partialDone: Promise<void> | null = null;
     try {
       const client = await this.withRetry("connect", () => provider.connect());
       if (this.shutdownRequested()) {
@@ -276,21 +281,20 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
         declarations.set(name, client.declareTask(declareOpts));
       }
       const worker = await this.withRetry("create worker", () => client.createWorker(this.workerName));
+      partialWorker = worker;
       if (this.shutdownRequested()) {
-        await settleQuietly(worker.stop());
         throw new Error("hatchet adapter stopped during startup; construct a new adapter to resume");
       }
       await this.withRetry("register workflows", () => worker.registerWorkflows([...declarations.values()]));
       if (this.shutdownRequested()) {
-        await settleQuietly(worker.stop());
         throw new Error("hatchet adapter stopped during startup; construct a new adapter to resume");
       }
       const workerDone = worker.start();
+      partialDone = workerDone;
       if (this.shutdownRequested()) {
         // The background loop may already have drained a run (at-least-once
-        // redelivery covers any effect); shut it down without adopting it.
-        await settleQuietly(worker.stop());
-        await settleQuietly(workerDone);
+        // redelivery covers any effect); fall through to the catch below,
+        // which stops the worker BEFORE settling its background promise.
         throw new Error("hatchet adapter stopped during startup; construct a new adapter to resume");
       }
       this.client = client;
@@ -300,8 +304,26 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
       this.workerDone.catch((err: unknown) => {
         this.workerError = err instanceof Error ? err : new Error(String(err));
       });
+      // Adopted: the catch below must not touch the live worker.
+      partialWorker = null;
+      partialDone = null;
       this.lifecycle = "started";
     } catch (err) {
+      // Clean the unadopted partial worker on EVERY exceptional exit
+      // (register-exhaustion and stop-during-register included): `stop()` only
+      // settles the in-flight attempt and never stops a worker it never
+      // adopted, so ownership stays here. Stop BEFORE settling the background
+      // promise (it only resolves after `stop()`).
+      const orphan = partialWorker;
+      const orphanDone = partialDone;
+      partialWorker = null;
+      partialDone = null;
+      if (orphan !== null) {
+        await settleQuietly(orphan.stop());
+      }
+      if (orphanDone !== null) {
+        await settleQuietly(orphanDone);
+      }
       // A stop() that lands mid-startup owns the terminal "stopped" state;
       // only release back to "constructed" when nobody stopped us.
       if (this.lifecycle === "starting") {
