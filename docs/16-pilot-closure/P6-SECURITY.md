@@ -5,6 +5,12 @@
 > revisão CORS/CSP/secrets/worker-creds/admin. **Nenhum runtime de auth,
 > sessão, CORS ou header foi alterado aqui** — decisão + prova primeiro;
 > migração HttpOnly (se um dia adotada) é plano, não implementação.
+>
+> **Atualização posterior (issue #44, subfatia frame policy web):** o §8 foi
+> atualizado porque `apps/web/next.config.mjs` passou a emitir
+> `frame-ancestors 'none'` + `X-Frame-Options: DENY` em todas as rotas web.
+> As seções 1–11 acima permanecem fiéis ao escopo original do P6a; a nota de
+> "nenhum header alterado" descreve aquela slice, não o estado atual.
 
 ## 1. Matriz de controles
 
@@ -19,7 +25,7 @@
 | S7 | Branch governance | Compensação (protection indisponível) | §5 |
 | S8 | Sessão localStorage vs HttpOnly | DECIDIDO: manter localStorage no pilot (aceitação explícita) | §6 |
 | S9 | CORS | Revisado, sem achado bloqueante | §7 |
-| S10 | CSP / security headers | GAP registrado, follow-up pós-pilot | §8 |
+| S10 | CSP / security headers | PARCIAL: frame policy web implementada; rate-limit/API headers/CSP geral pendentes (issue #44) | §8 |
 | S11 | Secrets no repo/CI | Revisado; scan verde | §9 |
 | S12 | Worker credentials | Revisado, fail-closed | §10 |
 | S13 | Admin endpoints | Revisado; sem rate-limit dedicado (follow-up) | §11 |
@@ -304,15 +310,47 @@ allowlistados. Sem `origin:true`, sem `*`, sem reflexão.
 Observação (não-achado): `asaas-access-token` no allowlist é intencional
 para tooling de provider via browser, documentado no próprio arquivo.
 
-## 8. CSP / security headers — GAP (follow-up, sem runtime nesta slice)
+## 8. CSP / security headers — PARCIAL: frame policy web implementada (issue #44)
 
-Achado: a API não usa helmet nem emite `Content-Security-Policy`,
-`Strict-Transport-Security`, `X-Content-Type-Options`,
-`Referrer-Policy` ou `frame-ancestors` (`main.ts` só registra CORS;
-`next.config.mjs` sem `headers()`). Risco pilot contido (API é JSON sem
-conteúdo ativo; web é SSR Next padrão), mas endurecer headers é barato e
-deve entrar numa slice pós-pilot — registrado aqui, não implementado por
-vedação de runtime desta fatia.
+**Subfatia de baixo risco implementada nesta branch (issue #44,
+`closure/security-public-auth-20261010`):**
+
+- `apps/web/next.config.mjs` ganhou `headers()` global com uma única regra
+  `source: "/:path*"` (catch-all — todas as rotas web, sem `has`/`missing`)
+  emitindo **exatamente dois headers**: `Content-Security-Policy:
+  frame-ancestors 'none'` e `X-Frame-Options: DENY`.
+- Motivo do par: `frame-ancestors 'none'` é o mecanismo moderno e
+  `X-Frame-Options: DENY` cobre navegadores antigos sem suporte à diretiva.
+- Prova por teste de regressão: `apps/web/test/frame-policy.test.ts` (7 asserts,
+  roda em `pnpm --filter @iptv/web test`) chama o `headers()` real da config,
+  aplica o matcher do Next às rotas top-level descobertas de `apps/web/app` e
+  a caminhos aninhados/assets, e trava aplicação incondicional e valores exatos.
+- Prova por HTTP real: build de produção + servidor standalone local
+  (porta 3999) — `/`, `/login`, `/crm` responderam HTTP 200 e `/growth/abc`
+  respondeu 404, **todos** com os dois headers. Nenhum outro header de
+  segurança foi adicionado.
+
+**Ainda pendente nesta seção (segue GAP; issue #44 registra o restante):**
+
+1. **Rate limiting / throttling na API** — permanece sem implementação
+   (grep `throttle|rate.?limit`: 0). Login/cadastro são endpoints públicos;
+   não há controle compensatório de ingress comprovado nesta revisão. Não
+   liberar exposição pública irrestrita até fechar o issue #44 ou obter
+   evidência de mitigação equivalente autorizada.
+2. **Security headers da API** (`Strict-Transport-Security`,
+   `X-Content-Type-Options`, `Referrer-Policy`, helmet) — fora do escopo desta
+   subfatia, que toca só a web.
+3. **CSP geral** (`default-src`/`script-src`/`style-src` com nonce) — deliberada
+   e explicitamente fora: CSP ampla exige inventariar os recursos inline do
+   App Router e quebraria a UI sem uma fatia dedicada. A CSP emitida agora é
+   apenas a diretiva de framing.
+4. **Exposição pública / auth pública** — o issue #44 foi aberto para registrar
+   o conjunto (auth + framing); a presente subfatia cobre somente framing web.
+   Nenhuma mudança de auth, CORS, sessão ou autorização foi feita aqui.
+
+**Estado honesto:** frame policy web = implementada e verificada. Rate limit,
+headers de API, CSP geral e exposição pública = **pendentes**. Nada nesta seção
+declara "security pass" do piloto; a matriz S10 continua GAP residual.
 
 ## 9. Secrets — revisado
 
@@ -508,7 +546,10 @@ Sem achado.
    0.223.0, api 1.9.1): high 1124011 e o moderate do core saíram da árvore
    por resolução real, baseline vazia por intenção, gate PASS e prova OTLP
    re-executada com os 3 sinais (§3, §12.2).
-4. Security headers + rate-limit na API (§8, §11).
-5. Reduzir TTL de sessão / rotação (§6).
-6. `CODEOWNERS` + proteção de branch quando o plano GitHub permitir (§5).
-7. Dataset red-team de prompt-injection (§4).
+4. Slice dedicada de upgrade fastify/nest (4 high runtime, §3).
+5. Security headers + rate-limit na API (§8, §11). Nota: a frame policy web
+   (`frame-ancestors 'none'` + `X-Frame-Options: DENY`) já está implementada
+   (§8) — o que resta neste item é rate-limit/throttling e os headers da API.
+6. Reduzir TTL de sessão / rotação (§6).
+7. `CODEOWNERS` + proteção de branch quando o plano GitHub permitir (§5).
+8. Dataset red-team de prompt-injection (§4).
