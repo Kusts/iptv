@@ -4,28 +4,33 @@
 > entrada, procedimento, métricas e critérios de saída. Engenharia não opera
 > tráfego real nem inventa autorização jurídica.
 
-> Snapshot 2026-10-11 (docs-only, nenhuma caixa mudou): PR #37 — o HEAD
-> anterior `51c81ee` teve CI verde nos runs `38091653864`/`38091650697`; o
-> snapshot docs `7acbb10` também concluiu **verde em todos os jobs** nos runs
-> `38138230248`/`38138227415` (`build`, security-scans, adversarial,
-> outbox-050-role-guards; `mergeStateStatus: CLEAN`). Os 6 threads estão
-> resolvidos, mas não há aprovação humana distinta nem merge. O follow-up
-> docs-only atual ainda requer CI próprio no HEAD que resultar do push. Candidatas
-> abertas e **não integradas**: #38
-> (`d17540c`), #39 (`26c905a`), #41 (`044be93`, ancestralidade inclui #38 via
-> merge regular `b0e80d5`), #42 (HEAD combinado `a004c57`
-> — cuja história já contém o merge regular `d0c5b8f` de #41 — com `build`
-> vermelho por corrida de papel cluster-global na migration 050 —
-> falha de harness de CI, não de OTel; histórico verde em `d44ea3c`; #49 não
-> consta na história de `a004c57`), #45
-> (`c796e6c`, anti-framing web), #48 (`43d7821`, cobertura G3 Asaas
-> test-only), #49 (`6cb0a0f`, correção da corrida de CI). Nenhum release gate
+> Snapshot 2026-10-11 (docs-only, nenhuma caixa mudou): PR #37 — HEADs
+> anteriores totalmente verdes: `51c81ee` (runs `38091653864`/`38091650697`) e
+> `7acbb10` (`38138230248`/`38138227415`, todos os jobs,
+> `mergeStateStatus: CLEAN`); o follow-up docs-only resultou no HEAD `34008b7`
+> com **CI divergente no MESMO HEAD**: run de push `38140003643` verde em
+> todos os jobs, mas o run de check do PR `38140006569` tem o job `build`
+> (`114471743171`) **FAILURE** por 23505 `pg_authid_rolname_index` na
+> migration 050 (papel cluster-global `outbox_worker` duplicado por tasks de
+> teste concorrentes migrando bancos distintos do mesmo cluster — corrida de
+> harness de CI, não regressão de código); demais jobs SUCCESS;
+> `mergeStateStatus: UNSTABLE`. Os 6 threads estão resolvidos, mas não há
+> aprovação humana distinta nem merge. Candidatas abertas e **não
+> integradas**: #38 (`d17540c`), #39 (`26c905a`), #41 (`044be93`,
+> ancestralidade inclui #38 via merge regular `b0e80d5`), #42 (HEAD
+> `b5066d6` — cuja história contém o merge regular `d0c5b8f` de #41 e o merge
+> regular `930ca44` do fix #49 (`6cb0a0f`) — com **CI verde** nas runs
+> `38141372169`/`38141369926` em todos os jobs, `mergeStateStatus: CLEAN`;
+> o vermelho anterior de `a004c57` é histórico), #45 (`c796e6c`,
+> anti-framing web), #48 (`43d7821`, cobertura G3 Asaas test-only), #49
+> (`6cb0a0f`, correção da corrida de CI — integrada ao branch do #42 via
+> `930ca44`, mas com o PR contra `main` ainda aberto). Nenhum release gate
 > foi fechado e nenhuma readiness promovida; as caixas abaixo continuam
 > desmarcadas.
 
 ## Entrada (tudo antes de qualquer tráfego real)
 
-- [ ] PRs de closure conhecidos (#12–#36) integrados; PR #37 (reconciliação de evidências) revisado/mergeado; CI verde no HEAD final da main. Confirmar novamente no GitHub — números de PR não substituem revisão/CI. Situação 2026-10-11: HEAD #37 `7acbb10` passou CI nos runs `38138230248`/`38138227415` (todos os jobs), com 6/6 threads resolvidos, mas **sem revisão humana distinta e sem merge**; o follow-up docs-only atual ainda requer sua CI. Main segue `2f181e8`.
+- [ ] PRs de closure conhecidos (#12–#36) integrados; PR #37 (reconciliação de evidências) revisado/mergeado; CI verde no HEAD final da main. Confirmar novamente no GitHub — números de PR não substituem revisão/CI. Situação 2026-10-11: HEAD #37 `34008b7` — run de push `38140003643` verde em todos os jobs, mas run de check do PR `38140006569` vermelho (job `build` `114471743171` FAILURE por 23505 `pg_authid_rolname_index` na migration 050 — corrida de papel cluster-global, harness não código); `mergeStateStatus: UNSTABLE`; HEADs anteriores `51c81ee`/`7acbb10` totalmente verdes; com 6/6 threads resolvidos, mas **sem revisão humana distinta e sem merge**. Main segue `2f181e8`.
 - [ ] Staging rehearsal repetido pós-merge (P1-exit parte 2 + P7) com API `iptv_app`.
 - [ ] Fechar os bloqueios técnicos em `RELEASE-CLOSURE-STATUS.md` antes de entrada; qualquer exceção deve estar explicitamente permitida pela SPEC e registrar owner, mitigação e prazo de revisão. A simples decisão de operador não transforma implementação não durável em F12 PASS.
 - [ ] Gates de operador com decisão explícita — **todos seguem abertos**:
