@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NestFactory } from "@nestjs/core";
 import type { NestFastifyApplication } from "@nestjs/platform-fastify";
 import { createDb, applyMigrations } from "@iptv/database";
+import { sql } from "kysely";
 import { newId } from "@iptv/domain";
 import type { CommandActor } from "@iptv/domain";
 import { AppModule } from "../src/app.module.js";
@@ -38,6 +39,8 @@ const PERMISSIONS = [
   "billing.exception.resolve",
   "agent.review.request",
   "agent.review.decide",
+  // G3 entitlement leg: activation/fulfillment of the settled order.
+  "subscription.write",
 ];
 
 const ASAAS_SECRET = "wave5-test-asaas-secret";
@@ -416,6 +419,277 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
     }
   }
 
+  /**
+   * ORDER_SETTLEMENT postings for ONE order — the financial-recognition
+   * effect of settlement (Dr receivable / Cr revenue), keyed
+   * `order-settlement:${orderId}` by production. Scoped by order reference so
+   * assertions cannot be satisfied or broken by other orders sharing the
+   * tenant.
+   */
+  async function settlementPostingsForOrder(orderId: string): Promise<Array<{ id: string; idempotency_key: string }>> {
+    return db
+      .selectFrom("finance.financial_transactions")
+      .select(["id", "idempotency_key"])
+      .where("tenant_id", "=", tenantId)
+      .where("transaction_type", "=", "ORDER_SETTLEMENT")
+      .where("reference_type", "=", "order")
+      .where("reference_id", "=", orderId)
+      .execute();
+  }
+
+  /**
+   * G3 settlement authority — asserted independently of the HTTP body and of
+   * the payment ledger alone (the PR #48 finding: "the tests only watch the
+   * payment ledger"). Every leg is an independent database query:
+   *
+   * (a) exactly ONE `ORDER_SETTLEMENT` financial transaction for the order,
+   *     keyed `order-settlement:${orderId}` (production idempotency key);
+   * (b) the order state transition is authoritative: `AWAITING_PAYMENT →
+   *     SETTLED` with `settled_amount_minor` equal to the order net and a
+   *     `settled_at` instant;
+   * (c) the domain-chain events of the SINGLE confirm command exist exactly
+   *     once each — `charge.paid.v1` (registry `billing.charge.paid`),
+   *     `payment.confirmed.v1` (`billing.payment.confirmed`),
+   *     `customer.created.v1` (`crm.customer.created`, first settled order
+   *     of the person only) and `order.settled.v1` (`commerce.order.settled`)
+   *     — all under ONE correlation id, cross-linked by aggregate id;
+   * (e) occurred_at is non-decreasing along that causal chain: no downstream
+   *     event was recorded before its cause (millisecond ties are
+   *     same-transaction emissions, so the comparison is strict only on
+   *     inversion);
+   * (f) every financial transaction written for this order/payment balances
+   *     per currency (sum of DEBIT entries == sum of CREDIT entries).
+   *
+   * Not covered here: entitlement granting (see the activation test) and the
+   * concurrent-race proofs (see the barrier tests).
+   */
+  async function assertSettlementAuthority(input: {
+    orderId: string;
+    chargeId: string;
+    paymentId: string;
+    personId: string;
+    expectedNetMinor: string;
+    /** `customer.created.v1` is emitted only by the person's FIRST settled order. */
+    expectCustomerCreated?: boolean;
+  }): Promise<void> {
+    // (a) exactly one ORDER_SETTLEMENT posting, on the production key.
+    const settlements = await settlementPostingsForOrder(input.orderId);
+    expect(settlements).toHaveLength(1);
+    expect(settlements[0]?.idempotency_key).toBe(`order-settlement:${input.orderId}`);
+
+    // (b) authoritative state transition AWAITING_PAYMENT -> SETTLED.
+    const order = await db
+      .selectFrom("commerce.orders")
+      .select(["status", "settled_amount_minor", "settled_at"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", input.orderId)
+      .executeTakeFirstOrThrow();
+    expect(order.status).toBe("SETTLED");
+    expect(order.settled_amount_minor).toBe(input.expectedNetMinor);
+    expect(order.settled_at).not.toBeNull();
+
+    // (c)+(e) the single confirm command's causal chain, isolated by the
+    // correlation id of the settlement event (charge.created/processing carry
+    // the charge.create correlation and never leak in). Ordering is asserted
+    // as non-decreasing occurred_at, never as an exact array: same-millisecond
+    // emissions inside one transaction tie, and a tie is not an inversion.
+    const settledEvent = await db
+      .selectFrom("platform.domain_events")
+      .select(["correlation_id"])
+      .where("tenant_id", "=", tenantId)
+      .where("event_type", "=", "order.settled.v1")
+      .where("aggregate_id", "=", input.orderId)
+      .executeTakeFirstOrThrow();
+    const chain = await db
+      .selectFrom("platform.domain_events")
+      .select(["event_type", "aggregate_type", "aggregate_id", "occurred_at", "data_json"])
+      .where("tenant_id", "=", tenantId)
+      .where("correlation_id", "=", settledEvent.correlation_id)
+      .execute();
+    const expectedChain = [
+      "charge.paid.v1",
+      "payment.confirmed.v1",
+      ...(input.expectCustomerCreated === false ? [] : ["customer.created.v1"]),
+      "order.settled.v1",
+    ];
+    // Exactly one event per expected type and nothing else in the chain.
+    const counts = new Map<string, number>();
+    for (const row of chain) {
+      counts.set(row.event_type, (counts.get(row.event_type) ?? 0) + 1);
+    }
+    for (const eventType of expectedChain) {
+      expect(counts.get(eventType) ?? 0).toBe(1);
+    }
+    expect(chain).toHaveLength(expectedChain.length);
+    const at = (eventType: string): number => {
+      const row = chain.find((e) => e.event_type === eventType);
+      if (row === undefined) {
+        throw new Error(`expected ${eventType} in the settlement chain`);
+      }
+      return row.occurred_at.getTime();
+    };
+    expect(at("charge.paid.v1")).toBeLessThanOrEqual(at("payment.confirmed.v1"));
+    expect(at("payment.confirmed.v1")).toBeLessThanOrEqual(
+      input.expectCustomerCreated === false ? at("order.settled.v1") : at("customer.created.v1"),
+    );
+    if (input.expectCustomerCreated !== false) {
+      expect(at("customer.created.v1")).toBeLessThanOrEqual(at("order.settled.v1"));
+    }
+    // Cross-links: the chain is causally about THIS charge/payment/order/person.
+    const chargePaid = chain.find((e) => e.event_type === "charge.paid.v1");
+    expect(chargePaid?.aggregate_id).toBe(input.chargeId);
+    const paymentConfirmed = chain.find((e) => e.event_type === "payment.confirmed.v1");
+    expect(paymentConfirmed?.aggregate_id).toBe(input.paymentId);
+    expect((paymentConfirmed?.data_json as { charge_id?: string }).charge_id).toBe(input.chargeId);
+    const orderSettled = chain.find((e) => e.event_type === "order.settled.v1");
+    expect(orderSettled?.aggregate_id).toBe(input.orderId);
+    expect((orderSettled?.data_json as { order_id?: string }).order_id).toBe(input.orderId);
+    expect((orderSettled?.data_json as { settled_amount_minor?: string }).settled_amount_minor).toBe(
+      input.expectedNetMinor,
+    );
+    if (input.expectCustomerCreated !== false) {
+      // Settlement emits `customer.created.v1` on aggregate (customer, person_id);
+      // the provisioning-time binding event uses a different aggregate id.
+      const customerCreated = chain.find((e) => e.event_type === "customer.created.v1");
+      expect(customerCreated?.aggregate_id).toBe(input.personId);
+      expect((customerCreated?.data_json as { order_id?: string }).order_id).toBe(input.orderId);
+    }
+
+    // (f) financial duplication guard, scoped to this order/payment.
+    const transactions = await db
+      .selectFrom("finance.financial_transactions")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where((eb) =>
+        eb.or([
+          eb.and([
+            eb("reference_type", "=", "payment"),
+            eb("reference_id", "=", input.paymentId),
+          ]),
+          eb.and([
+            eb("reference_type", "=", "order"),
+            eb("reference_id", "=", input.orderId),
+          ]),
+        ]),
+      )
+      .execute();
+    expect(transactions.length).toBeGreaterThan(0);
+    for (const tx of transactions) {
+      const entries = await db
+        .selectFrom("finance.financial_ledger_entries")
+        .select(["direction", "amount_minor", "currency"])
+        .where("tenant_id", "=", tenantId)
+        .where("financial_transaction_id", "=", tx.id)
+        .execute();
+      const net = new Map<string, bigint>();
+      for (const entry of entries) {
+        const amount = BigInt(entry.amount_minor);
+        expect(amount > 0n).toBe(true);
+        const signed = entry.direction === "DEBIT" ? amount : -amount;
+        net.set(entry.currency, (net.get(entry.currency) ?? 0n) + signed);
+      }
+      for (const [, value] of net) {
+        expect(value).toBe(0n);
+      }
+    }
+  }
+
+  /**
+   * Deterministic concurrency barrier for the G3 race tests — NO production
+   * hook, no sleeps-as-synchronization.
+   *
+   * A plain `Promise.all` of webhook deliveries cannot PROVE the race: the
+   * HTTP ingress is single-threaded Node, so the first delivery usually runs
+   * to completion before the second even acquires a pool connection, and the
+   * critical section (`loadChargeForUpdate`'s `SELECT ... FOR UPDATE` on the
+   * charge row for PAID; the payment-row `FOR UPDATE` for chargeback) is
+   * never actually contested. The test would pass even if the production
+   * serialization were removed.
+   *
+   * Here the TEST opens its own transaction and locks the SAME production row
+   * first, so the webhook workers are physically parked INSIDE the critical
+   * section. The lock queue has two shapes and BOTH are observed, otherwise
+   * the second worker would be invisible: the first waiter holds the row's
+   * tuple lock and waits on the holder's transaction id (`pg_locks`
+   * `locktype='transactionid'`, `transactionid` = holder xid); every later
+   * waiter queues on the tuple itself (`locktype='tuple'`, same relation +
+   * page + tuple). Only once `expectedWaiters` parked workers are OBSERVED on
+   * the holder's exact tuple does the barrier commit and release them into
+   * the production serialization point; the winner applies the effect and
+   * every loser must resolve to the duplicate outcome with zero new money.
+   * The observation is the proof of interleaving: the
+   * `expect(waiters).toBeGreaterThanOrEqual(...)` below FAILS the test if the
+   * workers never reached the lock together, instead of silently degrading
+   * to a sequential run.
+   */
+  async function runUnderRowLockBarrier<T>(
+    row: { schema: "billing"; table: "charges" | "payments"; id: string },
+    expectedWaiters: number,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const tableRef = sql.ref(`${row.schema}.${row.table}`);
+    const trx = await db.startTransaction().execute();
+    let released = false;
+    try {
+      // 1. The barrier holder takes the exact lock production takes.
+      await sql`select id from ${tableRef} where id = ${row.id}::uuid for update`.execute(trx);
+      // 2. Barrier identity: holder transaction id + the locked tuple.
+      const barrier = await sql<{ xid: string; ctid: string }>`
+        select pg_current_xact_id()::text as xid,
+               (select ctid::text from ${tableRef} where id = ${row.id}::uuid) as ctid
+      `.execute(trx);
+      const holderXid = barrier.rows[0]?.xid;
+      const ctid = barrier.rows[0]?.ctid;
+      const parsed = ctid === undefined ? null : /^\((\d+),(\d+)\)$/.exec(ctid);
+      if (holderXid === undefined || parsed === null) {
+        throw new Error(`barrier could not identify the locked row (xid=${String(holderXid)}, ctid=${String(ctid)})`);
+      }
+      const page = Number(parsed[1]);
+      const tuple = Number(parsed[2]);
+      // 3. Fire the workers WITHOUT awaiting: each parks on the locked row.
+      const inFlight = run();
+      // 4. Observe BOTH lock-queue shapes until every worker is parked.
+      let waiters = 0;
+      for (let tick = 0; tick < 240 && waiters < expectedWaiters; tick += 1) {
+        const observed = await sql<{ waiters: number }>`
+          select
+            (select count(*)::int from pg_locks
+              where locktype = 'transactionid' and not granted
+                and transactionid::text = ${holderXid})
+            + (select count(*)::int from pg_locks w
+               join pg_class rel on rel.oid = w.relation
+               join pg_namespace n on n.oid = rel.relnamespace
+               where w.locktype = 'tuple' and not w.granted
+                 and n.nspname = ${row.schema} and rel.relname = ${row.table}
+                 and w.page = ${page}::smallint and w.tuple = ${tuple}::smallint)
+            as waiters
+        `.execute(db);
+        waiters = observed.rows[0]?.waiters ?? 0;
+        if (waiters < expectedWaiters) {
+          // Poll interval only. Correctness NEVER depends on it: the barrier
+          // releases on the OBSERVED waiters, and the tick budget (240) bounds
+          // the wait at ~6s. A shorter/longer interval changes latency, not
+          // the proof — a test that cannot observe the waiters still fails.
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
+      expect(waiters).toBeGreaterThanOrEqual(expectedWaiters);
+      // 5. Release: commit the barrier; production row-lock ordering decides.
+      // `.execute()` is REQUIRED: `trx.commit()` only BUILDS the command and
+      // returns it — awaiting it without executing leaves the barrier
+      // transaction holding the row lock, so the released deliveries block
+      // forever (and the connection leaks into teardown).
+      await trx.commit().execute();
+      released = true;
+      const result = await inFlight;
+      return result;
+    } finally {
+      if (!released) {
+        await trx.rollback().execute().catch(() => undefined);
+      }
+    }
+  }
+
   async function requestRefund(paymentId: string, amountMinor: string, key: string) {
     return bus.execute<{ id: string; status: string; reviewRequestId: string }>(actor(), "refund.request", {
       paymentId,
@@ -425,7 +699,6 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
       idempotencyKey: key,
     });
   }
-
   async function approveRefund(reviewRequestId: string) {
     return bus.execute(approver(), "human_review.approve", { requestId: reviewRequestId });
   }
@@ -440,6 +713,41 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
 
   beforeAll(async () => {
     await applyMigrations(connectionString as string, { migrationsDir: MIGRATIONS_DIR });
+    // The W0 fail-closed gate (migration 044) registers `provider.cinevision`
+    // as UNAVAILABLE, which parks every fulfillment request HUMAN_REQUIRED.
+    // The G3 entitlement leg below presupposes the certified sandbox gate
+    // (echo fulfillment auto-activates), so upsert the GLOBAL row AVAILABLE.
+    // `platform.capabilities` has no tenant and files run sequentially
+    // sharing one TEST_DATABASE_URL, so each suite owns its arrange (same
+    // pattern as golden-loop / subscription-fulfillment); production stays
+    // fail-closed until real certification.
+    await db
+      .insertInto("platform.capabilities")
+      .values({
+        id: newId(),
+        key: "provider.cinevision",
+        owner_context: "provider",
+        availability: "AVAILABLE",
+        certification_status: "SANDBOX_CERTIFIED",
+        risk_level: "HIGH",
+        mvp_phase: "W0",
+        manual_equivalent:
+          "Provider operator fulfills the operation manually (HITL) via provider.resolve_operation",
+        policy_family: "provider-integration",
+        degradation:
+          "Forced MANUAL: every operation parks in HUMAN_REQUIRED until durable post-commit dispatch with certified readback",
+        permissions: [],
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .onConflict((oc) =>
+        oc.column("key").doUpdateSet({
+          availability: "AVAILABLE",
+          certification_status: "SANDBOX_CERTIFIED",
+          updated_at: new Date(),
+        }),
+      )
+      .execute();
     process.env["DATABASE_URL"] = connectionString as string;
     process.env["BETTER_AUTH_SECRET"] = "integration-test-secret-0123456789";
     delete process.env["ASAAS_ADAPTER"];
@@ -1048,6 +1356,16 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
   // (payments / charges / finance transactions / inbox rows), never just the
   // HTTP response body. Nothing here calls a provider: Asaas behavior reaches
   // these paths only as already-received payloads.
+  //
+  // Settlement is observed AUTHORITATIVELY (`assertSettlementAuthority`):
+  // ORDER_SETTLEMENT posted once on its production idempotency key, the
+  // AWAITING_PAYMENT → SETTLED transition, the downstream domain chain
+  // (charge.paid.v1 → payment.confirmed.v1 → customer.created.v1 →
+  // order.settled.v1) exactly once in causal order, and per-currency ledger
+  // balance — never the payment ledger alone. Concurrency is PROVEN with the
+  // `runUnderRowLockBarrier` deterministic barrier (both workers parked
+  // inside the production FOR UPDATE critical section), not with a bare
+  // Promise.all that Node would silently serialize.
   // -------------------------------------------------------------------------
 
   it("N concurrent deliveries of the SAME event id produce exactly one effect", async () => {
@@ -1096,6 +1414,17 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
       .executeTakeFirstOrThrow();
     expect(charge.status).toBe("PAID");
     await assertPaymentLedgerBalanced(confirmed.id);
+    // Settlement authority on top of the payment ledger: the order reached
+    // SETTLED exactly once, recognition posted once, and the downstream
+    // domain chain (charge.paid → payment.confirmed → customer.created →
+    // order.settled) fired exactly once, in causal order.
+    await assertSettlementAuthority({
+      orderId,
+      chargeId,
+      paymentId: confirmed.id,
+      personId,
+      expectedNetMinor: "2000",
+    });
   });
 
   it("a duplicate chargeback delivery posts exactly one reversal (idempotent status + ledger key)", async () => {
@@ -1103,7 +1432,7 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
     const personId = await makePerson();
     const planId = await seedPlan("1000");
     const { orderId } = await quoteAndSubmit(personId, planId, 1);
-    const { providerChargeId } = await createCharge(orderId);
+    const { chargeId, providerChargeId } = await createCharge(orderId);
     const paidEventId = `evt-cbdup-paid-${newId().slice(-12)}`;
     await postAsaas(tenantKey, paidPayload(providerChargeId, paidEventId, 10.0));
     const [payment] = await paymentsForOrder(orderId);
@@ -1112,18 +1441,35 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
     }
     expect(await confirmationsFor(payment.id)).toBe(1);
     expect(await chargebackReversalsFor(payment.id)).toBe(0);
+    await assertSettlementAuthority({
+      orderId,
+      chargeId,
+      paymentId: payment.id,
+      personId,
+      expectedNetMinor: "1000",
+    });
 
     // Two DISTINCT provider event ids for the same dispute, delivered
     // CONCURRENTLY: the inbox dedupe cannot help here (two separate rows), so
     // the payment-status guard (FOR UPDATE -- whichever runs second sees
     // CHARGEBACK and returns the duplicate outcome) plus the ledger
     // idempotency key are what must collapse the second delivery's money.
+    //
+    // The concurrency is PROVEN, not assumed: the barrier parks BOTH workers
+    // inside `handleChargeback`'s payment-row `SELECT ... FOR UPDATE` before
+    // releasing them (see `runUnderRowLockBarrier`), so the duplicate branch
+    // is actually contested by two in-flight transactions.
     const chargebackA = `evt-cbdup-a-${newId().slice(-12)}`;
     const chargebackB = `evt-cbdup-b-${newId().slice(-12)}`;
-    const [first, second] = await Promise.all([
-      postAsaas(tenantKey, chargebackPayload(providerChargeId, chargebackA, { value: 10.0 })),
-      postAsaas(tenantKey, chargebackPayload(providerChargeId, chargebackB, { value: 10.0 })),
-    ]);
+    const [first, second] = await runUnderRowLockBarrier(
+      { schema: "billing", table: "payments", id: payment.id },
+      2,
+      () =>
+        Promise.all([
+          postAsaas(tenantKey, chargebackPayload(providerChargeId, chargebackA, { value: 10.0 })),
+          postAsaas(tenantKey, chargebackPayload(providerChargeId, chargebackB, { value: 10.0 })),
+        ]),
+    );
     expect(first.statusCode).toBe(202);
     expect(second.statusCode).toBe(202);
     // Neither delivery deduped (distinct ids): both rows were inserted and
@@ -1148,6 +1494,15 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
     expect(reviews).toHaveLength(1);
     expect(reviews[0]?.status).toBe("OPEN");
     await assertPaymentLedgerBalanced(payment.id);
+    // The dispute is a payment-level effect: it must NEVER re-settle the
+    // order or re-fire the settlement chain — settlement stays exactly once.
+    await assertSettlementAuthority({
+      orderId,
+      chargeId,
+      paymentId: payment.id,
+      personId,
+      expectedNetMinor: "1000",
+    });
   });
 
   it("a late PAID after an applied chargeback is a no-op (no restoration, no double posting)", async () => {
@@ -1214,6 +1569,16 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
     expect(lateReviews).toHaveLength(1);
     expect(lateReviews[0]?.status).toBe("OPEN");
     await assertPaymentLedgerBalanced(payment.id);
+    // Replay safety at the settlement level: the late PAID was a duplicate
+    // outcome, so the order stayed SETTLED, ORDER_SETTLEMENT was never
+    // re-posted, and the domain chain never re-fired.
+    await assertSettlementAuthority({
+      orderId,
+      chargeId,
+      paymentId: payment.id,
+      personId,
+      expectedNetMinor: "1000",
+    });
   });
 
   it("a chargeback that arrives before any payment degrades to an exception, then a valid PAID converges once", async () => {
@@ -1256,6 +1621,17 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
       .execute();
     expect(mismatches).toHaveLength(1);
     expect(mismatches[0]?.status).toBe("OPEN");
+    // Out-of-order safety at the settlement level: with no payment, coverage
+    // cannot be met, so settlement must NOT have posted or fired yet.
+    expect(await settlementPostingsForOrder(orderId)).toHaveLength(0);
+    const orderBeforePaid = await db
+      .selectFrom("commerce.orders")
+      .select(["status", "settled_at"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", orderId)
+      .executeTakeFirstOrThrow();
+    expect(orderBeforePaid.status).toBe("AWAITING_PAYMENT");
+    expect(orderBeforePaid.settled_at).toBeNull();
 
     // The PAID then arrives with the exact charge amount: it converges so the
     // order is not stranded by the earlier out-of-order dispute.
@@ -1294,6 +1670,16 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
     expect(stillOpen[0]?.status).toBe("OPEN");
     expect(stillOpen[0]?.resolved_at).toBeNull();
     await assertPaymentLedgerBalanced(confirmed.id);
+    // The converging PAID settled the order exactly once: one ORDER_SETTLEMENT
+    // posting and the full downstream chain, despite the earlier out-of-order
+    // dispute having been processed first.
+    await assertSettlementAuthority({
+      orderId,
+      chargeId,
+      paymentId: confirmed.id,
+      personId,
+      expectedNetMinor: "1000",
+    });
   });
 
   it("a deferred (?defer=1) delivery is acked untouched and converges on an explicit drain", async () => {
@@ -1363,5 +1749,200 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
     expect(await paymentsForOrder(orderId)).toHaveLength(1);
     expect(await confirmationsFor(confirmed.id)).toBe(1);
     await assertPaymentLedgerBalanced(confirmed.id);
+    // The drained delivery went through the SAME authoritative settlement as
+    // an inline PAID: order SETTLED once, ORDER_SETTLEMENT posted once, full
+    // downstream chain once.
+    await assertSettlementAuthority({
+      orderId,
+      chargeId,
+      paymentId: confirmed.id,
+      personId,
+      expectedNetMinor: "1500",
+    });
+  });
+
+  it("two concurrent PAID deliveries for the SAME charge race at the charge lock; exactly one settles (deterministic barrier)", async () => {
+    const tenantKey = await setupAsaasChannel();
+    const personId = await makePerson();
+    const planId = await seedPlan("1000");
+    const { orderId } = await quoteAndSubmit(personId, planId, 1);
+    const { chargeId, providerChargeId } = await createCharge(orderId);
+
+    // Baseline: PROCESSING charge, AWAITING_PAYMENT order, zero money and
+    // zero settlement — the state the racing pair must not double-apply.
+    const before = await db
+      .selectFrom("commerce.orders")
+      .select(["status", "settled_at"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", orderId)
+      .executeTakeFirstOrThrow();
+    expect(before.status).toBe("AWAITING_PAYMENT");
+    expect(before.settled_at).toBeNull();
+    expect(await paymentsForOrder(orderId)).toHaveLength(0);
+    expect(await settlementPostingsForOrder(orderId)).toHaveLength(0);
+
+    // DISTINCT event ids: the inbox dedupe cannot collapse these, so the
+    // production serialization at `loadChargeForUpdate` (SELECT ... FOR
+    // UPDATE on the charge row) is the only guard. The barrier below parks
+    // BOTH workers inside that critical section before releasing them.
+    const eventA = `evt-racepaid-a-${newId().slice(-12)}`;
+    const eventB = `evt-racepaid-b-${newId().slice(-12)}`;
+    const [first, second] = await runUnderRowLockBarrier(
+      { schema: "billing", table: "charges", id: chargeId },
+      2,
+      () =>
+        Promise.all([
+          postAsaas(tenantKey, paidPayload(providerChargeId, eventA, 10.0)),
+          postAsaas(tenantKey, paidPayload(providerChargeId, eventB, 10.0)),
+        ]),
+    );
+    expect(first.statusCode).toBe(202);
+    expect(second.statusCode).toBe(202);
+    // Both rows were inserted and inline-claimed (distinct ids), and both
+    // normalized to PROCESSED — the money effect still landed exactly once.
+    await expectEventProcessed(eventA);
+    await expectEventProcessed(eventB);
+
+    const payments = await paymentsForOrder(orderId);
+    expect(payments).toHaveLength(1);
+    const [confirmed] = payments;
+    if (confirmed === undefined) {
+      throw new Error("expected a payment");
+    }
+    expect(confirmed.status).toBe("CONFIRMED");
+    expect(confirmed.amount_minor).toBe("1000");
+    // One PAID cycle: one confirmation posting, zero dispute postings.
+    expect(await confirmationsFor(confirmed.id)).toBe(1);
+    expect(await chargebackReversalsFor(confirmed.id)).toBe(0);
+    const charge = await db
+      .selectFrom("billing.charges")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", chargeId)
+      .executeTakeFirstOrThrow();
+    expect(charge.status).toBe("PAID");
+    await assertPaymentLedgerBalanced(confirmed.id);
+    // The winner settled authoritatively EXACTLY once; the loser's duplicate
+    // outcome posted nothing, settled nothing and emitted nothing.
+    await assertSettlementAuthority({
+      orderId,
+      chargeId,
+      paymentId: confirmed.id,
+      personId,
+      expectedNetMinor: "1000",
+    });
+  });
+
+  it("settlement authorizes activation: the entitlement is granted exactly once, and replayed PAIDs never re-grant", async () => {
+    const tenantKey = await setupAsaasChannel();
+    const personId = await makePerson();
+    const planId = await seedPlan("2000");
+    const planKey = await db
+      .selectFrom("catalog.plans")
+      .select(["plan_key"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", planId)
+      .executeTakeFirstOrThrow();
+    const { orderId } = await quoteAndSubmit(personId, planId, 1);
+    const { chargeId, providerChargeId } = await createCharge(orderId);
+    const paidEventId = `evt-ent-paid-${newId().slice(-12)}`;
+    await postAsaas(tenantKey, paidPayload(providerChargeId, paidEventId, 20.0));
+    const [payment] = await paymentsForOrder(orderId);
+    if (payment === undefined) {
+      throw new Error("expected a payment");
+    }
+    // Settlement is the precondition: activation follows the SETTLED order,
+    // never a payment alone.
+    await assertSettlementAuthority({
+      orderId,
+      chargeId,
+      paymentId: payment.id,
+      personId,
+      expectedNetMinor: "2000",
+    });
+
+    const activated = await bus.execute<{ id: string; status: string; already: boolean }>(
+      actor(),
+      "subscription.activate_from_order",
+      { orderId },
+    );
+    if (!activated.ok) {
+      throw new Error(`activate_from_order failed: ${JSON.stringify(activated)}`);
+    }
+    const subscriptionId = activated.data.id;
+    // Echo SUCCEEDED auto-activates: INITIAL entitlement grant lands here.
+    const fulfilled = await bus.execute<{ status: string; subscriptionStatus: string }>(
+      actor(),
+      "fulfillment.request_for_subscription",
+      { subscriptionId, adapter: "echo", echoOutcome: "success" },
+    );
+    if (!fulfilled.ok) {
+      throw new Error(`fulfillment failed: ${JSON.stringify(fulfilled)}`);
+    }
+    expect(fulfilled.data.status).toBe("SUCCEEDED");
+    expect(fulfilled.data.subscriptionStatus).toBe("ACTIVE");
+
+    async function entitlementsForSubscription(): Promise<Array<{ id: string; feature_key: string; status: string }>> {
+      return db
+        .selectFrom("entitlement.entitlements")
+        .select(["id", "feature_key", "status"])
+        .where("tenant_id", "=", tenantId)
+        .where("source_type", "=", "subscription")
+        .where("source_id", "=", subscriptionId)
+        .execute();
+    }
+
+    // (d) entitlement granted exactly once for the settled order.
+    const entitlements = await entitlementsForSubscription();
+    expect(entitlements).toHaveLength(1);
+    expect(entitlements[0]?.feature_key).toBe(`plan:${planKey.plan_key}`);
+    expect(entitlements[0]?.status).toBe("ACTIVE");
+    const grants = await db
+      .selectFrom("entitlement.entitlement_grants")
+      .select(["id", "grant_type", "source_type"])
+      .where("tenant_id", "=", tenantId)
+      .where("entitlement_id", "=", entitlements[0]?.id as string)
+      .execute();
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.grant_type).toBe("INITIAL");
+
+    // Provider replays the SAME PAID (inbox-deduped) and then retries it as a
+    // NEW event id (duplicate confirm outcome). Re-activation is idempotent
+    // too. Nothing may grant a second entitlement or re-settle.
+    const same = await postAsaas(tenantKey, paidPayload(providerChargeId, paidEventId, 20.0));
+    expect(same.json<{ deduped: boolean }>().deduped).toBe(true);
+    const retryEventId = `evt-ent-retry-${newId().slice(-12)}`;
+    const retry = await postAsaas(tenantKey, paidPayload(providerChargeId, retryEventId, 20.0));
+    expect(retry.statusCode).toBe(202);
+    expect(retry.json<{ deduped: boolean }>().deduped).toBe(false);
+    await expectEventProcessed(retryEventId);
+    const again = await bus.execute<{ id: string; status: string; already: boolean }>(
+      actor(),
+      "subscription.activate_from_order",
+      { orderId },
+    );
+    expect(again.ok).toBe(true);
+    if (again.ok) {
+      expect(again.data.already).toBe(true);
+    }
+
+    expect(await entitlementsForSubscription()).toHaveLength(1);
+    const grantsAfter = await db
+      .selectFrom("entitlement.entitlement_grants")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("entitlement_id", "=", entitlements[0]?.id as string)
+      .execute();
+    expect(grantsAfter).toHaveLength(1);
+    expect(await paymentsForOrder(orderId)).toHaveLength(1);
+    expect(await confirmationsFor(payment.id)).toBe(1);
+    await assertPaymentLedgerBalanced(payment.id);
+    await assertSettlementAuthority({
+      orderId,
+      chargeId,
+      paymentId: payment.id,
+      personId,
+      expectedNetMinor: "2000",
+    });
   });
 });

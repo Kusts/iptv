@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- test(billing): asserções de autoridade do settlement e corrida determinística do G3 (#46, #48): o gate deixa de observar apenas o payment ledger e passa a afirmar, por query independente, exatamente um posting `ORDER_SETTLEMENT` na chave de produção `order-settlement:<orderId>`, a transição autoritativa `AWAITING_PAYMENT → SETTLED` com `settled_amount_minor`/`settled_at`, a cadeia causal única (`charge.paid.v1` → `payment.confirmed.v1` → `customer.created.v1` → `order.settled.v1`) sob um mesmo correlation id, a ordem não-decrescente de `occurred_at`, o balanceamento débito/crédito por moeda e a granting de entitlement exatamente uma vez inclusive em replay. A concorrência deixou de ser provada por `Promise.all` (que passa mesmo sem a serialização de produção): a barreira de teste trava a MESMA linha que a produção serializa e só libera quando os N workers aparecem enfileirados em `pg_locks` sobre a tupla do holder, de modo que a prova de entrelaçamento é observada e falha o teste se os workers nunca se encontrarem.
+
 - docs(pilot): M2 fallback manual + capping (`evidence/p3-waha/m2-drill.md`: estado saudável lido ao vivo, procedimento de degradação/retomada; drill executado = ato do operador) + persistência do tunnel via Startup (tarefa agendada negada sem admin).
 
 - feat(integrations): M1-live WAHA (`evidence/p3-waha/m1-live.md`): sessão/restart/outbound/inbound/auth/dedupe/LID/triage provados ao vivo contra Contabo (conflito era 2ª instância na Hostinger, removida); webhook restaurado, ambiente devolvido.
