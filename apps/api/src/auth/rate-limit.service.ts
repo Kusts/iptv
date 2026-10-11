@@ -9,7 +9,7 @@ import {
   RATE_LIMIT_MAX_ENTRIES,
   type AuthRateLimitKind,
 } from "./rate-limit.js";
-import { RateLimitStore } from "./rate-limit.store.js";
+import { RateLimitStore, type RateLimitAcquireEntry } from "./rate-limit.store.js";
 
 export interface RateLimitServiceOptions {
   /** Trusted proxy hop count for `X-Forwarded-For` reading (default 0 = ignore header). */
@@ -33,6 +33,25 @@ const ALLOWED: RateLimitAcquireResult = { allowed: true, retryAfterSeconds: 0 };
  *  - a per-identity (hashed email) budget, which for `login` counts failures
  *    and is reset on success ({@link resetIdentity}); and
  *  - a per-origin (fail-safe IP) source-side backstop budget.
+ *
+ * LOCKOUT-vs-CHALLENGE trade-off (deliberate, numbers kept): the login
+ * identity budget is GLOBAL per email — it is intentionally NOT scoped by IP,
+ * so rotating source addresses cannot escape an exhausted identity (see the
+ * unit test). The cost is that 5 failed logins lock the legitimate owner out
+ * for the remainder of the 15-minute window. Scoping the identity budget per
+ * IP would remove that lock-out but would open distributed password guessing
+ * (one guess per bot across a botnet never trips any single bucket), which is
+ * the worse failure for a credential-guessing control. The principled fix for
+ * the lock-out side is a challenge step (e.g. CAPTCHA) after N failures rather
+ * than weaker counting — future work; the shipped numbers are unchanged.
+ *
+ * SATURATION (issue #44 P1 fix): both budgets are admitted JOINTLY via a
+ * single `store.tryAcquire` call — both charged or neither, never a partial
+ * state where one budget was consumed without the other. At the store cap an
+ * active counter is never evicted to admit a new key; new-key traffic is
+ * denied with a bounded `Retry-After` while existing counters are preserved
+ * (fail-closed for new keys, fail-safe for existing ones). See
+ * RateLimitStore for the exact policy.
  *
  * Availability decision — FAIL-OPEN, made consciously: the limiter is a
  * synchronous in-memory control with no external dependency, so the only
@@ -62,29 +81,36 @@ export class RateLimitService {
   /**
    * Decide whether an auth attempt may proceed and, when it may, charge one
    * unit to each applicable budget. Returns `allowed: false` with a
-   * `retryAfterSeconds` hint when any budget is exhausted. Synchronous/atomic.
+   * `retryAfterSeconds` hint when any budget is exhausted. Synchronous/atomic:
+   * the peek-both-then-consume-both sequence runs inside a single
+   * `store.tryAcquire`, so under saturation pressure admitting the identity
+   * budget can never evict the origin budget's active counter (or vice versa).
    */
   acquire(kind: AuthRateLimitKind, req: FastifyRequest, rawEmail: unknown): RateLimitAcquireResult {
     const policy = AUTH_RATE_LIMIT_POLICIES[kind];
     const origin = deriveClientOrigin(req, this.trustedProxyHops);
-    const originKey = originBucketKey(kind, origin.keySegment);
     const normalizedEmail = normalizeIdentityEmail(rawEmail);
-    const identityKey = normalizedEmail === null ? null : identityBucketKey(kind, normalizedEmail);
 
-    const identityDecision = identityKey === null ? ALLOWED : this.store.peek(identityKey, policy.identityLimit);
-    const originDecision = this.store.peek(originKey, policy.originLimit);
-
-    if (!identityDecision.allowed || !originDecision.allowed) {
+    const entries: RateLimitAcquireEntry[] = [];
+    if (normalizedEmail !== null) {
+      entries.push({
+        key: identityBucketKey(kind, normalizedEmail),
+        limit: policy.identityLimit,
+        windowMs: policy.identityWindowMs,
+      });
+    }
+    entries.push({
+      key: originBucketKey(kind, origin.keySegment),
+      limit: policy.originLimit,
+      windowMs: policy.originWindowMs,
+    });
+    const decision = this.store.tryAcquire(entries);
+    if (!decision.allowed) {
       return {
         allowed: false,
-        retryAfterSeconds: Math.max(identityDecision.retryAfterSeconds, originDecision.retryAfterSeconds),
+        retryAfterSeconds: decision.retryAfterSeconds,
       };
     }
-
-    if (identityKey !== null) {
-      this.store.consume(identityKey, policy.identityWindowMs);
-    }
-    this.store.consume(originKey, policy.originWindowMs);
     return ALLOWED;
   }
 
@@ -105,5 +131,10 @@ export class RateLimitService {
   /** Test isolation: clear every bucket. */
   resetAll(): void {
     this.store.resetAll();
+  }
+
+  /** New-key admissions refused at store capacity (saturation fail-closed path). */
+  get saturationDenials(): number {
+    return this.store.saturationDenials;
   }
 }
