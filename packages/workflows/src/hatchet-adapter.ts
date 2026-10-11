@@ -100,6 +100,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Settle a cleanup promise without ever throwing (shutdown paths only). */
+function settleQuietly(promise: Promise<unknown>): Promise<void> {
+  return promise.then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
 function retryDelayMs(baseDelayMs: number, attempt: number): number {
   return Math.min(baseDelayMs * 2 ** (attempt - 1), 2000);
 }
@@ -107,6 +115,15 @@ function retryDelayMs(baseDelayMs: number, attempt: number): number {
 export class HatchetWorkflowAdapter implements DurableWorkflowPort {
   private readonly handlers = new Map<string, RegisteredHandler>();
   private readonly inflightByKey = new Map<string, string>();
+  /**
+   * Reservations for triggers currently awaiting engine acceptance, keyed by
+   * caller `idempotencyKey`. The reservation is stored BEFORE the first
+   * `await` so concurrent `enqueue()` calls with the same key share one
+   * trigger instead of each creating a run. Rejected reservations are
+   * dropped (never cached); only accepted run ids enter the bounded
+   * `inflightByKey` cache.
+   */
+  private readonly pendingByKey = new Map<string, Promise<{ id: string; durable: boolean }>>();
   private readonly workerName: string;
   private readonly taskDefaults: HatchetTaskOptions;
   private readonly retryAttempts: number;
@@ -119,7 +136,13 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
   private worker: HatchetWorkerHandle | null = null;
   private workerDone: Promise<void> | null = null;
   private workerError: Error | null = null;
-  private lifecycle: "constructed" | "started" | "stopped" = "constructed";
+  private lifecycle: "constructed" | "starting" | "started" | "stopped" = "constructed";
+  /**
+   * In-flight `start()` attempt. Lets a concurrent `start()` serialize on the
+   * same startup (never double-create workers) and lets `stop()` track a
+   * pending startup so it can request shutdown and await its settlement.
+   */
+  private startPromise: Promise<void> | null = null;
 
   constructor(env: NodeJS.ProcessEnv | HatchetEnv = process.env, opts: HatchetAdapterOptions = {}) {
     const resolution = resolveHatchetEnv(env);
@@ -141,6 +164,15 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
     return this.lifecycle === "started";
   }
 
+  /**
+   * Fresh lifecycle read that TypeScript cannot narrow away: `stop()` may
+   * flip the state to "stopped" across any `await` inside `runStartup()`.
+   */
+  private shutdownRequested(): boolean {
+    const lifecycle: string = this.lifecycle;
+    return lifecycle === "stopped";
+  }
+
   registerHandler(name: string, handler: WorkflowHandler, taskOptions: HatchetTaskOptions = {}): void {
     if (this.lifecycle !== "constructed") {
       throw new Error("hatchet handlers must be registered before start()");
@@ -158,6 +190,31 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
     if (this.lifecycle === "stopped") {
       throw new Error("hatchet adapter is stopped; construct a new adapter to resume");
     }
+    if (this.lifecycle === "starting") {
+      // Serialize on the in-flight startup so concurrent start() calls can
+      // never double-create workers: wait for it, then re-evaluate.
+      const inflight = this.startPromise;
+      if (inflight !== null) {
+        try {
+          await inflight;
+        } catch {
+          // Fall through and re-evaluate: a failed first attempt releases
+          // back to "constructed" (or a stop() owns "stopped").
+        }
+      }
+      // Widened re-read: `stop()` or the settling attempt may have moved
+      // the state across the `await` above (narrowing from the "starting"
+      // guard no longer applies).
+      const current: string = this.lifecycle;
+      if (current === "started") {
+        throw new Error("hatchet adapter already started");
+      }
+      if (current === "stopped") {
+        throw new Error("hatchet adapter is stopped; construct a new adapter to resume");
+      }
+      // The in-flight attempt failed without a stop: retry as a fresh start.
+      return this.start();
+    }
     if (this.handlers.size === 0) {
       throw new Error("hatchet adapter has no registered handlers; register at least one before start()");
     }
@@ -165,43 +222,93 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
     if (provider === null) {
       throw new Error("hatchet adapter has no provider");
     }
-    const client = await this.withRetry("connect", () => provider.connect());
-    const declarations = new Map<string, HatchetTaskDeclaration>();
-    for (const [name, registered] of this.handlers) {
-      const declareOpts: HatchetDeclareTaskOpts = {
-        name,
-        fn: async (input: Record<string, unknown>) => {
-          await registered.handler(unwrapRunInput(input));
-        },
-      };
-      const retries = registered.options.retries ?? this.taskDefaults.retries;
-      const executionTimeout = registered.options.executionTimeout ?? this.taskDefaults.executionTimeout;
-      const scheduleTimeout = registered.options.scheduleTimeout ?? this.taskDefaults.scheduleTimeout;
-      const backoffMaxSeconds = registered.options.backoffMaxSeconds ?? this.taskDefaults.backoffMaxSeconds;
-      if (retries !== undefined) {
-        declareOpts.retries = retries;
+    this.lifecycle = "starting";
+    const attempt = this.runStartup(provider);
+    this.startPromise = attempt;
+    try {
+      await attempt;
+    } finally {
+      if (this.startPromise === attempt) {
+        this.startPromise = null;
       }
-      if (executionTimeout !== undefined) {
-        declareOpts.executionTimeout = executionTimeout;
-      }
-      if (scheduleTimeout !== undefined) {
-        declareOpts.scheduleTimeout = scheduleTimeout;
-      }
-      if (backoffMaxSeconds !== undefined) {
-        declareOpts.backoffMaxSeconds = backoffMaxSeconds;
-      }
-      declarations.set(name, client.declareTask(declareOpts));
     }
-    const worker = await this.withRetry("create worker", () => client.createWorker(this.workerName));
-    await this.withRetry("register workflows", () => worker.registerWorkflows([...declarations.values()]));
-    this.client = client;
-    this.declarations = declarations;
-    this.worker = worker;
-    this.workerDone = worker.start();
-    this.workerDone.catch((err: unknown) => {
-      this.workerError = err instanceof Error ? err : new Error(String(err));
-    });
-    this.lifecycle = "started";
+  }
+
+  /**
+   * The async startup body. Checks the lifecycle at every phase boundary so
+   * a `stop()` that lands mid-startup aborts before adopting anything: any
+   * partially created worker is stopped and discarded, the terminal
+   * "stopped" state (owned by `stop()`) is preserved, and no orphan worker
+   * is left behind. Failures with nobody stopping us release back to
+   * "constructed" so a later `start()` can retry.
+   */
+  private async runStartup(provider: HatchetClientProvider): Promise<void> {
+    try {
+      const client = await this.withRetry("connect", () => provider.connect());
+      if (this.shutdownRequested()) {
+        // Stopped during connect(): no worker exists yet, nothing to clean.
+        throw new Error("hatchet adapter stopped during startup; construct a new adapter to resume");
+      }
+      const declarations = new Map<string, HatchetTaskDeclaration>();
+      for (const [name, registered] of this.handlers) {
+        const declareOpts: HatchetDeclareTaskOpts = {
+          name,
+          fn: async (input: Record<string, unknown>) => {
+            await registered.handler(unwrapRunInput(input));
+          },
+        };
+        const retries = registered.options.retries ?? this.taskDefaults.retries;
+        const executionTimeout = registered.options.executionTimeout ?? this.taskDefaults.executionTimeout;
+        const scheduleTimeout = registered.options.scheduleTimeout ?? this.taskDefaults.scheduleTimeout;
+        const backoffMaxSeconds = registered.options.backoffMaxSeconds ?? this.taskDefaults.backoffMaxSeconds;
+        if (retries !== undefined) {
+          declareOpts.retries = retries;
+        }
+        if (executionTimeout !== undefined) {
+          declareOpts.executionTimeout = executionTimeout;
+        }
+        if (scheduleTimeout !== undefined) {
+          declareOpts.scheduleTimeout = scheduleTimeout;
+        }
+        if (backoffMaxSeconds !== undefined) {
+          declareOpts.backoffMaxSeconds = backoffMaxSeconds;
+        }
+        declarations.set(name, client.declareTask(declareOpts));
+      }
+      const worker = await this.withRetry("create worker", () => client.createWorker(this.workerName));
+      if (this.shutdownRequested()) {
+        await settleQuietly(worker.stop());
+        throw new Error("hatchet adapter stopped during startup; construct a new adapter to resume");
+      }
+      await this.withRetry("register workflows", () => worker.registerWorkflows([...declarations.values()]));
+      if (this.shutdownRequested()) {
+        await settleQuietly(worker.stop());
+        throw new Error("hatchet adapter stopped during startup; construct a new adapter to resume");
+      }
+      const workerDone = worker.start();
+      if (this.shutdownRequested()) {
+        // The background loop may already have drained a run (at-least-once
+        // redelivery covers any effect); shut it down without adopting it.
+        await settleQuietly(worker.stop());
+        await settleQuietly(workerDone);
+        throw new Error("hatchet adapter stopped during startup; construct a new adapter to resume");
+      }
+      this.client = client;
+      this.declarations = declarations;
+      this.worker = worker;
+      this.workerDone = workerDone;
+      this.workerDone.catch((err: unknown) => {
+        this.workerError = err instanceof Error ? err : new Error(String(err));
+      });
+      this.lifecycle = "started";
+    } catch (err) {
+      // A stop() that lands mid-startup owns the terminal "stopped" state;
+      // only release back to "constructed" when nobody stopped us.
+      if (this.lifecycle === "starting") {
+        this.lifecycle = "constructed";
+      }
+      throw err;
+    }
   }
 
   async enqueue(task: WorkflowTask): Promise<{ id: string; durable: boolean }> {
@@ -213,21 +320,27 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
     if (declaration === undefined) {
       throw new Error(`hatchet enqueue refused: no handler registered for "${task.name}"`);
     }
-    if (task.runAt !== undefined && task.runAt.getTime() > Date.now() + 1000) {
-      throw new Error(
-        "hatchet enqueue refused: delayed runAt is not mapped to the engine schedule API in this slice; refusing instead of running early",
-      );
+    if (task.runAt !== undefined) {
+      const runAtMs = task.runAt.getTime();
+      if (Number.isNaN(runAtMs)) {
+        throw new Error(
+          "hatchet enqueue refused: runAt is not a valid date; refusing instead of mis-scheduling",
+        );
+      }
+      // Scheduling is unimplemented in this slice (not mapped to the SDK
+      // `schedule()` API): refuse ANY future instant fail-closed instead of
+      // running early — the not-before contract in `types.ts` forbids
+      // executing before `runAt`.
+      if (runAtMs > Date.now()) {
+        throw new Error(
+          "hatchet enqueue refused: delayed runAt is not mapped to the engine schedule API in this slice; refusing instead of running early",
+        );
+      }
     }
     if (task.payload[HATCHET_RUN_TASK_KEY] !== undefined || task.payload[HATCHET_RUN_DEDUPE_KEY] !== undefined) {
       throw new Error(
         `hatchet enqueue refused: payload must not define reserved keys "${HATCHET_RUN_TASK_KEY}"/"${HATCHET_RUN_DEDUPE_KEY}"`,
       );
-    }
-    if (task.idempotencyKey !== undefined) {
-      const inflight = this.inflightByKey.get(task.idempotencyKey);
-      if (inflight !== undefined) {
-        return { id: inflight, durable: true };
-      }
     }
     const dedupeKey = task.idempotencyKey ?? newTaskId();
     const input: Record<string, unknown> = {
@@ -235,17 +348,54 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
       [HATCHET_RUN_TASK_KEY]: task.name,
       [HATCHET_RUN_DEDUPE_KEY]: dedupeKey,
     };
-    // `{ durable: true }` ONLY after the engine accepts the trigger (a run
-    // id exists). Transient provider failures are retried boundedly; then
-    // fail-closed — never a silent drop, never a false durable claim.
+    if (task.idempotencyKey === undefined) {
+      // `{ durable: true }` ONLY after the engine accepts the trigger (a run
+      // id exists). Transient provider failures are retried boundedly; then
+      // fail-closed — never a silent drop, never a false durable claim.
+      const handle = await this.withRetry("trigger run", () => declaration.runNoWait(input));
+      return { id: handle.runId, durable: true };
+    }
+    const key = task.idempotencyKey;
+    const pending = this.pendingByKey.get(key);
+    if (pending !== undefined) {
+      // A trigger for this key is already awaiting engine acceptance: share
+      // it instead of creating a second run.
+      return pending;
+    }
+    const accepted = this.inflightByKey.get(key);
+    if (accepted !== undefined) {
+      return { id: accepted, durable: true };
+    }
+    // Reserve BEFORE the first await so concurrent enqueues with the same
+    // key collapse onto this single trigger.
+    const reservation = this.triggerOnce(key, declaration, input);
+    this.pendingByKey.set(key, reservation);
+    const forget = (): void => {
+      if (this.pendingByKey.get(key) === reservation) {
+        this.pendingByKey.delete(key);
+      }
+    };
+    void reservation.then(forget, forget);
+    return reservation;
+  }
+
+  /**
+   * Single engine trigger for a reserved idempotency key. Only an accepted
+   * run id enters the bounded `inflightByKey` cache; rejections settle the
+   * shared reservation (whose `pendingByKey` entry is dropped by the
+   * registrant) so a later enqueue retries instead of observing stale state.
+   */
+  private async triggerOnce(
+    key: string,
+    declaration: HatchetTaskDeclaration,
+    input: Record<string, unknown>,
+  ): Promise<{ id: string; durable: boolean }> {
     const handle = await this.withRetry("trigger run", () => declaration.runNoWait(input));
-    if (task.idempotencyKey !== undefined) {
-      this.inflightByKey.set(task.idempotencyKey, handle.runId);
-      if (this.inflightByKey.size > 1000) {
-        const oldest = this.inflightByKey.keys().next();
-        if (!oldest.done) {
-          this.inflightByKey.delete(oldest.value);
-        }
+    this.inflightByKey.set(key, handle.runId);
+    if (this.inflightByKey.size > 1000) {
+      const oldest = this.inflightByKey.keys().next();
+      if (!oldest.done) {
+        this.inflightByKey.delete(oldest.value);
       }
     }
     return { id: handle.runId, durable: true };
@@ -268,6 +418,25 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
   }
 
   async stop(): Promise<void> {
+    if (this.lifecycle === "stopped") {
+      return;
+    }
+    if (this.lifecycle === "starting") {
+      // Shutdown requested mid-startup: take the terminal state now. The
+      // in-flight startup observes it at the next phase boundary, cleans
+      // any partial resources, and aborts without adopting a worker — so no
+      // orphan can complete afterwards.
+      this.lifecycle = "stopped";
+      const inflight = this.startPromise;
+      if (inflight !== null) {
+        await settleQuietly(inflight);
+      }
+      this.worker = null;
+      this.workerDone = null;
+      this.client = null;
+      this.provider = null;
+      return;
+    }
     if (this.lifecycle !== "started") {
       return;
     }
