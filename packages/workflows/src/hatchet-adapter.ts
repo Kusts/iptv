@@ -1,74 +1,292 @@
-import { createRequire } from "node:module";
-import { LocalWorkflowAdapter } from "./local-adapter.js";
-import { type TickResult, type WorkflowHandler, type WorkflowPort, type WorkflowTask } from "./types.js";
+/**
+ * Hatchet durable-workflow adapter (F12 vertical slice — Wave-0-gated, NEVER the default).
+ *
+ * Wiring (verified against the published SDK `@hatchet-dev/typescript-sdk`
+ * pinned at `HATCHET_SDK_VERSION`):
+ * - env: canonical `HATCHET_CLIENT_*` (`resolveHatchetEnv`), legacy
+ *   `HATCHET_API_TOKEN`/`HATCHET_SERVER_URL` compat-mapped with a logged
+ *   warning; fail-closed when no token resolves;
+ * - client: `RealHatchetProvider` (dynamic import, no network at
+ *   construction); a `HatchetClientProvider` can be injected for tests;
+ * - lifecycle: `registerHandler` (before `start`) → `start()` (connect with
+ *   bounded retry, declare tasks with retry/timeout config, create + start
+ *   worker in background) → `enqueue()` (trigger accepted ⇒
+ *   `{ durable: true }` with the engine run id) → `cancel(runId)` →
+ *   `stop()` (graceful shutdown, terminal).
+ *
+ * Honesty contract:
+ * - `durable: true` is returned ONLY after the engine accepts the trigger
+ *   (a run id exists server-side). Every other outcome throws — including
+ *   enqueue-before-start, unknown handler, delayed `runAt` (not yet mapped
+ *   to the SDK `schedule()` API), and exhausted provider retries.
+ * - At-least-once: redelivered runs re-invoke the handler. The adapter
+ *   propagates the caller `idempotencyKey` as run input `__dedupeKey` (fresh
+ *   UUID when absent) and dedupes in-flight triggers per key within process
+ *   lifetime, but cross-restart effect dedupe stays with the domain handler
+ *   (existing idempotency/fencing patterns). NO exactly-once claim.
+ * - `tick()` is a compatibility no-op returning zeros: the engine drives
+ *   execution server-side; the local scheduler loop keeps calling `tick()`
+ *   so swapping substrates never changes the caller shape.
+ */
 
-export interface HatchetEnv {
-  HATCHET_API_TOKEN?: string;
-  HATCHET_SERVER_URL?: string;
+import { LocalWorkflowAdapter } from "./local-adapter.js";
+import { type HatchetEnv, resolveHatchetEnv } from "./hatchet-env.js";
+import {
+  RealHatchetProvider,
+  assertHatchetSdkPresent,
+  type HatchetClientProvider,
+  type HatchetDeclareTaskOpts,
+  type HatchetEngineClient,
+  type HatchetTaskDeclaration,
+  type HatchetWorkerHandle,
+} from "./hatchet-provider.js";
+import { newTaskId, type TickResult, type WorkflowHandler, type WorkflowPort, type WorkflowTask } from "./types.js";
+
+export type { HatchetEnv } from "./hatchet-env.js";
+
+/** Reserved run-input keys owned by the adapter (payload collision fails closed). */
+export const HATCHET_RUN_TASK_KEY = "__task";
+export const HATCHET_RUN_DEDUPE_KEY = "__dedupeKey";
+
+/** Per-handler execution policy mapped onto the SDK task declaration. */
+export interface HatchetTaskOptions {
+  /** Task retries after the first attempt (SDK `retries`, default 0). */
+  retries?: number;
+  /** Go duration string, e.g. "60s" (SDK `executionTimeout`). */
+  executionTimeout?: string;
+  /** Go duration string (SDK `scheduleTimeout`). */
+  scheduleTimeout?: string;
+  /** Exponential backoff cap in seconds (SDK `backoff.maxSeconds`). */
+  backoffMaxSeconds?: number;
 }
 
-/**
- * Hatchet durable-workflow adapter (W1-08, Wave-0-gated — NEVER the default).
- *
- * Requires `HATCHET_API_TOKEN` (+ optional `HATCHET_SERVER_URL`) AND the
- * `@hatchet-dev/hatchet` SDK installed. SDK presence is checked synchronously
- * with `require.resolve` (no module load, no network), so a missing package
- * can never break boot: the constructor throws when config or SDK is absent
- * and `createWorkflowAdapter` falls back to `LocalWorkflowAdapter` with a
- * logged warning. No Hatchet network call happens at construction time.
- *
- * `enqueue()` FAILS CLOSED: it throws a descriptive error instead of ever
- * returning `{ durable: true }`. This substrate creates no scheduled run and
- * persists nothing, so asserting durability would be a false guarantee —
- * and silently reporting `durable: false` would be one too, because unlike
- * `LocalWorkflowAdapter` there is no in-memory queue behind this adapter:
- * the task would simply be gone. The only honest outcome is a loud refusal
- * at the call site. A real durable path (SDK workflow-name mapping, certified
- * at W0-04) replaces this guard before the substrate is ever selected.
- *
- * `tick()` is a compatibility no-op returning zeros: Hatchet drives
- * execution server-side (scheduled runs trigger workers through the Hatchet
- * cluster); the local scheduler loop keeps calling `tick()` so swapping
- * substrates never changes the caller shape. Durable adoption as a whole
- * awaits W0-04 certification.
- */
-export class HatchetWorkflowAdapter implements WorkflowPort {
-  private readonly handlers = new Map<string, WorkflowHandler>();
+export interface HatchetRetryPolicy {
+  /** Total attempts including the first (default 5). */
+  attempts?: number;
+  /** Base delay in ms, doubled per retry, capped at 2000ms (default 100). */
+  baseDelayMs?: number;
+}
 
-  constructor(env: NodeJS.ProcessEnv | HatchetEnv = process.env) {
-    const token = env["HATCHET_API_TOKEN"];
-    if (typeof token !== "string" || token.length === 0) {
-      throw new Error("hatchet is not configured (HATCHET_API_TOKEN)");
+export interface HatchetAdapterOptions {
+  /** Injected provider (tests); default is the real SDK provider. */
+  provider?: HatchetClientProvider;
+  /** Worker name registered on the engine (default "iptv-worker"). */
+  workerName?: string;
+  /** Default task policy for handlers registered without explicit options. */
+  taskDefaults?: HatchetTaskOptions;
+  /** Bounded-retry policy for connect/trigger (default { attempts: 5 }). */
+  retry?: HatchetRetryPolicy;
+  /** Warning sink (default `console.warn`); warnings never carry secrets. */
+  onWarning?: (message: string) => void;
+}
+
+/** Durable extension of the workflow port: explicit lifecycle + cancel. */
+export interface DurableWorkflowPort extends WorkflowPort {
+  /** Connect, declare tasks, and start the worker (background). */
+  start(): Promise<void>;
+  /** Graceful shutdown: stop the worker; terminal (construct a new adapter to resume). */
+  stop(): Promise<void>;
+  /** Cancel a run by engine run id. */
+  cancel(runId: string): Promise<void>;
+  readonly started: boolean;
+}
+
+interface RegisteredHandler {
+  handler: WorkflowHandler;
+  options: HatchetTaskOptions;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryDelayMs(baseDelayMs: number, attempt: number): number {
+  return Math.min(baseDelayMs * 2 ** (attempt - 1), 2000);
+}
+
+export class HatchetWorkflowAdapter implements DurableWorkflowPort {
+  private readonly handlers = new Map<string, RegisteredHandler>();
+  private readonly inflightByKey = new Map<string, string>();
+  private readonly workerName: string;
+  private readonly taskDefaults: HatchetTaskOptions;
+  private readonly retryAttempts: number;
+  private readonly retryBaseDelayMs: number;
+  private readonly warn: (message: string) => void;
+
+  private provider: HatchetClientProvider | null;
+  private client: HatchetEngineClient | null = null;
+  private declarations = new Map<string, HatchetTaskDeclaration>();
+  private worker: HatchetWorkerHandle | null = null;
+  private workerDone: Promise<void> | null = null;
+  private workerError: Error | null = null;
+  private lifecycle: "constructed" | "started" | "stopped" = "constructed";
+
+  constructor(env: NodeJS.ProcessEnv | HatchetEnv = process.env, opts: HatchetAdapterOptions = {}) {
+    const resolution = resolveHatchetEnv(env);
+    if (!resolution.ok) {
+      throw new Error(resolution.reason);
     }
-    // The token is validated here but never stored or logged: a future
-    // Hatchet client construction (with the SDK) reads it from env at call
-    // time. `HATCHET_SERVER_URL` is likewise not retained — the construction
-    // -only substrate never dials anything.
-    assertHatchetSdkPresent();
+    for (const warning of resolution.warnings) {
+      (opts.onWarning ?? defaultWarn)(warning);
+    }
+    this.provider = opts.provider ?? new RealHatchetProvider(resolution.config);
+    this.workerName = opts.workerName ?? "iptv-worker";
+    this.taskDefaults = opts.taskDefaults ?? {};
+    this.retryAttempts = Math.min(Math.max(Math.floor(opts.retry?.attempts ?? 5), 1), 10);
+    this.retryBaseDelayMs = Math.min(Math.max(opts.retry?.baseDelayMs ?? 100, 0), 10_000);
+    this.warn = opts.onWarning ?? defaultWarn;
   }
 
-  registerHandler(name: string, handler: WorkflowHandler): void {
+  get started(): boolean {
+    return this.lifecycle === "started";
+  }
+
+  registerHandler(name: string, handler: WorkflowHandler, taskOptions: HatchetTaskOptions = {}): void {
+    if (this.lifecycle !== "constructed") {
+      throw new Error("hatchet handlers must be registered before start()");
+    }
     if (this.handlers.has(name)) {
       throw new Error(`workflow handler already registered: ${name}`);
     }
-    this.handlers.set(name, handler);
+    this.handlers.set(name, { handler, options: taskOptions });
+  }
+
+  async start(): Promise<void> {
+    if (this.lifecycle === "started") {
+      throw new Error("hatchet adapter already started");
+    }
+    if (this.lifecycle === "stopped") {
+      throw new Error("hatchet adapter is stopped; construct a new adapter to resume");
+    }
+    if (this.handlers.size === 0) {
+      throw new Error("hatchet adapter has no registered handlers; register at least one before start()");
+    }
+    const provider = this.provider;
+    if (provider === null) {
+      throw new Error("hatchet adapter has no provider");
+    }
+    const client = await this.withRetry("connect", () => provider.connect());
+    const declarations = new Map<string, HatchetTaskDeclaration>();
+    for (const [name, registered] of this.handlers) {
+      const declareOpts: HatchetDeclareTaskOpts = {
+        name,
+        fn: async (input: Record<string, unknown>) => {
+          await registered.handler(unwrapRunInput(input));
+        },
+      };
+      const retries = registered.options.retries ?? this.taskDefaults.retries;
+      const executionTimeout = registered.options.executionTimeout ?? this.taskDefaults.executionTimeout;
+      const scheduleTimeout = registered.options.scheduleTimeout ?? this.taskDefaults.scheduleTimeout;
+      const backoffMaxSeconds = registered.options.backoffMaxSeconds ?? this.taskDefaults.backoffMaxSeconds;
+      if (retries !== undefined) {
+        declareOpts.retries = retries;
+      }
+      if (executionTimeout !== undefined) {
+        declareOpts.executionTimeout = executionTimeout;
+      }
+      if (scheduleTimeout !== undefined) {
+        declareOpts.scheduleTimeout = scheduleTimeout;
+      }
+      if (backoffMaxSeconds !== undefined) {
+        declareOpts.backoffMaxSeconds = backoffMaxSeconds;
+      }
+      declarations.set(name, client.declareTask(declareOpts));
+    }
+    const worker = await this.withRetry("create worker", () => client.createWorker(this.workerName));
+    await this.withRetry("register workflows", () => worker.registerWorkflows([...declarations.values()]));
+    this.client = client;
+    this.declarations = declarations;
+    this.worker = worker;
+    this.workerDone = worker.start();
+    this.workerDone.catch((err: unknown) => {
+      this.workerError = err instanceof Error ? err : new Error(String(err));
+    });
+    this.lifecycle = "started";
   }
 
   async enqueue(task: WorkflowTask): Promise<{ id: string; durable: boolean }> {
     if (task.name.trim().length === 0) {
       throw new Error("workflow task name must not be empty");
     }
-    // Fail closed: no Hatchet scheduled run is created and nothing is
-    // persisted, so `EnqueueResult.durable` ("true only when the substrate
-    // persists the task durably") must never be asserted here. Throwing
-    // keeps the caller from losing the task silently — reporting
-    // `durable: false` would still drop it with no queue behind this
-    // adapter, and returning `durable: true` was the dishonest stub this
-    // guard replaces. Durable enqueue lands only with the real SDK
-    // workflow-name mapping, certified at W0-04.
-    throw new Error(
-      "hatchet enqueue is not certified (W0-04 gate pending): this adapter is construction-only and creates no durable run; refusing to enqueue instead of claiming durability",
-    );
+    this.assertUsable();
+    const declaration = this.declarations.get(task.name);
+    if (declaration === undefined) {
+      throw new Error(`hatchet enqueue refused: no handler registered for "${task.name}"`);
+    }
+    if (task.runAt !== undefined && task.runAt.getTime() > Date.now() + 1000) {
+      throw new Error(
+        "hatchet enqueue refused: delayed runAt is not mapped to the engine schedule API in this slice; refusing instead of running early",
+      );
+    }
+    if (task.payload[HATCHET_RUN_TASK_KEY] !== undefined || task.payload[HATCHET_RUN_DEDUPE_KEY] !== undefined) {
+      throw new Error(
+        `hatchet enqueue refused: payload must not define reserved keys "${HATCHET_RUN_TASK_KEY}"/"${HATCHET_RUN_DEDUPE_KEY}"`,
+      );
+    }
+    if (task.idempotencyKey !== undefined) {
+      const inflight = this.inflightByKey.get(task.idempotencyKey);
+      if (inflight !== undefined) {
+        return { id: inflight, durable: true };
+      }
+    }
+    const dedupeKey = task.idempotencyKey ?? newTaskId();
+    const input: Record<string, unknown> = {
+      ...task.payload,
+      [HATCHET_RUN_TASK_KEY]: task.name,
+      [HATCHET_RUN_DEDUPE_KEY]: dedupeKey,
+    };
+    // `{ durable: true }` ONLY after the engine accepts the trigger (a run
+    // id exists). Transient provider failures are retried boundedly; then
+    // fail-closed — never a silent drop, never a false durable claim.
+    const handle = await this.withRetry("trigger run", () => declaration.runNoWait(input));
+    if (task.idempotencyKey !== undefined) {
+      this.inflightByKey.set(task.idempotencyKey, handle.runId);
+      if (this.inflightByKey.size > 1000) {
+        const oldest = this.inflightByKey.keys().next();
+        if (!oldest.done) {
+          this.inflightByKey.delete(oldest.value);
+        }
+      }
+    }
+    return { id: handle.runId, durable: true };
+  }
+
+  async cancel(runId: string): Promise<void> {
+    if (runId.trim().length === 0) {
+      throw new Error("hatchet cancel refused: run id must not be empty");
+    }
+    this.assertUsable();
+    const client = this.client;
+    if (client === null) {
+      throw new Error("hatchet cancel refused: adapter is not started");
+    }
+    try {
+      await client.runs.cancel(runId);
+    } catch (err) {
+      throw new Error(`hatchet cancel failed for run "${runId}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (this.lifecycle !== "started") {
+      return;
+    }
+    this.lifecycle = "stopped";
+    const worker = this.worker;
+    const done = this.workerDone;
+    this.worker = null;
+    this.workerDone = null;
+    this.client = null;
+    this.provider = null;
+    if (worker !== null) {
+      await worker.stop();
+    }
+    if (done !== null) {
+      await done;
+    }
+    if (this.workerError !== null) {
+      throw new Error(`hatchet worker stopped with error: ${this.workerError.message}`);
+    }
   }
 
   async tick(limit = 50): Promise<TickResult> {
@@ -77,21 +295,50 @@ export class HatchetWorkflowAdapter implements WorkflowPort {
     void Math.min(Math.max(Math.floor(limit), 1), 500);
     return { processed: 0, failed: 0 };
   }
+
+  private assertUsable(): void {
+    if (this.workerError !== null) {
+      throw new Error(`hatchet worker is unhealthy: ${this.workerError.message}`);
+    }
+    if (this.lifecycle !== "started" || this.client === null) {
+      throw new Error("hatchet adapter is not started; call start() before enqueue/cancel");
+    }
+  }
+
+  private async withRetry<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.retryAttempts; attempt += 1) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastError = err;
+        if (attempt < this.retryAttempts) {
+          this.warn(
+            `[workflows] hatchet ${operation} failed (attempt ${attempt}/${this.retryAttempts}), retrying: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          await sleep(retryDelayMs(this.retryBaseDelayMs, attempt));
+        }
+      }
+    }
+    throw new Error(
+      `hatchet ${operation} failed after ${this.retryAttempts} attempt(s), refusing to lose the task: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    );
+  }
 }
 
-/**
- * Synchronous presence check for the OPTIONAL Hatchet SDK. Uses
- * `require.resolve` (no module load, no network) so the constructor can
- * throw when the SDK is absent and the factory can fall back to local
- * without ever breaking boot or build.
- */
-function assertHatchetSdkPresent(): void {
-  const specifier = "@hatchet-dev/hatchet";
-  try {
-    createRequire(import.meta.url).resolve(specifier);
-  } catch {
-    throw new Error(`hatchet SDK is not installed (optional dependency ${specifier})`);
+/** Strip the adapter-internal envelope key before invoking the domain handler. */
+function unwrapRunInput(input: Record<string, unknown>): Record<string, unknown> {
+  const rest: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    // `__task` is adapter routing metadata; `__dedupeKey` is intentionally
+    // passed through so handlers can key recorded side effects on it
+    // (idempotent-consumer pattern — the adapter never claims exactly-once).
+    if (key === HATCHET_RUN_TASK_KEY) {
+      continue;
+    }
+    rest[key] = value;
   }
+  return rest;
 }
 
 export type WorkflowAdapterKind = "local" | "hatchet";
@@ -101,23 +348,50 @@ export interface WorkflowAdapterSelection {
   kind: WorkflowAdapterKind;
 }
 
+export interface WorkflowAdapterFactoryOptions extends HatchetAdapterOptions {
+  /**
+   * Override provider construction (tests). When it throws, the factory
+   * falls back to local with a logged warning — same as a missing SDK.
+   */
+  createProvider?: () => HatchetClientProvider;
+}
+
 /**
- * Factory: Hatchet only when `HATCHET_API_TOKEN` is set AND the adapter
+ * Factory: Hatchet only when a client token resolves AND the adapter
  * constructs; every failure falls back to the local adapter with a logged
- * warning. Local mode is explicitly NON-durable.
+ * warning. Local mode is explicitly NON-durable. Construction performs no
+ * network I/O — use `start()` on the `DurableWorkflowPort` to connect.
  */
-export function createWorkflowAdapter(env: NodeJS.ProcessEnv | HatchetEnv = process.env): WorkflowAdapterSelection {
-  const token = env["HATCHET_API_TOKEN"];
-  if (typeof token === "string" && token.length > 0) {
+export function createWorkflowAdapter(
+  env: NodeJS.ProcessEnv | HatchetEnv = process.env,
+  opts: WorkflowAdapterFactoryOptions = {},
+): WorkflowAdapterSelection {
+  const warn = opts.onWarning ?? defaultWarn;
+  const resolution = resolveHatchetEnv(env);
+  if (resolution.ok) {
     try {
-      return { adapter: new HatchetWorkflowAdapter(env), kind: "hatchet" };
+      const { createProvider, ...adapterOpts } = opts;
+      if (createProvider === undefined) {
+        // Fail fast when the optional SDK is absent (sync resolve, no
+        // network): the factory falls back to local instead of handing out
+        // an adapter that could only fail later at start().
+        assertHatchetSdkPresent();
+      }
+      const provider = createProvider !== undefined ? createProvider() : undefined;
+      const adapter =
+        provider === undefined
+          ? new HatchetWorkflowAdapter(env, adapterOpts)
+          : new HatchetWorkflowAdapter(env, { ...adapterOpts, provider });
+      return { adapter, kind: "hatchet" };
     } catch (err) {
-      warn(`[workflows] hatchet adapter unavailable, falling back to local (non-durable): ${err instanceof Error ? err.message : String(err)}`);
+      warn(
+        `[workflows] hatchet adapter unavailable, falling back to local (non-durable): ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
   return { adapter: new LocalWorkflowAdapter(), kind: "local" };
 }
 
-function warn(message: string): void {
+function defaultWarn(message: string): void {
   console.warn(message);
 }
