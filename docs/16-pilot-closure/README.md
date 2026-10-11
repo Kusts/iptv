@@ -21,15 +21,18 @@
 ## Snapshot de PRs — 2026-10-11 (nenhum merged)
 
 Estado verificado no GitHub em 2026-10-11; `main` segue em `2f181e8`. Nenhum
-release gate fechado e nenhuma readiness promovida por este snapshot.
+release gate fechado e nenhuma readiness promovida por este snapshot. Estados
+de CI são pontuais no momento da verificação: runs em execução (ex.: `build`
+do #37 em `7acbb10`) podem convergir depois, e verde de um HEAD não valida
+outro.
 
 | PR | HEAD | Base | CI | Observação |
 |---|---|---|---|---|
-| #37 | `51c81ee` | `main` | **verde** runs `38091653864`/`38091650697` (build, security-scans, adversarial, outbox-050-role-guards) | 6/6 threads resolvidos; sem aprovação humana distinta; sem merge |
+| #37 | `7acbb10` (último HEAD verificado) | `main` | **verde** runs `38138230248`/`38138227415` em todos os jobs (`build`, security-scans, adversarial, outbox-050-role-guards); `51c81ee` também foi verde nos runs anteriores `38091653864`/`38091650697` | 6/6 threads resolvidos; sem aprovação humana distinta; sem merge; o follow-up docs-only atual ainda exige CI no HEAD que resultar do push |
 | #38 | `d17540c` | `main` | verde runs `38093391830`/`38093388752` | dependências + audit fail-closed |
 | #39 | `26c905a` | `main` | verde runs `38092235210`/`38092231963` | honestidade de durabilidade; F12 segue BLOCKED (sem SDK/worker real) |
 | #41 | `044be93` | `main` | verde runs `38099608612`/`38099605875` | Vitest 4; ancestry inclui #38 pelo merge regular `b0e80d5` (CI valida #38→#41) |
-| #42 | `a004c57` | `closure/security-vitest4-20261009` (#41) | **`build` vermelho** runs `38107760190`/`38107758085` — corrida de papel cluster-global na migration 050 (23505 `pg_authid_rolname_index`, `outbox_worker`), falha de harness de CI e não de OTel; ancestry inclui #38/#41; histórico verde em `d44ea3c` | exige integrar a correção #49 e atualizar o stack com merge-back normal + CI antes de ser decision-ready |
+| #42 | `a004c57` | `closure/security-vitest4-20261009` (#41) | **`build` vermelho** runs `38107760190`/`38107758085` — corrida de papel cluster-global na migration 050 (23505 `pg_authid_rolname_index`, `outbox_worker`), falha de harness de CI e não de OTel; ancestry inclui #38/#41 (merge regular `d0c5b8f` já no histórico de `a004c57`); histórico verde em `d44ea3c` | exige integrar a correção #49 (não consta na história de `a004c57`, verificado em git) e CI verde no HEAD resultante antes de ser decision-ready |
 | #45 | `c796e6c` | `main` | **verde** runs `38097097482`/`38097083822` | anti-framing web; Issue #44 (auth abuse, enumeração, IP/proxy/origin, rate limit) segue aberta |
 | #48 | `43d7821` | `main` | **verde** runs `38135069294`/`38135056127` | cobertura G3 Asaas **test-only**, sem chamadas de provider; focado 21/21 em PostgreSQL 17 fresco; **não integrada — G3 segue BLOCKED** |
 | #49 | `6cb0a0f` | `main` | **verde** runs `38135113763`/`38135100781` | corrige a causa-raiz da corrida de CI (`pnpm test --concurrency=1` + serialização em `packages/database`), sem migration/app code; **não integrada** |

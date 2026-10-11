@@ -4,13 +4,20 @@
 > entrada, procedimento, métricas e critérios de saída. Engenharia não opera
 > tráfego real nem inventa autorização jurídica.
 
-> Snapshot 2026-10-11 (docs-only, nenhuma caixa mudou): PR #37 HEAD `51c81ee`
-> com CI verde nos runs `38091653864`/`38091650697` (build, security-scans,
-> adversarial, outbox-050-role-guards), 6 threads resolvidos, sem aprovação
-> humana distinta e sem merge. Candidatas abertas e **não integradas**: #38
-> (`d17540c`), #39 (`26c905a`), #41 (`044be93`), #42 (HEAD combinado `a004c57`
-> com `build` vermelho por corrida de papel cluster-global na migration 050 —
-> falha de harness de CI, não de OTel; histórico verde em `d44ea3c`), #45
+> Snapshot 2026-10-11 (docs-only, nenhuma caixa mudou): PR #37 — o HEAD
+> anterior `51c81ee` teve CI verde nos runs `38091653864`/`38091650697`; o
+> snapshot docs `7acbb10` também concluiu **verde em todos os jobs** nos runs
+> `38138230248`/`38138227415` (`build`, security-scans, adversarial,
+> outbox-050-role-guards; `mergeStateStatus: CLEAN`). Os 6 threads estão
+> resolvidos, mas não há aprovação humana distinta nem merge. O follow-up
+> docs-only atual ainda requer CI próprio no HEAD que resultar do push. Candidatas
+> abertas e **não integradas**: #38
+> (`d17540c`), #39 (`26c905a`), #41 (`044be93`, ancestralidade inclui #38 via
+> merge regular `b0e80d5`), #42 (HEAD combinado `a004c57`
+> — cuja história já contém o merge regular `d0c5b8f` de #41 — com `build`
+> vermelho por corrida de papel cluster-global na migration 050 —
+> falha de harness de CI, não de OTel; histórico verde em `d44ea3c`; #49 não
+> consta na história de `a004c57`), #45
 > (`c796e6c`, anti-framing web), #48 (`43d7821`, cobertura G3 Asaas
 > test-only), #49 (`6cb0a0f`, correção da corrida de CI). Nenhum release gate
 > foi fechado e nenhuma readiness promovida; as caixas abaixo continuam
@@ -18,7 +25,7 @@
 
 ## Entrada (tudo antes de qualquer tráfego real)
 
-- [ ] PRs de closure conhecidos (#12–#36) integrados; PR #37 (reconciliação de evidências) revisado/mergeado; CI verde no HEAD final da main. Confirmar novamente no GitHub — números de PR não substituem revisão/CI. Situação 2026-10-11: PR #37 (`51c81ee`) CI verde nos runs `38091653864`/`38091650697` e 6/6 threads resolvidos, mas **sem revisão humana distinta e sem merge**; main segue `2f181e8`.
+- [ ] PRs de closure conhecidos (#12–#36) integrados; PR #37 (reconciliação de evidências) revisado/mergeado; CI verde no HEAD final da main. Confirmar novamente no GitHub — números de PR não substituem revisão/CI. Situação 2026-10-11: HEAD #37 `7acbb10` passou CI nos runs `38138230248`/`38138227415` (todos os jobs), com 6/6 threads resolvidos, mas **sem revisão humana distinta e sem merge**; o follow-up docs-only atual ainda requer sua CI. Main segue `2f181e8`.
 - [ ] Staging rehearsal repetido pós-merge (P1-exit parte 2 + P7) com API `iptv_app`.
 - [ ] Fechar os bloqueios técnicos em `RELEASE-CLOSURE-STATUS.md` antes de entrada; qualquer exceção deve estar explicitamente permitida pela SPEC e registrar owner, mitigação e prazo de revisão. A simples decisão de operador não transforma implementação não durável em F12 PASS.
 - [ ] Gates de operador com decisão explícita — **todos seguem abertos**:
