@@ -454,6 +454,41 @@ Sem achado.
 - Gates Python de docs/contratos: `validate_docs`, `test_contracts`,
   `test_seed_contract` verdes.
 
+### 12.3 CI cluster-global role race (#42 / issue #47) — 2026-10-11
+
+- **Falha observada:** PR #42 no HEAD `a004c57`, runs `38107760190` e
+  `38107758085`, job `build` em vermelho. O teste
+  `packages/database/test/tenant-transaction.test.ts` recebeu `23505` em
+  `pg_authid_rolname_index`
+  ao criar `outbox_worker`; `security-scans`, `adversarial` e
+  `outbox-050-role-guards` passaram.
+- **Causa confirmada:** migration 050 verifica `pg_roles` e depois cria papéis
+  cluster-global (`outbox_worker`/`outbox_executor`). O runner guarda com
+  `pg_advisory_lock(7271645001)`, mas esse lock é por database; duas suítes
+  que migram bancos diferentes no mesmo serviço PostgreSQL podem passar
+  simultaneamente pelo check. Isso é uma corrida de harness de CI, não uma
+  regressão OTel nem falha de invariantes de 050.
+- **Correção candidata:** issue/PR #49 integra `pnpm test --concurrency=1`
+  no job `build` e `fileParallelism: false` em `packages/database`, mantendo
+  o conjunto completo de testes, DB service, jobs e migration 050 inalterados.
+  No branch local #42, #49 foi incorporado por merge normal (junto à cadeia
+  #38→#41→#42); merge commit do candidato de código: `930ca44`. Este registro
+  documental é posterior ao merge-back; o HEAD resultante requer CI remota
+  própria antes de qualquer decisão de merge.
+- **Validação em PostgreSQL 17 sintético:** mecanismo reproduzido com
+  `applyMigrations` concorrente em databases distintas (23505); executado o
+  comando de CI `pnpm test --concurrency=1` contra container fresco: **20/20
+  Turbo tasks, 125 arquivos / 1.495 testes, 0 falhas, 0 skips**; provas SQL,
+  guardas de role (18 recusas + 1 aceitação), frozen install, lint/typecheck/
+  build e três gates Python verdes. Os containers sintéticos foram removidos;
+  nenhum serviço/banco de projeto ou produção foi usado.
+- **Ainda pendente:** CI remota do HEAD atualizado do PR #42 (o vermelho do
+  antigo `a004c57` permanece válido até a atualização ser publicada e retestada),
+  revisão humana e decisão de merge. Issue #50 continua investigando um
+  timeout intermitente de teardown do outbox-worker; não foi atribuído a esta
+  race e não foi alterado nesta fatia. Nenhuma readiness/security PASS ou
+  capability é promovida por este candidato.
+
 ## Follow-ups (fora desta slice)
 
 1. ~~Migração **Vitest 3 → 4** (resolve `tinypool` critical ×2 e os moderates
