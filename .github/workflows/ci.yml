@@ -37,7 +37,23 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm test
+      # Serial test tasks: migrations from 050 onward create CLUSTER-GLOBAL
+      # roles (`outbox_worker`/`outbox_executor`, rows in `pg_authid` shared
+      # by EVERY database on the server, not per-database). The migration
+      # runner's `pg_advisory_lock` key is scoped per-database, so it only
+      # serializes suites migrating the SAME database — it cannot serialize
+      # two suites migrating DIFFERENT databases. Under Turbo's default
+      # concurrency, `packages/database#test` (migrates `iptv_test`) ran
+      # alongside `apps/outbox-worker#test` (creates and migrates its own
+      # database on the same cluster); both reached migration 050's
+      # `CREATE ROLE outbox_worker` check-then-create and the loser failed
+      # with duplicate `pg_authid` (23505) on
+      # `packages/database/test/tenant-transaction.test.ts` (CI #42).
+      # `--concurrency=1` serializes Turbo package tasks (`--parallel` is
+      # deprecated), so only one suite migrates at a time on the shared
+      # cluster. Same TEST_DATABASE_URL and same full test set — only the
+      # task scheduling changes, at the cost of suite wall-clock time.
+      - run: pnpm test --concurrency=1
         env:
           # Disposable CI database; integration suites apply migrations
           # themselves and skip when this is unset.
