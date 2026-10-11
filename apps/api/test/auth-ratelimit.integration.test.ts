@@ -1,9 +1,10 @@
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { NestFactory } from "@nestjs/core";
 import type { NestFastifyApplication } from "@nestjs/platform-fastify";
 import { applyMigrations } from "@iptv/database";
+import type { AuthInstance } from "@iptv/auth";
 import { newId } from "@iptv/domain";
 import { AppModule } from "../src/app.module.js";
 import { createFastifyAdapter, registerRequestIdHook } from "../src/request-id.js";
@@ -123,6 +124,28 @@ describe.skipIf(!hasDb)("public auth rate limiting (requires TEST_DATABASE_URL)"
     expect(blocked.json<{ code: string }>().code).toBe("RATE_LIMITED");
     expect(blocked.headers["retry-after"]).toMatch(/^\d+$/);
     expect(Number(blocked.headers["retry-after"])).toBeGreaterThan(0);
+  });
+
+  it("a BLOCKED request performs no password hash / DB lookup (auth.login is never called)", async () => {
+    const auth = app.get<AuthInstance>("AUTH");
+    const loginSpy = vi.spyOn(auth, "login");
+    const user = email("rl-nocost");
+    await register(user); // account exists (real register, not counted by the login spy)
+    try {
+      // Fill the identity budget: 5 failed logins reach auth.login (real 401s).
+      for (let i = 0; i < LOGIN_IDENTITY_LIMIT; i += 1) {
+        expect((await login(user, `wrong-${i}`)).statusCode).toBe(401);
+      }
+      expect(loginSpy).toHaveBeenCalledTimes(LOGIN_IDENTITY_LIMIT);
+
+      // The (limit+1)-th attempt is rejected by the limiter BEFORE the handler:
+      // auth.login must NOT run again — no password hash and no e-mail query.
+      const blocked = await login(user, "wrong-over");
+      expect(blocked.statusCode).toBe(429);
+      expect(loginSpy).toHaveBeenCalledTimes(LOGIN_IDENTITY_LIMIT);
+    } finally {
+      loginSpy.mockRestore();
+    }
   });
 
   it("forged X-Forwarded-For cannot bypass the limit (no trusted proxy by default)", async () => {

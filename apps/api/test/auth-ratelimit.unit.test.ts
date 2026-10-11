@@ -139,30 +139,100 @@ describe("identity + origin derivation (unit)", () => {
     expect(login).not.toContain("a@b.com"); // raw email is never retained
   });
 
-  it("uses the socket address and IGNORES X-Forwarded-For when no trusted proxy is configured", () => {
+  it("uses the socket address and IGNORES X-Forwarded-For when no trusted proxy is configured (default)", () => {
     const req = makeRequest({
       remoteAddress: "203.0.113.9",
       headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8" },
     });
     const origin = deriveClientOrigin(req, 0);
     expect(origin.source).toBe("socket");
-    // Same key as the plain socket origin regardless of the forged header.
+    // Same key as the plain socket origin: the forged header is completely ignored.
     const plain = deriveClientOrigin(makeRequest({ remoteAddress: "203.0.113.9" }), 0);
     expect(origin.keySegment).toBe(plain.keySegment);
-    // And different from what a trusted-hop read of that same header would yield.
-    const hop = deriveClientOrigin(req, 1);
-    expect(hop.keySegment).not.toBe(origin.keySegment);
   });
 
-  it("reads ONLY the trusted-hop position of X-Forwarded-For when hops > 0", () => {
+  // --- P1 regression suite: `parts.length - hops` selects the trusted tail's
+  // first entry (the real client), never the attacker-controlled prefix. ---
+
+  it("proxy that APPENDS: real client is the last entry, not the forged prefix (regression)", () => {
+    // Attacker sends `198.51.100.7`; the 1 trusted proxy (the API's socket)
+    // appends the real client -> header `198.51.100.7, 203.0.113.9`, hops = 1.
     const req = makeRequest({
-      remoteAddress: "10.0.0.1", // the trusted proxy
-      headers: { "x-forwarded-for": "198.51.100.7, 10.0.0.1" },
+      remoteAddress: "10.0.0.1",
+      headers: { "x-forwarded-for": "198.51.100.7, 203.0.113.9" },
     });
     const origin = deriveClientOrigin(req, 1);
     expect(origin.source).toBe("trusted-proxy");
-    const expected = deriveClientOrigin(makeRequest({ remoteAddress: "198.51.100.7" }), 0);
-    expect(origin.keySegment).toBe(expected.keySegment);
+    // Old buggy `length - 1 - hops` picked index 0 = 198.51.100.7 (attacker).
+    const realClient = deriveClientOrigin(makeRequest({ remoteAddress: "203.0.113.9" }), 0);
+    expect(origin.keySegment).toBe(realClient.keySegment);
+    expect(origin.keySegment).not.toBe(
+      deriveClientOrigin(makeRequest({ remoteAddress: "198.51.100.7" }), 0).keySegment,
+    );
+  });
+
+  it("proxy that OVERWRITES: single-entry header with hops=1 uses that client (no proxy collapse)", () => {
+    const req = makeRequest({
+      remoteAddress: "10.0.0.1",
+      headers: { "x-forwarded-for": "203.0.113.9" },
+    });
+    const origin = deriveClientOrigin(req, 1);
+    expect(origin.source).toBe("trusted-proxy");
+    const realClient = deriveClientOrigin(makeRequest({ remoteAddress: "203.0.113.9" }), 0);
+    expect(origin.keySegment).toBe(realClient.keySegment);
+  });
+
+  it("hops > parts.length fails safe to the socket (no out-of-range / NaN key)", () => {
+    const req = makeRequest({
+      remoteAddress: "10.0.0.1",
+      headers: { "x-forwarded-for": "203.0.113.9" },
+    });
+    const origin = deriveClientOrigin(req, 3);
+    expect(origin.source).toBe("socket");
+    const socket = deriveClientOrigin(makeRequest({ remoteAddress: "10.0.0.1" }), 0);
+    expect(origin.keySegment).toBe(socket.keySegment);
+    expect(origin.keySegment).not.toContain("undefined");
+    expect(origin.keySegment).not.toContain("NaN");
+  });
+
+  it("discards malformed header entries and keeps the trusted tail (valid IPv4 + IPv6)", () => {
+    // `not-an-ip` is filtered; a valid IPv6 stays but sits LEFT of the tail;
+    // the trusted index still resolves to the real client 203.0.113.9.
+    const req = makeRequest({
+      remoteAddress: "10.0.0.1",
+      headers: { "x-forwarded-for": "not-an-ip, 2001:db8::1, 203.0.113.9" },
+    });
+    const origin = deriveClientOrigin(req, 1);
+    expect(origin.source).toBe("trusted-proxy");
+    const realClient = deriveClientOrigin(makeRequest({ remoteAddress: "203.0.113.9" }), 0);
+    expect(origin.keySegment).toBe(realClient.keySegment);
+  });
+
+  it("an all-malformed header falls safe to the socket", () => {
+    const req = makeRequest({
+      remoteAddress: "10.0.0.1",
+      headers: { "x-forwarded-for": "not-an-ip, <script>, ,," },
+    });
+    const origin = deriveClientOrigin(req, 1);
+    expect(origin.source).toBe("socket");
+    const socket = deriveClientOrigin(makeRequest({ remoteAddress: "10.0.0.1" }), 0);
+    expect(origin.keySegment).toBe(socket.keySegment);
+  });
+
+  it("the forged prefix does NOT move the origin: different prefixes, same trusted tail → same bucket (P1)", () => {
+    const tail = "203.0.113.9"; // real client appended by the trusted proxy
+    const withPrefix1 = deriveClientOrigin(
+      makeRequest({ remoteAddress: "10.0.0.1", headers: { "x-forwarded-for": `198.51.100.7, ${tail}` } }),
+      1,
+    );
+    const withPrefix2 = deriveClientOrigin(
+      makeRequest({ remoteAddress: "10.0.0.1", headers: { "x-forwarded-for": `1.1.1.1, 2.2.2.2, ${tail}` } }),
+      1,
+    );
+    const tailDirect = deriveClientOrigin(makeRequest({ remoteAddress: tail }), 0);
+    // Both forged prefixes collapse onto the same trusted-tail origin.
+    expect(withPrefix1.keySegment).toBe(tailDirect.keySegment);
+    expect(withPrefix2.keySegment).toBe(tailDirect.keySegment);
   });
 
   it("falls back to a single shared 'unknown' bucket when no address is attributable", () => {
@@ -255,6 +325,59 @@ describe("RateLimitService.acquire (unit)", () => {
     // Attacker rotates a forged header trying to evade; still blocked.
     const blocked = service.acquire("login", req("203.0.113.1", "9.9.9.9"), email);
     expect(blocked.allowed).toBe(false);
+  });
+
+  it("an exhausted identity stays blocked from a fresh origin (identity is not origin-scoped)", () => {
+    for (let i = 0; i < 5; i += 1) {
+      service.acquire("login", req("203.0.113.1"), email);
+    }
+    // Same identity from a DIFFERENT source IP is still blocked: rotating origin
+    // does not reuse/escape an already-exhausted identity (7b — the per-identity
+    // failure budget is global, which is what makes the origin backstop the
+    // orthogonal DoS guard).
+    expect(service.acquire("login", req("198.51.100.9"), email).allowed).toBe(false);
+  });
+
+  it("reset-on-success preserves the ORIGIN backstop (still exhausts)", () => {
+    // Every attempt is treated as a success (identity reset each time), yet the
+    // origin keeps counting and eventually blocks despite no identity buildup.
+    for (let i = 0; i < 30; i += 1) {
+      expect(service.acquire("login", req(), email).allowed).toBe(true);
+      service.resetIdentity("login", email);
+    }
+    expect(service.acquire("login", req(), email).allowed).toBe(false);
+  });
+
+  it("under a trusted proxy, rotating the forged XFF prefix does NOT open new origin buckets (P1)", () => {
+    const proxied = new RateLimitService({ trustedProxyHops: 1 });
+    // Socket is the trusted proxy; it appends the real client 203.0.113.9. The
+    // attacker only controls the LEFT prefix, which the limiter never reads.
+    const fromClient = (forged: string) =>
+      makeRequest({ remoteAddress: "10.0.0.1", headers: { "x-forwarded-for": `${forged}, 203.0.113.9` } });
+    for (let i = 0; i < 30; i += 1) {
+      expect(proxied.acquire("login", fromClient(`9.9.9.${i}`), `user${i}@example.com`).allowed).toBe(true);
+    }
+    // 31st: fresh forged prefix AND fresh identity, but the shared real-client
+    // origin is exhausted -> blocked. The prefix could not mint a new bucket.
+    expect(proxied.acquire("login", fromClient("9.9.9.99"), "fresh@example.com").allowed).toBe(false);
+  });
+
+  it("two identities under the SAME forged XFF prefix share one real-origin bucket (P1)", () => {
+    const proxied = new RateLimitService({ trustedProxyHops: 1 });
+    const req = makeRequest({
+      remoteAddress: "10.0.0.1",
+      headers: { "x-forwarded-for": "198.51.100.7, 203.0.113.9" },
+    });
+    // a@ and b@ share the SAME real client (203.0.113.9) and identical forged
+    // prefix, hence ONE origin bucket. Reset identity each hit (as a success
+    // would) so identity never binds and the ORIGIN backstop is the only valve:
+    // it still trips at 30 accumulating across BOTH identities + forged prefix.
+    for (let i = 0; i < 30; i += 1) {
+      const who = i % 2 === 0 ? "a@example.com" : "b@example.com";
+      expect(proxied.acquire("login", req, who).allowed).toBe(true);
+      proxied.resetIdentity("login", who);
+    }
+    expect(proxied.acquire("login", req, "c@example.com").allowed).toBe(false);
   });
 
   it("register: per-origin is the binding mass-signup backstop", () => {

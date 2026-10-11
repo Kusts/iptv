@@ -111,43 +111,93 @@ function normalizeClientAddress(raw: string): string {
   return addr;
 }
 
-function isIpLike(token: string): boolean {
-  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(token) || token.includes(":");
+/** Strict-ish IPv4 check: four dotted decimal octets, each 0-255. */
+function isIpv4(value: string): boolean {
+  const octets = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(value);
+  if (octets === null) {
+    return false;
+  }
+  for (let i = 1; i <= 4; i += 1) {
+    const octet = octets[i];
+    if (octet === undefined || Number(octet) > 255) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Lenient IPv6 check: contains `:` and only hex/`:`/`.` characters (incl. `::` and a v4 tail). */
+function isIpv6(value: string): boolean {
+  return value.includes(":") && /^[0-9a-fA-F:.]+$/.test(value);
+}
+
+/** True when `value` is a syntactically plausible IPv4 or IPv6 literal (no zone/port). */
+function isValidIp(value: string): boolean {
+  return isIpv4(value) || isIpv6(value);
 }
 
 /**
- * Resolve the client origin for rate limiting. Header-skeptical and fail-safe:
+ * Split a raw `X-Forwarded-For` value into trusted candidate addresses: trims,
+ * drops empty/extra-comma entries, and DISCARDS anything that is not a valid
+ * IPv4/IPv6 literal, so a malformed entry is never propagated into a limit key.
+ */
+function parseForwardedFor(raw: string | null): string[] {
+  if (raw === null) {
+    return [];
+  }
+  return raw
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => isValidIp(part));
+}
+
+/**
+ * Resolve the client origin for rate limiting. Header-skeptical and fail-safe.
  *
- * - With the DEFAULT `trustedProxyHops = 0`, the value is taken ONLY from the
- *   TCP peer (`req.socket.remoteAddress`), which a client cannot forge with a
- *   header. `X-Forwarded-For` is ignored, so a spoofed header cannot move a
- *   caller into a different bucket or evade the limit.
- * - When the operator explicitly configures `trustedProxyHops > 0` (env opt-in),
- *   ONLY that many trusted proxies are stripped from the RIGHT of a single-hop
- *   `X-Forwarded-For` value and the next entry to the left is used as the
- *   client address. This NEVER enables Fastify's global `trustProxy`; it mirrors
- *   the numeric-hop semantics locally for the limiter only.
- * - When no address is attributable, a single shared `unknown` bucket is used so
- *   unattributable traffic is still throttled rather than exempted.
+ * DEFAULT (`trustedProxyHops = 0`): the value is taken ONLY from the TCP peer
+ * (`req.socket.remoteAddress`), which a client cannot forge with a header, and
+ * `X-Forwarded-For` is ignored entirely. A request that reaches the API
+ * directly is therefore keyed on its real socket; a spoofed header cannot move
+ * a caller into a different bucket or evade the limit.
+ *
+ * OPT-IN (`trustedProxyHops > 0`) — SEMANTIC CONTRACT: the argument is the
+ * number of trusted proxies in front of the API that APPEND their observed
+ * peer address to `X-Forwarded-For`. Each appending proxy writes exactly one
+ * entry at the RIGHT end; a client/attacker can only PREPEND entries to the
+ * left of the whole chain. The API's own socket is the LAST (closest) trusted
+ * hop and does NOT appear in the header. Consequently the trusted-appended
+ * entries are the RIGHTMOST `hops` of the (validated) list and the real client
+ * address is the FIRST of those — index `parts.length - hops`. Everything to
+ * the LEFT of that index is attacker-controlled and is never read, so rotating
+ * a forged prefix cannot open new origin buckets, and there is no way to pin a
+ * victim's address at the trusted index (the last trusted proxy always appends
+ * the true peer at the tail). If the list carries FEWER entries than `hops`
+ * (`parts.length - hops < 0`), the configured chain and the observed header
+ * disagree and NO entry is trustworthy, so the origin fails safe to the socket.
+ *
+ * This NEVER enables Fastify's global `trustProxy`; it reads the header only
+ * for the limiter's own bucketing. The real security guarantee additionally
+ * depends on the API being reachable ONLY through the configured trusted chain
+ * — a client that can hit the API directly bypasses the proxies (there `hops`
+ * should be 0 so the header is ignored).
+ *
+ * When no address is attributable (no hops, no socket), a single shared
+ * `unknown` bucket is used so unattributable traffic is still throttled rather
+ * than exempted.
  */
 export function deriveClientOrigin(req: FastifyRequest, trustedProxyHops: number): ClientOrigin {
   const socketAddress = req.socket?.remoteAddress;
   const hops = Number.isInteger(trustedProxyHops) && trustedProxyHops > 0 ? trustedProxyHops : 0;
 
   if (hops > 0) {
-    const forwarded = readForwardedFor(req.headers[FORWARDED_FOR_HEADER]);
-    if (forwarded !== null) {
-      const parts = forwarded
-        .split(",")
-        .map((part) => part.trim())
-        .filter((part) => part.length > 0);
-      const index = parts.length - 1 - hops;
-      const candidate = index >= 0 ? parts[index] : undefined;
-      if (candidate !== undefined && isIpLike(candidate)) {
-        const addr = normalizeClientAddress(candidate);
-        return { keySegment: hashSegment(addr), source: "trusted-proxy" };
-      }
+    const parts = parseForwardedFor(readForwardedFor(req.headers[FORWARDED_FOR_HEADER]));
+    // Real client = first trusted-proxy-appended entry = `parts.length - hops`.
+    const index = parts.length - hops;
+    const candidate = index >= 0 ? parts[index] : undefined;
+    if (candidate !== undefined) {
+      return { keySegment: hashSegment(normalizeClientAddress(candidate)), source: "trusted-proxy" };
     }
+    // index < 0 (hops > parts.length): no trustworthy entry → fall through to socket.
   }
 
   if (typeof socketAddress === "string" && socketAddress.length > 0) {
@@ -158,10 +208,13 @@ export function deriveClientOrigin(req: FastifyRequest, trustedProxyHops: number
 }
 
 /**
- * Number of trusted proxies declared in front of the API, read from
- * `AUTH_RATE_LIMIT_TRUSTED_PROXY_HOPS`. Anything that is not a non-negative
- * integer fails safe to 0 (header ignored). This controls ONLY the limiter's
- * own X-Forwarded-For reading; it never toggles Fastify's global `trustProxy`.
+ * Number of trusted proxies declared IN FRONT OF the API that APPEND to
+ * `X-Forwarded-For`, read from `AUTH_RATE_LIMIT_TRUSTED_PROXY_HOPS`. The API's
+ * own socket is the last trusted hop and is not counted (it is not in the
+ * header). Anything that is not a non-negative integer fails safe to 0
+ * (header ignored). This controls ONLY the limiter's own `X-Forwarded-For`
+ * reading (see {@link deriveClientOrigin}); it never toggles Fastify's global
+ * `trustProxy`.
  */
 export function trustedProxyHopsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env["AUTH_RATE_LIMIT_TRUSTED_PROXY_HOPS"];
