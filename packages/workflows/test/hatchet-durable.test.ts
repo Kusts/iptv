@@ -353,6 +353,12 @@ describe("hatchet durable slice: cancel + graceful shutdown", () => {
 });
 
 describe("hatchet real-SDK wiring proof", () => {
+  // NOTE (F12-FIX-03): the `await import()` below pulls the full published
+  // SDK graph (grpc/protobuf/rest clients) into the test worker — ~350ms
+  // warm, but 11026ms on the loaded canonical rerun (F12-CANONICAL-01),
+  // exceeding vitest's 5s default per-test timeout. The raised timeout is a
+  // mechanism fix only: the specifier+version+init() assertions below are
+  // unchanged. Shape-only — no client construction, no network.
   it("pins the exact published specifier + version and exposes init()", async () => {
     if (!sdkPresent()) {
       return;
@@ -367,7 +373,7 @@ describe("hatchet real-SDK wiring proof", () => {
     expect(mod).toBeDefined();
     const init = (mod as { default?: { init?: unknown } }).default?.init;
     expect(typeof init).toBe("function");
-  });
+  }, 30_000);
 
   it("documents the fail-closed fallback when the SDK is absent", () => {
     if (sdkPresent()) {
