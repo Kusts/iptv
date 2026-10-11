@@ -11,6 +11,9 @@ import { HealthController } from "./health.controller.js";
 import { AuthController } from "./auth/auth.controller.js";
 import { AuthGuard } from "./auth/auth.guard.js";
 import { PermissionsGuard } from "./auth/permissions.guard.js";
+import { RateLimitGuard } from "./auth/rate-limit.guard.js";
+import { RateLimitService } from "./auth/rate-limit.service.js";
+import { trustedProxyHopsFromEnv } from "./auth/rate-limit.js";
 import { AuditService } from "./audit/audit.service.js";
 import { TenantsController } from "./tenants/tenants.controller.js";
 import { CommandDbProvider, CommandsProvider } from "./commands/commands.provider.js";
@@ -168,6 +171,11 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     AuditService,
     AuthGuard,
     PermissionsGuard,
+    // Public-auth rate limiter: single-process, bounded, TTL store. Trusted
+    // proxy hops are read from env here so the limiter's X-Forwarded-For
+    // handling stays explicit and never toggles Fastify's global trustProxy.
+    { provide: RateLimitService, useFactory: () => new RateLimitService({ trustedProxyHops: trustedProxyHopsFromEnv(process.env) }) },
+    RateLimitGuard,
     CommandDbProvider,
     CommandsProvider,
     { provide: "POLICY_REPOSITORY", useFactory: (db: Kysely<Database> | null) => new KyselyPolicyRepository(db), inject: ["DB"] },
