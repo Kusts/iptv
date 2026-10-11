@@ -15,7 +15,7 @@
 | S3 | Suites adversariais em job próprio | NOVO, verde (17/17) | job `adversarial`; §4 |
 | S4 | Migration/proof PG tests na CI | Existente, sem mudança | job `build` (`run_pg_fixture_tests.sh`) + `outbox-050-role-guards`; sem lacuna — nenhum job novo |
 | S5 | Contracts/docs gates | Existente, sem mudança | `validate_docs.py`, `test_contracts.py`, `test_seed_contract.py` no `build` (+ guarda no self-test) |
-| S6 | Self-test dos gates P6 | NOVO, verde (18/18) | `tests/security/test_ci_security_gates.py`, roda no `security-scans` |
+| S6 | Self-test dos gates P6 | NOVO, verde (21/21) | `tests/security/test_ci_security_gates.py`, roda no `security-scans` |
 | S7 | Branch governance | Compensação (protection indisponível) | §5 |
 | S8 | Sessão localStorage vs HttpOnly | DECIDIDO: manter localStorage no pilot (aceitação explícita) | §6 |
 | S9 | CORS | Revisado, sem achado bloqueante | §7 |
@@ -128,6 +128,64 @@
     `@iptv/outbox-worker` **60/60** (ressalva de exit: o run com DB não
     encerra limpo no teardown do outbox-worker — §12.1); `pnpm build`
     12/12; lint 12/12; typecheck 20/20.
+
+### 3.1 Endpoint de registry do audit — snapshot datado 2026-10-10 (finding P1 do review do PR #41)
+
+Registro da finding P1 da revisão do PR #41: o gate depende do endpoint de
+advisory do registry (`pnpm audit --json`), e esse endpoint tem histórico de
+brownout/retirement. **Este é um snapshot do momento — não é garantia de
+comportamento futuro.** Nada de parser/cliente/lockfile/workflow foi alterado
+nesta fatia; o escopo aqui é apenas este registro + a rota de reparo.
+
+Estado observado em 2026-10-10 (revisão dos PRs #38/#41):
+
+- Cliente pinado e real: `pnpm@10.15.0` — campo `packageManager` do root,
+  conferido no repo; a versão declarada é a que executa de fato.
+- Registry host de fato: `registry.npmjs.org` — pnpm 10.15.0 enviou a
+  solicitação ao endpoint legado `/-/npm/v1/security/audits` deste host
+  (confirmado pelo código-fonte da versão fixada e pelo controle negativo
+  com o registry apontado para loopback).
+- Audit **real** no worktree #38 (HEAD `5be894c` desta branch): payload
+  válido e reconciliado 1:1 pelo gate, **8 advisories** (3 high/critical
+  reconhecidos + 5 moderate report-only) → **gate PASS** (exit 0; 0
+  high/critical novos).
+- Audit **real** na worktree #41: **4 advisories** → gate PASS. A contagem
+  difere do 8 acima porque são **dois checkouts com estados de lockfile
+  distintos** (a #41 carrega mudanças de dependência ausentes na #38); os
+  números descrevem lockfiles diferentes comparados contra a mesma baseline
+  — não há contradição nem falseamento. Entradas reconhecidas que deixem de
+  aparecer continuam virando aviso STALE, sem falhar (§3).
+- CI do PR #41: job `security-scans` com o mesmo pnpm 10.15.0 **verde**.
+- Falha operacional segue fechada: `scripts/ci-audit-gate.py` rodado com
+  `npm_config_registry` apontando para loopback **indisponível** falhou
+  (exit 1, `ECONNREFUSED`) — registry morto não produz PASS indevido.
+
+Risco registrado (brownout/retirement): fontes oficiais reportam que o
+pnpm 11 passou a usar o endpoint bulk/GHSA após o retirement do endpoint
+antigo reportado na issue **#11265**. Nesta data o endpoint voltou a
+responder, mas isso é observação pontual: **não** se afirma que o pnpm 10.x
+permanece compatível indefinidamente e **não** se afirma que um `410` nunca
+ocorrerá — o risco segue aberto, e quem vigia é o próprio gate.
+
+Rota de reparo documentada (gatilho definido; **nada executado hoje** —
+nenhum upgrade amplo nesta fatia):
+
+1. **Gatilho:** novo `410` (ou equivalente) do endpoint que derrube o
+   `pnpm audit --json` — o gate falha fechado e a CI bloqueia. **Nunca**
+   usar `--ignore-registry-errors` para atravessar: isso fabricaria
+   exatamente o falso-PASS que a validação fail-closed existe para impedir.
+2. **Antes de mudar cliente/endpoint:** comparar o payload real e a identidade
+   dos advisories com `tests/security/audit-baseline.json`. O fonte oficial de
+   pnpm 11.0.0-rc.1 ainda constrói a chave como `String(adv.id)` e deriva
+   `github_advisory_id` do `url`; portanto não presumir rekey só por mudar para
+   o endpoint bulk. A mudança `ignoreCves` → `ignoreGhsas` do pnpm 11 é para
+   filtros do cliente, não prova que as chaves deste baseline precisam mudar.
+   Se o output/ID real divergir, reconciliar pelo GHSA no `url` antes de alterar
+   a baseline, senão advisories conhecidos podem parecer novos por ruído de
+   identidade.
+3. **Então avaliar**, em slice dedicada com regressão, o cliente
+   (pnpm 11 e/ou o endpoint bulk/GHSA atual). A decisão de upgrade não é
+   tomada aqui; este registro fixa apenas gatilho, ordem e pré-requisito.
 
 ## 4. Suites adversariais (job `adversarial`, PG próprio descartável)
 
@@ -265,6 +323,16 @@ Sem achado.
   vulnerabilities ausente, campo do enum faltando, contador
   negativo/string/float/bool, campo desconhecido, audit válido com achado
   novo → falha, audit válido com achados reconhecidos → PASS).
+  **Registro de run desta slice (histórico preservado).** Estado atual
+  nesta branch: **21/21 OK** (6 + 15 de estresse) — finding P2 do review do
+  PR #38 corrigido: as fixtures de `metadata` eram envelopadas duas vezes
+  (`metadata.metadata`) e falhavam todas pelo ramo "vulnerabilities
+  ausente" sem exercitar o alvo; agora `audit_stdout(..., metadata=X)`
+  recebe o VALOR da chave `metadata` (shape real do `pnpm audit --json`) e
+  cada cenário negativo asserta também a MENSAGEM do ramo pretendido na
+  saída além do exit code. Casos novos: fixture no shape real, `metadata`
+  ausente, `vulnerabilities` vazio, full enum com achados reconhecidos →
+  PASS. Validação do momento, não garantia de runs futuros.
 - `python -c yaml.safe_load(ci.yml)`: 4 jobs
   (`build`, `outbox-050-role-guards`, `security-scans`, `adversarial`).
 - Adversariais em PG scratch descartável: **17/17** (container removido).
