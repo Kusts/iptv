@@ -59,6 +59,19 @@ export const ingestMessageInput = z.object({
   text: z.string().max(8000).default(""),
   occurredAt: z.string().datetime({ offset: true }),
   session: z.string().max(120).nullable().optional(),
+  /**
+   * Media ingest (G01/WAHA closure): TEXT is the default and preserves the
+   * pre-existing contract. Non-TEXT requires `attachmentRef` (mirrors the
+   * `messages_content_present_check` DB constraint); `mediaMetadata` lands in
+   * `metadata_json` alongside the provider/session markers.
+   */
+  contentType: z.enum(["TEXT", "IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "LOCATION", "TEMPLATE", "SYSTEM_EVENT", "OTHER"]).default("TEXT"),
+  attachmentRef: z.string().trim().min(1).max(2000).nullable().optional(),
+  mediaMetadata: z.record(z.string(), z.unknown()).nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (value.contentType !== "TEXT" && value.contentType !== "SYSTEM_EVENT" && (value.attachmentRef ?? null) === null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "media messages require attachmentRef", path: ["attachmentRef"] });
+  }
 });
 export type IngestMessageInput = z.infer<typeof ingestMessageInput>;
 
@@ -721,6 +734,10 @@ async function handleIngest(
     }
     const messageId = newId();
     const occurred = new Date(input.occurredAt);
+    const mediaExtra =
+      input.mediaMetadata !== null && input.mediaMetadata !== undefined
+        ? (input.mediaMetadata as Record<string, unknown>)
+        : {};
     await trx
       .insertInto("communication.messages")
       .values({
@@ -733,10 +750,10 @@ async function handleIngest(
         sender_type: "PERSON",
         external_message_id: input.externalMessageId,
         idempotency_key: null,
-        content_type: "TEXT",
+        content_type: input.contentType,
         body_text: input.text.length > 0 ? input.text : null,
-        attachment_ref: null,
-        metadata_json: { provider: "waha", session: input.session ?? null },
+        attachment_ref: input.attachmentRef ?? null,
+        metadata_json: { provider: "waha", session: input.session ?? null, ...mediaExtra },
         occurred_at: occurred,
         received_at: now(),
         created_at: now(),
@@ -845,6 +862,8 @@ async function handleIngest(
     externalMessageId: input.externalMessageId,
     bodyText: input.text.length > 0 ? input.text : null,
     occurredAt: new Date(input.occurredAt),
+    contentType: input.contentType,
+    attachmentRef: input.attachmentRef ?? null,
   });
   mem.deliveries.push({
     id: newId(),

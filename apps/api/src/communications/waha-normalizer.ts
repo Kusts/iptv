@@ -18,8 +18,26 @@ export type NormalizedWaha =
       occurredAt: string;
       session: string | null;
       rawEvent: string;
+      /**
+       * Present when the inbound carries provider media (image/audio/document/
+       * video). Text-only inbound has `media: null` and follows the unchanged
+       * TEXT path.
+       */
+      media: NormalizedWahaMedia | null;
     }
   | { kind: "unknown"; rawEvent: string };
+
+/** Provider media attachment identified on an inbound message (no I/O). */
+export interface NormalizedWahaMedia {
+  contentType: "IMAGE" | "AUDIO" | "DOCUMENT" | "VIDEO";
+  /** WAHA-hosted download URL when the payload reports one. */
+  mediaUrl: string | null;
+  declaredMime: string | null;
+  fileName: string | null;
+  sizeBytes: number | null;
+  durationSeconds: number | null;
+  caption: string | null;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -102,7 +120,92 @@ export function normalizeWahaPayload(raw: unknown): NormalizedWaha {
     occurredAt: toIso(payload["timestamp"] ?? root["timestamp"]),
     session: asString(root["session"]),
     rawEvent: event,
+    media: identifyWahaMedia(payload),
   };
+}
+
+function asNonNegativeInt(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.floor(parsed);
+    }
+  }
+  return null;
+}
+
+/**
+ * Identify provider media on a message payload (pure, never throws).
+ * Accepted WAHA shapes: an explicit `type` (`image`/`audio`/`ptt`/`voice`/
+ * `document`/`video`), or a media-bearing field (`mediaUrl`/`url`/`media`
+ * object) alongside a MIME/filename hint. Anything else → null (TEXT path).
+ */
+export function identifyWahaMedia(payload: Record<string, unknown>): NormalizedWahaMedia | null {
+  const rawType = payload["type"];
+  const type = typeof rawType === "string" ? rawType.trim().toLowerCase() : "";
+  const media = asRecord(payload["media"]);
+  const mediaUrl =
+    asString(payload["mediaUrl"]) ??
+    asString(payload["mediaURL"]) ??
+    asString(payload["url"]) ??
+    (media !== null
+      ? (asString(media["url"]) ?? asString(media["mediaUrl"]) ?? asString(media["link"]))
+      : null);
+  const declaredMime =
+    asString(payload["mimetype"]) ??
+    asString(payload["mimeType"]) ??
+    asString(payload["mime"]) ??
+    (media !== null ? (asString(media["mimetype"]) ?? asString(media["mimeType"])) : null);
+  const fileName =
+    asString(payload["filename"]) ??
+    asString(payload["fileName"]) ??
+    (media !== null ? (asString(media["filename"]) ?? asString(media["fileName"])) : null);
+  const sizeBytes =
+    asNonNegativeInt(payload["fileSize"]) ??
+    asNonNegativeInt(payload["size"]) ??
+    (media !== null ? (asNonNegativeInt(media["fileSize"]) ?? asNonNegativeInt(media["size"])) : null);
+  const durationSeconds =
+    asNonNegativeInt(payload["duration"]) ??
+    asNonNegativeInt(payload["durationSeconds"]) ??
+    (media !== null ? (asNonNegativeInt(media["duration"]) ?? asNonNegativeInt(media["durationSeconds"])) : null);
+  const caption = asString(payload["caption"]);
+
+  let contentType: NormalizedWahaMedia["contentType"] | null = null;
+  if (type === "image") {
+    contentType = "IMAGE";
+  } else if (type === "audio" || type === "ptt" || type === "voice" || type === "audio_message") {
+    contentType = "AUDIO";
+  } else if (type === "document") {
+    contentType = "DOCUMENT";
+  } else if (type === "video") {
+    contentType = "VIDEO";
+  } else if (type === "" || type === "chat" || type === "text") {
+    // Text-shaped payload: only treat as media when a media URL is present
+    // with a media MIME hint (WAHA variants that omit `type`).
+    if (mediaUrl !== null && declaredMime !== null) {
+      const mime = declaredMime.split(";")[0]?.trim().toLowerCase() ?? "";
+      if (mime.startsWith("image/")) {
+        contentType = "IMAGE";
+      } else if (mime.startsWith("audio/")) {
+        contentType = "AUDIO";
+      } else if (mime.startsWith("video/")) {
+        contentType = "VIDEO";
+      } else {
+        contentType = "DOCUMENT";
+      }
+    } else {
+      return null;
+    }
+  } else {
+    return null;
+  }
+  // An explicit media type without any downloadable/declared artifact is
+  // still media (unavailable → handled downstream as `media_unavailable`,
+  // never silently downgraded to TEXT).
+  return { contentType, mediaUrl, declaredMime, fileName, sizeBytes, durationSeconds, caption };
 }
 
 /** Normalize a sender address for identity matching (`@c.us`/`@s.whatsapp.net` stripped, digits kept). */

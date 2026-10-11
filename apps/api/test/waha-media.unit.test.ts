@@ -1,0 +1,385 @@
+import { describe, expect, it } from "vitest";
+import { CommandBus } from "../src/commands/command-bus.js";
+import { registerCrmCommands } from "../src/crm/crm.commands.js";
+import { registerCommunicationCommands } from "../src/communications/communications.commands.js";
+import {
+  identifyWahaMedia,
+  normalizeWahaPayload,
+} from "../src/communications/waha-normalizer.js";
+import {
+  assertFetchedMime,
+  HttpWahaMediaPort,
+  MEDIA_MAX_BYTES,
+  mediaMetadataFor,
+  validateMediaDescriptor,
+  type WahaMediaDescriptor,
+} from "../src/communications/waha-media.js";
+import { MemoryDb } from "./fakes/memory-fakes.js";
+import type { CommandActor } from "@iptv/domain";
+
+/**
+ * G01/WAHA media unit suite (no DB, no network — controlled stubs only).
+ * Fixture payloads use deterministic counters, never UUID-head slices.
+ */
+
+const TENANT = "11111111-1111-4111-8111-111111111111";
+
+let counter = 0;
+function tag(prefix: string): string {
+  counter += 1;
+  return `${prefix}-${String(counter).padStart(4, "0")}`;
+}
+
+function actor(): CommandActor {
+  return {
+    userId: "22222222-2222-4222-8222-222222222222",
+    isPlatformAdmin: false,
+    tenantId: TENANT,
+    roleKeys: ["tenant_owner"],
+    permissions: ["crm.person.read", "crm.lead.write", "conversation.reply"],
+    actorType: "human",
+  };
+}
+
+function imagePayload() {
+  return {
+    id: tag("wamsg-img"),
+    from: "5511999990001@c.us",
+    fromMe: false,
+    type: "image",
+    body: "",
+    caption: "foto do medidor",
+    mediaUrl: "https://waha.test/api/files/img-0001.jpg",
+    mimetype: "image/jpeg",
+    fileSize: 120_000,
+    timestamp: 1758912000,
+  };
+}
+
+describe("WAHA media identification (normalizer)", () => {
+  it("leaves text-only inbound on the TEXT path (media null)", () => {
+    const normalized = normalizeWahaPayload({
+      event: "message",
+      session: "default",
+      payload: { id: tag("wamsg"), from: "5511999990001@c.us", fromMe: false, body: "oi", timestamp: 1758912000 },
+    });
+    expect(normalized.kind).toBe("message");
+    if (normalized.kind !== "message") {
+      throw new Error("expected message");
+    }
+    expect(normalized.text).toBe("oi");
+    expect(normalized.media).toBeNull();
+  });
+
+  it("identifies a valid image with caption and size", () => {
+    const media = identifyWahaMedia(imagePayload() as unknown as Record<string, unknown>);
+    expect(media).toMatchObject({
+      contentType: "IMAGE",
+      mediaUrl: "https://waha.test/api/files/img-0001.jpg",
+      declaredMime: "image/jpeg",
+      sizeBytes: 120_000,
+      caption: "foto do medidor",
+    });
+  });
+
+  it("identifies ptt voice notes as AUDIO", () => {
+    const media = identifyWahaMedia({
+      id: tag("wamsg"),
+      from: "5511999990001@c.us",
+      fromMe: false,
+      type: "ptt",
+      mediaUrl: "https://waha.test/api/files/ptt-0001.ogg",
+      mimetype: "audio/ogg",
+      duration: 42,
+      timestamp: 1758912000,
+    });
+    expect(media).toMatchObject({ contentType: "AUDIO", durationSeconds: 42 });
+  });
+
+  it("identifies a pdf document with filename", () => {
+    const media = identifyWahaMedia({
+      id: tag("wamsg"),
+      from: "5511999990001@c.us",
+      fromMe: false,
+      type: "document",
+      mediaUrl: "https://waha.test/api/files/fatura-0001.pdf",
+      mimetype: "application/pdf",
+      filename: "fatura.pdf",
+      fileSize: 55_000,
+      timestamp: 1758912000,
+    });
+    expect(media).toMatchObject({ contentType: "DOCUMENT", fileName: "fatura.pdf" });
+  });
+
+  it("infers media from URL + MIME hint when `type` is absent", () => {
+    const media = identifyWahaMedia({
+      id: tag("wamsg"),
+      from: "5511999990001@c.us",
+      fromMe: false,
+      mediaUrl: "https://waha.test/api/files/img-0002.png",
+      mimetype: "image/png",
+      timestamp: 1758912000,
+    });
+    expect(media).toMatchObject({ contentType: "IMAGE" });
+  });
+
+  it("returns null for non-media types (location/sticker shapes)", () => {
+    expect(identifyWahaMedia({ type: "location", latitude: -23.5, longitude: -46.6 })).toBeNull();
+    expect(identifyWahaMedia({ type: "sticker" })).toBeNull();
+    expect(identifyWahaMedia({ body: "plain text" })).toBeNull();
+  });
+
+  it("keeps an explicit media type without artifacts as media (unavailable, never TEXT)", () => {
+    const normalized = normalizeWahaPayload({
+      event: "message",
+      session: "default",
+      payload: { id: tag("wamsg"), from: "5511999990001@c.us", fromMe: false, type: "audio", timestamp: 1758912000 },
+    });
+    expect(normalized.kind).toBe("message");
+    if (normalized.kind !== "message") {
+      throw new Error("expected message");
+    }
+    expect(normalized.media).toMatchObject({ contentType: "AUDIO", mediaUrl: null });
+  });
+});
+
+describe("media descriptor validation (pure)", () => {
+  function descriptor(overrides: Partial<WahaMediaDescriptor> = {}): WahaMediaDescriptor {
+    return {
+      contentType: "IMAGE",
+      mediaUrl: "https://waha.test/api/files/img-0001.jpg",
+      declaredMime: "image/jpeg",
+      fileName: null,
+      sizeBytes: 120_000,
+      durationSeconds: null,
+      caption: null,
+      ...overrides,
+    };
+  }
+
+  it("accepts a valid image descriptor", () => {
+    expect(validateMediaDescriptor(descriptor())).toMatchObject({ ok: true });
+  });
+
+  it("rejects an oversized file", () => {
+    const result = validateMediaDescriptor(descriptor({ sizeBytes: MEDIA_MAX_BYTES.IMAGE + 1 }));
+    expect(result).toMatchObject({ ok: false, code: "media_invalid" });
+    if (result.ok) {
+      throw new Error("expected invalid");
+    }
+    expect(result.reason).toMatch(/oversized IMAGE/);
+  });
+
+  it("rejects a mismatched MIME (html declared as document)", () => {
+    const result = validateMediaDescriptor(
+      descriptor({ contentType: "DOCUMENT", declaredMime: "text/html" }),
+    );
+    expect(result).toMatchObject({ ok: false, code: "media_invalid" });
+    if (result.ok) {
+      throw new Error("expected invalid");
+    }
+    expect(result.reason).toMatch(/mismatched MIME/);
+  });
+
+  it("marks missing media urls unavailable (never TEXT-downgraded)", () => {
+    const result = validateMediaDescriptor(descriptor({ mediaUrl: null }));
+    expect(result).toMatchObject({ ok: false, code: "media_unavailable" });
+  });
+
+  it("rejects audio beyond the duration cap", () => {
+    const result = validateMediaDescriptor(
+      descriptor({ contentType: "AUDIO", mediaUrl: "https://waha.test/f.ogg", declaredMime: "audio/ogg", durationSeconds: 601 }),
+    );
+    expect(result).toMatchObject({ ok: false, code: "media_invalid" });
+  });
+
+  it("gates fetched Content-Type bytes against the content type", () => {
+    expect(assertFetchedMime("IMAGE", "image/jpeg")).toEqual({ ok: true });
+    expect(assertFetchedMime("IMAGE", "text/html").ok).toBe(false);
+    expect(assertFetchedMime("AUDIO", null).ok).toBe(false);
+  });
+});
+
+describe("HttpWahaMediaPort with a controlled fetch double (no network)", () => {
+  function stubFetch(handler: (url: string) => { status: number; mime: string; bytes: Uint8Array }): typeof fetch {
+    return (async (input: string | URL | Request) => {
+      const url = String(input);
+      const out = handler(url);
+      return {
+        ok: out.status >= 200 && out.status < 300,
+        status: out.status,
+        headers: { get: (name: string) => (name.toLowerCase() === "content-type" ? out.mime : null) },
+        arrayBuffer: async () => out.bytes.buffer.slice(out.bytes.byteOffset, out.bytes.byteOffset + out.bytes.byteLength) as ArrayBuffer,
+      };
+    }) as unknown as typeof fetch;
+  }
+
+  function imageDescriptor(): WahaMediaDescriptor {
+    return {
+      contentType: "IMAGE",
+      mediaUrl: "https://waha.test/api/files/img-0001.jpg",
+      declaredMime: "image/jpeg",
+      fileName: null,
+      sizeBytes: null,
+      durationSeconds: null,
+      caption: "foto",
+    };
+  }
+
+  it("downloads a valid image from an allowlisted host", async () => {
+    let calls = 0;
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      fetchImpl: stubFetch(() => {
+        calls += 1;
+        return { status: 200, mime: "image/jpeg", bytes: new Uint8Array([1, 2, 3]) };
+      }),
+    });
+    const result = await port.download(imageDescriptor());
+    expect(calls).toBe(1);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("expected ok");
+    }
+    expect(result.fetched.mimeType).toBe("image/jpeg");
+    expect(result.fetched.sizeBytes).toBe(3);
+  });
+
+  it("refuses a non-allowlisted host without fetching (fail-closed)", async () => {
+    let calls = 0;
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      fetchImpl: stubFetch(() => {
+        calls += 1;
+        return { status: 200, mime: "image/jpeg", bytes: new Uint8Array([1]) };
+      }),
+    });
+    const result = await port.download({
+      ...imageDescriptor(),
+      mediaUrl: "https://evil.test/api/files/img-0001.jpg",
+    });
+    expect(calls).toBe(0);
+    expect(result).toMatchObject({ ok: false, code: "media_unavailable" });
+  });
+
+  it("maps provider 404 to download failure", async () => {
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      fetchImpl: stubFetch(() => ({ status: 404, mime: "application/json", bytes: new Uint8Array([]) })),
+    });
+    await expect(port.download(imageDescriptor())).resolves.toMatchObject({
+      ok: false,
+      code: "media_download_failed",
+    });
+  });
+
+  it("maps a transport throw to download failure", async () => {
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      fetchImpl: (async () => {
+        throw new Error("socket reset");
+      }) as unknown as typeof fetch,
+    });
+    const result = await port.download(imageDescriptor());
+    expect(result).toMatchObject({ ok: false, code: "media_download_failed" });
+  });
+
+  it("rejects fetched bytes whose MIME mismatches the declared type", async () => {
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      fetchImpl: stubFetch(() => ({ status: 200, mime: "text/html", bytes: new Uint8Array([60, 104, 116]) })),
+    });
+    await expect(port.download(imageDescriptor())).resolves.toMatchObject({
+      ok: false,
+      code: "media_invalid",
+    });
+  });
+
+  it("rejects fetched bytes beyond the size cap", async () => {
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      fetchImpl: stubFetch(() => ({
+        status: 200,
+        mime: "image/jpeg",
+        bytes: new Uint8Array(MEDIA_MAX_BYTES.IMAGE + 16),
+      })),
+    });
+    await expect(port.download(imageDescriptor())).resolves.toMatchObject({
+      ok: false,
+      code: "media_invalid",
+    });
+  });
+});
+
+describe("media metadata + ingest validation seam", () => {
+  it("marks audio transcription as explicit follow-up (no pipeline invented)", () => {
+    const metadata = mediaMetadataFor(
+      {
+        contentType: "AUDIO",
+        mediaUrl: "https://waha.test/f.ogg",
+        declaredMime: "audio/ogg",
+        fileName: null,
+        sizeBytes: 9000,
+        durationSeconds: null,
+        caption: null,
+      },
+      { bytes: new Uint8Array([1]), mimeType: "audio/ogg", sizeBytes: 1 },
+    );
+    expect(metadata["transcription"]).toEqual({ status: "PENDING_FOLLOW_UP", engine: null, transcriptRef: null });
+    expect(metadata["durationUnknown"]).toBe(true);
+  });
+
+  it("omits the transcription marker for non-audio media", () => {
+    const metadata = mediaMetadataFor(
+      {
+        contentType: "IMAGE",
+        mediaUrl: "https://waha.test/i.jpg",
+        declaredMime: "image/jpeg",
+        fileName: null,
+        sizeBytes: 10,
+        durationSeconds: null,
+        caption: null,
+      },
+      null,
+    );
+    expect("transcription" in metadata).toBe(false);
+  });
+
+  it("rejects media ingest without attachmentRef (mirrors the DB check)", async () => {
+    const db = new MemoryDb();
+    const bus = new CommandBus(db);
+    registerCrmCommands(bus);
+    registerCommunicationCommands(bus);
+    const person = (await bus.execute<{ id: string }>(actor(), "person.register", {
+      canonicalName: "Media P",
+      identities: [{ identityType: "WHATSAPP", normalizedValue: "5511999990001" }],
+    })) as { ok: true; data: { id: string } };
+    const conv = (await bus.execute<{ id: string }>(actor(), "conversation.start_manual", {
+      personId: person.data.id,
+      channel: "WHATSAPP",
+    })) as { ok: true; data: { id: string } };
+    expect(conv.data.id).toMatch(/^[0-9a-f-]{36}$/);
+
+    const missing = await bus.execute(actor(), "message.ingest", {
+      channel: "WHATSAPP",
+      externalMessageId: tag("wamsg"),
+      from: "5511999990001@c.us",
+      text: "",
+      occurredAt: new Date().toISOString(),
+      contentType: "IMAGE",
+    });
+    expect(missing.ok ? null : missing.code).toBe("validation_failed");
+
+    const stored = await bus.execute(actor(), "message.ingest", {
+      channel: "WHATSAPP",
+      externalMessageId: tag("wamsg"),
+      from: "5511999990001@c.us",
+      text: "",
+      occurredAt: new Date().toISOString(),
+      contentType: "IMAGE",
+      attachmentRef: "waha:test:image",
+      mediaMetadata: { mediaKind: "IMAGE" },
+    });
+    expect(stored.ok).toBe(true);
+  });
+});
