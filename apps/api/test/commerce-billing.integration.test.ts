@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NestFactory } from "@nestjs/core";
 import type { NestFastifyApplication } from "@nestjs/platform-fastify";
 import { createDb, applyMigrations } from "@iptv/database";
@@ -10,6 +10,7 @@ import type { CommandActor } from "@iptv/domain";
 import { AppModule } from "../src/app.module.js";
 import { createFastifyAdapter, registerRequestIdHook } from "../src/request-id.js";
 import { CommandBus } from "../src/commands/command-bus.js";
+import { AsaasWebhookService } from "../src/billing/asaas-webhook.service.js";
 import { OutboxDrainer } from "../src/outbox/outbox-drainer.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,6 +52,7 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
   let approverId = "";
   let bus: CommandBus;
   let drainer: OutboxDrainer;
+  let asaasWebhooks: AsaasWebhookService;
 
   function actor(): CommandActor {
     return {
@@ -243,6 +245,99 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
     });
   }
 
+  /** Asaas `?defer=1`: accept durably and leave normalization to the drain. */
+  async function postAsaasDeferred(tenantKey: string, payload: Record<string, unknown>) {
+    return injectRaw({
+      method: "POST",
+      url: `/v1/webhooks/asaas/${tenantKey}?defer=1`,
+      headers: { "asaas-access-token": ASAAS_SECRET },
+      payload,
+    });
+  }
+
+  /**
+   * Issuer chargeback delivery. `value` may be omitted on purpose: the
+   * normalizer then reports no amount, which is what a reordered chargeback
+   * (one that arrives before any payment exists) looks like.
+   */
+  function chargebackPayload(
+    providerChargeId: string,
+    eventId: string,
+    options: { value?: number } = {},
+  ): Record<string, unknown> {
+    const payment: Record<string, unknown> = { id: providerChargeId };
+    if (options.value !== undefined) {
+      payment["value"] = options.value;
+    }
+    return { event: "PAYMENT_CHARGEBACK", id: eventId, payment };
+  }
+
+  /**
+   * Independent result query on the inbox: counts rows by (tenant, provider,
+   * external event id) so a test never trusts the response body alone. The
+   * service stores the NORMALIZED event id (`asaas:<provider id>`), which is
+   * what dedupe is keyed on.
+   */
+  async function inboxRowsForEvent(eventId: string) {
+    return db
+      .selectFrom("platform.inbox_messages")
+      .select(["id", "state"])
+      .where("tenant_id", "=", tenantId)
+      .where("provider", "=", "asaas")
+      .where("external_event_id", "=", `asaas:${eventId}`)
+      .execute();
+  }
+
+  /**
+   * A 202 fast-ack does NOT prove `processRow` succeeded: the async normalize
+   * stage runs after the ack and can still mark the row FAILED (or leave it
+   * unclaimed), so a stale assertion on status 202 alone can hide a lost money
+   * effect. This asserts, independently of the HTTP body, that exactly ONE
+   * inbox row exists for the event and that it settled PROCESSED.
+   */
+  async function expectEventProcessed(eventId: string): Promise<void> {
+    const rows = await inboxRowsForEvent(eventId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.state).toBe("PROCESSED");
+  }
+
+  /**
+   * Money postings of one type for ONE payment. Scoped by reference (never by
+   * tenant) so an assertion cannot be satisfied or broken by the postings of
+   * earlier tests that share this suite's tenant.
+   */
+  async function postingsForPayment(paymentId: string, type: string): Promise<number> {
+    const rows = await db
+      .selectFrom("finance.financial_transactions")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("transaction_type", "=", type)
+      .where("reference_type", "=", "payment")
+      .where("reference_id", "=", paymentId)
+      .execute();
+    return rows.length;
+  }
+
+  /** Payment-confirmation postings (the money effect of exactly one PAID). */
+  async function confirmationsFor(paymentId: string): Promise<number> {
+    return postingsForPayment(paymentId, "PAYMENT_CONFIRMATION");
+  }
+
+  /** Chargeback-loss postings (the money effect of exactly one chargeback). */
+  async function chargebackReversalsFor(paymentId: string): Promise<number> {
+    return postingsForPayment(paymentId, "CHARGEBACK_REVERSAL");
+  }
+
+  async function paymentStatus(paymentId: string): Promise<string> {
+    const row = await db
+      .selectFrom("billing.payments")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", paymentId)
+      .executeTakeFirstOrThrow();
+    return row.status;
+  }
+
   async function paymentsForOrder(orderId: string) {
     return db
       .selectFrom("billing.payments")
@@ -258,6 +353,46 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
       .selectFrom("finance.financial_transactions")
       .select(["id"])
       .where("tenant_id", "=", tenantId)
+      .execute();
+    expect(txs.length).toBeGreaterThan(0);
+    for (const tx of txs) {
+      const entries = await db
+        .selectFrom("finance.financial_ledger_entries")
+        .select(["direction", "amount_minor", "currency"])
+        .where("tenant_id", "=", tenantId)
+        .where("financial_transaction_id", "=", tx.id)
+        .execute();
+      expect(entries.length).toBeGreaterThanOrEqual(2);
+      const net = new Map<string, bigint>();
+      for (const e of entries) {
+        const amount = BigInt(e.amount_minor);
+        expect(amount > 0n).toBe(true);
+        const signed = e.direction === "DEBIT" ? amount : -amount;
+        net.set(e.currency, (net.get(e.currency) ?? 0n) + signed);
+      }
+      for (const [, value] of net) {
+        expect(value).toBe(0n);
+      }
+    }
+  }
+
+  /**
+   * G3-only balance check, scoped to ONE payment by reference
+   * (`reference_type='payment'`, `reference_id=paymentId`): every financial
+   * transaction written for THIS payment must balance (per-currency
+   * DEBIT==CREDIT, positive amounts, at least a debit and a credit). Unlike
+   * the tenant-wide `assertLedgerBalancedDb`, it cannot be satisfied or broken
+   * by postings from unrelated tests that share this suite's tenant. The
+   * pre-existing `assertLedgerBalancedDb` and its callers are left untouched;
+   * this helper is used only by the G3 tests.
+   */
+  async function assertPaymentLedgerBalanced(paymentId: string): Promise<void> {
+    const txs = await db
+      .selectFrom("finance.financial_transactions")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("reference_type", "=", "payment")
+      .where("reference_id", "=", paymentId)
       .execute();
     expect(txs.length).toBeGreaterThan(0);
     for (const tx of txs) {
@@ -318,6 +453,7 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
     await app.init();
     bus = app.get(CommandBus);
     drainer = app.get(OutboxDrainer);
+    asaasWebhooks = app.get(AsaasWebhookService);
 
     const register = await injectRaw({
       method: "POST",
@@ -901,5 +1037,331 @@ describe.skipIf(!hasDb)("Wave 5 Commerce + Billing (requires TEST_DATABASE_URL)"
 
     const foreign = await injectRaw({ method: "GET", url: `/v1/orders/${orderId}`, token: bodyB.token });
     expect(foreign.statusCode).toBe(404);
+  });
+
+  // -------------------------------------------------------------------------
+  // G3: concurrent / reordered / deferred Asaas deliveries.
+  //
+  // Invariant under test everywhere below: exactly ONE money effect per
+  // provider event, and never a second effect for a delivery the platform has
+  // already absorbed. Every money assertion is an independent database query
+  // (payments / charges / finance transactions / inbox rows), never just the
+  // HTTP response body. Nothing here calls a provider: Asaas behavior reaches
+  // these paths only as already-received payloads.
+  // -------------------------------------------------------------------------
+
+  it("N concurrent deliveries of the SAME event id produce exactly one effect", async () => {
+    const tenantKey = await setupAsaasChannel();
+    const personId = await makePerson();
+    const planId = await seedPlan("2000");
+    const { orderId } = await quoteAndSubmit(personId, planId, 1);
+    const { chargeId, providerChargeId } = await createCharge(orderId);
+    const eventId = `evt-race-${newId().slice(-12)}`;
+    const payload = paidPayload(providerChargeId, eventId, 20.0);
+
+    // Baseline: a PROCESSING charge has produced no money effect yet.
+    expect(await paymentsForOrder(orderId)).toHaveLength(0);
+
+    const replies = await Promise.all([
+      postAsaas(tenantKey, payload),
+      postAsaas(tenantKey, payload),
+      postAsaas(tenantKey, payload),
+      postAsaas(tenantKey, payload),
+      postAsaas(tenantKey, payload),
+    ]);
+    for (const reply of replies) {
+      expect(reply.statusCode).toBe(202);
+    }
+    // Exactly one delivery inserted; the rest collapsed as duplicates.
+    expect(replies.filter((r) => r.json<{ deduped: boolean }>().deduped === false)).toHaveLength(1);
+    expect(replies.filter((r) => r.json<{ deduped: boolean }>().deduped === true)).toHaveLength(4);
+    // The 202s alone can hide a failed inline processRow: prove the single
+    // surviving row was actually claimed and normalized to PROCESSED.
+    await expectEventProcessed(eventId);
+
+    const payments = await paymentsForOrder(orderId);
+    expect(payments).toHaveLength(1);
+    const [confirmed] = payments;
+    if (confirmed === undefined) {
+      throw new Error("expected a payment");
+    }
+    // One PAID delivery, one confirmation posting, zero dispute postings.
+    expect(await confirmationsFor(confirmed.id)).toBe(1);
+    expect(await chargebackReversalsFor(confirmed.id)).toBe(0);
+    const charge = await db
+      .selectFrom("billing.charges")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", chargeId)
+      .executeTakeFirstOrThrow();
+    expect(charge.status).toBe("PAID");
+    await assertPaymentLedgerBalanced(confirmed.id);
+  });
+
+  it("a duplicate chargeback delivery posts exactly one reversal (idempotent status + ledger key)", async () => {
+    const tenantKey = await setupAsaasChannel();
+    const personId = await makePerson();
+    const planId = await seedPlan("1000");
+    const { orderId } = await quoteAndSubmit(personId, planId, 1);
+    const { providerChargeId } = await createCharge(orderId);
+    const paidEventId = `evt-cbdup-paid-${newId().slice(-12)}`;
+    await postAsaas(tenantKey, paidPayload(providerChargeId, paidEventId, 10.0));
+    const [payment] = await paymentsForOrder(orderId);
+    if (payment === undefined) {
+      throw new Error("expected a payment");
+    }
+    expect(await confirmationsFor(payment.id)).toBe(1);
+    expect(await chargebackReversalsFor(payment.id)).toBe(0);
+
+    // Two DISTINCT provider event ids for the same dispute, delivered
+    // CONCURRENTLY: the inbox dedupe cannot help here (two separate rows), so
+    // the payment-status guard (FOR UPDATE -- whichever runs second sees
+    // CHARGEBACK and returns the duplicate outcome) plus the ledger
+    // idempotency key are what must collapse the second delivery's money.
+    const chargebackA = `evt-cbdup-a-${newId().slice(-12)}`;
+    const chargebackB = `evt-cbdup-b-${newId().slice(-12)}`;
+    const [first, second] = await Promise.all([
+      postAsaas(tenantKey, chargebackPayload(providerChargeId, chargebackA, { value: 10.0 })),
+      postAsaas(tenantKey, chargebackPayload(providerChargeId, chargebackB, { value: 10.0 })),
+    ]);
+    expect(first.statusCode).toBe(202);
+    expect(second.statusCode).toBe(202);
+    // Neither delivery deduped (distinct ids): both rows were inserted and
+    // inline-claimed, so BOTH must actually normalize to PROCESSED.
+    expect(first.json<{ deduped: boolean }>().deduped).toBe(false);
+    expect(second.json<{ deduped: boolean }>().deduped).toBe(false);
+    await expectEventProcessed(chargebackA);
+    await expectEventProcessed(chargebackB);
+
+    // Despite two accepted AND processed deliveries, exactly ONE money effect:
+    // payment CHARGEBACK once, one loss posting, one review exception.
+    expect(await paymentStatus(payment.id)).toBe("CHARGEBACK");
+    expect(await chargebackReversalsFor(payment.id)).toBe(1);
+    expect(await paymentsForOrder(orderId)).toHaveLength(1);
+    const reviews = await db
+      .selectFrom("billing.exceptions")
+      .select(["id", "kind", "status"])
+      .where("tenant_id", "=", tenantId)
+      .where("payment_id", "=", payment.id)
+      .where("kind", "=", "CHARGEBACK")
+      .execute();
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]?.status).toBe("OPEN");
+    await assertPaymentLedgerBalanced(payment.id);
+  });
+
+  it("a late PAID after an applied chargeback is a no-op (no restoration, no double posting)", async () => {
+    const tenantKey = await setupAsaasChannel();
+    const personId = await makePerson();
+    const planId = await seedPlan("1000");
+    const { orderId } = await quoteAndSubmit(personId, planId, 1);
+    const { chargeId, providerChargeId } = await createCharge(orderId);
+    const paidEventId = `evt-latepaid-1-${newId().slice(-12)}`;
+    await postAsaas(tenantKey, paidPayload(providerChargeId, paidEventId, 10.0));
+    const [payment] = await paymentsForOrder(orderId);
+    if (payment === undefined) {
+      throw new Error("expected a payment");
+    }
+    const chargebackEventId = `evt-latepaid-cb-${newId().slice(-12)}`;
+    await postAsaas(
+      tenantKey,
+      chargebackPayload(providerChargeId, chargebackEventId, { value: 10.0 }),
+    );
+    expect(await paymentStatus(payment.id)).toBe("CHARGEBACK");
+    const confirmationsBefore = await confirmationsFor(payment.id);
+    const reversalsBefore = await chargebackReversalsFor(payment.id);
+    expect(reversalsBefore).toBe(1);
+
+    // The provider retries the PAID it already delivered (new event id, so the
+    // inbox cannot dedupe it): the charge is already PAID, so this must
+    // resolve to the duplicate outcome with zero new money.
+    const lateEventId = `evt-latepaid-2-${newId().slice(-12)}`;
+    const late = await postAsaas(
+      tenantKey,
+      paidPayload(providerChargeId, lateEventId, 10.0),
+    );
+    expect(late.statusCode).toBe(202);
+    expect(late.json<{ deduped: boolean }>().deduped).toBe(false);
+
+    expect(await confirmationsFor(payment.id)).toBe(confirmationsBefore);
+    expect(await chargebackReversalsFor(payment.id)).toBe(reversalsBefore);
+    expect(await paymentStatus(payment.id)).toBe("CHARGEBACK");
+    expect(await paymentsForOrder(orderId)).toHaveLength(1);
+    const charge = await db
+      .selectFrom("billing.charges")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", chargeId)
+      .executeTakeFirstOrThrow();
+    expect(charge.status).toBe("PAID");
+
+    // Every delivery acked 202 and processed: even the no-op late PAID settles
+    // PROCESSED (the confirm returns the already-PAID duplicate outcome), and
+    // it did not silently FAIL in the async normalize stage.
+    await expectEventProcessed(paidEventId);
+    await expectEventProcessed(chargebackEventId);
+    await expectEventProcessed(lateEventId);
+
+    // The chargeback still needs a human: the late PAID must not auto-resolve
+    // the review exception (it touches no money and no exception).
+    const lateReviews = await db
+      .selectFrom("billing.exceptions")
+      .select(["id", "status"])
+      .where("tenant_id", "=", tenantId)
+      .where("payment_id", "=", payment.id)
+      .where("kind", "=", "CHARGEBACK")
+      .execute();
+    expect(lateReviews).toHaveLength(1);
+    expect(lateReviews[0]?.status).toBe("OPEN");
+    await assertPaymentLedgerBalanced(payment.id);
+  });
+
+  it("a chargeback that arrives before any payment degrades to an exception, then a valid PAID converges once", async () => {
+    const tenantKey = await setupAsaasChannel();
+    const personId = await makePerson();
+    const planId = await seedPlan("1000");
+    const { orderId } = await quoteAndSubmit(personId, planId, 1);
+    const { chargeId, providerChargeId } = await createCharge(orderId);
+
+    // Reordered dispute: the charge is still PROCESSING, so no payment exists
+    // to charge back. Delivery is accepted, but the money effect is refused.
+    const reorderCbEventId = `evt-reorder-cb-${newId().slice(-12)}`;
+    const early = await postAsaas(
+      tenantKey,
+      chargebackPayload(providerChargeId, reorderCbEventId),
+    );
+    expect(early.statusCode).toBe(202);
+    // The 202 hides nothing: the no-payment dispute normalized to an exception
+    // and the row still settles PROCESSED.
+    await expectEventProcessed(reorderCbEventId);
+
+    // No payment exists yet, so there is nothing to charge back: the dispute
+    // must not manufacture one, and no reversal may be posted.
+    expect(await paymentsForOrder(orderId)).toHaveLength(0);
+    const charge = await db
+      .selectFrom("billing.charges")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", chargeId)
+      .executeTakeFirstOrThrow();
+    // Pinned limitation, not a claim that a reversal reorder works: the
+    // dispute is parked as a human exception and the charge stays open.
+    expect(charge.status).toBe("PROCESSING");
+    const mismatches = await db
+      .selectFrom("billing.exceptions")
+      .select(["id", "kind", "status", "resolved_at"])
+      .where("tenant_id", "=", tenantId)
+      .where("charge_id", "=", chargeId)
+      .where("kind", "=", "AMOUNT_MISMATCH")
+      .execute();
+    expect(mismatches).toHaveLength(1);
+    expect(mismatches[0]?.status).toBe("OPEN");
+
+    // The PAID then arrives with the exact charge amount: it converges so the
+    // order is not stranded by the earlier out-of-order dispute.
+    const reorderPaidEventId = `evt-reorder-paid-${newId().slice(-12)}`;
+    const paid = await postAsaas(
+      tenantKey,
+      paidPayload(providerChargeId, reorderPaidEventId, 10.0),
+    );
+    expect(paid.statusCode).toBe(202);
+    expect(paid.json<{ deduped: boolean }>().deduped).toBe(false);
+    await expectEventProcessed(reorderPaidEventId);
+
+    const payments = await paymentsForOrder(orderId);
+    expect(payments).toHaveLength(1);
+    expect(payments[0]?.status).toBe("CONFIRMED");
+    const [confirmed] = payments;
+    if (confirmed === undefined) {
+      throw new Error("expected a payment");
+    }
+    // The late PAID converged the charge exactly once, and the earlier
+    // out-of-order dispute left no money behind.
+    expect(await confirmationsFor(confirmed.id)).toBe(1);
+    expect(await chargebackReversalsFor(confirmed.id)).toBe(0);
+
+    // The out-of-order dispute must NOT be silently cleared by the valid PAID:
+    // the AMOUNT_MISMATCH exception stays OPEN with resolved_at NULL, still
+    // awaiting a human even though the order has since converged.
+    const stillOpen = await db
+      .selectFrom("billing.exceptions")
+      .select(["status", "resolved_at"])
+      .where("tenant_id", "=", tenantId)
+      .where("charge_id", "=", chargeId)
+      .where("kind", "=", "AMOUNT_MISMATCH")
+      .execute();
+    expect(stillOpen).toHaveLength(1);
+    expect(stillOpen[0]?.status).toBe("OPEN");
+    expect(stillOpen[0]?.resolved_at).toBeNull();
+    await assertPaymentLedgerBalanced(confirmed.id);
+  });
+
+  it("a deferred (?defer=1) delivery is acked untouched and converges on an explicit drain", async () => {
+    const tenantKey = await setupAsaasChannel();
+    const personId = await makePerson();
+    const planId = await seedPlan("1500");
+    const { orderId } = await quoteAndSubmit(personId, planId, 1);
+    const { chargeId, providerChargeId } = await createCharge(orderId);
+    const eventId = `evt-deferred-${newId().slice(-12)}`;
+
+    const acked = await postAsaasDeferred(tenantKey, paidPayload(providerChargeId, eventId, 15.0));
+    expect(acked.statusCode).toBe(202);
+    expect(acked.json<{ accepted: boolean; deduped: boolean }>()).toEqual({
+      accepted: true,
+      deduped: false,
+    });
+
+    // Deferred: durable and normalized-by-nobody.
+    const pending = await inboxRowsForEvent(eventId);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.state).toBe("RECEIVED");
+    expect(await paymentsForOrder(orderId)).toHaveLength(0);
+
+    const drained = await asaasWebhooks.drainPending(50);
+    expect(drained.processed).toBeGreaterThanOrEqual(1);
+    expect(drained.failed).toBe(0);
+
+    const settled = await inboxRowsForEvent(eventId);
+    expect(settled).toHaveLength(1);
+    expect(settled[0]?.state).toBe("PROCESSED");
+    const payments = await paymentsForOrder(orderId);
+    expect(payments).toHaveLength(1);
+    expect(payments[0]?.status).toBe("CONFIRMED");
+    const [confirmed] = payments;
+    if (confirmed === undefined) {
+      throw new Error("expected a payment");
+    }
+    expect(await confirmationsFor(confirmed.id)).toBe(1);
+    const charge = await db
+      .selectFrom("billing.charges")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", chargeId)
+      .executeTakeFirstOrThrow();
+    expect(charge.status).toBe("PAID");
+
+    // Claim-once under a re-drain: a second drain must never call processRow
+    // for this already-PROCESSED inbox id. `drainPending` claims GLOBALLY
+    // (every RECEIVED asaas row across tenants), so its aggregate
+    // processed/failed counts say nothing about THIS row and are deliberately
+    // NOT asserted. Spy only for the duration of the second drain and filter
+    // calls by this row's id; unrelated queued events may be processed.
+    const [processedRow] = await inboxRowsForEvent(eventId);
+    if (processedRow === undefined) {
+      throw new Error("expected a processed inbox row");
+    }
+    const processRowSpy = vi.spyOn(asaasWebhooks, "processRow");
+    try {
+      await asaasWebhooks.drainPending(50);
+      expect(
+        processRowSpy.mock.calls.some(([, inboxId]) => inboxId === processedRow.id),
+      ).toBe(false);
+    } finally {
+      processRowSpy.mockRestore();
+    }
+    expect((await inboxRowsForEvent(eventId))[0]?.state).toBe("PROCESSED");
+    expect(await paymentsForOrder(orderId)).toHaveLength(1);
+    expect(await confirmationsFor(confirmed.id)).toBe(1);
+    await assertPaymentLedgerBalanced(confirmed.id);
   });
 });
