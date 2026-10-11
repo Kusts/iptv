@@ -37,22 +37,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
-      # Serial test tasks: migrations from 050 onward create CLUSTER-GLOBAL
-      # roles (`outbox_worker`/`outbox_executor`, rows in `pg_authid` shared
-      # by EVERY database on the server, not per-database). The migration
-      # runner's `pg_advisory_lock` key is scoped per-database, so it only
-      # serializes suites migrating the SAME database — it cannot serialize
-      # two suites migrating DIFFERENT databases. Under Turbo's default
-      # concurrency, `packages/database#test` (migrates `iptv_test`) ran
-      # alongside `apps/outbox-worker#test` (creates and migrates its own
-      # database on the same cluster); both reached migration 050's
-      # `CREATE ROLE outbox_worker` check-then-create and the loser failed
-      # with duplicate `pg_authid` (23505) on
-      # `packages/database/test/tenant-transaction.test.ts` (CI #42).
-      # `--concurrency=1` serializes Turbo package tasks (`--parallel` is
-      # deprecated), so only one suite migrates at a time on the shared
-      # cluster. Same TEST_DATABASE_URL and same full test set — only the
-      # task scheduling changes, at the cost of suite wall-clock time.
+      # `--concurrency=1` serializes the turbo `test` tasks (it also covers
+      # their `^build` dependencies, which are already local turbo-cache hits
+      # from the `pnpm typecheck` step above, so the added wall time is the
+      # test tasks themselves). Several packages apply the full migration set
+      # in their `beforeAll`, and the runner's advisory lock only guards runs
+      # against the SAME database — `pg_advisory_lock` is per-database — so two
+      # packages migrating two different databases in this one Postgres
+      # service race migration 050's cluster-global check-then-create of the
+      # `outbox_worker`/`outbox_executor` roles and one dies on the unique
+      # index backing `pg_authid.rolname` (#42: `@iptv/database` on
+      # `iptv_test` vs `@iptv/outbox-worker` on its own database). Turbo's task
+      # graph has no edge between packages' `test` tasks, so serializing at the
+      # scheduler is the only graph-wide guarantee; enumerating dependencies
+      # would not cover suites added later and would still miss the
+      # same-package file race closed by `fileParallelism: false` in
+      # packages/database (`maxWorkers: 1` in apps/api covers that package).
       - run: pnpm test --concurrency=1
         env:
           # Disposable CI database; integration suites apply migrations
