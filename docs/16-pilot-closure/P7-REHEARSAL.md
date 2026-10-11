@@ -49,6 +49,15 @@ pnpm --filter @iptv/api exec vitest run test/golden-loop.integration.test.ts tes
 python scripts/validate_docs.py   # verde; nenhum contrato/registry tocado
 ```
 
+> Nota para reruns (2026-10-09, após o upgrade Vitest 3 → 4 — ver §12.1 de
+> `docs/16-pilot-closure/P6-SECURITY.md`): o reporter `basic` não existe
+> mais no Vitest 4 e hoje falha na própria startup (`Failed to load custom
+> Reporter from basic`, reproduzido com `vitest 4.1.11`). O comando
+> histórico acima permanece literal como evidência da execução original
+> (2026-10-08, sob Vitest 3); para reruns futuros, use `--reporter=default`
+> ou simplesmente omita a flag — o reporter padrão imprime o mesmo resumo
+> `Test Files ... / Tests ...`.
+
 ## 4. Achados para o Planner (não bloqueiam P7)
 
 1. API cai em restart do DB (erro `pg` não tratado, exit 1) — propor handler +

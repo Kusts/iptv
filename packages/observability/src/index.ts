@@ -105,8 +105,12 @@ async function configureOtlp(endpoint: string, metricExportIntervalMs: number): 
     import("@opentelemetry/sdk-trace-node"),
     import("@opentelemetry/exporter-trace-otlp-http"),
   ]);
-  const traceProvider = new NodeTracerProvider();
-  traceProvider.addSpanProcessor(new BatchSpanProcessor(new OTLPTraceExporter({ url: `${base}/v1/traces` })));
+  // OTel JS 2.x: span processors are passed to the constructor (`spanProcessors`)
+  // — `NodeTracerProvider.addSpanProcessor()` was removed in 2.0 (migration of
+  // `@opentelemetry/sdk-trace-node` 1.30.1 → 2.12.0). Register below is unchanged.
+  const traceProvider = new NodeTracerProvider({
+    spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: `${base}/v1/traces` }))],
+  });
 
   const [{ MeterProvider, PeriodicExportingMetricReader }, { OTLPMetricExporter }] = await Promise.all([
     import("@opentelemetry/sdk-metrics"),
@@ -131,10 +135,14 @@ async function configureOtlp(endpoint: string, metricExportIntervalMs: number): 
     import("@opentelemetry/sdk-logs"),
     import("@opentelemetry/exporter-logs-otlp-http"),
   ]);
-  const loggerProvider = new LoggerProvider();
-  loggerProvider.addLogRecordProcessor(
-    new BatchLogRecordProcessor(new OTLPLogExporter({ url: `${base}/v1/logs` })),
-  );
+  // OTel JS 2.x generation (sdk-logs 0.57.2 → 0.223.0): log record processors
+  // are passed to the constructor (`processors`) —
+  // `LoggerProvider.addLogRecordProcessor()` no longer exists in 0.223.0.
+  const loggerProvider = new LoggerProvider({
+    processors: [
+      new BatchLogRecordProcessor({ exporter: new OTLPLogExporter({ url: `${base}/v1/logs` }) }),
+    ],
+  });
   otlpLogger = loggerProvider.getLogger(TRACER_NAME);
 
   traceProvider.register();
