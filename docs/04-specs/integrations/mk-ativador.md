@@ -45,3 +45,24 @@ Potential channels: authenticated web and Telegram. Credentials/phone/account re
 ## Security
 
 Never put supplier credentials into LLM prompt/history. Browser automation uses authorized normal session; CAPTCHA/2FA/security challenges → HITL.
+
+## SIMULATED engineering seam (credential-independent, 2026-10-11)
+
+> Status: SIMULATED-ONLY. No live MK account, credentials, or observed
+> purchase/activation contract exists in this repository. This section marks
+> the seam — it invents no endpoints, params, payloads, or flows.
+
+- Typed port + skeleton adapter: `apps/browser-worker/src/providers/mkativador/`
+  (`types.ts`, `simulated.ts`, `adapter.ts`) covering auth seam (credential
+  refs, never values), balance query, product query, purchase, activation and
+  readback. API seam: `apps/api/src/provider/provider-mk-cine-simulated.ts`
+  (`MkSimulatedWritePort`).
+- Every external call runs against an explicit in-memory SIMULATED fixture
+  (single-effect ledger keyed by idempotency key; replays perform no new
+  mutation). All results carry `simulated: true`.
+- Spending-limit, idempotency-key and reconciliation-state fields are part of
+  the types; UNKNOWN is distinct from SUCCESS/FAILURE; uncertain effects park
+  MANUAL with an audit entry.
+- Operator gates still required before any live work: MK account +
+  credentials in the operator vault, observed purchase/activation contract,
+  and an explicit spending cap.
