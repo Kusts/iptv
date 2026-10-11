@@ -8,11 +8,16 @@
   claim. Failure isolation: one throwing handler counts as failed and never
   stops the rest of the tick.
 - **`HatchetWorkflowAdapter` (Wave-0-gated, never default)** — constructed
-  only when `HATCHET_API_TOKEN` is set; the `@hatchet-dev/hatchet` SDK is an
-  **optional** dependency loaded via dynamic `import()` behind env, so a
-  missing package/config can never break boot or build. `tick()` is a
-  compatibility no-op (Hatchet drives execution server-side). Concrete
-  workflow-name mapping is pinned at W0-04 certification.
+  only when `HATCHET_API_TOKEN` is set; SDK presence is checked with
+  `require.resolve` (no load, no network), and the constructor throws when
+  config or SDK is absent so `createWorkflowAdapter` falls back to local with
+  a logged warning. `tick()` is a compatibility no-op (Hatchet would drive
+  execution server-side). **`enqueue()` fails closed**: it throws instead of
+  ever returning `{ durable: true }`, because this adapter creates no
+  scheduled run and persists nothing — asserting durability would be a false
+  guarantee, and reporting `durable: false` would silently drop the task
+  (there is no in-memory queue behind this substrate). A real durable path
+  requires the SDK workflow-name mapping certified at W0-04.
 - **`createWorkflowAdapter(env)`** — Hatchet when configured, otherwise
   local; any Hatchet construction failure falls back to local with a logged
   warning.

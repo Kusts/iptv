@@ -60,6 +60,48 @@ describe("LocalWorkflowAdapter", () => {
   });
 });
 
+describe("HatchetWorkflowAdapter.enqueue fails closed", () => {
+  // The constructor is env-gated (token + optional SDK) and the SDK is not
+  // installed in this environment, so `enqueue` cannot be reached through
+  // `new`. It is exercised on the prototype directly: the fail-closed guard
+  // touches no instance state, and the constructor gates are covered by the
+  // factory tests above. Hermetic by construction — no network, no SDK
+  // install, no service call.
+  const adapter: HatchetWorkflowAdapter = Object.create(HatchetWorkflowAdapter.prototype);
+
+  it("throws instead of ever claiming durability (the `{ durable: true }` stub is gone)", async () => {
+    await expect(
+      adapter.enqueue({ name: "trial.expire_due", payload: { tenant: "t1" } }),
+    ).rejects.toThrow(/not certified \(W0-04 gate pending\).*refusing to enqueue/);
+  });
+
+  it("refuses every task shape (runAt/idempotencyKey included) rather than resolving", async () => {
+    await expect(
+      adapter.enqueue({
+        name: "order.expire_due",
+        payload: { id: 1 },
+        runAt: new Date(Date.now() + 60_000),
+        idempotencyKey: "k1",
+      }),
+    ).rejects.toThrow(/construction-only/);
+  });
+
+  it("keeps the empty-name validation ahead of the fail-closed guard", async () => {
+    await expect(adapter.enqueue({ name: "   ", payload: {} })).rejects.toThrow(/must not be empty/);
+  });
+
+  it("does not silently return a non-durable result either (task would just vanish)", async () => {
+    // Unlike LocalWorkflowAdapter there is no in-memory queue behind this
+    // adapter, so `{ durable: false }` would hide a total task loss: the
+    // only honest non-durable report is a throw.
+    const result = await adapter.enqueue({ name: "x", payload: {} }).then(
+      () => "resolved",
+      () => "rejected",
+    );
+    expect(result).toBe("rejected");
+  });
+});
+
 describe("Hatchet factory fallback", () => {
   it("selects local when no token is configured", () => {
     const selection = createWorkflowAdapter({});

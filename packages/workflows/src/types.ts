@@ -6,9 +6,10 @@ import { randomUUID } from "node:crypto";
  * tasks behind this port so the execution substrate is swappable:
  * - default: `LocalWorkflowAdapter` (in-process, explicitly NON-durable —
  *   tasks live only in memory and are lost on process exit);
- * - Wave-0-gated: `HatchetWorkflowAdapter` (durable scheduled runs on the
- *   Hatchet cluster; adoption awaits W0-04 certification and is NEVER the
- *   default).
+ * - Wave-0-gated: `HatchetWorkflowAdapter` (construction-only placeholder —
+ *   env/SDK-gated construction, but `enqueue` fails closed and never claims
+ *   durability; durable adoption awaits W0-04 certification and is NEVER
+ *   the default).
  *
  * Task names are free-form strings agreed with the caller (e.g.
  * `trial.expire_due`); payloads are plain JSON records — never class
