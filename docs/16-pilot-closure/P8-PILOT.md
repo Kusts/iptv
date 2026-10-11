@@ -4,9 +4,21 @@
 > entrada, procedimento, métricas e critérios de saída. Engenharia não opera
 > tráfego real nem inventa autorização jurídica.
 
+> Snapshot 2026-10-11 (docs-only, nenhuma caixa mudou): PR #37 HEAD `51c81ee`
+> com CI verde nos runs `38091653864`/`38091650697` (build, security-scans,
+> adversarial, outbox-050-role-guards), 6 threads resolvidos, sem aprovação
+> humana distinta e sem merge. Candidatas abertas e **não integradas**: #38
+> (`d17540c`), #39 (`26c905a`), #41 (`044be93`), #42 (HEAD combinado `a004c57`
+> com `build` vermelho por corrida de papel cluster-global na migration 050 —
+> falha de harness de CI, não de OTel; histórico verde em `d44ea3c`), #45
+> (`c796e6c`, anti-framing web), #48 (`43d7821`, cobertura G3 Asaas
+> test-only), #49 (`6cb0a0f`, correção da corrida de CI). Nenhum release gate
+> foi fechado e nenhuma readiness promovida; as caixas abaixo continuam
+> desmarcadas.
+
 ## Entrada (tudo antes de qualquer tráfego real)
 
-- [ ] PRs de closure conhecidos (#12–#36) integrados; PR #37 (reconciliação de evidências) revisado/mergeado; CI verde no HEAD final da main. Confirmar novamente no GitHub — números de PR não substituem revisão/CI.
+- [ ] PRs de closure conhecidos (#12–#36) integrados; PR #37 (reconciliação de evidências) revisado/mergeado; CI verde no HEAD final da main. Confirmar novamente no GitHub — números de PR não substituem revisão/CI. Situação 2026-10-11: PR #37 (`51c81ee`) CI verde nos runs `38091653864`/`38091650697` e 6/6 threads resolvidos, mas **sem revisão humana distinta e sem merge**; main segue `2f181e8`.
 - [ ] Staging rehearsal repetido pós-merge (P1-exit parte 2 + P7) com API `iptv_app`.
 - [ ] Fechar os bloqueios técnicos em `RELEASE-CLOSURE-STATUS.md` antes de entrada; qualquer exceção deve estar explicitamente permitida pela SPEC e registrar owner, mitigação e prazo de revisão. A simples decisão de operador não transforma implementação não durável em F12 PASS.
 - [ ] Gates de operador com decisão explícita — **todos seguem abertos**:
@@ -20,7 +32,9 @@
       `KNOWN_NOT_APPLIED`, nenhum refund bem-sucedido). Restam **G1**
       (liquidação PIX fiel via dashboard), **G2** (webhook Asaas→nós via URL
       pública) e **G3** (reorder dedicado — teste determinístico de software,
-      bloqueio de engenharia). **B2** re-run de software 2026-10-09
+      bloqueio de engenharia: **candidata test-only no PR #48 `43d7821`, CI
+      verde `38135069294`/`38135056127` e focado 21/21 local, mas não
+      integrada — G3 segue BLOCKED até mainline**). **B2** re-run de software 2026-10-09
       (`P5-RELEASE-E2E.md`) **CONCLUÍDO**: citações primárias `test:` das 32
       linhas PASS (+ perna inbound de G01, hoje BLOCKED) re-executadas —
       arquivos `evidence:` históricos NÃO re-executados; re-run integral
@@ -36,11 +50,11 @@
 - [ ] Observabilidade ativa (P6) + alertas + `TEST_DATABASE_URL` documentada p/ reruns.
 - [ ] `pilot-evidence.yaml`: re-run integral com `last_run` real por ID
       (P5 follow-up). Situação em 2026-10-09 (branch
-      `closure/p8-p5-evidence-20261009`): re-run de software executado —
-      32 linhas PASS com `last_run` real (citação primária `test:`
-      re-executada: build 9/9 + Vitest 184/184 contra PostgreSQL 17 fresco em
-      loopback); **G01, G07 e F12 seguem BLOCKED** com dono operator;
-      arquivos `evidence:` históricos NÃO foram re-executados. Como
+      `closure/p8-p5-evidence-20261009`), reafirmada em 2026-10-11: re-run de
+      software executado — 32 linhas PASS com `last_run` real (citação primária
+      `test:` re-executada: build 9/9 + Vitest 184/184 contra PostgreSQL 17
+      fresco em loopback) e **G01, G07 e F12 seguem BLOCKED** com dono
+      operator; arquivos `evidence:` históricos NÃO foram re-executados. Como
       "integral" exigiria também a re-execução dos arquivos de evidência e o
       fechamento dos gates de operador (G01/G07/F12 abertos), a caixa
       permanece **desmarcada** até decisão do operador.
