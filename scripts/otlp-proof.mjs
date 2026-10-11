@@ -76,9 +76,10 @@ for (const path of [" /v1/traces", "/v1/metrics", "/v1/logs"]) {
   const key = path.trim();
   const deliveries = hits[key] ?? [];
   const bytes = deliveries.reduce((sum, h) => sum + h.bytes, 0);
+  const contentType = deliveries[0]?.contentType ?? "(none)";
   const ok = deliveries.length >= 1 && bytes > 0;
   if (!ok) failures += 1;
-  console.log(`${ok ? "RECEIVED" : "MISSING "} ${key}: ${deliveries.length} request(s), ${bytes} byte(s)`);
+  console.log(`${ok ? "RECEIVED" : "MISSING "} ${key}: ${deliveries.length} request(s), ${bytes} byte(s), content-type ${contentType}`);
 }
 if (failures > 0) {
   console.error(`PROOF FAIL: ${failures} signal(s) never reached the stub receiver`);

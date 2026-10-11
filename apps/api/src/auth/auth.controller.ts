@@ -14,6 +14,9 @@ import type { FastifyRequest } from "fastify";
 import { AuditService } from "../audit/audit.service.js";
 import { AuthGuard } from "./auth.guard.js";
 import { throwHttp } from "./http-errors.js";
+import { AuthRateLimit } from "./rate-limit.js";
+import { RateLimitGuard } from "./rate-limit.guard.js";
+import { RateLimitService } from "./rate-limit.service.js";
 
 interface RegisterBody {
   email?: unknown;
@@ -52,6 +55,7 @@ export class AuthController {
     // emit `design:paramtypes` metadata, so type-inferred DI would resolve
     // to `undefined` at test runtime. Never rely on inferred injection here.
     @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(RateLimitService) private readonly rateLimit: RateLimitService,
   ) {}
 
   private requireAuth(): AuthInstance {
@@ -62,6 +66,8 @@ export class AuthController {
   }
 
   @Post("register")
+  @AuthRateLimit("register")
+  @UseGuards(RateLimitGuard)
   async register(@Body() body: RegisterBody, @Req() req: FastifyRequest): Promise<{
     token: string;
     user: { id: string; email: string; displayName: string | null };
@@ -70,12 +76,16 @@ export class AuthController {
   }> {
     const auth = this.requireAuth();
     try {
+      const email = asString(body.email, "email");
       const result = await auth.register({
-        email: asString(body.email, "email"),
+        email,
         password: asString(body.password, "password"),
         displayName: asOptionalString(body.displayName),
         tenantName: asOptionalString(body.tenantName),
       });
+      // A completed registration clears this identity's attempt budget so a
+      // legitimate first-time signup is not carried toward a throttle.
+      this.rateLimit.resetIdentity("register", email);
       if (result.activeTenantId !== null) {
         await this.audit.write({
           tenantId: result.activeTenantId,
@@ -101,6 +111,8 @@ export class AuthController {
 
   @Post("login")
   @HttpCode(200)
+  @AuthRateLimit("login")
+  @UseGuards(RateLimitGuard)
   async login(@Body() body: LoginBody, @Req() req: FastifyRequest): Promise<{
     token: string;
     user: { id: string; email: string; displayName: string | null };
@@ -109,10 +121,16 @@ export class AuthController {
   }> {
     const auth = this.requireAuth();
     try {
+      const email = asString(body.email, "email");
       const result = await auth.login({
-        email: asString(body.email, "email"),
+        email,
         password: asString(body.password, "password"),
       });
+      // Successful credential: reset THIS identity's failure budget so a few
+      // mistypes never carry a legitimate user toward a lock-out, and so the
+      // success key differs from the failure key. The per-origin backstop is
+      // intentionally left intact.
+      this.rateLimit.resetIdentity("login", email);
       if (result.activeTenantId !== null) {
         await this.audit.write({
           tenantId: result.activeTenantId,

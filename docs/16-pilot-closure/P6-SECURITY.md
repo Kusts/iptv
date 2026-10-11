@@ -5,6 +5,12 @@
 > revisão CORS/CSP/secrets/worker-creds/admin. **Nenhum runtime de auth,
 > sessão, CORS ou header foi alterado aqui** — decisão + prova primeiro;
 > migração HttpOnly (se um dia adotada) é plano, não implementação.
+>
+> **Atualização posterior (issue #44, subfatia frame policy web):** o §8 foi
+> atualizado porque `apps/web/next.config.mjs` passou a emitir
+> `frame-ancestors 'none'` + `X-Frame-Options: DENY` em todas as rotas web.
+> As seções 1–11 acima permanecem fiéis ao escopo original do P6a; a nota de
+> "nenhum header alterado" descreve aquela slice, não o estado atual.
 
 ## 1. Matriz de controles
 
@@ -15,11 +21,11 @@
 | S3 | Suites adversariais em job próprio | NOVO, verde (17/17) | job `adversarial`; §4 |
 | S4 | Migration/proof PG tests na CI | Existente, sem mudança | job `build` (`run_pg_fixture_tests.sh`) + `outbox-050-role-guards`; sem lacuna — nenhum job novo |
 | S5 | Contracts/docs gates | Existente, sem mudança | `validate_docs.py`, `test_contracts.py`, `test_seed_contract.py` no `build` (+ guarda no self-test) |
-| S6 | Self-test dos gates P6 | NOVO, verde (6/6) | `tests/security/test_ci_security_gates.py`, roda no `security-scans` |
+| S6 | Self-test dos gates P6 | NOVO, verde (22/22) | `tests/security/test_ci_security_gates.py`, roda no `security-scans` |
 | S7 | Branch governance | Compensação (protection indisponível) | §5 |
 | S8 | Sessão localStorage vs HttpOnly | DECIDIDO: manter localStorage no pilot (aceitação explícita) | §6 |
 | S9 | CORS | Revisado, sem achado bloqueante | §7 |
-| S10 | CSP / security headers | GAP registrado, follow-up pós-pilot | §8 |
+| S10 | CSP / security headers | PARCIAL: frame policy web implementada; rate-limit/API headers/CSP geral pendentes (issue #44) | §8 |
 | S11 | Secrets no repo/CI | Revisado; scan verde | §9 |
 | S12 | Worker credentials | Revisado, fail-closed | §10 |
 | S13 | Admin endpoints | Revisado; sem rate-limit dedicado (follow-up) | §11 |
@@ -58,22 +64,173 @@
   `pnpm audit --json` contra `tests/security/audit-baseline.json` e **falha
   só em high/critical NOVO**; entradas resolvidas upstream viram aviso
   STALE sem quebrar o build.
-- Baseline 2026-10-08: 19 advisories (9 moderate, **8 high, 2 critical** —
-  os 10 reconhecidos com `reason` + `followup` cada):
+- Gate fail-closed contra falha operacional (patch desta branch): saída
+  vazia do `pnpm audit` (comando morto: registry fora, shim ausente, rc != 0),
+  JSON malformado e JSON estruturalmente inválido (não-objeto, sem
+  `advisories` ou `advisories` não-dict) agora **FALHAM** com exit 1. Antes,
+  `pnpm audit --json` morto com stdout vazio era interpretado como `{}` e
+  produziria **PASS** indevido. O exit code do pnpm (!= 0 quando há
+  vulnerabilidades, inclusive as reconhecidas) **não** decide o gate — o
+  veredito vem do conteúdo do JSON; PASS só com JSON válido e zero
+  high/critical fora da baseline (advisory nunca é mutado).
+- Revisão da validação estrutural (fail-closed em 2 níveis, patch desta
+  branch): a checagem anterior cobria só o formato externo, então payload
+  como `{"advisories":{"999":{"title":"x"}},"metadata":{"vulnerabilities":{"high":1}}}`
+  **passava** — severidade ausente não é blocking e `metadata` não era
+  conferido. Agora: (1) todo registro em `advisories` precisa ser objeto com
+  `severity` não-vazia do enum conhecido (`info`/`low`/`moderate`/`high`/
+  `critical`) — auditamos TODAS as severidades, não só high/critical;
+  (2) `metadata.vulnerabilities` precisa existir, com contador inteiro
+  não-negativo para cada severidade do enum, sem campos desconhecidos;
+  (3) os contadores precisam reconciliar 1:1 com os registros de
+  `advisories` (contrato verificado contra saída real do
+  `pnpm audit --json`, pnpm 10.15.0). Qualquer dado ausente, desconhecido ou
+  inconsistente **FALHA** — o gate não decide sobre payload incompleto.
+  Exit code != 0 do pnpm com payload válido e reconcilido continua
+  legítimo e não decide o gate.
+- Baseline 2026-10-09 (pós-overrides `pnpm.overrides` no root, drift
+  conferido a cada CI pelo gate): **8 advisories — 5 moderate (report-only),
+  3 high/critical reconhecidos com `reason` + `followup`**:
   - `tinypool` critical ×2 (via vitest): **dev-only** (pool de workers do
-    runner de teste; exploit exige código já no processo de teste).
-    Follow-up: bump do vitest quando `tinypool>=2.1.2` fluir.
-  - `fastify` high ×4 (via `@nestjs/platform-fastify`, **runtime da API**:
-    body replacement, auth bypass via URL malformada, validation bypasses).
-    Reconhecidos porque o upgrade exige bump peer-compatível do NestJS —
-    mudança runtime com regressão, fora desta slice. Revalidados a cada
-    CI; qualquer advisory novo falha o gate.
-    Follow-up: slice dedicada de upgrade fastify/nest com regressão.
-  - `postcss` high ×2, `sharp` high ×1 (via next): **build-time** (CSS/imagem
-    próprios no build; sem input de atacante no pipeline).
-  - `source-map-js` high ×1 (via vitest/vite): **dev-only**.
-  - `next` moderate ×2 (cache poisoning SSG/ISR): report-only pelo threshold.
-- Resultado local: `AUDIT-GATE PASS: nenhum high/critical novo` (exit 0).
+    runner de teste; exploit exige código já no processo de teste). Só
+    resolve com migração **Vitest 3 → 4** (`tinypool>=2.1.2` é major de
+    tinypool; vitest 3.2.7 fixa `^1.1.1` no lockfile).
+  - `@opentelemetry/propagator-jaeger` high ×1 (transitive-only do SDK de
+    trace 1.30.1): nunca importado/registrado no código (propagação é só W3C
+    traceparent); o DoS exige JaegerPropagator processando header
+    malformado — inalcançável aqui; sai com bump do SDK.
+  - moderate report-only (threshold high): `@opentelemetry/core`,
+    `vitest`, `@vitest/mocker` e `next` ×2 (cache poisoning SSG/ISR).
+  - **Resolvidos in-place nesta branch** (removidos da baseline):
+    `fastify` high ×4 (override `^5.12.5` via `@nestjs/platform-fastify`),
+    `postcss` high ×2 (`^8.5.23`), `sharp` high ×1 (`^0.35.5`),
+    `source-map-js` high ×1 (`^1.2.2`).
+- Resultado local: `AUDIT-GATE PASS: nenhum high/critical novo` (exit 0;
+  8 totais, 3 high/critical, 3 ack, 0 novos).
+- **Follow-up VITEST4 executado neste repo** (branch
+  `closure/security-vitest4-20261009`, sobre o HEAD 9ef38b8 do PR #38):
+  Vitest 3 → 4 nos 12 workspaces (`vitest: ^4.1.11`; lockfile resolve
+  **vitest 4.1.11** + `@vitest/*` 4.1.11; `vite` segue **7.3.6**, dentro do
+  peer `^6||^7||^8`). A linha Vitest 4 **não depende mais de `tinypool`**
+  (`grep tinypool pnpm-lock.yaml`: 0 ocorrências), então saem da árvore:
+  - `vitest` + `@vitest/mocker` moderate (path traversal via redirect mock,
+    patched em `>=4.1.11` — é exatamente o piso mínimo exigido);
+  - `tinypool` critical ×2 (`GHSA-5gmw-xhrv-c9v3`,
+    `GHSA-85c8-ppgw-ccpr`) — **removidos da baseline por resolução real**
+    (não mute): `pnpm audit --json` vivo passa a reportar **4 advisories,
+    0 critical**.
+  - Estado do gate ao fim daquela slice (validado ao vivo): **4 totais —
+    3 moderate report-only (`@opentelemetry/core`, `next` ×2) + 1 high
+    reconhecido (`propagator-jaeger`)**; `AUDIT-GATE PASS` (exit 0; 1
+    high/critical, 1 ack, 0 novos). A baseline havia encolhido para o único
+    achado high/critical que ainda exigia trabalho fora daquela fatia —
+    resolvido depois pelo follow-up OTEL2 abaixo.
+  - Sem adaptação de config: os 11 `vitest.config.ts` só usam
+    `include`/`testTimeout`/`maxWorkers`/`hookTimeout`/`environment`
+    (`jsdom`, já dependência própria de `apps/web`) — todos válidos em
+    Vitest 4. Regressão medida: **1175 testes unitários verdes** sem
+    `TEST_DATABASE_URL` (320 de integração *skipped* por
+    `describe.skipIf(!hasDb)`) e, com banco descartável fresco, zero
+    falha de teste — `@iptv/api` **916/916**, `@iptv/database` **28/28**,
+    `@iptv/outbox-worker` **60/60** (ressalva de exit: o run com DB não
+    encerra limpo no teardown do outbox-worker — §12.1); `pnpm build`
+    12/12; lint 12/12; typecheck 20/20.
+- **Follow-up OTEL2 executado neste repo** (branch
+  `closure/security-otel2-20261009`, sobre o commit bfbf66f do PR #41):
+  upgrade **coerente para a geração OpenTelemetry 2.x** em
+  `packages/observability` — `sdk-trace-node` 1.30.1 → **2.12.0**,
+  `sdk-metrics` 1.30.1 → **2.12.0**, `sdk-logs` e os três exporters
+  OTLP/HTTP 0.57.2 → **0.223.0**, `@opentelemetry/api` **mantido em 1.9.1**
+  (dentro do peer `>=1.9.0 <1.10.0` do sdk-metrics 2.12.0). Motivo: o
+  primeiro bump (só o trace SDK) quebrou o contrato de tipos — o exporter
+  0.57.2 usa a API 1.x (`instrumentationLibrary`) contra o `sdk-trace-node`
+  2.x — e a prova OTLP enviava **zero bytes de trace**; só a geração
+  completa fecha os dois problemas. Migração de código (duas APIs removidas
+  nas versões novas, ambas em `configureOtlp`): `spanProcessors` no
+  construtor do `NodeTracerProvider` (`addSpanProcessor` removido no 2.0) e
+  `processors` no construtor do `LoggerProvider` (`addLogRecordProcessor`
+  removido no sdk-logs 0.223.0, com `BatchLogRecordProcessor` recebendo
+  `{ exporter }`). Nenhum propagador foi adicionado; nenhum call site de
+  `apps/api`/workers mudou (default continua noop).
+  - Árvore sem resíduo 1.x: lockfile só com `core`/`resources`/
+    `sdk-trace*` 2.12.0 + `sdk-logs`/exporters 0.223.0 + `api` 1.9.1;
+    `grep propagator pnpm-lock.yaml` → 0 ocorrências.
+  - Saem da baseline/árvore **por resolução real**: o high
+    `1124011` (`@opentelemetry/propagator-jaeger`, GHSA-45rx-2jwx-cxfr — o
+    SDK 2.x não depende mais do propagador) e o moderate `1153174`
+    (`@opentelemetry/core` 1.30.1 — core 2.12.0 fixo na geração 2.x).
+  - Estado atual do gate (validado ao vivo): `pnpm audit --json` →
+    **2 advisories, ambos moderate e report-only** (`next` ×2: cache
+    poisoning SSG/ISR), **0 high/critical, 0 reconhecidos**;
+    `AUDIT-GATE PASS`. A baseline fica **VAZIA de reconhecidos por
+    intenção** — invariante explícita no self-test
+    (`test_audit_baseline_empty_is_intentional`: `acknowledged == {}` + nota
+    documentando a intenção; qualquer high/critical futuro falha fechado).
+  - Prova OTLP re-executada e **verde**: `scripts/otlp-proof.mjs` → 1 trace
+    (821 B) + 3 exports de métrica (3585 B) + 1 log (845 B); a mesma prova
+    roda automatizada em `test/otlp-proof.test.ts` (stub loopback, 3 sinais
+    exigidos).
+
+### 3.1 Endpoint de registry do audit — snapshot datado 2026-10-10 (finding P1 do review do PR #41)
+
+Registro da finding P1 da revisão do PR #41: o gate depende do endpoint de
+advisory do registry (`pnpm audit --json`), e esse endpoint tem histórico de
+brownout/retirement. **Este é um snapshot do momento — não é garantia de
+comportamento futuro.** Nada de parser/cliente/lockfile/workflow foi alterado
+nesta fatia; o escopo aqui é apenas este registro + a rota de reparo.
+
+Estado observado em 2026-10-10 (revisão dos PRs #38/#41):
+
+- Cliente pinado e real: `pnpm@10.15.0` — campo `packageManager` do root,
+  conferido no repo; a versão declarada é a que executa de fato.
+- Registry host de fato: `registry.npmjs.org` — pnpm 10.15.0 enviou a
+  solicitação ao endpoint legado `/-/npm/v1/security/audits` deste host
+  (confirmado pelo código-fonte da versão fixada e pelo controle negativo
+  com o registry apontado para loopback).
+- Audit **real** no worktree #38 (HEAD `d17540c` da branch
+  `closure/security-hardening-20261009`): payload
+  válido e reconciliado 1:1 pelo gate, **8 advisories** (3 high/critical
+  reconhecidos + 5 moderate report-only) → **gate PASS** (exit 0; 0
+  high/critical novos).
+- Audit **real** na worktree #41: **4 advisories** (1 high reconhecido) → gate
+  PASS. A contagem difere do 8 acima porque são **dois snapshots de checkout**:
+  #38 tem seu lockfile/dependencies e baseline `d17540c` (3 high/critical
+  reconhecidos); #41 tem outro lockfile e a baseline pós-Vitest do seu HEAD
+  original `bfbf66f` (1 high reconhecido). Os números descrevem estados de
+  lockfile **e baseline** distintos, não uma execução única nem a mesma
+  baseline — sem contradição ou falseamento. Entradas reconhecidas que deixem
+  de aparecer continuam virando aviso STALE, sem falhar (§3).
+- CI do PR #41: job `security-scans` com o mesmo pnpm 10.15.0 **verde**.
+- Falha operacional segue fechada: `scripts/ci-audit-gate.py` rodado com
+  `npm_config_registry` apontando para loopback **indisponível** falhou
+  (exit 1, `ECONNREFUSED`) — registry morto não produz PASS indevido.
+
+Risco registrado (brownout/retirement): fontes oficiais reportam que o
+pnpm 11 passou a usar o endpoint bulk/GHSA após o retirement do endpoint
+antigo reportado na issue **#11265**. Nesta data o endpoint voltou a
+responder, mas isso é observação pontual: **não** se afirma que o pnpm 10.x
+permanece compatível indefinidamente e **não** se afirma que um `410` nunca
+ocorrerá — o risco segue aberto, e quem vigia é o próprio gate.
+
+Rota de reparo documentada (gatilho definido; **nada executado hoje** —
+nenhum upgrade amplo nesta fatia):
+
+1. **Gatilho:** novo `410` (ou equivalente) do endpoint que derrube o
+   `pnpm audit --json` — o gate falha fechado e a CI bloqueia. **Nunca**
+   usar `--ignore-registry-errors` para atravessar: isso fabricaria
+   exatamente o falso-PASS que a validação fail-closed existe para impedir.
+2. **Antes de mudar cliente/endpoint:** comparar o payload real e a identidade
+   dos advisories com `tests/security/audit-baseline.json`. O fonte oficial de
+   pnpm 11.0.0-rc.1 ainda constrói a chave como `String(adv.id)` e deriva
+   `github_advisory_id` do `url`; portanto não presumir rekey só por mudar para
+   o endpoint bulk. A mudança `ignoreCves` → `ignoreGhsas` do pnpm 11 é para
+   filtros do cliente, não prova que as chaves deste baseline precisam mudar.
+   Se o output/ID real divergir, reconciliar pelo GHSA no `url` antes de alterar
+   a baseline, senão advisories conhecidos podem parecer novos por ruído de
+   identidade.
+3. **Então avaliar**, em slice dedicada com regressão, o cliente
+   (pnpm 11 e/ou o endpoint bulk/GHSA atual). A decisão de upgrade não é
+   tomada aqui; este registro fixa apenas gatilho, ordem e pré-requisito.
 
 ## 4. Suites adversariais (job `adversarial`, PG próprio descartável)
 
@@ -153,15 +310,47 @@ allowlistados. Sem `origin:true`, sem `*`, sem reflexão.
 Observação (não-achado): `asaas-access-token` no allowlist é intencional
 para tooling de provider via browser, documentado no próprio arquivo.
 
-## 8. CSP / security headers — GAP (follow-up, sem runtime nesta slice)
+## 8. CSP / security headers — PARCIAL: frame policy web implementada (issue #44)
 
-Achado: a API não usa helmet nem emite `Content-Security-Policy`,
-`Strict-Transport-Security`, `X-Content-Type-Options`,
-`Referrer-Policy` ou `frame-ancestors` (`main.ts` só registra CORS;
-`next.config.mjs` sem `headers()`). Risco pilot contido (API é JSON sem
-conteúdo ativo; web é SSR Next padrão), mas endurecer headers é barato e
-deve entrar numa slice pós-pilot — registrado aqui, não implementado por
-vedação de runtime desta fatia.
+**Subfatia de baixo risco implementada nesta branch (issue #44,
+`closure/security-public-auth-20261010`):**
+
+- `apps/web/next.config.mjs` ganhou `headers()` global com uma única regra
+  `source: "/:path*"` (catch-all — todas as rotas web, sem `has`/`missing`)
+  emitindo **exatamente dois headers**: `Content-Security-Policy:
+  frame-ancestors 'none'` e `X-Frame-Options: DENY`.
+- Motivo do par: `frame-ancestors 'none'` é o mecanismo moderno e
+  `X-Frame-Options: DENY` cobre navegadores antigos sem suporte à diretiva.
+- Prova por teste de regressão: `apps/web/test/frame-policy.test.ts` (7 asserts,
+  roda em `pnpm --filter @iptv/web test`) chama o `headers()` real da config,
+  aplica o matcher do Next às rotas top-level descobertas de `apps/web/app` e
+  a caminhos aninhados/assets, e trava aplicação incondicional e valores exatos.
+- Prova por HTTP real: build de produção + servidor standalone local
+  (porta 3999) — `/`, `/login`, `/crm` responderam HTTP 200 e `/growth/abc`
+  respondeu 404, **todos** com os dois headers. Nenhum outro header de
+  segurança foi adicionado.
+
+**Ainda pendente nesta seção (segue GAP; issue #44 registra o restante):**
+
+1. **Rate limiting / throttling na API** — permanece sem implementação
+   (grep `throttle|rate.?limit`: 0). Login/cadastro são endpoints públicos;
+   não há controle compensatório de ingress comprovado nesta revisão. Não
+   liberar exposição pública irrestrita até fechar o issue #44 ou obter
+   evidência de mitigação equivalente autorizada.
+2. **Security headers da API** (`Strict-Transport-Security`,
+   `X-Content-Type-Options`, `Referrer-Policy`, helmet) — fora do escopo desta
+   subfatia, que toca só a web.
+3. **CSP geral** (`default-src`/`script-src`/`style-src` com nonce) — deliberada
+   e explicitamente fora: CSP ampla exige inventariar os recursos inline do
+   App Router e quebraria a UI sem uma fatia dedicada. A CSP emitida agora é
+   apenas a diretiva de framing.
+4. **Exposição pública / auth pública** — o issue #44 foi aberto para registrar
+   o conjunto (auth + framing); a presente subfatia cobre somente framing web.
+   Nenhuma mudança de auth, CORS, sessão ou autorização foi feita aqui.
+
+**Estado honesto:** frame policy web = implementada e verificada. Rate limit,
+headers de API, CSP geral e exposição pública = **pendentes**. Nada nesta seção
+declara "security pass" do piloto; a matriz S10 continua GAP residual.
 
 ## 9. Secrets — revisado
 
@@ -194,8 +383,39 @@ Sem achado.
 
 - `gitleaks detect --source . --config .gitleaks.toml --redact` (8.24.0,
   119 commits): **no leaks found**, exit 0.
-- `python scripts/ci-audit-gate.py`: **PASS** (19 totais, 10 ack, 0 novos).
-- `python tests/security/test_ci_security_gates.py`: **6/6 OK**.
+- `python scripts/ci-audit-gate.py`: **PASS** (8 totais, 3 high/critical,
+  3 ack, 0 novos) — incluindo o patch fail-closed: saída vazia/JSON
+  inválido/sem `advisories` falham; exit code != 0 do pnpm com advisories
+  válidos não decide o gate (veredito pelo JSON). Payload real do registry
+  reconciliado 1:1 (`metadata.vulnerabilities` vs registros); controle
+  negativo com a mesma saída real adulterada (severidade `HIGH` +
+  contador inflado) → FAIL.
+- `python tests/security/test_ci_security_gates.py`: **18/18 OK** (6
+  anteriores + 12 de estresse do gate com `subprocess.run` mockado, sem
+  rede: comando morto + saída vazia, JSON malformado, JSON inválido
+  estruturalmente/sem advisories, advisory sem severidade (payload
+  adversarial do revisor `{"999":{"title":"x"}}`), severidade
+  desconhecida/não-string, registro advisory não-objeto, contador de
+  `metadata.vulnerabilities` divergente dos registros, metadata/
+  vulnerabilities ausente, campo do enum faltando, contador
+  negativo/string/float/bool, campo desconhecido, audit válido com achado
+  novo → falha, audit válido com achados reconhecidos → PASS).
+  **Registro de run desta slice (histórico preservado).** No HEAD combinado
+  (#41 + follow-up OTEL2): **22/22 OK** (6 + 16 de estresse — os 15 do
+  harness do PR #38 mais a invariante OTel2
+  `test_audit_baseline_empty_is_intentional`) — finding P2 do review do
+  PR #38 corrigido: as fixtures de `metadata` eram envelopadas duas vezes
+  (`metadata.metadata`) e falhavam todas pelo ramo "vulnerabilities
+  ausente" sem exercitar o alvo; agora `audit_stdout(..., metadata=X)`
+  recebe o VALOR da chave `metadata` (shape real do `pnpm audit --json`) e
+  cada cenário negativo asserta também a MENSAGEM do ramo pretendido na
+  saída além do exit code. Casos novos: fixture no shape real, `metadata`
+  ausente, `vulnerabilities` vazio, full enum com achados reconhecidos →
+  PASS. Com a baseline real VAZIA por intenção (OTel 2), os casos
+  "reconhecido"/divergência de contador injetam baseline sintética via
+  tempfile (`run_audit_gate_capture(..., baseline=...)`), então a cobertura
+  não depende do estado real da baseline. Validação do momento, não garantia
+  de runs futuros.
 - `python -c yaml.safe_load(ci.yml)`: 4 jobs
   (`build`, `outbox-050-role-guards`, `security-scans`, `adversarial`).
 - Adversariais em PG scratch descartável: **17/17** (container removido).
@@ -204,10 +424,132 @@ Sem achado.
 - CI existente intocada: diff do workflow só **adiciona** jobs; `build` e
   `outbox-050-role-guards` byte-idênticos.
 
+### 12.1 Validação do follow-up Vitest 4 (branch `closure/security-vitest4-20261009`)
+
+> Registro histórico do run original desta slice (18/18 com o harness que
+> existia naquele commit). Após integrar o restante do PR #38 e, depois, o
+> follow-up OTEL2, o self-test no HEAD combinado é **22/22**; ver §12 e a
+> validação do HEAD combinado.
+
+- Instalação: `pnpm install` atualizou o lockfile (vitest 4.1.11 +
+  `@vitest/*` 4.1.11; `vite` 7.3.6 mantido; **tinypool removido** da árvore)
+  e `pnpm install --frozen-lockfile` reprova o lockfile sincronizado
+  (exit 0). Escopo da mudança: 12 `package.json` (faixa
+  `"vitest": "^3.2.4"` → `"^4.1.11"`), lockfile e baseline de audit.
+  Nenhum `vitest.config.ts` precisou de adaptação (nada de breaking change
+  verificada nas configs em uso).
+- `python scripts/ci-audit-gate.py`: **PASS** (4 totais, 1 high/critical,
+  1 ack, 0 novos). Baseline encolhida só pelos 2 critical do tinypool
+  comprovadamente ausentes do lockfile novo (STALE→removido); nenhum mute.
+- `python tests/security/test_ci_security_gates.py` no run original: 18/18 OK.
+- `pnpm lint` 12/12, `pnpm typecheck` 20/20, `pnpm build` 12/12.
+- `pnpm test` sem `TEST_DATABASE_URL`: 20/20 tasks; **1175 passed**,
+  **320 skipped** (todos `*.integration.test.ts` sob
+  `describe.skipIf(!hasDb)`).
+- `pnpm test` com banco descartável **frio e vazio** criado só para a
+  validação (descartado depois): **zero falha de teste de aplicação** —
+  `@iptv/api` 77 arquivos / **916 testes passed**, `@iptv/database`
+  **28/28**, `@iptv/outbox-worker` **60/60**. O run completo, porém,
+  **não encerrou com exit limpo**: com a suíte completa em paralelo, o
+  `afterAll` de `apps/outbox-worker/test/worker.integration.test.ts`
+  estoura o `hookTimeout` default de 10s neste host lento — a falha é de
+  **teardown/exit do comando, não de asserção**, portanto o run com DB
+  **não é verde de ponta a ponta** (testes verdes, comando vermelho no
+  teardown).
+- A falha de teardown é **pré-existente e não é regressão desta slice**:
+  reproduzida IDÊNTICA no worktree principal com **Vitest 3** (controle
+  A/B), sem o upgrade — mesmo `afterAll`/`hookTimeout`. Fica como
+  candidato a follow-up de higiene (`hookTimeout: 120_000` espelhando
+  `apps/api` e `packages/database`).
+
+### 12.2 Validação do follow-up OTEL 2 (branch `closure/security-otel2-20261009`)
+
+- Escopo: **somente** `packages/observability` (package.json, `src/index.ts`,
+  `test/otlp-proof.test.ts` novo) + `tests/security/` (baseline + self-test) +
+  documentação; nenhum outro package tocado, nenhum propagador adicionado.
+- Instalação: lockfile reescrito para a geração coerente (`core`/`resources`/
+  `sdk-trace*` 2.12.0; `sdk-logs`/exporters 0.223.0; `api` 1.9.1) e
+  `pnpm install --frozen-lockfile` **exit 0**.
+- `python scripts/ci-audit-gate.py`: **PASS** (2 totais, 0 high/critical,
+  0 reconhecidos, 0 novos) — os 2 restantes são moderate `next` report-only.
+- `python tests/security/test_ci_security_gates.py`: 18 → **22/22** no HEAD
+  combinado (harness 21/21 do PR #38 + a nova invariante
+  `test_audit_baseline_empty_is_intentional`: baseline real
+  vazia + nota de intenção; casos "reconhecido" seguem cobertos por
+  baseline sintética injetada via tempfile).
+- `@iptv/observability`: `typecheck`, `build`, `lint` e `test` verdes —
+  **13/13** (12 units + prova OTLP automatizada exigindo traces+metrics+logs
+  no stub loopback).
+- `node scripts/otlp-proof.mjs`: **OTLP-PROOF PASS** — `/v1/traces` 1 req /
+  821 B, `/v1/metrics` 3 req / 3585 B, `/v1/logs` 1 req / 845 B.
+- Regressão da árvore: `pnpm lint` 12/12, `pnpm typecheck` 20/20,
+  `pnpm build` 12/12; `pnpm test` **20/20 tasks** (com `--concurrency=2`;
+  sob concorrência plena o `@iptv/web` flakesia com "Timeout waiting for
+  worker to respond" neste host lento e passa isolado 122/122 — falha de
+  ambiente, não de asserção). Sem `TEST_DATABASE_URL`: **608 passed /
+  308 skipped** em `@iptv/api` (37/77 arquivos) e os demais `*.integration.test.ts`
+  *skipped* por `describe.skipIf(!hasDb)` — **nenhum banco foi criado**.
+- Gates Python de docs/contratos: `validate_docs`, `test_contracts`,
+  `test_seed_contract` verdes.
+
+### 12.3 CI cluster-global role race (#42 / issue #47) — 2026-10-11
+
+- **Falha observada:** PR #42 no HEAD `a004c57`, runs `38107760190` e
+  `38107758085`, job `build` em vermelho. O teste
+  `packages/database/test/tenant-transaction.test.ts` recebeu `23505` em
+  `pg_authid_rolname_index`
+  ao criar `outbox_worker`; `security-scans`, `adversarial` e
+  `outbox-050-role-guards` passaram.
+- **Causa confirmada:** migration 050 verifica `pg_roles` e depois cria papéis
+  cluster-global (`outbox_worker`/`outbox_executor`). O runner guarda com
+  `pg_advisory_lock(7271645001)`, mas esse lock é por database; duas suítes
+  que migram bancos diferentes no mesmo serviço PostgreSQL podem passar
+  simultaneamente pelo check. Isso é uma corrida de harness de CI, não uma
+  regressão OTel nem falha de invariantes de 050.
+- **Correção candidata:** issue/PR #49 integra `pnpm test --concurrency=1`
+  no job `build` e `fileParallelism: false` em `packages/database`, mantendo
+  o conjunto completo de testes, DB service, jobs e migration 050 inalterados.
+  No branch local #42, #49 foi incorporado por merge normal (junto à cadeia
+  #38→#41→#42); merge commit do candidato de código: `930ca44`. Este registro
+  documental é posterior ao merge-back; o HEAD resultante requer CI remota
+  própria antes de qualquer decisão de merge.
+- **Validação em PostgreSQL 17 sintético:** mecanismo reproduzido com
+  `applyMigrations` concorrente em databases distintas (23505); executado o
+  comando de CI `pnpm test --concurrency=1` contra container fresco: **20/20
+  Turbo tasks, 125 arquivos / 1.495 testes, 0 falhas, 0 skips**; provas SQL,
+  guardas de role (18 recusas + 1 aceitação), frozen install, lint/typecheck/
+  build e três gates Python verdes. Os containers sintéticos foram removidos;
+  nenhum serviço/banco de projeto ou produção foi usado.
+- **Ainda pendente:** CI remota do HEAD atualizado do PR #42 (o vermelho do
+  antigo `a004c57` permanece válido até a atualização ser publicada e retestada),
+  revisão humana e decisão de merge. Issue #50 continua investigando um
+  timeout intermitente de teardown do outbox-worker; não foi atribuído a esta
+  race e não foi alterado nesta fatia. Nenhuma readiness/security PASS ou
+  capability é promovida por este candidato.
+
 ## Follow-ups (fora desta slice)
 
-1. Slice dedicada de upgrade fastify/nest (4 high runtime, §3).
-2. Security headers + rate-limit na API (§8, §11).
-3. Reduzir TTL de sessão / rotação (§6).
-4. `CODEOWNERS` + proteção de branch quando o plano GitHub permitir (§5).
-5. Dataset red-team de prompt-injection (§4).
+1. ~~Migração **Vitest 3 → 4** (resolve `tinypool` critical ×2 e os moderates
+   `vitest`/`@vitest/mocker`; `tinypool>=2.1.2` é major — slice dedicada com
+   regressão; §3).~~ **FEITO** em `closure/security-vitest4-20261009`
+   (PR-followup do #38): vitest 4.1.11 nos 12 workspaces, baseline podada
+   para 1 high/critical, gate PASS, regressão sem falha de teste — com o
+   run de DB sem exit limpo no teardown do outbox-worker (§3, §12.1).
+2. Manutenção dos `pnpm.overrides` desta branch (fastify/postcss/sharp/
+   source-map-js): remover cada override quando o bump nativo do dependente
+   (nest/next/vitest) fluir com a correção, para não deixar pin transitivo
+   defasado (§3).
+3. ~~Bump `@opentelemetry/sdk-trace-node` quando major viável (resolve
+   `propagator-jaeger` high; hoje 1.30.1, §3).~~ **FEITO** em
+   `closure/security-otel2-20261009` como upgrade **coerente da geração
+   OTel 2.x** (sdk-trace-node + sdk-metrics 2.12.0, sdk-logs/exporters
+   0.223.0, api 1.9.1): high 1124011 e o moderate do core saíram da árvore
+   por resolução real, baseline vazia por intenção, gate PASS e prova OTLP
+   re-executada com os 3 sinais (§3, §12.2).
+4. Slice dedicada de upgrade fastify/nest (4 high runtime, §3).
+5. Security headers + rate-limit na API (§8, §11). Nota: a frame policy web
+   (`frame-ancestors 'none'` + `X-Frame-Options: DENY`) já está implementada
+   (§8) — o que resta neste item é rate-limit/throttling e os headers da API.
+6. Reduzir TTL de sessão / rotação (§6).
+7. `CODEOWNERS` + proteção de branch quando o plano GitHub permitir (§5).
+8. Dataset red-team de prompt-injection (§4).

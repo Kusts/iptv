@@ -37,7 +37,23 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm test
+      # `--concurrency=1` serializes the turbo `test` tasks (it also covers
+      # their `^build` dependencies, which are already local turbo-cache hits
+      # from the `pnpm typecheck` step above, so the added wall time is the
+      # test tasks themselves). Several packages apply the full migration set
+      # in their `beforeAll`, and the runner's advisory lock only guards runs
+      # against the SAME database — `pg_advisory_lock` is per-database — so two
+      # packages migrating two different databases in this one Postgres
+      # service race migration 050's cluster-global check-then-create of the
+      # `outbox_worker`/`outbox_executor` roles and one dies on the unique
+      # index backing `pg_authid.rolname` (#42: `@iptv/database` on
+      # `iptv_test` vs `@iptv/outbox-worker` on its own database). Turbo's task
+      # graph has no edge between packages' `test` tasks, so serializing at the
+      # scheduler is the only graph-wide guarantee; enumerating dependencies
+      # would not cover suites added later and would still miss the
+      # same-package file race closed by `fileParallelism: false` in
+      # packages/database (`maxWorkers: 1` in apps/api covers that package).
+      - run: pnpm test --concurrency=1
         env:
           # Disposable CI database; integration suites apply migrations
           # themselves and skip when this is unset.

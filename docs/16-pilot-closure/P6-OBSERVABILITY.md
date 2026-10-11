@@ -33,11 +33,38 @@ testes.
 init real + 1 span + counters + 1 log + flush; tudo em loopback, sem rede
 externa, sem credencial):
 
-- `RECEIVED /v1/traces: 1 request(s), 809 byte(s)`
+- `RECEIVED /v1/traces: 1 request(s), 821 byte(s)`
 - `RECEIVED /v1/metrics: 3 request(s), 3585 byte(s)`
 - `RECEIVED /v1/logs: 1 request(s), 845 byte(s)`
 - `OTLP-PROOF PASS` — e a linha stdout carrega `trace_id` correlacionado
-  (`{"level":"info","msg":"p6b otlp proof log","trace_id":"8aaea…","component":"otlp-proof"}`).
+  (`{"level":"info","msg":"p6b otlp proof log","trace_id":"ee85be…","component":"otlp-proof"}`).
+  Os três sinais chegam como OTLP/HTTP **JSON**
+  (`content-type application/json`). O payload do trace no stub local cresceu
+  de 809 B para 821 B após o bump 1.x → 2.x; o OTLP/JSON atual serializa o
+  escopo no campo `scope`. Esse contador é evidência de transporte, não prova
+  de ingestão/semântica num collector real; validar compatibilidade com o
+  collector do staging continua pendente.
+
+**Geração OTel 2.x coerente** (slice `SECURITY-OTEL2-20261009`, pacote
+`@iptv/observability`): `sdk-trace-node` 1.30.1 → **2.12.0**,
+`sdk-metrics` 1.30.1 → **2.12.0**, `sdk-logs` e os três exporters
+OTLP/HTTP 0.57.2 → **0.223.0**, `@opentelemetry/api` mantido em **1.9.1**
+(dentro do peer `>=1.9.0 <1.10.0` exigido pelo sdk-metrics 2.12.0). Duas
+migrações de API foram necessárias e estão refletidas em `configureOtlp`:
+`spanProcessors` passado ao construtor do `NodeTracerProvider`
+(`addSpanProcessor` removido no 2.0) e `processors` passado ao construtor do
+`LoggerProvider` (`addLogRecordProcessor` removido no sdk-logs 0.223.0;
+`BatchLogRecordProcessor` passou a receber `{ exporter }`). A árvore ficou
+sem resíduo 1.x: lockfile só com `core`/`resources`/`sdk-trace*` 2.12.0,
+`sdk-logs`/exporters 0.223.0, `api` 1.9.1. Antes do upgrade coerente, o
+exporter de traces 0.57.2 (SDK 1.x, `instrumentationLibrary`) falhava o
+typecheck contra o `sdk-trace-node` 2.x e a prova enviava **zero bytes de
+trace** — o contrato de 3 sinais só fecha com a geração completa.
+
+A mesma prova roda **automatizada** na suíte do pacote
+(`test/otlp-proof.test.ts`: stub em `127.0.0.1` efêmero, init real, 1 span +
+2 counters + 1 log, flush e exigência de ≥1 request com bytes nos três
+sinais) — `pnpm --filter @iptv/observability test` passa a valer **13/13**.
 
 Instrumentação que já alimenta o pipeline sem call-site novo: `CommandBus`
 (command+tenant+code), ingress Asaas/WAHA (provider+outcome), scheduler,
@@ -96,9 +123,12 @@ de staging / sem provider live) — estão como gaps em `P6-PERFORMANCE.md` e
 ## 4. Validação desta slice
 
 - `otlp-proof.mjs` → **PASS** (1/3/1 sinais, bytes literais acima).
+- `otlp-proof.test.ts` (prova automatizada no pacote, stub loopback) → **PASS**
+  exigindo os 3 sinais.
 - `ops-alert-check.sh` → **CLEAR 16/16** no staging + controle negativo
   com 2 CRITs + `backup_fresh` OK contra evidência do drill.
-- `@iptv/observability`: `build` + `typecheck` + `lint` + `test` **12/12**
-  (incl. `emitLog`/shutdown no noop + espelho de counters sem throw).
+- `@iptv/observability`: `build` + `typecheck` + `lint` + `test` **13/13**
+  (incl. `emitLog`/shutdown no noop + espelho de counters sem throw + prova
+  OTLP automatizada).
 - `python scripts/validate_docs.py` verde (links só para arquivos
   existentes; sem vocabulário de eventos tocado).
