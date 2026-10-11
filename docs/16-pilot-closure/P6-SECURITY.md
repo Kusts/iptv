@@ -145,16 +145,19 @@ Estado observado em 2026-10-10 (revisão dos PRs #38/#41):
   solicitação ao endpoint legado `/-/npm/v1/security/audits` deste host
   (confirmado pelo código-fonte da versão fixada e pelo controle negativo
   com o registry apontado para loopback).
-- Audit **real** no worktree #38 (HEAD `5be894c` desta branch): payload
+- Audit **real** no worktree #38 (HEAD `d17540c` da branch
+  `closure/security-hardening-20261009`): payload
   válido e reconciliado 1:1 pelo gate, **8 advisories** (3 high/critical
   reconhecidos + 5 moderate report-only) → **gate PASS** (exit 0; 0
   high/critical novos).
-- Audit **real** na worktree #41: **4 advisories** → gate PASS. A contagem
-  difere do 8 acima porque são **dois checkouts com estados de lockfile
-  distintos** (a #41 carrega mudanças de dependência ausentes na #38); os
-  números descrevem lockfiles diferentes comparados contra a mesma baseline
-  — não há contradição nem falseamento. Entradas reconhecidas que deixem de
-  aparecer continuam virando aviso STALE, sem falhar (§3).
+- Audit **real** na worktree #41: **4 advisories** (1 high reconhecido) → gate
+  PASS. A contagem difere do 8 acima porque são **dois snapshots de checkout**:
+  #38 tem seu lockfile/dependencies e baseline `d17540c` (3 high/critical
+  reconhecidos); #41 tem outro lockfile e a baseline pós-Vitest do seu HEAD
+  original `bfbf66f` (1 high reconhecido). Os números descrevem estados de
+  lockfile **e baseline** distintos, não uma execução única nem a mesma
+  baseline — sem contradição ou falseamento. Entradas reconhecidas que deixem
+  de aparecer continuam virando aviso STALE, sem falhar (§3).
 - CI do PR #41: job `security-scans` com o mesmo pnpm 10.15.0 **verde**.
 - Falha operacional segue fechada: `scripts/ci-audit-gate.py` rodado com
   `npm_config_registry` apontando para loopback **indisponível** falhou
@@ -343,6 +346,10 @@ Sem achado.
 
 ### 12.1 Validação do follow-up Vitest 4 (branch `closure/security-vitest4-20261009`)
 
+> Registro histórico do run original desta slice (18/18 com o harness que
+> existia naquele commit). Após integrar o restante do PR #38, o self-test
+> atual é **21/21**; ver §12 e a validação do HEAD combinado.
+
 - Instalação: `pnpm install` atualizou o lockfile (vitest 4.1.11 +
   `@vitest/*` 4.1.11; `vite` 7.3.6 mantido; **tinypool removido** da árvore)
   e `pnpm install --frozen-lockfile` reprova o lockfile sincronizado
@@ -353,7 +360,7 @@ Sem achado.
 - `python scripts/ci-audit-gate.py`: **PASS** (4 totais, 1 high/critical,
   1 ack, 0 novos). Baseline encolhida só pelos 2 critical do tinypool
   comprovadamente ausentes do lockfile novo (STALE→removido); nenhum mute.
-- `python tests/security/test_ci_security_gates.py`: 18/18 OK.
+- `python tests/security/test_ci_security_gates.py` no run original: 18/18 OK.
 - `pnpm lint` 12/12, `pnpm typecheck` 20/20, `pnpm build` 12/12.
 - `pnpm test` sem `TEST_DATABASE_URL`: 20/20 tasks; **1175 passed**,
   **320 skipped** (todos `*.integration.test.ts` sob
