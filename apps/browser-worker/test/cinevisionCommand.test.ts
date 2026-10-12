@@ -1,7 +1,8 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { setTimeout as nodeSetTimeout } from "node:timers";
+import { describe, expect, it, vi } from "vitest";
 import type { WorkerConfig } from "../src/config.js";
 import { BINDING_PROVIDER, FIXED_SECRET_REFS } from "../src/constants.js";
 import { formatResult } from "../src/output.js";
@@ -204,6 +205,44 @@ async function run(
 
 function newCalls(): Calls {
   return { opened: 0, submitted: 0, evaluates: 0, closed: 0, gotos: 0 };
+}
+
+/**
+ * Real `setTimeout`, taken from `node:timers` and captured at module
+ * scope BEFORE any test — or any vitest `setupFiles` — installs fake
+ * timers. The budget tests below fake `setTimeout`, so this reference is
+ * the only way to wait on the real clock while the fake clock is
+ * installed; binding it here, once at import time, keeps the wait immune
+ * to a later `vi.useFakeTimers()` in this module.
+ */
+const realSetTimeout: typeof nodeSetTimeout = nodeSetTimeout;
+
+/**
+ * Bounded real-clock wait for `predicate` (1ms polls on the real timer).
+ * Used with fake timers: the command budget is armed before the
+ * production code performs real async fs work (`ensureProfileDir` +
+ * `acquireProfileLock`), so the attempt only reaches `browser.open` after
+ * that work finishes. Polling the real clock lets it finish without the
+ * test guessing a duration, resolves the instant the condition holds,
+ * and yields `false` after the bound — a regressed contract then fails on
+ * an explicit assertion instead of hanging the suite under fake timers.
+ */
+function untilReal(predicate: () => boolean, timeoutMs = 3000): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const started = Date.now();
+    const poll = (): void => {
+      if (predicate()) {
+        resolve(true);
+        return;
+      }
+      if (Date.now() - started >= timeoutMs) {
+        resolve(false);
+        return;
+      }
+      realSetTimeout(poll, 1);
+    };
+    poll();
+  });
 }
 
 describe("V2 wiring", () => {
@@ -512,120 +551,190 @@ describe("error mapping (Fase-1 taxonomy → envelope codes)", () => {
 
 describe("command budget (F2 cancellation)", () => {
   it("fails closed with TRANSPORT when the total budget is exceeded", async () => {
-    const calls = newCalls();
-    const hanging: CinevisionCommandBrowser = {
-      open: async () => {
-        calls.opened += 1;
-        const page = await fakeBrowser({ form: null, reads: [] }, calls).open("p", ALLOWED, "/api");
-        page.goto = async () => {
-          await new Promise(() => undefined);
-        };
-        return page;
-      },
-    };
-    const cfg = config({ commandTimeoutMs: 200 });
-    const result = await runCinevisionCommand(
-      cfg,
-      { secrets: fakeSecrets(), browser: hanging },
-      "cinevision.listServers",
-      {},
-    );
-    expect(result.status).toBe("INCONCLUSIVE");
-    expect(result.errorCode).toBe("TRANSPORT");
-    // Bounded close + lock release happened even with work still pending.
-    expect(calls.closed).toBeGreaterThanOrEqual(1);
-    const lock = await acquireProfileLock(cfg.profileDir);
-    await lock.release();
+    // Fake timers, same rationale as the sibling budget test below: a
+    // real 200ms budget would start BEFORE the profile setup
+    // (`ensureProfileDir` + `acquireProfileLock`, real async fs) finishes,
+    // so on a loaded machine it could expire before `browser.open` ever
+    // ran and the attempt would never reach the wedged navigation. Here
+    // the clock advances only after that navigation is in flight, so the
+    // timeout is the only thing under test.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const calls = newCalls();
+      const hanging: CinevisionCommandBrowser = {
+        open: async () => {
+          calls.opened += 1;
+          const page = await fakeBrowser({ form: null, reads: [] }, calls).open("p", ALLOWED, "/api");
+          page.goto = async () => {
+            calls.gotos += 1;
+            await new Promise(() => undefined);
+          };
+          return page;
+        },
+      };
+      const cfg = config({ commandTimeoutMs: 200 });
+      const resultPromise = runCinevisionCommand(
+        cfg,
+        { secrets: fakeSecrets(), browser: hanging },
+        "cinevision.listServers",
+        {},
+      );
+      // The attempt reached the wedged navigation (open + goto) BEFORE the
+      // budget is allowed to elapse — deterministic, no real 200ms race.
+      // (`opened` is 2 here: this fake's own `open` plus the inner fake
+      // browser's, same as before.)
+      expect(await untilReal(() => calls.gotos === 1)).toBe(true);
+      expect(calls.opened).toBe(2);
+      expect(calls.closed).toBe(0);
+      vi.advanceTimersByTime(cfg.commandTimeoutMs);
+      const result = await resultPromise;
+      expect(result.status).toBe("INCONCLUSIVE");
+      expect(result.errorCode).toBe("TRANSPORT");
+      // Bounded close + lock release happened even with work still pending.
+      expect(calls.closed).toBeGreaterThanOrEqual(1);
+      // The still-wedged navigation ran no step either.
+      expect(calls.evaluates).toBe(0);
+      expect(calls.submitted).toBe(0);
+      const lock = await acquireProfileLock(cfg.profileDir);
+      await lock.release();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("runs no further steps after the budget expires and frees the lock", async () => {
-    const calls = newCalls();
-    let releaseGoto!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      releaseGoto = resolve;
-    });
-    const hanging: CinevisionCommandBrowser = {
-      open: async () => {
-        calls.opened += 1;
-        const page = await fakeBrowser({ form: null, reads: [] }, calls).open("p", ALLOWED, "/api");
-        page.goto = async () => {
-          calls.gotos += 1;
-          await gate;
-        };
-        return page;
-      },
-    };
-    const cfg = config({ commandTimeoutMs: 50 });
-    const result = await runCinevisionCommand(
-      cfg,
-      { secrets: fakeSecrets(), browser: hanging },
-      "cinevision.listServers",
-      {},
-    );
-    expect(result.status).toBe("INCONCLUSIVE");
-    expect(result.errorCode).toBe("TRANSPORT");
-    // The budget owner closed the context boundedly and ran no reads.
-    expect(calls.closed).toBeGreaterThanOrEqual(1);
-    expect(calls.evaluates).toBe(0);
-    // The wedged navigation resolves AFTER the budget: the late attempt
-    // must perform no further step (no login, no reads).
-    releaseGoto();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(calls.evaluates).toBe(0);
-    expect(calls.submitted).toBe(0);
-    // The profile lock is free despite the late-resolving work.
-    const lock = await acquireProfileLock(cfg.profileDir);
-    await lock.release();
+    // Fake timers: the budget elapses only when this test advances the
+    // clock. A real 50ms timer would start BEFORE the profile setup
+    // (`ensureProfileDir` + `acquireProfileLock`, real async fs) finishes,
+    // so on a loaded machine it could expire before `browser.open` ever
+    // ran and the attempt would never reach the wedged navigation below.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const calls = newCalls();
+      let releaseGoto!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        releaseGoto = resolve;
+      });
+      let gotoResumes = 0;
+      const hanging: CinevisionCommandBrowser = {
+        open: async () => {
+          calls.opened += 1;
+          const page = await fakeBrowser({ form: null, reads: [] }, calls).open("p", ALLOWED, "/api");
+          page.goto = async () => {
+            calls.gotos += 1;
+            await gate;
+            gotoResumes += 1;
+          };
+          return page;
+        },
+      };
+      const cfg = config({ commandTimeoutMs: 50 });
+      const resultPromise = runCinevisionCommand(
+        cfg,
+        { secrets: fakeSecrets(), browser: hanging },
+        "cinevision.listServers",
+        {},
+      );
+      // The attempt reached the wedged navigation (open + goto) BEFORE the
+      // budget is allowed to elapse — deterministic, no real 50ms race.
+      // (`opened` is 2 here: this fake's own `open` plus the inner fake
+      // browser's, same as before.)
+      expect(await untilReal(() => calls.gotos === 1)).toBe(true);
+      expect(calls.opened).toBe(2);
+      expect(calls.closed).toBe(0);
+      vi.advanceTimersByTime(cfg.commandTimeoutMs);
+      const result = await resultPromise;
+      expect(result.status).toBe("INCONCLUSIVE");
+      expect(result.errorCode).toBe("TRANSPORT");
+      // The budget owner closed the context boundedly and ran no reads.
+      expect(calls.closed).toBeGreaterThanOrEqual(1);
+      expect(calls.evaluates).toBe(0);
+      // The wedged navigation resolves AFTER the budget: the late attempt
+      // must perform no further step (no login, no reads).
+      releaseGoto();
+      expect(await untilReal(() => gotoResumes === 1)).toBe(true);
+      expect(calls.evaluates).toBe(0);
+      expect(calls.submitted).toBe(0);
+      // The profile lock is free despite the late-resolving work.
+      const lock = await acquireProfileLock(cfg.profileDir);
+      await lock.release();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
 describe("open cancellation (N2 ownership-safe acquisition)", () => {
   it("timeout during open closes the early context, frees the lock, late resolution assigns nothing", async () => {
-    const calls = newCalls();
-    let releaseOpen!: (page: CinevisionCommandPage) => void;
-    const openGate = new Promise<CinevisionCommandPage>((resolve) => {
-      releaseOpen = resolve;
-    });
-    // Signal-ignoring browser: pends like a wedged launch, but exposes
-    // its context early via onContext (the contract under test).
-    const pendingOpen: CinevisionCommandBrowser = {
-      open: async (_dir, _origin, _login, opts) => {
-        calls.opened += 1;
-        opts?.onContext?.({
-          close: async () => {
-            calls.closed += 1;
-          },
-        });
-        return openGate;
-      },
-    };
-    const cfg = config({ commandTimeoutMs: 50 });
-    const result = await runCinevisionCommand(
-      cfg,
-      { secrets: fakeSecrets(), browser: pendingOpen },
-      "cinevision.listServers",
-      {},
-    );
-    expect(result.status).toBe("INCONCLUSIVE");
-    expect(result.errorCode).toBe("TRANSPORT");
-    // Timeout owner closed the early-exposed context boundedly.
-    expect(calls.closed).toBeGreaterThanOrEqual(1);
-    // Lock released: another execution can acquire it (no collision).
-    const lock = await acquireProfileLock(cfg.profileDir);
-    await lock.release();
-    // Late launch resolves AFTER cleanup: the runner must close the
-    // tardy page instead of assigning it, and run zero steps with it.
-    const lateCalls = newCalls();
-    const lateInner = await fakeBrowser({ form: null, reads: [] }, lateCalls).open("p", ALLOWED, "/api");
-    const closedBefore = calls.closed;
-    releaseOpen({ ...lateInner, close: async () => { calls.closed += 1; } });
-    for (let i = 0; i < 100 && calls.closed <= closedBefore; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    // Fake timers (same rationale as the budget test): `open` is reached
+    // only after real async fs work (profile dir + profile lock), so a
+    // real 50ms budget could expire before the context exists and the
+    // contract under test (early-exposed context closed by the timeout
+    // owner) would never be exercised. Restored in `finally`, so a failed
+    // assertion cannot leak fake timers into the rest of the suite.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const calls = newCalls();
+      let releaseOpen!: (page: CinevisionCommandPage) => void;
+      const openGate = new Promise<CinevisionCommandPage>((resolve) => {
+        releaseOpen = resolve;
+      });
+      /** Early contexts exposed through `onContext`, before `open` resolves. */
+      let exposedContexts = 0;
+      // Signal-ignoring browser: pends like a wedged launch, but exposes
+      // its context early via onContext (the contract under test).
+      const pendingOpen: CinevisionCommandBrowser = {
+        open: async (_dir, _origin, _login, opts) => {
+          calls.opened += 1;
+          opts?.onContext?.({
+            close: async () => {
+              calls.closed += 1;
+            },
+          });
+          exposedContexts += 1;
+          return openGate;
+        },
+      };
+      const cfg = config({ commandTimeoutMs: 50 });
+      const resultPromise = runCinevisionCommand(
+        cfg,
+        { secrets: fakeSecrets(), browser: pendingOpen },
+        "cinevision.listServers",
+        {},
+      );
+      // Proof the timeout is the thing under test: `open` ran and
+      // `onContext` exposed the context BEFORE the budget is allowed to
+      // elapse (bounded real-clock wait, not a wall-clock guess).
+      expect(await untilReal(() => calls.opened === 1 && exposedContexts === 1)).toBe(true);
+      expect(calls.closed).toBe(0);
+      vi.advanceTimersByTime(cfg.commandTimeoutMs);
+      const result = await resultPromise;
+      expect(result.status).toBe("INCONCLUSIVE");
+      expect(result.errorCode).toBe("TRANSPORT");
+      // Timeout owner closed the early-exposed context boundedly.
+      expect(calls.closed).toBeGreaterThanOrEqual(1);
+      // Lock released: another execution can acquire it (no collision).
+      const lock = await acquireProfileLock(cfg.profileDir);
+      await lock.release();
+      // Late launch resolves AFTER cleanup: the runner must close the
+      // tardy page instead of assigning it, and run zero steps with it.
+      const lateCalls = newCalls();
+      const lateInner = await fakeBrowser({ form: null, reads: [] }, lateCalls).open("p", ALLOWED, "/api");
+      const closedBefore = calls.closed;
+      releaseOpen({ ...lateInner, close: async () => { calls.closed += 1; } });
+      expect(await untilReal(() => calls.closed > closedBefore)).toBe(true);
+      // The tardy page was closed instead of used.
+      expect(calls.closed).toBeGreaterThan(closedBefore);
+      expect(calls.gotos).toBe(0);
+      expect(calls.evaluates).toBe(0);
+      expect(calls.submitted).toBe(0);
+      // The tardy page itself never ran a step either.
+      expect(lateCalls.gotos).toBe(0);
+      expect(lateCalls.evaluates).toBe(0);
+      expect(lateCalls.submitted).toBe(0);
+    } finally {
+      vi.useRealTimers();
     }
-    expect(calls.closed).toBeGreaterThan(closedBefore);
-    expect(calls.gotos).toBe(0);
-    expect(calls.evaluates).toBe(0);
-    expect(calls.submitted).toBe(0);
   });
 });
 
