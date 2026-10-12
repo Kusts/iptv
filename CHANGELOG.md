@@ -2,6 +2,10 @@
 
 ## Unreleased - Added
 
+- fix(providers): honest readback keying and timeout uncertainty in simulated seams (PROV-MK-CINE-01)
+
+- fix(security): per-rule AND gitleaks allowlist for triaged fixtures (G01, #40)
+
 - feat(providers): MK + CINEVISION SIMULATED write seams with recovery (PROV-MK-CINE-01, #51): typed write-operation envelopes, lease/fencing plumbing (migration-045 shape), idempotency single-effect ledgers, timeout→UNKNOWN classification, readback + reconciliation hooks, audit prefix-only entries; API `provider-mk-cine-simulated.ts` (14 tests) + browser-worker `cinevision/writes.ts`, `write-simulated.ts`, `mkativador/` (28 tests incl. #51 recovery) — fixture skeletons only, no endpoints invented, no live calls, not wired into dispatcher/resolveOpsPort; SPECs `cinevision.md` + `mk-ativador.md` extended.
 
 - docs(operations): capability status do Hatchet (`docs/10-operations/integrations-capability-status.md`) alinhada ao código do PR #39 — a linha ainda descrevia o SDK opcional como "optional dynamic import", mecanismo que o commit removeu. Agora registra a resolução de presença **síncrona** no construtor via `require.resolve` (só resolução — sem load de módulo, sem rede) e o fallback explícito de `createWorkflowAdapter` para `LocalWorkflowAdapter` (não-durável) quando token ou SDK estão ausentes. Documentação segue o código: nada de runtime/testes alterado; estado inalterado — F12 BLOCKED com dono operator (certificação W0-04), adapter construction-only com `enqueue` falhando fechado, nenhuma declaração de Hatchet configurado/certificado ou de durabilidade.
