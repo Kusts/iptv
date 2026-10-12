@@ -31,6 +31,7 @@ import {
   normalizeWahaStatus,
   riskForSessionStatus,
 } from "../src/communications/waha-normalizer.js";
+import type { WahaMediaPort } from "../src/communications/waha-media.js";
 import { WahaWebhookService } from "../src/communications/waha-webhook.service.js";
 import { MemoryDb, MemoryInboxStore } from "./fakes/memory-fakes.js";
 
@@ -322,6 +323,54 @@ describe("F06 tenant session routing", () => {
       session: "tenant-a-session",
     })) as { ok: true; data: { conversationId: string } };
     expect(own.data.conversationId).toBe(conv.data.id);
+  });
+
+  it("refuses foreign-session media before any download (port never called)", async () => {
+    const { bus, db } = setup();
+    bindSession(TENANT, "tenant-a-session");
+    bindSession(OTHER_TENANT, "tenant-b-session");
+    let downloads = 0;
+    const countingPort: WahaMediaPort = {
+      name: "counting-media",
+      async download() {
+        downloads += 1;
+        return { ok: false, code: "media_download_failed", reason: "unreachable in this test" };
+      },
+    };
+    const inbox = new MemoryInboxStore();
+    const service = new WahaWebhookService(null, inbox, bus, null, countingPort);
+    await service.processRow(TENANT, "inbox-media-foreign-session", {
+      event: "message",
+      session: "tenant-b-session",
+      payload: {
+        id: "wamsg-media-foreign-session",
+        from: "5511999990001@c.us",
+        fromMe: false,
+        type: "image",
+        mediaUrl: "https://waha.test/api/files/foreign.jpg",
+        mimetype: "image/jpeg",
+        timestamp: 1758912000,
+      },
+    });
+    // Session of B through A's channel: refused before any download.
+    expect(downloads).toBe(0);
+    expect(db.txFor(TENANT).events).toHaveLength(0);
+    // Quarantined exactly like the TEXT path: re-ingesting the same id
+    // yields no message row (quarantine exception), never a persisted message.
+    const again = await bus.execute(actor(), "message.ingest", {
+      channel: "WHATSAPP",
+      externalMessageId: "wamsg-media-foreign-session",
+      from: "5511999990001@c.us",
+      text: "",
+      occurredAt: new Date().toISOString(),
+      session: "tenant-b-session",
+    });
+    expect(again).toEqual({
+      ok: true,
+      data: { messageId: null, conversationId: null, exceptionId: expect.any(String), duplicate: false },
+    });
+    expect(downloads).toBe(0);
+    expect(db.txFor(TENANT).events).toHaveLength(0);
   });
 
   it("keeps routing correct across a session restart", async () => {

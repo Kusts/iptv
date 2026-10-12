@@ -2,12 +2,19 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { Inject, Injectable, Optional } from "@nestjs/common";
 import { sql, type Kysely } from "kysely";
 import type { Database } from "@iptv/database";
+import { withTenantTransaction } from "@iptv/database";
 import { newId } from "@iptv/domain";
 import type { CommandActor } from "@iptv/domain";
 import { withSpan } from "@iptv/observability";
 import { CommandBus } from "../commands/command-bus.js";
 import type { InboxStore } from "../inbox/inbox-processor.js";
 import { normalizeWahaPayload, normalizeWahaStatus, riskForSessionStatus } from "./waha-normalizer.js";
+import {
+  defaultWahaMediaPort,
+  type WahaMediaDescriptor,
+  type WahaMediaPort,
+} from "./waha-media.js";
+import { validateSessionForTenant } from "./waha-sessions.js";
 import { setRiskState } from "./waha-risk-state.js";
 import { AgentPipeline } from "../agent/pipeline.js";
 
@@ -46,7 +53,18 @@ export class WahaWebhookService {
     @Inject("INBOX_STORE") private readonly inbox: InboxStore,
     @Inject(CommandBus) private readonly bus: CommandBus,
     @Optional() @Inject(AgentPipeline) private readonly agents?: AgentPipeline | null,
+    /**
+     * G01/WAHA closure: injectable media download port. Defaults to the
+     * fail-closed HTTP port (empty allowlist → every download refused and
+     * recorded as an exception, never a message row). Tests inject controlled
+     * doubles; no live WhatsApp traffic happens in tests.
+     */
+    @Optional() @Inject("WAHA_MEDIA_PORT") private readonly mediaPort?: WahaMediaPort | null,
   ) {}
+
+  private mediaDownloader(): WahaMediaPort {
+    return this.mediaPort ?? defaultWahaMediaPort();
+  }
 
   private requireDb(): Kysely<Database> {
     if (this.db === null) {
@@ -160,6 +178,52 @@ export class WahaWebhookService {
   }
 
   /**
+   * Media-failure sink: records an UNMATCHED_INBOUND exception with a
+   * `media_*` reason (no migration — the kind stays within the existing
+   * check constraint) so a human can resolve/discard it. Tenant-scoped via
+   * `withTenantTransaction`; the row is tenant-isolated exactly like the
+   * unmatched-inbound path in `message.ingest`.
+   */
+  private async recordMediaException(
+    tenantId: string,
+    externalMessageId: string,
+    from: string,
+    reason: string,
+    detail: string,
+    descriptor: WahaMediaDescriptor,
+    extra?: Record<string, unknown>,
+  ): Promise<void> {
+    await withTenantTransaction(this.requireDb(), tenantId, async (trx) => {
+      await trx
+        .insertInto("communication.exceptions")
+        .values({
+          id: newId(),
+          tenant_id: tenantId,
+          kind: "UNMATCHED_INBOUND",
+          status: "OPEN",
+          channel: "WHATSAPP",
+          external_message_id: externalMessageId,
+          from_address: from,
+          conversation_id: null,
+          person_id: null,
+          reason: `${reason}: ${detail}`,
+          payload_json: {
+            mediaKind: descriptor.contentType,
+            mimeType: descriptor.declaredMime,
+            fileName: descriptor.fileName,
+            sizeBytes: descriptor.sizeBytes,
+            durationSeconds: descriptor.durationSeconds,
+            ...extra,
+          },
+          created_at: new Date(),
+          updated_at: new Date(),
+          resolved_at: null,
+        })
+        .execute();
+    });
+  }
+
+  /**
    * Async normalize stage: WAHA payload → canonical `message.ingest`.
    * Unknown event types are marked PROCESSED (skipped) without touching
    * domain state — fast ack is never blocked by an unknown shape.
@@ -188,6 +252,92 @@ export class WahaWebhookService {
       permissions: [],
       actorType: "external",
     };
+    // Fail closed BEFORE any media download: a foreign session is
+    // quarantined through the same `message.ingest` path as TEXT (session
+    // mismatch → UNMATCHED_INBOUND exception, no message row), so the media
+    // port is never invoked for another tenant's session.
+    const sessionCheck = validateSessionForTenant(tenantId, normalized.session);
+    if (!sessionCheck.ok) {
+      const refusal = await this.bus.execute<{
+        messageId: string | null;
+        conversationId: string | null;
+        exceptionId: string | null;
+        duplicate: boolean;
+      }>(actor, "message.ingest", {
+        channel: "WHATSAPP",
+        externalMessageId: normalized.externalId,
+        from: normalized.from,
+        text: normalized.text,
+        occurredAt: normalized.occurredAt,
+        session: normalized.session,
+        contentType: "TEXT",
+        attachmentRef: null,
+        mediaMetadata: null,
+      });
+      if (!refusal.ok) {
+        await this.inbox.markState({ tenantId, id: inboxId, state: "FAILED", errorCode: refusal.code });
+        return;
+      }
+      await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
+      return;
+    }
+    // G01/WAHA closure: media inbound diverts to the authorized
+    // download/ingest path. Failures are recorded on the manual-resolution
+    // exception queue (kind UNMATCHED_INBOUND, `media_*` reason) and the
+    // inbox row is acked — a bad file never becomes a message row and never
+    // blocks the fast ack.
+    //
+    // No tenant-scoped attachment/blob storage exists in this codebase
+    // (verified 2026-10-12: `attachment_ref` is an opaque pointer consumed
+    // by `message.ingest`, with no blob port or table behind it), and no new
+    // subsystem may be created here — so verified bytes cannot be durably
+    // persisted. Emitting a fabricated `waha:<id>:<kind>` ref would claim an
+    // available attachment with zero stored bytes. A verified download is
+    // therefore recorded on the manual-resolution exception queue with an
+    // explicit ingest-pending marker instead of a message row: `attachmentRef`
+    // stays null and nothing claims the file is available. A future storage
+    // port can claim these rows by their `ingestPending` marker.
+    const contentType = "TEXT";
+    const attachmentRef: string | null = null;
+    const mediaMetadata: Record<string, unknown> | null = null;
+    if (normalized.media !== null) {
+      const descriptor: WahaMediaDescriptor = normalized.media;
+      let download: Awaited<ReturnType<WahaMediaPort["download"]>>;
+      try {
+        download = await this.mediaDownloader().download(descriptor);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        download = { ok: false, code: "media_download_failed", reason: `media fetch failed: ${message}` };
+      }
+      if (!download.ok) {
+        await this.recordMediaException(
+          tenantId,
+          normalized.externalId,
+          normalized.from,
+          download.code,
+          download.reason,
+          descriptor,
+        );
+        await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
+        return;
+      }
+      await this.recordMediaException(
+        tenantId,
+        normalized.externalId,
+        normalized.from,
+        "media_unavailable",
+        `attachment bytes verified (${download.fetched.mimeType}, ${download.fetched.sizeBytes}B) but no tenant-scoped attachment storage is wired; ingest pending`,
+        descriptor,
+        {
+          ingestPending: true,
+          ingestReason: "no tenant-scoped attachment storage; bytes verified but not persisted",
+          fetchedMimeType: download.fetched.mimeType,
+          fetchedSizeBytes: download.fetched.sizeBytes,
+        },
+      );
+      await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
+      return;
+    }
     const result = await this.bus.execute<{
       messageId: string | null;
       conversationId: string | null;
@@ -200,6 +350,9 @@ export class WahaWebhookService {
       text: normalized.text,
       occurredAt: normalized.occurredAt,
       session: normalized.session,
+      contentType,
+      attachmentRef,
+      mediaMetadata,
     });
     if (!result.ok) {
       await this.inbox.markState({ tenantId, id: inboxId, state: "FAILED", errorCode: result.code });
