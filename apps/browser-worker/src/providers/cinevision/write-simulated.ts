@@ -216,6 +216,20 @@ export class CinevisionWriteSkeletonAdapter {
     input: CinevisionWriteInput,
     query: CinevisionWriteReadbackQuery,
   ): Promise<{ decision: CinevisionReconcileDecision; readback: CinevisionWriteReadbackResult }> {
+    // Bind the reconcile to the originating input: the readback query must
+    // name the same operation identity (idempotencyKey + action). A
+    // divergent query would otherwise let reconcile(inputA, queryB) report
+    // B's outcome for A — returning succeed/fail for the wrong operation.
+    // Divergence stays inconclusive (MANUAL), without touching the ledger.
+    if (input.idempotencyKey !== query.idempotencyKey || input.action !== query.action) {
+      const readback: CinevisionWriteReadbackResult = {
+        effectApplied: false,
+        conclusive: false,
+        evidence: "SIMULATED input/query mismatch",
+        simulated: true,
+      };
+      return { decision: decideCinevisionWriteReconcile(readback), readback };
+    }
     const raced = await withTimeout(
       this.deps.external.readback(query),
       this.deps.timeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS,

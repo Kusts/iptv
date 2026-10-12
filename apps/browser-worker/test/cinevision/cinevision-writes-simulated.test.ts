@@ -149,4 +149,43 @@ describe("cinevision write readback + reconciliation hook", () => {
     expect(decision.kind).toBe("manual");
     expect(external.sends).toHaveLength(sendsBefore);
   });
+
+  it("input/query identity mismatch stays MANUAL: UNKNOWN input never adopts another op SUCCESS", async () => {
+    const external = new InMemorySimulatedCinevisionWriteExternal("success");
+    const adapter = new CinevisionWriteSkeletonAdapter({ external });
+    const inputA = writeInput();
+    const inputB = writeInput();
+    await external.send(inputA, "unknown");
+    const sentB = await external.send(inputB, "success");
+    expect(sentB.result.outcome).toBe("SUCCESS");
+    expect(sentB.result.externalRef).not.toBeNull();
+    const sendsBefore = external.sends.length;
+    const { decision, readback } = await adapter.reconcile(inputA, {
+      action: inputB.action,
+      idempotencyKey: inputB.idempotencyKey,
+      externalRef: sentB.result.externalRef,
+    });
+    expect(decision.kind).toBe("manual");
+    expect(readback.conclusive).toBe(false);
+    expect(external.sends).toHaveLength(sendsBefore);
+  });
+
+  it("input/query identity mismatch stays MANUAL: UNKNOWN input never adopts another op FAILURE", async () => {
+    const external = new InMemorySimulatedCinevisionWriteExternal("success");
+    const adapter = new CinevisionWriteSkeletonAdapter({ external });
+    const inputA = writeInput();
+    const inputB = writeInput();
+    await external.send(inputA, "unknown");
+    await external.send(inputB, "failure");
+    const sendsBefore = external.sends.length;
+    const { decision, readback } = await adapter.reconcile(inputA, {
+      action: inputB.action,
+      idempotencyKey: inputB.idempotencyKey,
+      externalRef: null,
+    });
+    expect(decision.kind).toBe("manual");
+    expect(decision).not.toEqual({ kind: "fail" });
+    expect(readback.conclusive).toBe(false);
+    expect(external.sends).toHaveLength(sendsBefore);
+  });
 });
