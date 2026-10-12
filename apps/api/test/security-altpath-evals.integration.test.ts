@@ -107,7 +107,7 @@ const MIGRATIONS_DIR = join(here, "..", "..", "..", "db", "migrations");
 const connectionString = process.env["TEST_DATABASE_URL"];
 const hasDb = typeof connectionString === "string" && connectionString.length > 0;
 
-const BETTER_AUTH_SECRET = "integration-test-secret-0123456789";
+const ALT_TEST_AUTH_FIXTURE = "altpath test fixture, not a credential 0123456789";
 const ASAAS_SECRET = "sec40-asaas-secret";
 
 function email(prefix: string): string {
@@ -443,7 +443,7 @@ describe.skipIf(!hasDb)("alternate-path permission evals for critical effects (#
       )
       .execute();
     process.env["DATABASE_URL"] = connectionString as string;
-    process.env["BETTER_AUTH_SECRET"] = BETTER_AUTH_SECRET;
+    process.env["BETTER_AUTH_SECRET"] = ALT_TEST_AUTH_FIXTURE;
     delete process.env["ASAAS_ADAPTER"];
     app = await NestFactory.create<NestFastifyApplication>(AppModule, createFastifyAdapter());
     registerRequestIdHook(app);
@@ -688,7 +688,7 @@ describe.skipIf(!hasDb)("alternate-path permission evals for critical effects (#
     });
     expect(reg.statusCode).toBe(201);
     const probe = reg.json<{ token: string }>();
-    const hash = createHash("sha256").update(`${BETTER_AUTH_SECRET}:${probe.token}`).digest("hex");
+    const hash = createHash("sha256").update(`${ALT_TEST_AUTH_FIXTURE}:${probe.token}`).digest("hex");
     await db
       .updateTable("control.auth_sessions")
       .set({ expires_at: new Date(Date.now() - 60_000) })
