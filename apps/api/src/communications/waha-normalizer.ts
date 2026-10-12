@@ -140,8 +140,11 @@ function asNonNegativeInt(value: unknown): number | null {
 /**
  * Identify provider media on a message payload (pure, never throws).
  * Accepted WAHA shapes: an explicit `type` (`image`/`audio`/`ptt`/`voice`/
- * `document`/`video`), or a media-bearing field (`mediaUrl`/`url`/`media`
- * object) alongside a MIME/filename hint. Anything else → null (TEXT path).
+ * `document`/`video`), an explicit media signal (`hasMedia`/`has_media`/
+ * `isMedia`) even without URL/MIME/`type` (unavailable → handled downstream
+ * as `media_unavailable`, never silently downgraded to TEXT), or a
+ * media-bearing field (`mediaUrl`/`url`/`media` object) alongside a
+ * MIME/filename hint. Anything else → null (TEXT path).
  */
 export function identifyWahaMedia(payload: Record<string, unknown>): NormalizedWahaMedia | null {
   const rawType = payload["type"];
@@ -172,6 +175,8 @@ export function identifyWahaMedia(payload: Record<string, unknown>): NormalizedW
     asNonNegativeInt(payload["durationSeconds"]) ??
     (media !== null ? (asNonNegativeInt(media["duration"]) ?? asNonNegativeInt(media["durationSeconds"])) : null);
   const caption = asString(payload["caption"]);
+  const hasMediaSignal =
+    payload["hasMedia"] === true || payload["has_media"] === true || payload["isMedia"] === true;
 
   let contentType: NormalizedWahaMedia["contentType"] | null = null;
   if (type === "image") {
@@ -184,9 +189,22 @@ export function identifyWahaMedia(payload: Record<string, unknown>): NormalizedW
     contentType = "VIDEO";
   } else if (type === "" || type === "chat" || type === "text") {
     // Text-shaped payload: only treat as media when a media URL is present
-    // with a media MIME hint (WAHA variants that omit `type`).
+    // with a media MIME hint (WAHA variants that omit `type`), or when the
+    // payload explicitly signals media without any artifact (WAHA `hasMedia`
+    // with no URL/MIME/`type` → unavailable, never TEXT).
     if (mediaUrl !== null && declaredMime !== null) {
       const mime = declaredMime.split(";")[0]?.trim().toLowerCase() ?? "";
+      if (mime.startsWith("image/")) {
+        contentType = "IMAGE";
+      } else if (mime.startsWith("audio/")) {
+        contentType = "AUDIO";
+      } else if (mime.startsWith("video/")) {
+        contentType = "VIDEO";
+      } else {
+        contentType = "DOCUMENT";
+      }
+    } else if (hasMediaSignal) {
+      const mime = declaredMime?.split(";")[0]?.trim().toLowerCase() ?? "";
       if (mime.startsWith("image/")) {
         contentType = "IMAGE";
       } else if (mime.startsWith("audio/")) {

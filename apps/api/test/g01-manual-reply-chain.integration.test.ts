@@ -376,6 +376,26 @@ describe.skipIf(!hasDb)("G01 manual-reply chain (requires TEST_DATABASE_URL)", (
     expect(convRow.control_mode).toBe("PAUSED");
   });
 
+  it("replay after UNKNOWN is refused until reconciliation (fail-closed, no second send)", async () => {
+    // The conversation is still PAUSED from the UNKNOWN above: a sequential
+    // re-POST of a send must NOT produce a second adapter call — the
+    // provider may already have applied the first attempt.
+    const retry = await inject({
+      method: "POST",
+      url: `/v1/communications/conversations/${journey.conversationId}/send-manual`,
+      token,
+      payload: { text: "replay após timeout" },
+    });
+    expect(retry.statusCode).toBe(409);
+    expect(retry.json<{ message: string }>().message).toMatch(/reconcile_required/);
+    expect(sentInputs).toHaveLength(1);
+    expect(unknownCalls).toBe(1);
+    // LIMITATION (declared, not proven): this is fail-closed refusal, not
+    // exactly-once delivery. It blocks the unreconciled retry; it proves
+    // nothing about provider-side duplication of the first attempt, which
+    // only out-of-band reconciliation can settle.
+  });
+
   it("a second tenant sees nothing of the journey (tenant isolation)", async () => {
     const other = await inject({
       method: "POST",

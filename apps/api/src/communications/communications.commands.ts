@@ -30,7 +30,10 @@ import { expectedSessionFor, validateSessionForTenant } from "./waha-sessions.js
  *   they do NOT require the `messaging.outbound` autonomous capability.
  * - Gateway UNKNOWN_EFFECT (timeout after send attempt) → delivery row
  *   `QUEUED` + `error_code=UNKNOWN_EFFECT`, conversation to `PAUSED` with a
- *   `RECONCILE_REQUIRED` control event. Never blind-retry.
+ *   `RECONCILE_REQUIRED` control event. Never blind-retry: a later
+ *   `message.send_manual` on a `PAUSED` conversation is refused with
+ *   `reconcile_required` until a human reconciles (assign/release) — fail
+ *   closed, not exactly-once.
  * - `communication_suppressions` hit or a `DENIED` preference on the
  *   recipient channel → `forbidden`, nothing is sent.
  * - Events emitted are registry-listed only: `conversation.started.v1`,
@@ -444,6 +447,18 @@ async function handleSendManual(
   const conv = loaded.conv;
   if (CLOSED_STATUSES.includes(conv.status)) {
     return { ok: false, code: "precondition_failed", message: `conversation is ${conv.status}` };
+  }
+  if (conv.controlMode === "PAUSED") {
+    // Fail closed after an UNKNOWN gateway effect: the previous send may
+    // already have been applied provider-side, so a re-POST could double
+    // send. Refuse until a human reconciles (assign/release moves the
+    // conversation out of PAUSED). This is NOT exactly-once — it only
+    // blocks the unreconciled retry.
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: "reconcile_required: conversation is PAUSED after an UNKNOWN gateway effect; reconcile before resending",
+    };
   }
   const block = await suppressionBlock(ctx, conv.personId, conv.channel);
   if (block.blocked) {

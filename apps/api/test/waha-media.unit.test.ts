@@ -142,6 +142,51 @@ describe("WAHA media identification (normalizer)", () => {
     }
     expect(normalized.media).toMatchObject({ contentType: "AUDIO", mediaUrl: null });
   });
+
+  it("treats explicit hasMedia signaling without URL/MIME/type as media (never TEXT)", () => {
+    const media = identifyWahaMedia({
+      id: tag("wamsg"),
+      from: "5511999990001@c.us",
+      fromMe: false,
+      hasMedia: true,
+      body: "",
+      timestamp: 1758912000,
+    });
+    expect(media).toMatchObject({ contentType: "DOCUMENT", mediaUrl: null, declaredMime: null });
+    const normalized = normalizeWahaPayload({
+      event: "message",
+      session: "default",
+      payload: {
+        id: tag("wamsg"),
+        from: "5511999990001@c.us",
+        fromMe: false,
+        hasMedia: true,
+        body: "",
+        timestamp: 1758912000,
+      },
+    });
+    expect(normalized.kind).toBe("message");
+    if (normalized.kind !== "message") {
+      throw new Error("expected message");
+    }
+    expect(normalized.media).toMatchObject({ mediaUrl: null });
+  });
+
+  it("infers the media kind from a MIME hint when hasMedia carries no URL", () => {
+    const media = identifyWahaMedia({
+      id: tag("wamsg"),
+      from: "5511999990001@c.us",
+      fromMe: false,
+      hasMedia: true,
+      mimetype: "image/png",
+      timestamp: 1758912000,
+    });
+    expect(media).toMatchObject({ contentType: "IMAGE", mediaUrl: null, declaredMime: "image/png" });
+  });
+
+  it("leaves plain text without media signaling on the TEXT path", () => {
+    expect(identifyWahaMedia({ body: "texto puro, sem sinal de mídia" })).toBeNull();
+  });
 });
 
 describe("media descriptor validation (pure)", () => {
@@ -312,6 +357,79 @@ describe("HttpWahaMediaPort with a controlled fetch double (no network)", () => 
     expect(result).toMatchObject({ ok: false, code: "media_unavailable" });
   });
 
+  it("refuses an https→http downgrade without fetching or leaking the api key", async () => {
+    const calls: CapturedCall[] = [];
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      apiKey: "secret-key",
+      fetchImpl: stubFetch((url) => {
+        if (url === "https://waha.test/api/files/img-0001.jpg") {
+          return { status: 302, location: "http://waha.test/api/files/img-0001.jpg" };
+        }
+        return { status: 200, mime: "image/jpeg", bytes: new Uint8Array([9]) };
+      }, calls),
+    });
+    const result = await port.download(imageDescriptor());
+    expect(result).toMatchObject({ ok: false, code: "media_unavailable" });
+    if (result.ok) {
+      throw new Error("expected refusal");
+    }
+    expect(result.reason).toMatch(/redirect origin not allowlisted: http:\/\/waha\.test/);
+    expect(calls).toHaveLength(1);
+    expect(calls.some((call) => call.url.startsWith("http://"))).toBe(false);
+  });
+
+  it("refuses a port-swapped redirect without fetching it", async () => {
+    const calls: CapturedCall[] = [];
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      apiKey: "secret-key",
+      fetchImpl: stubFetch((url) => {
+        if (url === "https://waha.test/api/files/img-0001.jpg") {
+          return { status: 302, location: "https://waha.test:8443/api/files/img-0001.jpg" };
+        }
+        return { status: 200, mime: "image/jpeg", bytes: new Uint8Array([9]) };
+      }, calls),
+    });
+    const result = await port.download(imageDescriptor());
+    expect(result).toMatchObject({ ok: false, code: "media_unavailable" });
+    if (result.ok) {
+      throw new Error("expected refusal");
+    }
+    expect(result.reason).toMatch(/redirect origin not allowlisted: https:\/\/waha\.test:8443/);
+    expect(calls).toHaveLength(1);
+    expect(calls.some((call) => call.url.includes(":8443"))).toBe(false);
+  });
+
+  it("refuses a direct http URL when only the https origin is allowlisted", async () => {
+    let calls = 0;
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      fetchImpl: stubFetch(() => {
+        calls += 1;
+        return { status: 200, mime: "image/jpeg", bytes: new Uint8Array([1]) };
+      }),
+    });
+    const result = await port.download({
+      ...imageDescriptor(),
+      mediaUrl: "http://waha.test/api/files/img-0001.jpg",
+    });
+    expect(calls).toBe(0);
+    expect(result).toMatchObject({ ok: false, code: "media_unavailable" });
+  });
+
+  it("accepts an explicit http origin entry (the only way to authorize plain http)", async () => {
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["http://waha.test"],
+      fetchImpl: stubFetch(() => ({ status: 200, mime: "image/jpeg", bytes: new Uint8Array([1, 2, 3]) })),
+    });
+    const result = await port.download({
+      ...imageDescriptor(),
+      mediaUrl: "http://waha.test/api/files/img-0001.jpg",
+    });
+    expect(result.ok).toBe(true);
+  });
+
   it("maps provider 404 to download failure", async () => {
     const port = new HttpWahaMediaPort({
       allowedHosts: ["waha.test"],
@@ -384,7 +502,7 @@ describe("HttpWahaMediaPort with a controlled fetch double (no network)", () => 
     if (result.ok) {
       throw new Error("expected refusal");
     }
-    expect(result.reason).toMatch(/redirect host not allowlisted: evil\.test/);
+    expect(result.reason).toMatch(/redirect origin not allowlisted: https:\/\/evil\.test/);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.headers["X-Api-Key"]).toBe("secret-key");
     expect(calls.some((call) => call.url.includes("evil.test"))).toBe(false);

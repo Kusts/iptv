@@ -14,6 +14,7 @@ import {
   type WahaMediaDescriptor,
   type WahaMediaPort,
 } from "./waha-media.js";
+import { validateSessionForTenant } from "./waha-sessions.js";
 import { setRiskState } from "./waha-risk-state.js";
 import { AgentPipeline } from "../agent/pipeline.js";
 
@@ -243,6 +244,43 @@ export class WahaWebhookService {
       await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
       return;
     }
+    const actor: CommandActor = {
+      userId: "waha-webhook",
+      isPlatformAdmin: true,
+      tenantId,
+      roleKeys: [],
+      permissions: [],
+      actorType: "external",
+    };
+    // Fail closed BEFORE any media download: a foreign session is
+    // quarantined through the same `message.ingest` path as TEXT (session
+    // mismatch → UNMATCHED_INBOUND exception, no message row), so the media
+    // port is never invoked for another tenant's session.
+    const sessionCheck = validateSessionForTenant(tenantId, normalized.session);
+    if (!sessionCheck.ok) {
+      const refusal = await this.bus.execute<{
+        messageId: string | null;
+        conversationId: string | null;
+        exceptionId: string | null;
+        duplicate: boolean;
+      }>(actor, "message.ingest", {
+        channel: "WHATSAPP",
+        externalMessageId: normalized.externalId,
+        from: normalized.from,
+        text: normalized.text,
+        occurredAt: normalized.occurredAt,
+        session: normalized.session,
+        contentType: "TEXT",
+        attachmentRef: null,
+        mediaMetadata: null,
+      });
+      if (!refusal.ok) {
+        await this.inbox.markState({ tenantId, id: inboxId, state: "FAILED", errorCode: refusal.code });
+        return;
+      }
+      await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
+      return;
+    }
     // G01/WAHA closure: media inbound diverts to the authorized
     // download/ingest path. Failures are recorded on the manual-resolution
     // exception queue (kind UNMATCHED_INBOUND, `media_*` reason) and the
@@ -300,14 +338,6 @@ export class WahaWebhookService {
       await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
       return;
     }
-    const actor: CommandActor = {
-      userId: "waha-webhook",
-      isPlatformAdmin: true,
-      tenantId,
-      roleKeys: [],
-      permissions: [],
-      actorType: "external",
-    };
     const result = await this.bus.execute<{
       messageId: string | null;
       conversationId: string | null;

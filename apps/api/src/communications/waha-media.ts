@@ -239,7 +239,14 @@ export interface WahaMediaPort {
 }
 
 export interface HttpWahaMediaOptions {
-  /** Hosts allowed as download origins. Empty (default) refuses everything. */
+  /**
+   * Allowed download origins. Entries may be bare hosts (`waha.example`,
+   * optionally with `:port`) — pinned to `https:` — or full origins
+   * (`https://waha.example`, `http://waha.local:3000`). Empty (default)
+   * refuses everything. Comparison is exact `URL.origin`
+   * (scheme+host+port): an `https` entry never authorizes the `http`
+   * downgrade or a port swap.
+   */
   allowedHosts?: string[];
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
@@ -247,21 +254,50 @@ export interface HttpWahaMediaOptions {
 }
 
 /**
- * HTTP downloader with an origin allowlist (SSRF guard), manual redirect
- * handling (every hop revalidated, max {@link MEDIA_MAX_REDIRECT_HOPS}
+ * Normalize one allowlist entry to an exact origin (`URL.origin`). Bare
+ * hosts pin to `https:`; entries with `://` are taken as explicit origins
+ * (the only way to authorize plain `http:`). Returns null when unparseable
+ * or on a non-http(s) scheme — fail closed.
+ */
+function normalizeAllowedOrigin(entry: string): string | null {
+  const trimmed = entry.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  try {
+    const url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return null;
+    }
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * HTTP downloader with an exact-origin allowlist (SSRF guard), manual
+ * redirect handling (every hop revalidated, max {@link MEDIA_MAX_REDIRECT_HOPS}
  * followed), timeout, bounded stream read with a `Content-Length` pre-check,
- * and a header-only MIME gate before any byte is read. With no
- * `allowedHosts` configured it refuses every URL — fail-closed by default.
+ * and a header-only MIME gate before any byte is read. With no allowlist
+ * configured it refuses every URL — fail-closed by default. The `X-Api-Key`
+ * credential is only ever attached to a request whose exact origin
+ * (scheme+host+port) is allowlisted — an `https` entry never sends the key
+ * over the `http` downgrade or to a swapped port.
  */
 export class HttpWahaMediaPort implements WahaMediaPort {
   readonly name = "waha-media-http";
-  private readonly allowedHosts: string[];
+  private readonly allowedOrigins: Set<string>;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly apiKey: string | null;
 
   constructor(options: HttpWahaMediaOptions = {}) {
-    this.allowedHosts = options.allowedHosts ?? [];
+    this.allowedOrigins = new Set(
+      (options.allowedHosts ?? [])
+        .map((entry) => normalizeAllowedOrigin(entry))
+        .filter((origin): origin is string => origin !== null),
+    );
     this.timeoutMs = options.timeoutMs ?? MEDIA_DOWNLOAD_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.apiKey = options.apiKey ?? null;
@@ -274,8 +310,8 @@ export class HttpWahaMediaPort implements WahaMediaPort {
     if (url.protocol !== "https:" && url.protocol !== "http:") {
       return { ok: false, code: "media_invalid", reason: `refused ${where} scheme: ${url.protocol}` };
     }
-    if (!this.allowedHosts.includes(url.hostname)) {
-      return { ok: false, code: "media_unavailable", reason: `${where} host not allowlisted: ${url.hostname}` };
+    if (!this.allowedOrigins.has(url.origin)) {
+      return { ok: false, code: "media_unavailable", reason: `${where} origin not allowlisted: ${url.origin}` };
     }
     return { ok: true };
   }
@@ -301,11 +337,13 @@ export class HttpWahaMediaPort implements WahaMediaPort {
     try {
       for (let hop = 0; ; hop += 1) {
         const headers: Record<string, string> = {};
-        if (this.apiKey !== null) {
-          // Every fetched hop is allowlisted by construction (the initial
-          // URL plus each revalidated redirect target), so the key is only
-          // ever sent to allowlisted hosts. A non-allowlisted redirect
-          // target is refused BEFORE any request to it is issued.
+        // Every fetched hop passed the exact-origin gate above (the initial
+        // URL plus each revalidated redirect target), and the membership is
+        // rechecked here so the key is only ever sent to an authorized
+        // origin. A downgraded (`http:`) or port-swapped redirect target is
+        // refused BEFORE any request to it is issued — the key never leaves
+        // the authorized origin.
+        if (this.apiKey !== null && this.allowedOrigins.has(current.origin)) {
           headers["X-Api-Key"] = this.apiKey;
         }
         const res = await this.fetchImpl(current.toString(), {
