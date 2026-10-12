@@ -28,6 +28,16 @@
  *                          |   POST /v1/agent/copilot/execute {command:"refund.request"}
  *                          |   -> CopilotService.execute -> allowlist COPILOT_COMMANDS
  *                          |   (HIGH risk: parked for HITL, never direct-executes)
+ *                          | Copilot continuation (same route, {command,input,reviewId})
+ *                          |   -> CopilotService.executeApproved (binding hash +
+ *                          |   RESOLVED/APPROVE + single-use
+ *                          |   copilot_review_consumptions claim; tenant-scoped)
+ *                          | HumanReviewController.approve
+ *                          |   POST /v1/human-reviews/:id/approve
+ *                          |   -> `human_review.approve`
+ *                          |   (perm `agent.review.decide`; tenant-scoped; no
+ *                          |   self-approval on copilot_command reviews via
+ *                          |   copilotTargetRevalidator in agent/copilot-review.ts)
  *                          | AsaasWebhookService.processRow (NO refund path: PAID only
  *                          |   confirms via `charge.webhook_confirm`; chargeback is the
  *                          |   distinct `payment.record_chargeback` intake, provider-
@@ -711,13 +721,36 @@ describe.skipIf(!hasDb)("alternate-path permission evals for critical effects (#
     expect(forged.ok ? null : forged.code).toBe("forbidden");
     denied();
 
-    // Drain with a budget: rules out deferred/async completion of the effect
-    // out-of-band (no scheduler/worker path can mint what the deny blocked).
-    const drainBudgetUntil = Date.now() + 3000;
+    // Fail-closed drain with a budget: rules out deferred/async completion
+    // of the effect out-of-band (no scheduler/worker path can mint what the
+    // deny blocked). Drain errors PROPAGATE (no `.catch` swallow: an
+    // incomplete drain must fail the test, never pass it), and exhausting
+    // the budget without reaching quiescence FAILS explicitly instead of
+    // breaking silently. Per-row publish failures do not throw (the drainer
+    // parks them FAILED with a 60s backoff, so they are not re-due); only
+    // infra/config errors throw, which is exactly the fail-closed signal.
+    // A final drain with `claimed === 0` is the verifiable quiescence proof:
+    // no deferred work remains for ANY target, hence none for this one.
+    // (Sequential in-file order + the tenant-scoped zero-effect oracles
+    // below are the primary proof; the drain is defense-in-depth.)
+    const drainBudgetUntil = Date.now() + 15_000;
+    let quiesced = false;
+    let lastClaimed = -1;
     for (;;) {
-      if (Date.now() >= drainBudgetUntil) break;
-      const drained = await drainer.drain(50).catch(() => undefined);
-      if (drained === undefined || drained.claimed === 0) break;
+      const drained = await drainer.drain(50);
+      lastClaimed = drained.claimed;
+      if (drained.claimed === 0) {
+        quiesced = true;
+        break;
+      }
+      if (Date.now() >= drainBudgetUntil) {
+        break;
+      }
+    }
+    if (!quiesced) {
+      throw new Error(
+        `fail-closed drain did not quiesce within budget (last claimed=${lastClaimed}); cannot rule out deferred completion`,
+      );
     }
 
     // Zero effect on the attacked target: no refund row ...
@@ -817,6 +850,203 @@ describe.skipIf(!hasDb)("alternate-path permission evals for critical effects (#
     expect(
       (await db.selectFrom("billing.refunds").select(["id"]).where("tenant_id", "=", tenantA).execute()).length,
     ).toBe(countBefore);
+  });
+
+  it("1b4. parked copilot item: unauthorized continuation denied, legitimate approval executes with attribution", async () => {
+    // HITL continuation flow under test (all real symbols):
+    // - park:     POST /v1/agent/copilot/execute {command:"refund.request", input}
+    //             -> CopilotService.execute -> requestReview ->
+    //             `human_review.request` (resource_type "copilot_command"),
+    //             201 pending_review + reviewId.
+    // - approve:  POST /v1/human-reviews/:id/approve -> `human_review.approve`
+    //             (perm `agent.review.decide`; tenant-scoped; no self-approval
+    //             via copilotTargetRevalidator in agent/copilot-review.ts).
+    // - continue: POST /v1/agent/copilot/execute {command, input, reviewId}
+    //             -> CopilotService.executeApproved (binding hash + RESOLVED +
+    //             APPROVE + single-use copilot_review_consumptions claim).
+    // Covered below: cross-tenant continuation (404), pre-approval
+    // continuation (409), unauthorized approve (bus forbidden +
+    // cross-tenant HTTP 404), then the legitimate path (second-human approve
+    // + owner execute) with attribution to the legitimate tenant/actor.
+    // Out of scope: MEDIUM-risk direct copilot commands (covered by the
+    // copilot-w14b suite), provider-operation HITL center items (read-model
+    // only, no approve control), and concurrent double-spend races on the
+    // single-use claim (sequential in-file order; replay is covered).
+    const personId = await makePerson();
+    const planId = await seedPlan("1000");
+    const { paymentId } = await paidAndConfirmed(personId, planId, 1, 10.0);
+    const key = `sec40-copilot-park-${tail()}`;
+    const parkedInput = {
+      paymentId,
+      amountMinor: "100",
+      currency: "BRL",
+      reason: "parked copilot continuation target",
+      idempotencyKey: key,
+    };
+    const refundsBefore = (
+      await db.selectFrom("billing.refunds").select(["id"]).where("tenant_id", "=", tenantA).execute()
+    ).length;
+    const reversalsBefore = (
+      await db
+        .selectFrom("finance.financial_transactions")
+        .select(["id"])
+        .where("tenant_id", "=", tenantA)
+        .where("transaction_type", "=", "REFUND_REVERSAL")
+        .execute()
+    ).length;
+
+    // Park via the operator (holds `billing.refund.request` +
+    // `agent.review.request`, like test 1b). The input carries an
+    // idempotencyKey so the legitimate continuation below can execute;
+    // 1b's key-less input could never continue past input validation.
+    const parked = await postA(
+      "/v1/agent/copilot/execute",
+      { command: "refund.request", input: parkedInput },
+      { token: opToken, revision: opRev },
+    );
+    expect(parked.statusCode).toBe(201);
+    expect(parked.json<{ status: string }>().status).toBe("pending_review");
+    const reviewId = parked.json<{ reviewId: string }>().reviewId;
+    expect(typeof reviewId).toBe("string");
+
+    // (ii-a) Cross-tenant continuation: tenant B names tenant A's review.
+    // Tenant-scoped lookup misses -> 404, nothing executes.
+    const foreign = await postA(
+      "/v1/agent/copilot/execute",
+      { command: "refund.request", input: parkedInput, reviewId },
+      { token: tokenB, revision: revB },
+    );
+    expect(foreign.statusCode).toBe(404);
+    denied();
+    // (ii-b) Pre-approval continuation by the requester: the review is still
+    // open, so the continuation is stale -> 409, nothing executes.
+    const early = await postA(
+      "/v1/agent/copilot/execute",
+      { command: "refund.request", input: parkedInput, reviewId },
+      { token: opToken, revision: opRev },
+    );
+    expect(early.statusCode).toBe(409);
+    denied();
+    // (ii-c) Unauthorized approve at the bus choke point: stripped actor
+    // lacks `agent.review.decide` -> forbidden, review untouched.
+    const forgedApprove = await bus.execute(stripped(tenantA), "human_review.approve", { requestId: reviewId });
+    expect(forgedApprove.ok ? null : forgedApprove.code).toBe("forbidden");
+    denied();
+    // (ii-d) Cross-tenant approve over HTTP: tenant B cannot decide tenant
+    // A's review -> 404, review untouched.
+    const foreignApprove = await postA(`/v1/human-reviews/${reviewId}/approve`, {}, { token: tokenB, revision: revB });
+    expect(foreignApprove.statusCode).toBe(404);
+    denied();
+
+    // Zero effect from every denied continuation/approval above (REAL state):
+    // the parked command created NO refund request ...
+    expect(await refundRequestsWithKey(key)).toHaveLength(0);
+    // ... no refund row for the target payment ...
+    expect(
+      (await db.selectFrom("billing.refunds").select(["id"]).where("tenant_id", "=", tenantA).execute()).length,
+    ).toBe(refundsBefore);
+    // ... payment status untouched ...
+    expect(
+      (
+        await db
+          .selectFrom("billing.payments")
+          .select(["status"])
+          .where("tenant_id", "=", tenantA)
+          .where("id", "=", paymentId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("CONFIRMED");
+    // ... no new reversal postings ...
+    expect(
+      (
+        await db
+          .selectFrom("finance.financial_transactions")
+          .select(["id"])
+          .where("tenant_id", "=", tenantA)
+          .where("transaction_type", "=", "REFUND_REVERSAL")
+          .execute()
+      ).length,
+    ).toBe(reversalsBefore);
+    // ... no refund-effect domain entries for the target payment (the success
+    // path is the only emitter of these event types) ...
+    expect(
+      await db
+        .selectFrom("platform.domain_events")
+        .select(["id"])
+        .where("tenant_id", "=", tenantA)
+        .where("aggregate_type", "=", "payment")
+        .where("aggregate_id", "=", paymentId)
+        .where("event_type", "in", ["payment.refunded.v1", "payment.partially_refunded.v1"])
+        .execute(),
+    ).toHaveLength(0);
+    // ... and the parked review is still open, never decided.
+    const stillOpen = await db
+      .selectFrom("agent.human_review_requests")
+      .select(["status"])
+      .where("tenant_id", "=", tenantA)
+      .where("id", "=", reviewId)
+      .executeTakeFirstOrThrow();
+    expect(["REQUESTED", "QUEUED", "ACKNOWLEDGED", "IN_REVIEW"]).toContain(stillOpen.status);
+
+    // (iii) Legitimate path: a second human approves, the owner continues.
+    // approverA is never the requester (operator), so no self-approval trip.
+    const approved = await bus.execute(approverA(), "human_review.approve", { requestId: reviewId });
+    expect(approved.ok).toBe(true);
+    const executed = await postA("/v1/agent/copilot/execute", {
+      command: "refund.request",
+      input: parkedInput,
+      reviewId,
+    });
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json<{ status: string }>().status).toBe("executed");
+    // Effect attributed to the legitimate tenant/actor: exactly one refund
+    // request for the parked key ...
+    expect(await refundRequestsWithKey(key)).toHaveLength(1);
+    // ... single-use claim burned by the owner (a replay would 409 `consumed`).
+    const consumption = await db
+      .selectFrom("agent.copilot_review_consumptions")
+      .select(["consumed_by_actor_id", "tenant_id"])
+      .where("tenant_id", "=", tenantA)
+      .where("human_review_request_id", "=", reviewId)
+      .execute();
+    expect(consumption).toHaveLength(1);
+    expect(consumption[0]?.consumed_by_actor_id).toBe(userA);
+    expect(consumption[0]?.tenant_id).toBe(tenantA);
+    // ... and still no MONEY effect: a request parks for financial review,
+    // it does not mint refunds, reversals, or payment flips.
+    expect(
+      (await db.selectFrom("billing.refunds").select(["id"]).where("tenant_id", "=", tenantA).execute()).length,
+    ).toBe(refundsBefore);
+    expect(
+      (
+        await db
+          .selectFrom("billing.payments")
+          .select(["status"])
+          .where("tenant_id", "=", tenantA)
+          .where("id", "=", paymentId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("CONFIRMED");
+    expect(
+      (
+        await db
+          .selectFrom("finance.financial_transactions")
+          .select(["id"])
+          .where("tenant_id", "=", tenantA)
+          .where("transaction_type", "=", "REFUND_REVERSAL")
+          .execute()
+      ).length,
+    ).toBe(reversalsBefore);
+    // Second continuation with the same reviewId is a consumed replay: 409,
+    // still exactly one request (single-effect, like test 1e's re-execute).
+    const replayed = await postA("/v1/agent/copilot/execute", {
+      command: "refund.request",
+      input: parkedInput,
+      reviewId,
+    });
+    expect(replayed.statusCode).toBe(409);
+    expect(await refundRequestsWithKey(key)).toHaveLength(1);
+    legit();
   });
 
   it("1b3. replay of a denied refund.request stays denied (no idempotency escape)", async () => {
