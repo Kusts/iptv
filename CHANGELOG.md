@@ -2,6 +2,10 @@
 
 ## Unreleased - Added
 
+- fix(api): harden WAHA media download redirects, bounded fetch and pending ingest (G01)
+
+- fix(security): per-rule AND gitleaks allowlist for triaged fixtures (G01, #40)
+
 - feat(waha): manual-reply golden chain and media-audio inbound with controlled adapter (G01): full manual-reply chain exactly-once same-conversation (`g01-manual-reply-chain.integration.test.ts`) + media/audio inbound matrix (`waha-media.integration.test.ts`, `waha-media.unit.test.ts`, `waha-media.ts` normalizer/handler); controlled adapter doubles only, zero live WhatsApp calls; webhook/normalizer/commands/wave2-store seams wired for reply-chain idempotency.
 
 - docs(operations): capability status do Hatchet (`docs/10-operations/integrations-capability-status.md`) alinhada ao código do PR #39 — a linha ainda descrevia o SDK opcional como "optional dynamic import", mecanismo que o commit removeu. Agora registra a resolução de presença **síncrona** no construtor via `require.resolve` (só resolução — sem load de módulo, sem rede) e o fallback explícito de `createWorkflowAdapter` para `LocalWorkflowAdapter` (não-durável) quando token ou SDK estão ausentes. Documentação segue o código: nada de runtime/testes alterado; estado inalterado — F12 BLOCKED com dono operator (certificação W0-04), adapter construction-only com `enqueue` falhando fechado, nenhuma declaração de Hatchet configurado/certificado ou de durabilidade.
