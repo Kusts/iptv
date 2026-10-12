@@ -1,6 +1,20 @@
+import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 import { LocalWorkflowAdapter } from "../src/local-adapter.js";
-import { HatchetWorkflowAdapter, createWorkflowAdapter } from "../src/hatchet-adapter.js";
+import {
+  HatchetWorkflowAdapter,
+  createWorkflowAdapter,
+} from "../src/hatchet-adapter.js";
+import { HATCHET_SDK_SPECIFIER } from "../src/hatchet-provider.js";
+
+function sdkPresent(): boolean {
+  try {
+    createRequire(import.meta.url).resolve(HATCHET_SDK_SPECIFIER);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 describe("LocalWorkflowAdapter", () => {
   it("runs due tasks and skips future runAt until due", async () => {
@@ -60,22 +74,19 @@ describe("LocalWorkflowAdapter", () => {
   });
 });
 
-describe("HatchetWorkflowAdapter.enqueue fails closed", () => {
-  // The constructor is env-gated (token + optional SDK) and the SDK is not
-  // installed in this environment, so `enqueue` cannot be reached through
-  // `new`. It is exercised on the prototype directly: the fail-closed guard
-  // touches no instance state, and the constructor gates are covered by the
-  // factory tests above. Hermetic by construction — no network, no SDK
-  // install, no service call.
-  const adapter: HatchetWorkflowAdapter = Object.create(HatchetWorkflowAdapter.prototype);
+describe("HatchetWorkflowAdapter.enqueue honesty contract", () => {
+  // Construction is env-gated but performs no network I/O; without start()
+  // the adapter holds no engine client, so every enqueue shape must reject
+  // instead of resolving — with or without the optional SDK installed.
+  const adapter = new HatchetWorkflowAdapter({ HATCHET_CLIENT_TOKEN: "test-token-not-a-secret" });
 
-  it("throws instead of ever claiming durability (the `{ durable: true }` stub is gone)", async () => {
+  it("never resolves before start (no durable claim, no silent drop)", async () => {
     await expect(
       adapter.enqueue({ name: "trial.expire_due", payload: { tenant: "t1" } }),
-    ).rejects.toThrow(/not certified \(W0-04 gate pending\).*refusing to enqueue/);
+    ).rejects.toThrow(/not started/);
   });
 
-  it("refuses every task shape (runAt/idempotencyKey included) rather than resolving", async () => {
+  it("rejects delayed and keyed shapes before start rather than resolving", async () => {
     await expect(
       adapter.enqueue({
         name: "order.expire_due",
@@ -83,22 +94,11 @@ describe("HatchetWorkflowAdapter.enqueue fails closed", () => {
         runAt: new Date(Date.now() + 60_000),
         idempotencyKey: "k1",
       }),
-    ).rejects.toThrow(/construction-only/);
+    ).rejects.toThrow(/not started/);
   });
 
-  it("keeps the empty-name validation ahead of the fail-closed guard", async () => {
+  it("keeps the empty-name validation ahead of every other guard", async () => {
     await expect(adapter.enqueue({ name: "   ", payload: {} })).rejects.toThrow(/must not be empty/);
-  });
-
-  it("does not silently return a non-durable result either (task would just vanish)", async () => {
-    // Unlike LocalWorkflowAdapter there is no in-memory queue behind this
-    // adapter, so `{ durable: false }` would hide a total task loss: the
-    // only honest non-durable report is a throw.
-    const result = await adapter.enqueue({ name: "x", payload: {} }).then(
-      () => "resolved",
-      () => "rejected",
-    );
-    expect(result).toBe("rejected");
   });
 });
 
@@ -110,19 +110,49 @@ describe("Hatchet factory fallback", () => {
   });
 
   it("throws from the constructor without config", () => {
-    expect(() => new HatchetWorkflowAdapter({})).toThrow(/HATCHET_API_TOKEN/);
+    expect(() => new HatchetWorkflowAdapter({})).toThrow(/HATCHET_CLIENT_TOKEN/);
+  });
+
+  it("selects the hatchet adapter when a token resolves and the SDK is installed", () => {
+    if (!sdkPresent()) {
+      return;
+    }
+    // Construction performs no network I/O: only env resolution + the sync
+    // SDK presence check. Connection happens in start().
+    const selection = createWorkflowAdapter({ HATCHET_CLIENT_TOKEN: "test-token-not-a-secret" });
+    expect(selection.kind).toBe("hatchet");
+    expect(selection.adapter).toBeInstanceOf(HatchetWorkflowAdapter);
+  });
+
+  it("falls back to local when provider construction fails, with a logged warning", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const selection = createWorkflowAdapter(
+        { HATCHET_CLIENT_TOKEN: "test-token-not-a-secret" },
+        {
+          createProvider: () => {
+            throw new Error("boom");
+          },
+        },
+      );
+      expect(selection.kind).toBe("local");
+      expect(selection.adapter).toBeInstanceOf(LocalWorkflowAdapter);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toMatch(/falling back to local/);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("falls back to local when the SDK is absent, with a logged warning", () => {
+    if (sdkPresent()) {
+      return;
+    }
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
-      // Token set but the optional SDK is not installed: the constructor
-      // throws and the factory falls back to local (non-durable) — no
-      // network call happens anywhere on this path.
-      expect(() => new HatchetWorkflowAdapter({ HATCHET_API_TOKEN: "test-token" })).toThrow(
-        /not installed/,
-      );
-      const selection = createWorkflowAdapter({ HATCHET_API_TOKEN: "test-token" });
+      // Token set but the optional SDK is not installed: the factory falls
+      // back to local (non-durable) — no network call happens on this path.
+      const selection = createWorkflowAdapter({ HATCHET_CLIENT_TOKEN: "test-token-not-a-secret" });
       expect(selection.kind).toBe("local");
       expect(selection.adapter).toBeInstanceOf(LocalWorkflowAdapter);
       expect(warn).toHaveBeenCalledTimes(1);
