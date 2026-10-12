@@ -156,11 +156,23 @@ describe("issue #51 recovery scenarios at the port level (SIMULATED)", () => {
     // LIVE_NEEDED: real crash-restart reclaim runs in `recoverOnce` on PG.
   });
 
-  it("restart-before-ack: timed-out send parks UNKNOWN; no duplicate mutation on retry", async () => {
+  it("restart-before-ack: timed-out send parks UNKNOWN; retry parks MANUAL for verification (never re-sends)", async () => {
     const port = new CinevisionSimulatedWritePort("timeout", 10);
     const key = nextKey("cv51");
     const first = await port.requestOperation(request("createTrial", key));
     expect(first.outcome).toBe("UNKNOWN");
+    // The key is reserved BEFORE the send: the ledger preserves the
+    // uncertain state even though the ack never arrived.
+    expect(port.ledgerSize).toBe(1);
+    expect(port.effectCount).toBe(0);
+    // Even after the provider recovers, retrying the same key must park
+    // for verification — never re-execute the send.
+    port.setBehavior("success");
+    const effectsBefore = port.effectCount;
+    const retry = await port.requestOperation(request("createTrial", key));
+    expect(retry.outcome).toBe("MANUAL");
+    expect(port.effectCount).toBe(effectsBefore);
+    expect(port.ledgerSize).toBe(1);
     // LIVE_NEEDED: real restart-before-ack recovery needs the DB dispatcher.
   });
 

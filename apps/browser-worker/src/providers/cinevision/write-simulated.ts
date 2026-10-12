@@ -43,6 +43,8 @@ export interface SimulatedWriteResponse {
 
 export class InMemorySimulatedCinevisionWriteExternal {
   private readonly ledger = new Map<string, CinevisionWriteResult>();
+  /** Operation identity per key (action + ref) so readback can validate. */
+  private readonly meta = new Map<string, { action: CinevisionWriteAction; externalRef: string | null }>();
   private effects = 0;
   readonly sends: Array<{ action: CinevisionWriteAction; idempotencyKey: string; behavior: SimulatedWriteBehavior }> =
     [];
@@ -68,6 +70,7 @@ export class InMemorySimulatedCinevisionWriteExternal {
     }
     const result = this.buildResult(input, behavior);
     this.ledger.set(input.idempotencyKey, result);
+    this.meta.set(input.idempotencyKey, { action: input.action, externalRef: result.externalRef });
     // crash_after_effect: the effect happened but the ack never arrived —
     // the ledger holds SUCCESS while the caller observes UNKNOWN.
     if (result.outcome === "SUCCESS") this.effects += 1;
@@ -90,13 +93,29 @@ export class InMemorySimulatedCinevisionWriteExternal {
     return { result, duplicate: false };
   }
 
-  /** Readback consults the ledger only — never re-sends. */
+  /**
+   * Readback consults the ledger only — never re-sends. Keyed by the
+   * operation identity (idempotencyKey + action + externalRef): the entry
+   * is fetched by exact idempotency key, the recorded action must match
+   * the query action, and a SUCCESS claim additionally requires presenting
+   * the recorded non-null externalRef. A null reference is never
+   * identifying on its own and can never reconcile another operation's
+   * effect: null-ref SUCCESS lookups stay inconclusive, and uncertain or
+   * refused effects for the exact key report only that key's outcome.
+   */
   async readback(query: CinevisionWriteReadbackQuery): Promise<CinevisionWriteReadbackResult> {
-    const recorded = [...this.ledger.values()].find((entry) => entry.externalRef === query.externalRef);
+    const recorded = this.ledger.get(query.idempotencyKey);
     if (recorded === undefined) {
       return { effectApplied: false, conclusive: false, evidence: "SIMULATED no record", simulated: true };
     }
+    const identity = this.meta.get(query.idempotencyKey);
+    if (identity === undefined || identity.action !== query.action) {
+      return { effectApplied: false, conclusive: false, evidence: "SIMULATED action mismatch", simulated: true };
+    }
     if (recorded.outcome === "SUCCESS") {
+      if (query.externalRef === null || recorded.externalRef === null || query.externalRef !== recorded.externalRef) {
+        return { effectApplied: false, conclusive: false, evidence: "SIMULATED ref mismatch", simulated: true };
+      }
       return { effectApplied: true, conclusive: true, evidence: "SIMULATED ledger hit", simulated: true };
     }
     if (recorded.outcome === "FAILURE") {

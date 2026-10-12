@@ -173,6 +173,11 @@ export abstract class SimulatedWritePortBase implements ProviderOpsPort {
     if (prior !== undefined) {
       return { result: prior, duplicate: true };
     }
+    // Reserve the key BEFORE the effect so a timeout preserves uncertainty:
+    // the ledger holds UNKNOWN/VERIFYING while the send is in flight, and a
+    // retry of the same key replays that uncertain record (parks MANUAL for
+    // verification) instead of re-executing the send.
+    this.ledger.set(input.idempotencyKey, classifySimulatedWriteTimeout(this.kind, input.action));
     if (this.behavior === "timeout") {
       await new Promise<never>(() => undefined);
     }

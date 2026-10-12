@@ -88,25 +88,54 @@ export class MkAtivadorSkeletonAdapter {
   }
 
   private async readback(input: MkOperationInput): Promise<MkOperationResult> {
-    const raced = await withTimeout(
-      this.deps.external.perform(input.kind, input.idempotencyKey, this.deps.behavior),
-      this.deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    );
-    if (raced === null) {
-      const result = classifyMkTimeout(input.kind);
-      this.audit.push(mkAuditFor(input, result));
-      return result;
+    if (input.kind !== "readback") {
+      return this.park(input, "readback misrouted: expected subject lookup");
     }
-    // Readback NEVER re-executes the subject: the fixture ledger answers
-    // from the recorded outcome only (replay-safe by construction).
-    const result: MkOperationResult = {
-      outcome: raced.result.outcome,
-      reconciliationState: raced.result.reconciliationState,
-      detail: `mk: readback observed ${raced.result.outcome} (SIMULATED, no re-execution)`,
-      externalRef: raced.result.externalRef,
-      simulated: true,
-      needsHuman: raced.result.outcome === "UNKNOWN" || raced.result.outcome === "MANUAL",
-    };
+    // Honest readback: lookup SOLELY by the subject idempotency key against
+    // the recorded ledger — never `perform` (which would execute and append
+    // a new ledger entry for the readback's own key). Absence is
+    // inconclusive: park MANUAL for operator verification. Read-only by
+    // construction: `lookup` cannot insert, mutate, or count an effect.
+    const recorded = this.deps.external.lookup(input.subjectIdempotencyKey);
+    if (recorded === undefined) {
+      return this.park(input, "no record for subject, operator must verify");
+    }
+    const result: MkOperationResult =
+      recorded.outcome === "SUCCESS"
+        ? {
+            outcome: "SUCCESS",
+            reconciliationState: "SUCCEEDED",
+            detail: "mk: readback observed SUCCESS (SIMULATED, no re-execution)",
+            externalRef: recorded.externalRef,
+            simulated: true,
+            needsHuman: false,
+          }
+        : recorded.outcome === "FAILURE"
+          ? {
+              outcome: "FAILURE",
+              reconciliationState: "FAILED",
+              detail: "mk: readback observed FAILURE (SIMULATED, no re-execution)",
+              externalRef: recorded.externalRef,
+              simulated: true,
+              needsHuman: false,
+            }
+          : recorded.outcome === "MANUAL"
+            ? {
+                outcome: "MANUAL",
+                reconciliationState: "MANUAL",
+                detail: "mk: readback observed MANUAL (SIMULATED, no re-execution)",
+                externalRef: recorded.externalRef,
+                simulated: true,
+                needsHuman: true,
+              }
+            : {
+                outcome: "UNKNOWN",
+                reconciliationState: "VERIFYING",
+                detail: "mk: readback observed UNKNOWN (SIMULATED, no re-execution)",
+                externalRef: recorded.externalRef,
+                simulated: true,
+                needsHuman: true,
+              };
     this.audit.push(mkAuditFor(input, result));
     return result;
   }

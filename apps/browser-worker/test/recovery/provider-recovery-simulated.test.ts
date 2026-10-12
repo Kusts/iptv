@@ -126,6 +126,8 @@ describe("issue #51: restart-before-ack", () => {
     const first = await adapter.execute(mkPurchase(key));
     expect(first.reconciliationState).toBe("VERIFYING");
     const sendsBefore = external.calls.length;
+    const ledgerBefore = external.ledgerSize;
+    const effectsBefore = external.effectCount;
     const read = await adapter.execute({
       kind: "readback",
       idempotencyKey: nextKey("mk51"),
@@ -135,10 +137,121 @@ describe("issue #51: restart-before-ack", () => {
       subjectIdempotencyKey: key,
     });
     expect(read.simulated).toBe(true);
-    expect(external.calls.length).toBe(sendsBefore + 1);
-    // The +1 is the readback observation itself, not a re-execution of the
-    // purchase: the purchase ledger holds exactly one entry for `key`.
-    expect(external.ledgerSize).toBe(2);
+    expect(read.outcome).toBe("UNKNOWN");
+    expect(read.reconciliationState).toBe("VERIFYING");
+    expect(read.needsHuman).toBe(true);
+    // Honest readback observes the SUBJECT entry only: no new external
+    // call, no new ledger entry, no new effect.
+    expect(external.calls.length).toBe(sendsBefore);
+    expect(external.ledgerSize).toBe(ledgerBefore);
+    expect(external.effectCount).toBe(effectsBefore);
+  });
+});
+
+describe("issue #51: MK readback keyed by subject (read-only)", () => {
+  function readbackOf(subjectKey: string): MkOperationInput {
+    return {
+      kind: "readback",
+      idempotencyKey: nextKey("mk51"),
+      spendingLimitMinor: 5000,
+      amountMinor: 0,
+      credentials: { ...MK_REFS },
+      subjectIdempotencyKey: subjectKey,
+    };
+  }
+
+  it("applied subject → SUCCESS/SUCCEEDED with zero new mutation", async () => {
+    const external = new InMemorySimulatedMkExternal("success");
+    const adapter = new MkAtivadorSkeletonAdapter({ external });
+    const key = nextKey("mk51");
+    const applied = await adapter.execute(mkPurchase(key));
+    expect(applied.outcome).toBe("SUCCESS");
+    const ledgerBefore = external.ledgerSize;
+    const effectsBefore = external.effectCount;
+    const callsBefore = external.calls.length;
+    const read = await adapter.execute(readbackOf(key));
+    expect(read.outcome).toBe("SUCCESS");
+    expect(read.reconciliationState).toBe("SUCCEEDED");
+    expect(read.needsHuman).toBe(false);
+    expect(read.simulated).toBe(true);
+    expect(external.calls.length).toBe(callsBefore);
+    expect(external.ledgerSize).toBe(ledgerBefore);
+    expect(external.effectCount).toBe(effectsBefore);
+  });
+
+  it("uncertain subject → UNKNOWN/VERIFYING with zero new mutation", async () => {
+    const external = new InMemorySimulatedMkExternal("unknown");
+    const adapter = new MkAtivadorSkeletonAdapter({ external });
+    const key = nextKey("mk51");
+    await adapter.execute(mkPurchase(key));
+    const ledgerBefore = external.ledgerSize;
+    const effectsBefore = external.effectCount;
+    const callsBefore = external.calls.length;
+    const read = await adapter.execute(readbackOf(key));
+    expect(read.outcome).toBe("UNKNOWN");
+    expect(read.reconciliationState).toBe("VERIFYING");
+    expect(read.needsHuman).toBe(true);
+    expect(external.calls.length).toBe(callsBefore);
+    expect(external.ledgerSize).toBe(ledgerBefore);
+    expect(external.effectCount).toBe(effectsBefore);
+  });
+
+  it("missing subject → MANUAL (inconclusive, operator must verify)", async () => {
+    const external = new InMemorySimulatedMkExternal("success");
+    const adapter = new MkAtivadorSkeletonAdapter({ external });
+    const read = await adapter.execute(readbackOf(nextKey("mk51-ghost")));
+    expect(read.outcome).toBe("MANUAL");
+    expect(read.needsHuman).toBe(true);
+    expect(read.simulated).toBe(true);
+    expect(external.ledgerSize).toBe(0);
+    expect(external.effectCount).toBe(0);
+    expect(external.calls).toHaveLength(0);
+  });
+});
+
+describe("issue #51: CINEVISION readback keyed by operation (no cross-match)", () => {
+  it("FAIL vs UNKNOWN stay distinct; null refs and action mismatches never reconcile another op", async () => {
+    const external = new InMemorySimulatedCinevisionWriteExternal("success");
+    const adapter = new CinevisionWriteSkeletonAdapter({ external });
+    const keyA = nextKey("cv51");
+    const keyB = nextKey("cv51");
+    const inputA = cvWrite(keyA);
+    const inputB = cvWrite(keyB);
+    await external.send(inputA, "failure");
+    await external.send(inputB, "unknown");
+    const effectsBefore = external.effectCount;
+    const sendsBefore = external.sends.length;
+    // A (FAIL, null ref): exact-key lookup reports not-applied conclusively.
+    const { decision: decA } = await adapter.reconcile(inputA, {
+      action: inputA.action,
+      idempotencyKey: keyA,
+      externalRef: null,
+    });
+    expect(decA).toEqual({ kind: "fail" });
+    // B (UNKNOWN): inconclusive → manual, never a re-send.
+    const { decision: decB } = await adapter.reconcile(inputB, {
+      action: inputB.action,
+      idempotencyKey: keyB,
+      externalRef: null,
+    });
+    expect(decB.kind).toBe("manual");
+    // A null ref for an unknown key never reconciles another operation.
+    const { decision: decGhost } = await adapter.reconcile(inputA, {
+      action: inputA.action,
+      idempotencyKey: nextKey("cv51"),
+      externalRef: null,
+    });
+    expect(decGhost.kind).toBe("manual");
+    // Action mismatch never reconciles, even with the right key.
+    const { decision: decMismatch } = await adapter.reconcile(inputA, {
+      action: "blockCustomer",
+      idempotencyKey: keyA,
+      externalRef: null,
+    });
+    expect(decMismatch.kind).toBe("manual");
+    // Readback observed only: no new sends, no new effects.
+    expect(external.sends).toHaveLength(sendsBefore);
+    expect(external.effectCount).toBe(effectsBefore);
   });
 });
 

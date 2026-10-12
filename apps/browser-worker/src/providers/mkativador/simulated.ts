@@ -74,6 +74,17 @@ export class InMemorySimulatedMkExternal {
     return { result, duplicate: false };
   }
 
+  /**
+   * Read-only subject lookup for honest readback: answers from the recorded
+   * outcome keyed by the SUBJECT idempotency key only. Never inserts,
+   * never mutates, never increments the effect count — a readback observes,
+   * it does not execute. Returns `undefined` when the subject was never
+   * recorded (caller must treat absence as inconclusive/MANUAL).
+   */
+  lookup(subjectIdempotencyKey: string): MkOperationResult | undefined {
+    return this.ledger.get(subjectIdempotencyKey);
+  }
+
   private buildResult(kind: MkOperationKind, behavior: SimulatedMkBehavior): MkOperationResult {
     switch (behavior) {
       case "success":
