@@ -183,6 +183,37 @@ describe("P1: connect() drives the provider path on every module shape", () => {
       }).connect(),
     ).rejects.toThrow(/SDK failed to load/);
   });
+
+  it("rejects init() results without the wrapper surface in connect() (fail-closed)", async () => {
+    const noopGuard = () => undefined;
+    const base = {
+      token: "tok",
+      usedLegacyToken: false,
+      usedLegacyServerUrl: false,
+    } as const;
+    const badClients: Array<[string, unknown]> = [
+      ["null", null],
+      ["empty object", {}],
+      [
+        "null task",
+        { task: null, worker: async () => ({}), runs: { cancel: async () => undefined } },
+      ],
+      [
+        "non-callable worker",
+        { task: () => ({}), worker: "nope", runs: { cancel: async () => undefined } },
+      ],
+      ["missing runs.cancel", { task: () => ({}), worker: async () => ({}), runs: {} }],
+    ];
+    for (const [label, badClient] of badClients) {
+      await expect(
+        new RealHatchetProvider(base, {
+          loadSdk: async () => ({ default: { init: () => badClient } }),
+          assertSdkPresent: noopGuard,
+        }).connect(),
+        label,
+      ).rejects.toThrow(/client shape mismatch.*task\(\).*worker\(\).*runs\.cancel/s);
+    }
+  });
 });
 
 describe("P1: factory required mode fails closed at bootstrap", () => {

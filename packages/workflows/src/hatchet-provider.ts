@@ -141,6 +141,35 @@ function initOn(value: unknown): value is { init: RealSdkInitFn } {
 }
 
 /**
+ * Fail-closed guard for the object returned by `init(initConfig)`.
+ *
+ * `resolveHatchetSdkInit()` only proves the MODULE exposes `init()`; a
+ * stubbed or drifted `init` can still resolve with `null`/`{}` (or an
+ * object missing the surface the wrapper below calls). Without this check
+ * `connect()` would resolve with a broken wrapper and the failure would
+ * only surface later inside `declareTask`/`createWorker`/`runs.cancel`.
+ * The wrapper calls exactly `client.task()`, `client.worker()` and
+ * `client.runs.cancel()`, so those three callables are the minimum
+ * contract enforced here — in `connect()`, never lazily.
+ */
+function isRealSdkClientShape(value: unknown): value is RealSdkClientShape {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (typeof value["task"] !== "function") {
+    return false;
+  }
+  if (typeof value["worker"] !== "function") {
+    return false;
+  }
+  const runs = value["runs"];
+  if (!isRecord(runs) || typeof runs["cancel"] !== "function") {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Normalize the published SDK's module shape to its `init` entry point.
  *
  * Verified against `@hatchet-dev/typescript-sdk@1.37.0` (CJS entry:
@@ -232,6 +261,12 @@ export class RealHatchetProvider implements HatchetClientProvider {
       client = init(initConfig);
     } catch (err) {
       throw new Error(`hatchet client init failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!isRealSdkClientShape(client)) {
+      throw new Error(
+        `hatchet SDK client shape mismatch: init() returned an object without the required surface ` +
+          `(task(), worker(), runs.cancel()) — refusing to wire an unverified client`,
+      );
     }
     // Raw SDK declarations, keyed by task name: the worker registration
     // below must receive the real objects returned by `client.task()`.
