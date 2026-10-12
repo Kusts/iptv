@@ -6,16 +6,20 @@
 # explícito, ou (d) BLOCKED com motivo + dono + condição de desbloqueio.
 # Zero UNKNOWN/NOT_MAPPED nos gates MVP-PILOT. BLOCKED só por gate externo
 # (live/operador), nunca por "não mapeado".
-# last_run honesto: nenhuma suíte de integração foi re-executada nesta tarefa
-# (sem TEST_DATABASE_URL descartável verificado); PASS = suíte/evidência
-# existente no repo, citada por arquivo:teste exato.
+# last_run honesto: 2026-10-12 — G01/G02/G03/G04/G05/G06/G08/G09 re-executados
+# verde contra a main cfec222 (golden-loop 3/3, commerce-billing +
+# agent-shadow 31/31, trial-compat + subscription-fulfillment +
+# renewal-retention 34/34, g01-chain + waha-media 17/17; PostgreSQL 16
+# descartável, TEST_DATABASE_URL próprio); demais IDs mantêm
+# not_rerun_in_this_task. PASS = suíte/evidência existente no repo,
+# citada por arquivo:teste exato.
 
 - id: G01
   status: PASS
   test: 'apps/api/test/golden-loop.integration.test.ts:"legs a-b: inbound WhatsApp → lead/person/conversation → durable trial ACTIVE + binding"'
   environment: integration (TEST_DATABASE_URL descartável; echo gateway, zero live)
   evidence: código + suíte existente
-  last_run: not_rerun_in_this_task
+  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
   owner: coder
   limitations: outbound live (entrega real 1×) pendente de M1 (sessão sandbox + destinatário opt-in); suíte usa echo gateway
 - id: G02
@@ -23,15 +27,15 @@
   test: 'apps/api/test/agent-shadow-approval.integration.test.ts:"inbound → SHADOW run persisted + HumanReview created; shadow NEVER sends"'
   environment: integration (echo gateway)
   evidence: código + suíte existente
-  last_run: not_rerun_in_this_task
+  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
   owner: coder
-  limitations: nenhuma além de last_run
+  limitations: nenhuma (suite re-executada em 2026-10-12)
 - id: G03
   status: PASS
   test: 'apps/api/test/trial-compat.integration.test.ts:"happy path: request -> provisioning(echo) -> ACTIVE -> technical PASSED -> trust renewal -> ENDED"'
   environment: integration (echo provider)
   evidence: código + suíte existente; readback em apps/api/test/trial-readback.integration.test.ts
-  last_run: not_rerun_in_this_task
+  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
   owner: coder
   limitations: provider live real (CINEVISION writes) pendente de Fase 6 Step 3; caminho echo certificado em software
 - id: G04
@@ -39,15 +43,15 @@
   test: 'apps/api/test/trial-compat.integration.test.ts:"retrial after INVALIDATED goes through human review, then provisions"'
   environment: integration
   evidence: código + suíte existente
-  last_run: not_rerun_in_this_task
+  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
   owner: coder
-  limitations: nenhuma além de last_run
+  limitations: nenhuma (suite re-executada em 2026-10-12)
 - id: G05
   status: PASS
   test: 'apps/api/test/commerce-billing.integration.test.ts:"happy path: quote → submit → charge → webhook PAID → payment → balanced ledger → SETTLED → customer (idempotent)"'
   environment: integration (echo Asaas; webhook sintético)
   evidence: código + suíte existente; lifecycle live sandbox em evidence/p3-asaas-sandbox/report.md (software PASS / live BLOCKED-B1)
-  last_run: not_rerun_in_this_task
+  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
   owner: coder
   limitations: PIX lifecycle live completo pendente de B1 (customer sandbox + simulação via dashboard)
 - id: G06
@@ -55,7 +59,7 @@
   test: 'apps/api/test/subscription-fulfillment.integration.test.ts:"full loop: SETTLED → PENDING + cycle → MANUAL resolve SUCCEEDED → ACTIVE + grants + notification"'
   environment: integration (echo provider)
   evidence: código + suíte existente
-  last_run: not_rerun_in_this_task
+  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
   owner: coder
   limitations: provisionamento em provider live pendente de Fase 6 Steps 3/6–9
 - id: G07
@@ -74,17 +78,17 @@
   test: 'apps/api/test/renewal-retention.integration.test.ts:"full renewal happy path: quote → charge → webhook → renew → new OPEN cycle"'
   environment: integration
   evidence: código + suíte existente
-  last_run: not_rerun_in_this_task
+  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
   owner: coder
-  limitations: nenhuma além de last_run
+  limitations: nenhuma (suite re-executada em 2026-10-12)
 - id: G09
   status: PASS
   test: 'apps/api/test/trial-compat.integration.test.ts:"trust renewal boundary: 4 days denied, 3 days allowed"'
   environment: integration
   evidence: 'código + suíte existente; também renewal-retention "trust renewal: forbidden without review, bounded extension once with approval"'
-  last_run: not_rerun_in_this_task
+  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
   owner: coder
-  limitations: nenhuma além de last_run
+  limitations: nenhuma (suite re-executada em 2026-10-12)
 - id: G10
   status: PASS
   test: 'apps/api/test/subscription-fulfillment.integration.test.ts:"cancel_at_period_end keeps access until cycle expiry, then ENDED"'
