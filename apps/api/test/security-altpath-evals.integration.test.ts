@@ -120,6 +120,10 @@ function tail(): string {
 
 // Effect counters for the closing metrics test (in-file order is sequential).
 const metrics = { unauthorizedAttempts: 0, unauthorizedEffects: 0, legitSuccess: 0 };
+// Refund ids minted by LEGITIMATE flows only (test 1e registers here). The
+// closing metrics test derives unauthorizedEffects from observation: every
+// SUCCEEDED refund outside this set is an unauthorized money effect.
+const legitRefundIds = new Set<string>();
 function denied(): void {
   metrics.unauthorizedAttempts += 1;
 }
@@ -554,17 +558,99 @@ describe.skipIf(!hasDb)("alternate-path permission evals for critical effects (#
   //    REFUND_REVERSAL ledger + payment status flip.
   // ------------------------------------------------------------------
 
-  it("1a. primary-route deny: operator cannot execute a refund (403, zero effect)", async () => {
-    const res = await postA(`/v1/refund-requests/${newId()}/execute`, undefined, { token: opToken, revision: opRev });
+  it("1a. primary-route deny: operator cannot execute an APPROVED refund (403, zero effect)", async () => {
+    // Real, executable target: owner requests, a second human approves.
+    const personId = await makePerson();
+    const planId = await seedPlan("1000");
+    const { paymentId } = await paidAndConfirmed(personId, planId, 1, 10.0);
+    const key = `sec40-attack-${tail()}`;
+    const requested = await bus.execute<{ id: string; reviewRequestId: string }>(
+      ownerA(),
+      "refund.request",
+      {
+        paymentId,
+        amountMinor: "100",
+        currency: "BRL",
+        reason: "attacked refund target",
+        idempotencyKey: key,
+      },
+      { idempotencyKey: key },
+    );
+    expect(requested.ok).toBe(true);
+    if (!requested.ok) {
+      throw new Error("attack-target refund.request failed");
+    }
+    const targetId = requested.data.id;
+    const approved = await bus.execute(approverA(), "human_review.approve", {
+      requestId: requested.data.reviewRequestId,
+    });
+    expect(approved.ok).toBe(true);
+    // Non-vacuous target: APPROVED and executable before the attack.
+    const targetBefore = await db
+      .selectFrom("billing.refund_requests")
+      .select(["status", "executed_at"])
+      .where("tenant_id", "=", tenantA)
+      .where("id", "=", targetId)
+      .executeTakeFirstOrThrow();
+    expect(targetBefore.status).toBe("APPROVED");
+    const reversalsBefore = (
+      await db
+        .selectFrom("finance.financial_transactions")
+        .select(["id"])
+        .where("tenant_id", "=", tenantA)
+        .where("transaction_type", "=", "REFUND_REVERSAL")
+        .execute()
+    ).length;
+
+    // Attack: least-privilege operator (no `billing.refund.execute`) attempts
+    // the execute route against the approved request.
+    const res = await postA(`/v1/refund-requests/${targetId}/execute`, undefined, { token: opToken, revision: opRev });
     expect(res.statusCode).toBe(403);
     denied();
-    const rows = await db
-      .selectFrom("billing.refunds")
-      .select(["id"])
+
+    // Zero effect on the ATTACKED target (REAL state, never status text):
+    // no refund row for the attacked request ...
+    expect(
+      await db
+        .selectFrom("billing.refunds")
+        .select(["id"])
+        .where("tenant_id", "=", tenantA)
+        .where("refund_request_id", "=", targetId)
+        .execute(),
+    ).toHaveLength(0);
+    // ... payment status untouched ...
+    expect(
+      (
+        await db
+          .selectFrom("billing.payments")
+          .select(["status"])
+          .where("tenant_id", "=", tenantA)
+          .where("id", "=", paymentId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("CONFIRMED");
+    // ... no new reversal postings. The echo provider fake acts only through
+    // the command handler, which a PermissionsGuard deny never reaches, so no
+    // provider call can have produced a money effect ...
+    expect(
+      (
+        await db
+          .selectFrom("finance.financial_transactions")
+          .select(["id"])
+          .where("tenant_id", "=", tenantA)
+          .where("transaction_type", "=", "REFUND_REVERSAL")
+          .execute()
+      ).length,
+    ).toBe(reversalsBefore);
+    // ... and the request itself is still APPROVED, never executed.
+    const targetAfter = await db
+      .selectFrom("billing.refund_requests")
+      .select(["status", "executed_at"])
       .where("tenant_id", "=", tenantA)
-      .where("refund_request_id", "=", "00000000-0000-4000-8000-000000000000")
-      .execute();
-    expect(rows).toHaveLength(0);
+      .where("id", "=", targetId)
+      .executeTakeFirstOrThrow();
+    expect(targetAfter.status).toBe("APPROVED");
+    expect(targetAfter.executed_at).toBeNull();
   });
 
   it("1a2. choke-point deny: stripped actor refund.request is forbidden with zero state", async () => {
@@ -581,6 +667,111 @@ describe.skipIf(!hasDb)("alternate-path permission evals for critical effects (#
     denied();
     // Permission is checked BEFORE parse/claim/tx: no row may exist.
     expect(await refundRequestsWithKey(key)).toHaveLength(0);
+  });
+
+  it("1a3. approved request executed by an unauthorized actor stays denied with zero effect (bus choke point + outbox drain)", async () => {
+    // Second real, executable target (distinct payment/request from 1a).
+    const personId = await makePerson();
+    const planId = await seedPlan("1000");
+    const { paymentId } = await paidAndConfirmed(personId, planId, 1, 10.0);
+    const key = `sec40-attack-bus-${tail()}`;
+    const requested = await bus.execute<{ id: string; reviewRequestId: string }>(
+      ownerA(),
+      "refund.request",
+      {
+        paymentId,
+        amountMinor: "100",
+        currency: "BRL",
+        reason: "second attacked refund target",
+        idempotencyKey: key,
+      },
+      { idempotencyKey: key },
+    );
+    expect(requested.ok).toBe(true);
+    if (!requested.ok) {
+      throw new Error("attack-target refund.request failed");
+    }
+    const targetId = requested.data.id;
+    const approved = await bus.execute(approverA(), "human_review.approve", {
+      requestId: requested.data.reviewRequestId,
+    });
+    expect(approved.ok).toBe(true);
+    const reversalsBefore = (
+      await db
+        .selectFrom("finance.financial_transactions")
+        .select(["id"])
+        .where("tenant_id", "=", tenantA)
+        .where("transaction_type", "=", "REFUND_REVERSAL")
+        .execute()
+    ).length;
+
+    // Attack at the bus choke point: actor without `billing.refund.execute`.
+    const forged = await bus.execute(stripped(tenantA), "refund.execute_approved", { refundRequestId: targetId });
+    expect(forged.ok).toBe(false);
+    expect(forged.ok ? null : forged.code).toBe("forbidden");
+    denied();
+
+    // Drain with a budget: rules out deferred/async completion of the effect
+    // out-of-band (no scheduler/worker path can mint what the deny blocked).
+    const drainBudgetUntil = Date.now() + 3000;
+    for (;;) {
+      if (Date.now() >= drainBudgetUntil) break;
+      const drained = await drainer.drain(50).catch(() => undefined);
+      if (drained === undefined || drained.claimed === 0) break;
+    }
+
+    // Zero effect on the attacked target: no refund row ...
+    expect(
+      await db
+        .selectFrom("billing.refunds")
+        .select(["id"])
+        .where("tenant_id", "=", tenantA)
+        .where("refund_request_id", "=", targetId)
+        .execute(),
+    ).toHaveLength(0);
+    // ... payment status untouched ...
+    expect(
+      (
+        await db
+          .selectFrom("billing.payments")
+          .select(["status"])
+          .where("tenant_id", "=", tenantA)
+          .where("id", "=", paymentId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("CONFIRMED");
+    // ... no new reversal postings ...
+    expect(
+      (
+        await db
+          .selectFrom("finance.financial_transactions")
+          .select(["id"])
+          .where("tenant_id", "=", tenantA)
+          .where("transaction_type", "=", "REFUND_REVERSAL")
+          .execute()
+      ).length,
+    ).toBe(reversalsBefore);
+    // ... no refund-effect domain entries for the target payment (the success
+    // path is the only emitter of these event types) ...
+    expect(
+      await db
+        .selectFrom("platform.domain_events")
+        .select(["id"])
+        .where("tenant_id", "=", tenantA)
+        .where("aggregate_type", "=", "payment")
+        .where("aggregate_id", "=", paymentId)
+        .where("event_type", "in", ["payment.refunded.v1", "payment.partially_refunded.v1"])
+        .execute(),
+    ).toHaveLength(0);
+    // ... and the request itself is still APPROVED, never executed.
+    const targetAfter = await db
+      .selectFrom("billing.refund_requests")
+      .select(["status", "executed_at"])
+      .where("tenant_id", "=", tenantA)
+      .where("id", "=", targetId)
+      .executeTakeFirstOrThrow();
+    expect(targetAfter.status).toBe("APPROVED");
+    expect(targetAfter.executed_at).toBeNull();
   });
 
   it("1b. alternate route (copilot tool entry) cannot bypass approval: parked, never executed", async () => {
@@ -744,6 +935,10 @@ describe.skipIf(!hasDb)("alternate-path permission evals for critical effects (#
       .executeTakeFirstOrThrow();
     expect(refund.status).toBe("SUCCEEDED");
     expect(refund.amount_minor).toBe("500");
+    // Register the legitimate money effect so the closing metrics test can
+    // derive unauthorizedEffects from observation (any SUCCEEDED refund
+    // outside this set is an unauthorized effect).
+    legitRefundIds.add(executed.data.refundId);
     const reversals = await db
       .selectFrom("finance.financial_transactions")
       .select(["id"])
@@ -1213,7 +1408,20 @@ describe.skipIf(!hasDb)("alternate-path permission evals for critical effects (#
     legit();
   });
 
-  it("6. metrics: unauthorized-effect success rate is 0; legitimate work preserved", () => {
+  it("6. metrics: no unauthorized attempt produced a money effect; legitimate work preserved", async () => {
+    // unauthorizedEffects is DERIVED from observation, not a constant: every
+    // SUCCEEDED refund in tenant A must trace to a legitimate flow (test 1e
+    // registers its refund id in legitRefundIds). Each denied test already
+    // carries its own zero-effect oracle (1a/1a3/1b*/1c and the 2/3/4/5
+    // families); this is the global cross-check that no denied path minted
+    // money anywhere in the suite.
+    const succeeded = await db
+      .selectFrom("billing.refunds")
+      .select(["id"])
+      .where("tenant_id", "=", tenantA)
+      .where("status", "=", "SUCCEEDED")
+      .execute();
+    metrics.unauthorizedEffects = succeeded.filter((r) => !legitRefundIds.has(r.id)).length;
     expect(metrics.unauthorizedAttempts).toBeGreaterThan(0);
     expect(metrics.unauthorizedEffects).toBe(0);
     expect(metrics.legitSuccess).toBeGreaterThan(0);
