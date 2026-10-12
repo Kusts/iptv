@@ -2,6 +2,12 @@
 
 ## Unreleased - Added
 
+- fix(api): harden WAHA media download redirects, bounded fetch and pending ingest (G01)
+
+- fix(security): per-rule AND gitleaks allowlist for triaged fixtures (G01, #40)
+
+- feat(waha): manual-reply golden chain and media-audio inbound with controlled adapter (G01): full manual-reply chain same-conversation (`g01-manual-reply-chain.integration.test.ts`) + media/audio inbound matrix (`waha-media.integration.test.ts`, `waha-media.unit.test.ts`, `waha-media.ts` normalizer/handler); controlled adapter doubles only, zero live WhatsApp calls; post-UNKNOWN resend refused until human reconcile (fail-closed, not exactly-once); inconclusive 2xx without provider id surfaces UNKNOWN instead of invented id; session validated before any media download; exact-origin media allowlist; explicit-media-without-artifact quarantined as media_unavailable. Review round H1/H2/M3-M5 closed, unit 75/75 + integration 17/17 on disposable DB.
+
 - docs: MK Ativador diferido para pós-MVP, G07 reclassificado DEFERRED_POST_MVP (ADR-0027, gate `test_pilot_evidence.py` estendido com enum + teste de ADR/reativação, 6/6 verde).
 
 - docs(operations): capability status do Hatchet (`docs/10-operations/integrations-capability-status.md`) alinhada ao código do PR #39 — a linha ainda descrevia o SDK opcional como "optional dynamic import", mecanismo que o commit removeu. Agora registra a resolução de presença **síncrona** no construtor via `require.resolve` (só resolução — sem load de módulo, sem rede) e o fallback explícito de `createWorkflowAdapter` para `LocalWorkflowAdapter` (não-durável) quando token ou SDK estão ausentes. Documentação segue o código: nada de runtime/testes alterado; estado inalterado — F12 BLOCKED com dono operator (certificação W0-04), adapter construction-only com `enqueue` falhando fechado, nenhuma declaração de Hatchet configurado/certificado ou de durabilidade.

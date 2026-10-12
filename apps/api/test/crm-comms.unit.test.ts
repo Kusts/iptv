@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -141,6 +143,34 @@ describe("messaging gateway selection", () => {
       text: "hi",
     });
     expect(result).toEqual({ ok: false, code: "FAILED", message: expect.any(String) });
+  });
+
+  it("WAHA adapter treats HTTP 2xx without an observable provider id as UNKNOWN (never a fabricated SENT)", async () => {
+    const server = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url?.includes("invalid-json") === true) {
+        res.end("not-json{{{");
+      } else {
+        res.end(JSON.stringify({ status: "ok" }));
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      for (const base of [`http://127.0.0.1:${port}/no-id`, `http://127.0.0.1:${port}/invalid-json`]) {
+        const adapter = new WahaGatewayAdapter(base, "key", "default", 3000);
+        await expect(
+          adapter.sendText({
+            tenantId: TENANT,
+            conversationId: newId(),
+            to: "5511999990001@c.us",
+            text: "hi",
+          }),
+        ).rejects.toBeInstanceOf(GatewayUnknownError);
+      }
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

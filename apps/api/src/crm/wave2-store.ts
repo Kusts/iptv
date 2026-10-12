@@ -23,7 +23,7 @@ export interface Wave2MemoryState {
   identities: Map<string, { id: string; tenantId: string; personId: string; identityType: string; normalizedValue: string; detachedAt: Date | null }>;
   leads: Map<string, { id: string; tenantId: string; personId: string; status: string; stage: string | null; createdAt: Date; qualifiedAt: Date | null; lostAt: Date | null; closedReason: string | null }>;
   conversations: Map<string, { id: string; tenantId: string; personId: string; channel: string; externalThreadId: string | null; status: string; controlMode: string; lastMessageAt: Date | null; resolvedAt: Date | null; archivedAt: Date | null }>;
-  messages: Map<string, { id: string; tenantId: string; conversationId: string; personId: string; direction: string; channel: string; senderType: string; externalMessageId: string | null; bodyText: string | null; occurredAt: Date }>;
+  messages: Map<string, { id: string; tenantId: string; conversationId: string; personId: string; direction: string; channel: string; senderType: string; externalMessageId: string | null; bodyText: string | null; occurredAt: Date; contentType?: string; attachmentRef?: string | null }>;
   deliveries: Array<{ id: string; tenantId: string; messageId: string; provider: string; status: string; attemptNo: number; externalDeliveryId: string | null; errorCode: string | null }>;
   preferences: Array<{ tenantId: string; personId: string; purposeKey: string; channel: string; status: string }>;
   suppressions: Array<{ tenantId: string; personId: string | null; channel: string | null; purposeKey: string | null; reason: string; startsAt: Date; endsAt: Date | null }>;
