@@ -1,23 +1,37 @@
-# P6 security gate (CODER-P6A) — estende as regras default com um allowlist
-# global para constantes sintéticas de fixture / prosa de ADR já triadas
-# como não-segredo (ver docs/16-pilot-closure/P6-SECURITY.md §2).
-# Dentro do stanza, path E secret casam por AND: um segredo real novo —
-# mesmo dentro desses arquivos — continua falhando o scan.
+# P6 security gate (CODER-P6A) — estende as regras default com allowlists
+# CIRÚRGICAS por regra (ver docs/16-pilot-closure/P6-SECURITY.md §2).
+# Por que por-regra e não global: no gitleaks 8.24.0, `paths` no [allowlist]
+# global exclui o ARQUIVO INTEIRO antes da detecção (verificado
+# empiricamente), independentemente de `regexes` — semântica OR, não AND.
+# `condition = "AND"` no stanza global não corrige (paths continuam
+# pré-filtro). Cada bloco [rules.allowlist] abaixo exige valor exato
+# ANCORADO (^...$) E path exato: segredo real novo — mesmo nesses arquivos
+# — continua falhando o scan (ver tests/security/test_ci_security_gates.py).
 [extend]
 useDefault = true
 
 [allowlist]
-description = "P6 triaged: synthetic test-fixture constants (hashed or request-scoped) + ADR prose false positive; exact values only, never real credentials"
+description = "global kept empty on purpose: no paths, no secret regexes (see per-rule blocks below)"
+
+[[rules]]
+id = "generic-api-key"
+[rules.allowlist]
+description = "P6 triaged synthetic fixtures + 2026-10-11 G01/#40 triage (cde8ae0:53 chain fixture sha256-hashed before persist; 7bd0023:110 shared BETTER_AUTH test constant). Exact anchored values AND exact paths only; history still scanned via fetch-depth 0"
+condition = "AND"
 regexTarget = "secret"
 regexes = [
-  '''p13-fix1-asaas-secret''',
-  '''w16-exposure-idem''',
-  '''n3-arbitrary-resolve-key''',
-  '''2FA/passkeys/organization''',
+  '''^p13-fix1-asaas-secret$''',
+  '''^w16-exposure-idem$''',
+  '''^n3-arbitrary-resolve-key$''',
+  '''^2FA/passkeys/organization$''',
+  '''^g01-chain-secret$''',
+  '''^integration-test-secret-0123456789$''',
 ]
 paths = [
-  '''apps/api/test/billing-rls-rehearsal\.integration\.test\.ts''',
-  '''apps/api/test/experiments-w16\.integration\.test\.ts''',
-  '''apps/api/test/trial-dispatch\.unit\.test\.ts''',
-  '''docs/06-decisions/ADR-0015-auth-better-auth\.md''',
+  '''^apps/api/test/billing-rls-rehearsal\.integration\.test\.ts$''',
+  '''^apps/api/test/experiments-w16\.integration\.test\.ts$''',
+  '''^apps/api/test/trial-dispatch\.unit\.test\.ts$''',
+  '''^docs/06-decisions/ADR-0015-auth-better-auth\.md$''',
+  '''^apps/api/test/g01-manual-reply-chain\.integration\.test\.ts$''',
+  '''^apps/api/test/security-altpath-evals\.integration\.test\.ts$''',
 ]
