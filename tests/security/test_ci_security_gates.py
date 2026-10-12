@@ -677,8 +677,12 @@ class TestGitleaksSurgicalAllowlist(unittest.TestCase):
         self.assertIn("useDefault = true", config)
         for value in GITLEAKS_SURGICAL_REGEXES:
             self.assertIn(value, allowlist.get("regexes", []))
-        # Paths no TOML escapam o ponto; compara a forma não-escapada.
-        stored = [p.replace("\\.", ".") for p in allowlist.get("paths", [])]
+        # Paths no TOML escapam o ponto e são ancorados ^...$; compara a
+        # forma não-escapada e não-ancorada.
+        stored = [
+            p.replace("\\.", ".").removeprefix("^").removesuffix("$")
+            for p in allowlist.get("paths", [])
+        ]
         for path in GITLEAKS_SURGICAL_PATHS:
             self.assertIn(path, stored)
 
