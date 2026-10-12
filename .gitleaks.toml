@@ -7,17 +7,21 @@
 useDefault = true
 
 [allowlist]
-description = "P6 triaged: synthetic test-fixture constants (hashed or request-scoped) + ADR prose false positive; exact values only, never real credentials"
+description = "P6 triaged: synthetic test-fixture constants (hashed or request-scoped) + ADR prose false positive; exact values only, never real credentials. Triaged 2026-10-11: cde8ae0:...:generic-api-key:53 (g01-chain-secret) + 7bd0023:...:generic-api-key:110 (integration-test-secret-0123456789) — synthetic fixtures, no rotation"
 regexTarget = "secret"
 regexes = [
   '''p13-fix1-asaas-secret''',
   '''w16-exposure-idem''',
   '''n3-arbitrary-resolve-key''',
   '''2FA/passkeys/organization''',
+  '''g01-chain-secret''',
+  '''integration-test-secret-0123456789''',
 ]
 paths = [
   '''apps/api/test/billing-rls-rehearsal\.integration\.test\.ts''',
   '''apps/api/test/experiments-w16\.integration\.test\.ts''',
   '''apps/api/test/trial-dispatch\.unit\.test\.ts''',
   '''docs/06-decisions/ADR-0015-auth-better-auth\.md''',
+  '''apps/api/test/g01-manual-reply-chain\.integration\.test\.ts''',
+  '''apps/api/test/security-altpath-evals\.integration\.test\.ts''',
 ]
