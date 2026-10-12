@@ -11,7 +11,6 @@ import type { InboxStore } from "../inbox/inbox-processor.js";
 import { normalizeWahaPayload, normalizeWahaStatus, riskForSessionStatus } from "./waha-normalizer.js";
 import {
   defaultWahaMediaPort,
-  mediaMetadataFor,
   type WahaMediaDescriptor,
   type WahaMediaPort,
 } from "./waha-media.js";
@@ -191,6 +190,7 @@ export class WahaWebhookService {
     reason: string,
     detail: string,
     descriptor: WahaMediaDescriptor,
+    extra?: Record<string, unknown>,
   ): Promise<void> {
     await withTenantTransaction(this.requireDb(), tenantId, async (trx) => {
       await trx
@@ -212,6 +212,7 @@ export class WahaWebhookService {
             fileName: descriptor.fileName,
             sizeBytes: descriptor.sizeBytes,
             durationSeconds: descriptor.durationSeconds,
+            ...extra,
           },
           created_at: new Date(),
           updated_at: new Date(),
@@ -247,9 +248,20 @@ export class WahaWebhookService {
     // exception queue (kind UNMATCHED_INBOUND, `media_*` reason) and the
     // inbox row is acked — a bad file never becomes a message row and never
     // blocks the fast ack.
-    let contentType = "TEXT";
-    let attachmentRef: string | null = null;
-    let mediaMetadata: Record<string, unknown> | null = null;
+    //
+    // No tenant-scoped attachment/blob storage exists in this codebase
+    // (verified 2026-10-12: `attachment_ref` is an opaque pointer consumed
+    // by `message.ingest`, with no blob port or table behind it), and no new
+    // subsystem may be created here — so verified bytes cannot be durably
+    // persisted. Emitting a fabricated `waha:<id>:<kind>` ref would claim an
+    // available attachment with zero stored bytes. A verified download is
+    // therefore recorded on the manual-resolution exception queue with an
+    // explicit ingest-pending marker instead of a message row: `attachmentRef`
+    // stays null and nothing claims the file is available. A future storage
+    // port can claim these rows by their `ingestPending` marker.
+    const contentType = "TEXT";
+    const attachmentRef: string | null = null;
+    const mediaMetadata: Record<string, unknown> | null = null;
     if (normalized.media !== null) {
       const descriptor: WahaMediaDescriptor = normalized.media;
       let download: Awaited<ReturnType<WahaMediaPort["download"]>>;
@@ -271,9 +283,22 @@ export class WahaWebhookService {
         await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
         return;
       }
-      contentType = descriptor.contentType;
-      attachmentRef = `waha:${normalized.externalId}:${descriptor.contentType.toLowerCase()}`;
-      mediaMetadata = mediaMetadataFor(descriptor, download.fetched);
+      await this.recordMediaException(
+        tenantId,
+        normalized.externalId,
+        normalized.from,
+        "media_unavailable",
+        `attachment bytes verified (${download.fetched.mimeType}, ${download.fetched.sizeBytes}B) but no tenant-scoped attachment storage is wired; ingest pending`,
+        descriptor,
+        {
+          ingestPending: true,
+          ingestReason: "no tenant-scoped attachment storage; bytes verified but not persisted",
+          fetchedMimeType: download.fetched.mimeType,
+          fetchedSizeBytes: download.fetched.sizeBytes,
+        },
+      );
+      await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
+      return;
     }
     const actor: CommandActor = {
       userId: "waha-webhook",

@@ -23,10 +23,13 @@ import type {
  *
  * Full-stack webhook → authorized ingest → conversation-linked persistence
  * with a CONTROLLED media double (no network, no live WhatsApp):
- * - valid image / audio / document persist with metadata on the conversation;
+ * - verified downloads are acked (202) and queued as OPEN ingest-pending
+ *   exceptions: no tenant-scoped attachment/blob storage exists, so verified
+ *   bytes cannot be persisted — no message row is created and no attachment
+ *   ref is fabricated (`attachmentRef` stays null, `ingestPending: true`);
  * - oversized, MIME-mismatched, unavailable, and failed downloads are acked
  *   (202) and recorded as OPEN exceptions — never message rows;
- * - duplicate webhooks never duplicate media rows (tenant-scoped dedupe);
+ * - duplicate webhooks never duplicate exception rows (tenant-scoped dedupe);
  * - the same external id under another tenant lands on that tenant only.
  *
  * Deterministic fixtures: counters only, never UUID-head slices.
@@ -162,7 +165,7 @@ describe.skipIf(!hasDb)("WAHA media inbound (requires TEST_DATABASE_URL)", () =>
   async function exceptionByExternal(externalId: string) {
     return db
       .selectFrom("communication.exceptions")
-      .select(["id", "status", "reason"])
+      .select(["id", "status", "reason", "payload_json"])
       .where("tenant_id", "=", tenantId)
       .where("external_message_id", "=", externalId)
       .execute();
@@ -233,7 +236,7 @@ describe.skipIf(!hasDb)("WAHA media inbound (requires TEST_DATABASE_URL)", () =>
     await db.destroy().catch(() => undefined);
   });
 
-  it("valid image persists IMAGE + metadata linked to the conversation", async () => {
+  it("verified image is acked and queued as ingest-pending (no fabricated attachment ref)", async () => {
     const externalId = tag("wamsg-img");
     const res = await inject({
       method: "POST",
@@ -247,19 +250,25 @@ describe.skipIf(!hasDb)("WAHA media inbound (requires TEST_DATABASE_URL)", () =>
       }, "foto do medidor"),
     });
     expect(res.statusCode).toBe(202);
-    const rows = await messagesByExternal(externalId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.content_type).toBe("IMAGE");
-    expect(rows[0]?.attachment_ref).toBe(`waha:${externalId}:image`);
-    expect(rows[0]?.conversation_id).toBe(journey.conversationId);
-    expect(rows[0]?.person_id).toBe(journey.personId);
-    const metadata = rows[0]?.metadata_json as Record<string, unknown>;
-    expect(metadata["mediaKind"]).toBe("IMAGE");
-    expect(metadata["mimeType"]).toBe("image/jpeg");
-    expect(metadata["caption"]).toBe("foto do medidor");
+    // No tenant-scoped attachment storage exists, so verified bytes cannot
+    // be persisted: no message row is created and no `waha:<id>:<kind>` ref
+    // is fabricated. The verified download waits on the exception queue with
+    // an explicit ingest-pending marker for a future storage port to claim.
+    expect(await messagesByExternal(externalId)).toHaveLength(0);
+    const exceptions = await exceptionByExternal(externalId);
+    expect(exceptions).toHaveLength(1);
+    expect(exceptions[0]?.status).toBe("OPEN");
+    expect(exceptions[0]?.reason).toMatch(/^media_unavailable/);
+    expect(exceptions[0]?.reason).toMatch(/ingest pending/);
+    const payload = exceptions[0]?.payload_json as Record<string, unknown>;
+    expect(payload["ingestPending"]).toBe(true);
+    expect(payload["mediaKind"]).toBe("IMAGE");
+    expect(payload["mimeType"]).toBe("image/jpeg");
+    expect(payload["fetchedMimeType"]).toBe("image/jpeg");
+    expect(payload["fetchedSizeBytes"]).toBe(3);
   });
 
-  it("valid audio persists AUDIO with the transcription follow-up marker", async () => {
+  it("verified audio is acked and queued as ingest-pending (no transcription claimed)", async () => {
     const externalId = tag("wamsg-audio");
     const res = await inject({
       method: "POST",
@@ -273,15 +282,22 @@ describe.skipIf(!hasDb)("WAHA media inbound (requires TEST_DATABASE_URL)", () =>
       }),
     });
     expect(res.statusCode).toBe(202);
-    const rows = await messagesByExternal(externalId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.content_type).toBe("AUDIO");
-    expect(rows[0]?.conversation_id).toBe(journey.conversationId);
-    const metadata = rows[0]?.metadata_json as Record<string, unknown>;
-    expect(metadata["transcription"]).toEqual({ status: "PENDING_FOLLOW_UP", engine: null, transcriptRef: null });
+    expect(await messagesByExternal(externalId)).toHaveLength(0);
+    const exceptions = await exceptionByExternal(externalId);
+    expect(exceptions).toHaveLength(1);
+    expect(exceptions[0]?.status).toBe("OPEN");
+    expect(exceptions[0]?.reason).toMatch(/^media_unavailable/);
+    const payload = exceptions[0]?.payload_json as Record<string, unknown>;
+    expect(payload["ingestPending"]).toBe(true);
+    expect(payload["mediaKind"]).toBe("AUDIO");
+    expect(payload["durationSeconds"]).toBe(42);
+    expect(payload["fetchedMimeType"]).toBe("audio/ogg");
+    // Nothing claims a transcription pipeline: the follow-up marker lived on
+    // message metadata, and no message row exists while bytes are unstored.
+    expect(payload["transcription"]).toBeUndefined();
   });
 
-  it("valid document persists DOCUMENT with filename", async () => {
+  it("verified document is acked and queued as ingest-pending with filename", async () => {
     const externalId = tag("wamsg-doc");
     const res = await inject({
       method: "POST",
@@ -296,10 +312,14 @@ describe.skipIf(!hasDb)("WAHA media inbound (requires TEST_DATABASE_URL)", () =>
       }),
     });
     expect(res.statusCode).toBe(202);
-    const rows = await messagesByExternal(externalId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.content_type).toBe("DOCUMENT");
-    expect((rows[0]?.metadata_json as Record<string, unknown>)["fileName"]).toBe("fatura.pdf");
+    expect(await messagesByExternal(externalId)).toHaveLength(0);
+    const exceptions = await exceptionByExternal(externalId);
+    expect(exceptions).toHaveLength(1);
+    expect(exceptions[0]?.reason).toMatch(/^media_unavailable/);
+    const payload = exceptions[0]?.payload_json as Record<string, unknown>;
+    expect(payload["ingestPending"]).toBe(true);
+    expect(payload["mediaKind"]).toBe("DOCUMENT");
+    expect(payload["fileName"]).toBe("fatura.pdf");
   });
 
   it("oversized file is acked but recorded as an exception, never a message", async () => {
@@ -377,7 +397,7 @@ describe.skipIf(!hasDb)("WAHA media inbound (requires TEST_DATABASE_URL)", () =>
     expect(exceptions[0]?.reason).toMatch(/^media_download_failed/);
   });
 
-  it("duplicate media webhook never duplicates the media row", async () => {
+  it("duplicate media webhook never duplicates the pending row", async () => {
     const externalId = tag("wamsg-dup");
     const payload = mediaPayload(externalId, {
       type: "image",
@@ -390,7 +410,8 @@ describe.skipIf(!hasDb)("WAHA media inbound (requires TEST_DATABASE_URL)", () =>
     const second = await inject({ method: "POST", url: `/v1/webhooks/waha/${tenantKey}`, secret: WAHA_SECRET, payload });
     expect(second.statusCode).toBe(202);
     expect(second.json()).toEqual({ accepted: true, deduped: true });
-    expect(await messagesByExternal(externalId)).toHaveLength(1);
+    expect(await messagesByExternal(externalId)).toHaveLength(0);
+    expect(await exceptionByExternal(externalId)).toHaveLength(1);
   });
 
   it("the same external id under another tenant is isolated to that tenant", async () => {
@@ -416,7 +437,8 @@ describe.skipIf(!hasDb)("WAHA media inbound (requires TEST_DATABASE_URL)", () =>
       })
       .execute();
     // No person/conversation exists there: the media inbound quarantines as
-    // an exception under the OTHER tenant, and nothing lands here.
+    // an ingest-pending exception under the OTHER tenant, and nothing lands
+    // here.
     const externalId = tag("wamsg-xtenant");
     const res = await inject({
       method: "POST",

@@ -55,6 +55,114 @@ export const MEDIA_MIME_ALLOWLIST: Record<WahaMediaContentType, readonly string[
 export const MEDIA_MAX_AUDIO_SECONDS = 600;
 export const MEDIA_DOWNLOAD_TIMEOUT_MS = 10_000;
 
+/**
+ * Max redirects followed per download. Every hop is revalidated (scheme +
+ * origin allowlist); the redirect chain never inherits trust from the
+ * initial URL, and `redirect: "manual"` keeps the loop explicit.
+ */
+export const MEDIA_MAX_REDIRECT_HOPS = 3;
+
+const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * Parse a `Content-Length` header value. Returns null when absent, empty, or
+ * non-numeric (multiple values: first entry wins). A null result means "no
+ * trustworthy pre-check" — the bounded stream read below stays authoritative.
+ */
+function parseContentLength(value: string | null): number | null {
+  if (value === null) {
+    return null;
+  }
+  const first = value.split(",")[0]?.trim() ?? "";
+  if (!/^\d+$/.test(first)) {
+    return null;
+  }
+  const parsed = Number(first);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+/**
+ * Bounded body read. A present `ReadableStream` is consumed chunk by chunk
+ * with a running total; the read aborts (fail-closed) as soon as the cap is
+ * exceeded, so an unbounded or lying origin cannot force the full payload
+ * into memory. A null body (opaque/empty responses, non-streaming doubles)
+ * is refused unless a present, numeric `Content-Length` fits the cap — and
+ * even then the single-shot read is rechecked after the fact.
+ */
+async function readBoundedBytes(
+  res: Response,
+  cap: number,
+): Promise<
+  | { ok: true; bytes: Uint8Array }
+  | { ok: false; code: "media_invalid" | "media_download_failed"; reason: string }
+> {
+  const stream = res.body;
+  if (stream === null) {
+    const declared = parseContentLength(res.headers.get("content-length"));
+    if (declared === null || declared > cap) {
+      return { ok: false, code: "media_download_failed", reason: "media body unavailable for bounded read" };
+    }
+    const buffer = new Uint8Array(await res.arrayBuffer());
+    if (buffer.length > cap) {
+      return {
+        ok: false,
+        code: "media_invalid",
+        reason: `oversized download: ${buffer.length} > ${cap}`,
+      };
+    }
+    return { ok: true, bytes: buffer };
+  }
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const raw: unknown = value;
+      let chunk: Uint8Array;
+      if (typeof raw === "string") {
+        chunk = new TextEncoder().encode(raw);
+      } else if (raw instanceof Uint8Array) {
+        chunk = raw;
+      } else if (ArrayBuffer.isView(raw)) {
+        chunk = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+      } else {
+        try {
+          await reader.cancel();
+        } catch {
+          // Release-only; the failure below is authoritative.
+        }
+        return { ok: false, code: "media_download_failed", reason: "unsupported media stream chunk" };
+      }
+      total += chunk.length;
+      if (total > cap) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Release-only; the refusal below is authoritative.
+        }
+        return { ok: false, code: "media_invalid", reason: `oversized download: exceeds ${cap} bytes` };
+      }
+      chunks.push(chunk);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, code: "media_download_failed", reason: `media stream failed: ${message}` };
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return { ok: true, bytes };
+}
+
 export type MediaValidation =
   | { ok: true; descriptor: WahaMediaDescriptor }
   | { ok: false; code: "media_unavailable" | "media_invalid"; reason: string };
@@ -139,9 +247,11 @@ export interface HttpWahaMediaOptions {
 }
 
 /**
- * HTTP downloader with an origin allowlist (SSRF guard), timeout, fetched
- * size cap, and post-download MIME gate. With no `allowedHosts` configured it
- * refuses every URL — fail-closed by default.
+ * HTTP downloader with an origin allowlist (SSRF guard), manual redirect
+ * handling (every hop revalidated, max {@link MEDIA_MAX_REDIRECT_HOPS}
+ * followed), timeout, bounded stream read with a `Content-Length` pre-check,
+ * and a header-only MIME gate before any byte is read. With no
+ * `allowedHosts` configured it refuses every URL — fail-closed by default.
  */
 export class HttpWahaMediaPort implements WahaMediaPort {
   readonly name = "waha-media-http";
@@ -157,48 +267,107 @@ export class HttpWahaMediaPort implements WahaMediaPort {
     this.apiKey = options.apiKey ?? null;
   }
 
+  private checkAllowedUrl(
+    url: URL,
+    where: "media" | "media redirect",
+  ): { ok: true } | { ok: false; code: "media_unavailable" | "media_invalid"; reason: string } {
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return { ok: false, code: "media_invalid", reason: `refused ${where} scheme: ${url.protocol}` };
+    }
+    if (!this.allowedHosts.includes(url.hostname)) {
+      return { ok: false, code: "media_unavailable", reason: `${where} host not allowlisted: ${url.hostname}` };
+    }
+    return { ok: true };
+  }
+
   async download(descriptor: WahaMediaDescriptor): Promise<MediaDownloadResult> {
     const preflight = validateMediaDescriptor(descriptor);
     if (!preflight.ok) {
       return preflight;
     }
-    let url: URL;
+    const cap = MEDIA_MAX_BYTES[descriptor.contentType];
+    let current: URL;
     try {
-      url = new URL(descriptor.mediaUrl as string);
+      current = new URL(descriptor.mediaUrl as string);
     } catch {
       return { ok: false, code: "media_invalid", reason: "malformed media url" };
     }
-    if (url.protocol !== "https:" && url.protocol !== "http:") {
-      return { ok: false, code: "media_invalid", reason: `refused media scheme: ${url.protocol}` };
-    }
-    if (!this.allowedHosts.includes(url.hostname)) {
-      return { ok: false, code: "media_unavailable", reason: `media host not allowlisted: ${url.hostname}` };
+    const initial = this.checkAllowedUrl(current, "media");
+    if (!initial.ok) {
+      return initial;
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const headers: Record<string, string> = {};
-      if (this.apiKey !== null) {
-        headers["X-Api-Key"] = this.apiKey;
+      for (let hop = 0; ; hop += 1) {
+        const headers: Record<string, string> = {};
+        if (this.apiKey !== null) {
+          // Every fetched hop is allowlisted by construction (the initial
+          // URL plus each revalidated redirect target), so the key is only
+          // ever sent to allowlisted hosts. A non-allowlisted redirect
+          // target is refused BEFORE any request to it is issued.
+          headers["X-Api-Key"] = this.apiKey;
+        }
+        const res = await this.fetchImpl(current.toString(), {
+          headers,
+          signal: controller.signal,
+          redirect: "manual",
+        });
+        if (REDIRECT_STATUSES.has(res.status)) {
+          if (hop >= MEDIA_MAX_REDIRECT_HOPS) {
+            return {
+              ok: false,
+              code: "media_download_failed",
+              reason: `media redirect exceeded ${MEDIA_MAX_REDIRECT_HOPS} hops`,
+            };
+          }
+          const location = res.headers.get("location");
+          if (location === null) {
+            return {
+              ok: false,
+              code: "media_download_failed",
+              reason: `media redirect without location (HTTP ${res.status})`,
+            };
+          }
+          let next: URL;
+          try {
+            // Relative Location values resolve against the current URL.
+            next = new URL(location, current.toString());
+          } catch {
+            return { ok: false, code: "media_download_failed", reason: "invalid media redirect location" };
+          }
+          const gated = this.checkAllowedUrl(next, "media redirect");
+          if (!gated.ok) {
+            return gated;
+          }
+          current = next;
+          continue;
+        }
+        if (!res.ok) {
+          return { ok: false, code: "media_download_failed", reason: `media fetch HTTP ${res.status}` };
+        }
+        // Header-only MIME gate before any byte is read.
+        const mimeGate = assertFetchedMime(descriptor.contentType, res.headers.get("content-type"));
+        if (!mimeGate.ok) {
+          return { ok: false, code: "media_invalid", reason: mimeGate.reason };
+        }
+        // Fail fast on a truthful Content-Length; a lying origin is still
+        // caught by the bounded stream read below.
+        const declared = parseContentLength(res.headers.get("content-length"));
+        if (declared !== null && declared > cap) {
+          return {
+            ok: false,
+            code: "media_invalid",
+            reason: `oversized ${descriptor.contentType}: ${declared} > ${cap}`,
+          };
+        }
+        const body = await readBoundedBytes(res, cap);
+        if (!body.ok) {
+          return body;
+        }
+        const mimeType = (res.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "application/octet-stream");
+        return { ok: true, fetched: { bytes: body.bytes, mimeType, sizeBytes: body.bytes.length } };
       }
-      const res = await this.fetchImpl(url.toString(), { headers, signal: controller.signal });
-      if (!res.ok) {
-        return { ok: false, code: "media_download_failed", reason: `media fetch HTTP ${res.status}` };
-      }
-      const buffer = new Uint8Array(await res.arrayBuffer());
-      if (buffer.length > MEDIA_MAX_BYTES[descriptor.contentType]) {
-        return {
-          ok: false,
-          code: "media_invalid",
-          reason: `oversized ${descriptor.contentType}: ${buffer.length} > ${MEDIA_MAX_BYTES[descriptor.contentType]}`,
-        };
-      }
-      const mimeGate = assertFetchedMime(descriptor.contentType, res.headers.get("content-type"));
-      if (!mimeGate.ok) {
-        return { ok: false, code: "media_invalid", reason: mimeGate.reason };
-      }
-      const mimeType = (res.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "application/octet-stream");
-      return { ok: true, fetched: { bytes: buffer, mimeType, sizeBytes: buffer.length } };
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
         return { ok: false, code: "media_download_failed", reason: "media fetch timed out" };

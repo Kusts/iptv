@@ -10,6 +10,7 @@ import {
   assertFetchedMime,
   HttpWahaMediaPort,
   MEDIA_MAX_BYTES,
+  MEDIA_MAX_REDIRECT_HOPS,
   mediaMetadataFor,
   validateMediaDescriptor,
   type WahaMediaDescriptor,
@@ -201,15 +202,64 @@ describe("media descriptor validation (pure)", () => {
 });
 
 describe("HttpWahaMediaPort with a controlled fetch double (no network)", () => {
-  function stubFetch(handler: (url: string) => { status: number; mime: string; bytes: Uint8Array }): typeof fetch {
-    return (async (input: string | URL | Request) => {
+  interface StubMediaResponse {
+    status: number;
+    mime?: string;
+    location?: string;
+    contentLength?: string;
+    bytes?: Uint8Array;
+    chunks?: Uint8Array[];
+    bodyNull?: boolean;
+    onPull?: () => void;
+  }
+
+  interface CapturedCall {
+    url: string;
+    headers: Record<string, string>;
+  }
+
+  function stubFetch(
+    handler: (url: string, callIndex: number) => StubMediaResponse,
+    calls: CapturedCall[] = [],
+  ): typeof fetch {
+    return (async (input: unknown, init?: { headers?: Record<string, string> }) => {
       const url = String(input);
-      const out = handler(url);
+      calls.push({ url, headers: { ...(init?.headers ?? {}) } });
+      const out = handler(url, calls.length - 1);
+      const headerMap: Record<string, string | null> = {
+        "content-type": out.mime ?? null,
+        location: out.location ?? null,
+        "content-length": out.contentLength ?? null,
+      };
+      const chunks = out.chunks ?? (out.bytes !== undefined ? [out.bytes] : []);
+      let body: ReadableStream<Uint8Array> | null = null;
+      if (!out.bodyNull && (out.chunks !== undefined || out.bytes !== undefined)) {
+        let index = 0;
+        body = new ReadableStream<Uint8Array>(
+          {
+            pull(controller) {
+              out.onPull?.();
+              if (index >= chunks.length) {
+                controller.close();
+                return;
+              }
+              controller.enqueue(chunks[index] as Uint8Array);
+              index += 1;
+            },
+          },
+          // Zero watermark: chunks are produced only when actually read, so
+          // pull counters measure consumed bytes, not prefetched ones.
+          { highWaterMark: 0 },
+        );
+      }
+      const payload = out.bytes ?? new Uint8Array([]);
       return {
         ok: out.status >= 200 && out.status < 300,
         status: out.status,
-        headers: { get: (name: string) => (name.toLowerCase() === "content-type" ? out.mime : null) },
-        arrayBuffer: async () => out.bytes.buffer.slice(out.bytes.byteOffset, out.bytes.byteOffset + out.bytes.byteLength) as ArrayBuffer,
+        headers: { get: (name: string) => headerMap[name.toLowerCase()] ?? null },
+        body,
+        arrayBuffer: async () =>
+          payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) as ArrayBuffer,
       };
     }) as unknown as typeof fetch;
   }
@@ -295,19 +345,168 @@ describe("HttpWahaMediaPort with a controlled fetch double (no network)", () => 
     });
   });
 
-  it("rejects fetched bytes beyond the size cap", async () => {
+  it("rejects fetched bytes beyond the size cap with a bounded stream read", async () => {
+    let pulls = 0;
     const port = new HttpWahaMediaPort({
       allowedHosts: ["waha.test"],
       fetchImpl: stubFetch(() => ({
         status: 200,
         mime: "image/jpeg",
         bytes: new Uint8Array(MEDIA_MAX_BYTES.IMAGE + 16),
+        onPull: () => {
+          pulls += 1;
+        },
       })),
     });
     await expect(port.download(imageDescriptor())).resolves.toMatchObject({
       ok: false,
       code: "media_invalid",
     });
+    // Single oversized chunk: the read aborts on the first pull, never
+    // accumulating the full payload.
+    expect(pulls).toBe(1);
+  });
+
+  it("refuses an allowlisted→evil redirect without fetching evil or leaking the api key", async () => {
+    const calls: CapturedCall[] = [];
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      apiKey: "secret-key",
+      fetchImpl: stubFetch((url) => {
+        if (url === "https://waha.test/api/files/img-0001.jpg") {
+          return { status: 302, location: "https://evil.test/stolen.jpg" };
+        }
+        return { status: 200, mime: "image/jpeg", bytes: new Uint8Array([9]) };
+      }, calls),
+    });
+    const result = await port.download(imageDescriptor());
+    expect(result).toMatchObject({ ok: false, code: "media_unavailable" });
+    if (result.ok) {
+      throw new Error("expected refusal");
+    }
+    expect(result.reason).toMatch(/redirect host not allowlisted: evil\.test/);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.headers["X-Api-Key"]).toBe("secret-key");
+    expect(calls.some((call) => call.url.includes("evil.test"))).toBe(false);
+  });
+
+  it("follows a relative allowlisted redirect and sends the api key on every hop", async () => {
+    const calls: CapturedCall[] = [];
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      apiKey: "secret-key",
+      fetchImpl: stubFetch((url) => {
+        if (url === "https://waha.test/api/files/img-0001.jpg") {
+          return { status: 302, location: "/api/files/img-0002.jpg" };
+        }
+        return { status: 200, mime: "image/jpeg", bytes: new Uint8Array([1, 2, 3]) };
+      }, calls),
+    });
+    const result = await port.download(imageDescriptor());
+    expect(result.ok).toBe(true);
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://waha.test/api/files/img-0001.jpg",
+      "https://waha.test/api/files/img-0002.jpg",
+    ]);
+    for (const call of calls) {
+      expect(call.headers["X-Api-Key"]).toBe("secret-key");
+    }
+  });
+
+  it("refuses a redirect chain past the hop budget", async () => {
+    const calls: CapturedCall[] = [];
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      fetchImpl: stubFetch((url) => ({ status: 302, location: `${url}/next` }), calls),
+    });
+    const result = await port.download(imageDescriptor());
+    expect(result).toMatchObject({ ok: false, code: "media_download_failed" });
+    if (result.ok) {
+      throw new Error("expected refusal");
+    }
+    expect(result.reason).toMatch(/exceeded/);
+    expect(calls).toHaveLength(1 + MEDIA_MAX_REDIRECT_HOPS);
+  });
+
+  it("refuses an oversized content-length before reading the body", async () => {
+    let pulls = 0;
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      fetchImpl: stubFetch(() => ({
+        status: 200,
+        mime: "image/jpeg",
+        contentLength: String(MEDIA_MAX_BYTES.IMAGE + 1),
+        chunks: [new Uint8Array([1, 2, 3])],
+        onPull: () => {
+          pulls += 1;
+        },
+      })),
+    });
+    const result = await port.download(imageDescriptor());
+    expect(result).toMatchObject({ ok: false, code: "media_invalid" });
+    if (result.ok) {
+      throw new Error("expected refusal");
+    }
+    expect(result.reason).toMatch(/oversized IMAGE/);
+    expect(pulls).toBe(0);
+  });
+
+  it("aborts a chunked stream without content-length above the cap with bounded reads", async () => {
+    let pulls = 0;
+    let bytesRead = 0;
+    const oneMiB = new Uint8Array(1024 * 1024);
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      fetchImpl: stubFetch(() => ({
+        status: 200,
+        mime: "image/jpeg",
+        chunks: Array.from({ length: 20 }, () => oneMiB),
+        onPull: () => {
+          pulls += 1;
+          bytesRead += oneMiB.length;
+        },
+      })),
+    });
+    const result = await port.download(imageDescriptor());
+    expect(result).toMatchObject({ ok: false, code: "media_invalid" });
+    if (result.ok) {
+      throw new Error("expected refusal");
+    }
+    expect(result.reason).toMatch(/exceeds/);
+    // IMAGE cap is 8 MiB: the 9th MiB trips the abort, so at most 9 pulls
+    // and 9 MiB ever cross the boundary — never the full 20 MiB.
+    expect(pulls).toBeLessThanOrEqual(9);
+    expect(bytesRead).toBeLessThanOrEqual(MEDIA_MAX_BYTES.IMAGE + oneMiB.length);
+  });
+
+  it("refuses a null body without a valid content-length (fail-closed)", async () => {
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      fetchImpl: stubFetch(() => ({ status: 200, mime: "image/jpeg", bodyNull: true })),
+    });
+    await expect(port.download(imageDescriptor())).resolves.toMatchObject({
+      ok: false,
+      code: "media_download_failed",
+    });
+  });
+
+  it("accepts a null body only with a valid content-length, rechecked after the read", async () => {
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      fetchImpl: stubFetch(() => ({
+        status: 200,
+        mime: "image/jpeg",
+        contentLength: "3",
+        bytes: new Uint8Array([1, 2, 3]),
+        bodyNull: true,
+      })),
+    });
+    const result = await port.download(imageDescriptor());
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("expected ok");
+    }
+    expect(result.fetched.sizeBytes).toBe(3);
   });
 });
 
