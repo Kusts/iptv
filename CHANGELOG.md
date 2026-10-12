@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- docs(release): evidência live parcial 2026-10-12 — B1 (customer + PIX R$5 PENDING + QR em sandbox; pagamento dashboard + webhook pendentes), M1 (sessão WORKING + 1 envio 201, provável duplicata de sonda, sem readback), vault CINEVISION vazio (Steps travados), W0-04 prova live em hatchet-lite descartável (durable:true + restart sem duplicar efeito) com `.env` local adotado; matriz G01/G05/F12 atualizada sem promoção indevida.
+
 - test(release): re-run parcial da matriz G/F em 2026-10-12 (main `cfec222`, PostgreSQL 16 descartável): G01/G02/G03/G04/G05/G06/G08/G09 verdes (85 testes no total; `last_run` real no YAML + nota P5). Demais IDs seguem `not_rerun_in_this_task`; lives e re-run integral seguem pendentes do operador.
 
 - test(browser-worker): fake-timer-safe waits in cinevisionCommand budget tests (salvaged from #37): real-clock `untilReal` polling bound at import time, so budget assertions fail explicitly instead of hanging under `vi.useFakeTimers()`; 15/15 green.

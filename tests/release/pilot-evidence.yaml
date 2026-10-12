@@ -21,7 +21,7 @@
   evidence: código + suíte existente
   last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
   owner: coder
-  limitations: outbound live (entrega real 1×) pendente de M1 (sessão sandbox + destinatário opt-in); suíte usa echo gateway
+  limitations: 'outbound live (entrega real 1×) pendente de M1 (sessão sandbox + destinatário opt-in); suíte usa echo gateway. Parcial live 2026-10-12 (evidence/p3-waha/m1-send-20261012.md): sessão WORKING + 1 envio sintético 201 ao contato de teste (id 3EB0…, provável duplicata de sonda); entrega/readback não observados, M2 segue aberto'
 - id: G02
   status: PASS
   test: 'apps/api/test/agent-shadow-approval.integration.test.ts:"inbound → SHADOW run persisted + HumanReview created; shadow NEVER sends"'
@@ -53,7 +53,7 @@
   evidence: código + suíte existente; lifecycle live sandbox em evidence/p3-asaas-sandbox/report.md (software PASS / live BLOCKED-B1)
   last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
   owner: coder
-  limitations: PIX lifecycle live completo pendente de B1 (customer sandbox + simulação via dashboard)
+  limitations: 'PIX lifecycle live completo pendente de B1 (customer sandbox + simulação via dashboard). Parcial live 2026-10-12 (evidence/p3-asaas-sandbox/live-b1-20261012.md): customer descartável + PIX R$5 PENDING + QR emitidos em sandbox; pagamento via dashboard + webhook pendentes do operador'
 - id: G06
   status: PASS
   test: 'apps/api/test/subscription-fulfillment.integration.test.ts:"full loop: SETTLED → PENDING + cycle → MANUAL resolve SUCCEEDED → ACTIVE + grants + notification"'
@@ -251,13 +251,13 @@
   limitations: nenhuma além de last_run
 - id: F12
   status: BLOCKED
-  test: 'nenhum (adapter Hatchet construction-only; desde 2026-10-09 enqueue falha fechado e nunca afirma durable; LocalWorkflowAdapter perde fila no restart por desenho)'
-  environment: nenhum (BLOCKED — sem instância Hatchet; nada a executar)
-  evidence: 'evidence/p3-hatchet/report.md (9/9 LIVE-BLOCKED: sem instância, sem SDK, sem mapeamento real); bug de contrato corrigido: enqueue lançava {durable:true} sem run e agora falha fechado (packages/workflows/test/workflows.unit.test.ts)'
-  last_run: 2026-10-07 (sonda P2C-HATCHET); fix de contrato 2026-10-09 (unit, sem gate externo)
+  test: 'prova live 2026-10-12 (script temporário, removido): adapter com provider REAL contra hatchet-lite descartável — enqueue certificado retorna durable:true com run id real; restart (adapter novo, mesmo engine) re-enfileira sem duplicar efeito dedupe-keyed (evidence/p3-hatchet/w004-live-proof-20261012.md)'
+  environment: hatchet-lite descartável próprio (gRPC localhost:17077); sem dependência de produção
+  evidence: 'evidence/p3-hatchet/w004-live-proof-20261012.md (1/1 verde); gate de certificação no código (certified/HATCHET_DURABLE_CERTIFIED, sem ele enqueue falha fechado); suites do pacote 54/54'
+  last_run: 2026-10-12 (prova live contra lite descartável)
   owner: operator
-  limitations: resume durável impossível neste ambiente (bloqueio externo permanece); falso claim durable:true sem run removido; fallback Inngest exige decisão própria
-  unblock: decisão adotar-vs-manter-local + instância Hatchet real + SDK pinado + mapeamento workflow-name real + gate de 9 itens (cold-engine startup cf. upstream #4778, noisy-tenant, provider-down)
+  limitations: resume durável provado localmente (single-tenant, sem bulkheads provider-down/noisy-tenant, sem cancel sob engine real); instância definitiva + gate integral de 9 itens pendentes; .env local adotado (HATCHET_CLIENT_* + DURABLE_CERTIFIED=1, instância descartável)
+  unblock: instância Hatchet definitiva + gate integral de 9 itens (cold-engine startup cf. upstream #4778, noisy-tenant, provider-down) + re-prova contra ela
 - id: F13
   status: PASS
   test: 'apps/api/test/renewal-retention.integration.test.ts:"F13: settled renewal order suppresses the reminder before subscription.renew runs"'
