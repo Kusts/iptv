@@ -21,6 +21,12 @@
 4. Honestidade de `last_run`: nenhuma suíte de integração foi re-executada
    nesta tarefa (sem `TEST_DATABASE_URL` descartável verificado); PASS =
    suíte/evidência existente citada exatamente, não re-run local.
+   (Atualização 2026-10-12: G01/G02/G03/G04/G05/G06/G08/G09 re-executados
+   verde contra a main `cfec222` — golden-loop 3/3, commerce-billing +
+   agent-shadow 31/31, trial-compat + subscription-fulfillment +
+   renewal-retention 34/34, g01-chain + waha-media 17/17, PostgreSQL 16
+   descartável; `last_run` real registrado no YAML. Demais IDs seguem
+   `not_rerun_in_this_task`; re-run integral (B2) segue aberto.)
 
 ## Cobertura — resumo
 

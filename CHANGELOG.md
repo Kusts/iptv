@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- test(release): re-run parcial da matriz G/F em 2026-10-12 (main `cfec222`, PostgreSQL 16 descartável): G01/G02/G03/G04/G05/G06/G08/G09 verdes (85 testes no total; `last_run` real no YAML + nota P5). Demais IDs seguem `not_rerun_in_this_task`; lives e re-run integral seguem pendentes do operador.
+
 - test(browser-worker): fake-timer-safe waits in cinevisionCommand budget tests (salvaged from #37): real-clock `untilReal` polling bound at import time, so budget assertions fail explicitly instead of hanging under `vi.useFakeTimers()`; 15/15 green.
 
 - fix(workflows): durability-certification gate on Hatchet enqueue (F12 review HIGH): `durable: true` now requires asserted W0-04 certification (`certified: true` / `HATCHET_DURABLE_CERTIFIED=1`, operator-owned); uncertified `enqueue()` throws fail-closed BEFORE any trigger (no run created, nothing to mistake for durable). `FakeHatchetEngine` no longer re-exported from the package index (deep import for tests only). Trigger retries abort after `stop()` (no post-shutdown engine calls); fake `stop()` settles the in-flight handler (graceful). Regressions: uncertified refusal with zero trigger attempts, env/opt-in paths, retry-abort, graceful active-handler shutdown. F12 stays BLOCKED pending W0-04 live-engine certification.
