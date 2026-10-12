@@ -9,7 +9,7 @@
 - [ ] PRs #12–#26 mergeados em ordem, CI verde na main.
 - [ ] Staging rehearsal repetido pós-merge (P1-exit parte 2 + P7) com API `iptv_app`.
 - [ ] Gates de operador com decisão explícita: B1/B2 (Asaas sandbox→canary),
-      M1/M2 (WAHA), G07 (MK), Steps 3/6–9 (CINEVISION), F12 (Hatchet ou
+      M1/M2 (WAHA), G07 (MK — diferido pós-MVP per ADR-0027, 2026-10-12), Steps 3/6–9 (CINEVISION), F12 (Hatchet ou
       local-honesto aceito), legal/provider/tax (SPEC §12.4, M1–M4).
 - [ ] Observabilidade ativa (P6) + alertas + `TEST_DATABASE_URL` documentada p/ reruns.
 - [ ] `pilot-evidence.yaml`: re-run integral com `last_run` real por ID (P5 follow-up).

@@ -14,7 +14,7 @@ YAML_PATH = ROOT / "tests" / "release" / "pilot-evidence.yaml"
 
 EXPECTED_IDS = [f"G{i:02d}" for i in range(1, 19)] + [f"F{i:02d}" for i in range(1, 18)]
 REQUIRED_KEYS = {"id", "status", "test", "environment", "evidence", "last_run", "owner", "limitations"}
-VALID_STATUS = {"PASS", "BLOCKED"}
+VALID_STATUS = {"PASS", "BLOCKED", "DEFERRED_POST_MVP"}
 
 
 def load_entries() -> list[dict]:
@@ -54,6 +54,13 @@ class TestPilotEvidence(unittest.TestCase):
             if e["status"] == "BLOCKED":
                 self.assertEqual(e["owner"], "operator", f"{e['id']}: BLOCKED sem dono operator")
                 self.assertTrue(str(e.get("unblock", "")).strip(), f"{e['id']}: BLOCKED sem condição de desbloqueio")
+
+    def test_deferred_has_adr_owner_and_reactivation(self) -> None:
+        for e in load_entries():
+            if e["status"] == "DEFERRED_POST_MVP":
+                self.assertEqual(e["owner"], "operator", f"{e['id']}: DEFERRED sem dono operator")
+                self.assertTrue(str(e.get("adr", "")).strip(), f"{e['id']}: DEFERRED sem ADR de diferimento")
+                self.assertTrue(str(e.get("unblock", "")).strip(), f"{e['id']}: DEFERRED sem condição de reativação")
 
     def test_pass_points_at_test_and_evidence(self) -> None:
         for e in load_entries():

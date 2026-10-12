@@ -25,10 +25,10 @@
 ## Cobertura — resumo
 
 - **PASS: 33/35** (todos com teste automatizado existente citado + limitações).
-- **BLOCKED: 2/35**, ambos por gate externo de operador, nunca por "não mapeado":
+- **BLOCKED: 1/35 + DEFERRED_POST_MVP: 1/35**, todos por gate externo de operador, nunca por "não mapeado":
   - **G07** (compra MK real) → gate G07 do operador (conta/termos + compra
     controlada + reconciliação + limites de gasto). Parcial echo coberto por
-    `multidomain-dispatch` (license echo) — sem efeito econômico real.
+    `multidomain-dispatch` (license echo) — sem efeito econômico real. **Diferido pós-MVP (ADR-0027, 2026-10-12); status `DEFERRED_POST_MVP`.**
   - **F12** (crash-resume durável) → Hatchet 9/9 LIVE-BLOCKED
     (`evidence/p3-hatchet/report.md`); adapter construction-only, SDK ausente,
     sem instância. O falso claim de contrato do stub (`enqueue` retornava
@@ -62,13 +62,15 @@
 2. Suíte adversarial dedicada F09 (prompt-injection) — hoje só fail-closed.
 3. Teste F16 dedicado cobrindo as 5 superfícies
    (Order/Subscription/Cycle/Entitlement/add-on) em um só lugar.
-4. Gates do operador pendentes: B1 (PIX live), M1/M2 (WAHA live), G07 (MK),
+4. Gates do operador pendentes: B1 (PIX live), M1/M2 (WAHA live),
    Steps 3/6–9 Fase 6 (CINEVISION writes/canary), decisão Hatchet (F12).
+   G07 (MK) diferido pós-MVP per ADR-0027 — reativação pós-MVP, fora do piloto.
 5. Scheduler ligado (`API_SCHEDULER_ENABLED=1`) para o caminho F13 em staging.
 
 ## Validação
 
 - `python -m unittest tests.release.test_pilot_evidence` — parse YAML, 35 IDs
   exatos, sem UNKNOWN/NOT_MAPPED, BLOCKED só com `unblock` + owner operator,
+  DEFERRED_POST_MVP só com `adr` + `unblock` + owner operator,
   toda entrada PASS com `test`+`evidence`.
 - `python -c "import yaml; ..."` — parse direto (fallback sem dependência de pacote).
