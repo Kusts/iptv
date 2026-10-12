@@ -118,7 +118,7 @@ const connectionString = process.env["TEST_DATABASE_URL"];
 const hasDb = typeof connectionString === "string" && connectionString.length > 0;
 
 const ALT_TEST_AUTH_FIXTURE = "altpath test fixture, not a credential 0123456789";
-const ASAAS_SECRET = "sec40-asaas-secret";
+const ASAAS_FIXTURE_TOKEN = "sec40 test fixture, not a credential";
 
 function email(prefix: string): string {
   return `${prefix}-${newId().replace(/-/g, "").slice(-12)}@example.com`;
@@ -372,7 +372,7 @@ describe.skipIf(!hasDb)("alternate-path permission evals for critical effects (#
 
   async function setupAsaasChannel(): Promise<string> {
     const tenantKey = `sec40-${tail()}`;
-    const sha = createHash("sha256").update(ASAAS_SECRET, "utf8").digest("hex");
+    const sha = createHash("sha256").update(ASAAS_FIXTURE_TOKEN, "utf8").digest("hex");
     await db
       .insertInto("billing.tenant_channels")
       .values({
@@ -401,7 +401,7 @@ describe.skipIf(!hasDb)("alternate-path permission evals for critical effects (#
     const delivered = await inject({
       method: "POST",
       url: `/v1/webhooks/asaas/${tenantKey}`,
-      headers: { "asaas-access-token": ASAAS_SECRET },
+      headers: { "asaas-access-token": ASAAS_FIXTURE_TOKEN },
       payload: {
         event: "PAYMENT_RECEIVED",
         id: eventId,
@@ -1266,7 +1266,7 @@ describe.skipIf(!hasDb)("alternate-path permission evals for critical effects (#
     const delivered = await inject({
       method: "POST",
       url: `/v1/webhooks/asaas/${tenantKey}`,
-      headers: { "asaas-access-token": ASAAS_SECRET },
+      headers: { "asaas-access-token": ASAAS_FIXTURE_TOKEN },
       payload: { event: "PAYMENT_RECEIVED", id: eventId, payment: { id: unknownRef, value: 10.0, currency: "BRL" } },
     });
     expect(delivered.statusCode).toBe(202);
