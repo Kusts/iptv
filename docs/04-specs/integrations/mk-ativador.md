@@ -1,6 +1,6 @@
 # Integration SPEC — MK Ativador / AtiveAPP Supplier Adapter
 
-> Status: Draft based on public catalog analysis 2026-09-22; authenticated purchase flow still requires live validation.  
+> Status: Deferred post-MVP (ADR-0027, 2026-10-12) — automatic implementation suspended; manual fallback only with operator confirmation + audit.  
 > Version: 1.0  
 > Review: Auto-reviewed v0.14 — separates public catalog evidence, supplier balance, procurement and customer-facing pricing.
 

@@ -30,7 +30,6 @@ Required to operate the internal tenant end-to-end:
 - Asaas PIX, payment webhooks and reconciliation;
 - Subscription, cycles and entitlements;
 - CINEVISION browser adapter and reconciliation;
-- MK Ativador browser adapter and license assets;
 - Support/Diagnostics/HITL;
 - configurable campaigns, referral and rewards core;
 - reseller core including hierarchical network;
@@ -64,7 +63,8 @@ Adds what is required before external paying tenants:
 - dedicated warehouse/ClickHouse;
 - full experimentation suite;
 - cross-tenant benchmarks;
-- CINEVISION monthly-credit model.
+- CINEVISION monthly-credit model;
+- MK Ativador automatic integration (deferred post-MVP per ADR-0027; manual fallback only).
 
 ## MVP readiness statement
 

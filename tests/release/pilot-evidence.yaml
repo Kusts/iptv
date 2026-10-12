@@ -59,14 +59,16 @@
   owner: coder
   limitations: provisionamento em provider live pendente de Fase 6 Steps 3/6–9
 - id: G07
-  status: BLOCKED
+  status: DEFERRED_POST_MVP
   test: 'apps/api/test/multidomain-dispatch.integration.test.ts:"license: echo success charges and applies (durable mode changes nothing on this path)" (parcial — caminho echo apenas)'
   environment: integration echo (sem efeito econômico real)
   evidence: evidence/p3-asaas-sandbox/report.md (refund/ledger em software); P3-INTEGRATIONS.md linha MK (Echo/manual adapters only)
   last_run: not_rerun_in_this_task
   owner: operator
   limitations: compra real em fornecedor MK nunca executada; adapter echo/manual apenas
-  unblock: gate G07 do operador — conta/termos do fornecedor + compra controlada de teste + reconciliação de efeito desconhecido + limites de gasto explícitos
+  unblock: reativação pós-MVP — conta/termos do fornecedor + compra controlada de teste + reconciliação unknown-effect + limites de gasto explícitos
+  adr: ADR-0027-mk-deferred-post-mvp
+  deferral: ADR-0027 — G07 diferido para pós-MVP por decisão do operador (2026-10-12); status DEFERRED_POST_MVP com enum estendido formalmente no gate
 - id: G08
   status: PASS
   test: 'apps/api/test/renewal-retention.integration.test.ts:"full renewal happy path: quote → charge → webhook → renew → new OPEN cycle"'
