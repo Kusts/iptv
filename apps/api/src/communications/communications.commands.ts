@@ -30,7 +30,10 @@ import { expectedSessionFor, validateSessionForTenant } from "./waha-sessions.js
  *   they do NOT require the `messaging.outbound` autonomous capability.
  * - Gateway UNKNOWN_EFFECT (timeout after send attempt) → delivery row
  *   `QUEUED` + `error_code=UNKNOWN_EFFECT`, conversation to `PAUSED` with a
- *   `RECONCILE_REQUIRED` control event. Never blind-retry.
+ *   `RECONCILE_REQUIRED` control event. Never blind-retry: a later
+ *   `message.send_manual` on a `PAUSED` conversation is refused with
+ *   `reconcile_required` until a human reconciles (assign/release) — fail
+ *   closed, not exactly-once.
  * - `communication_suppressions` hit or a `DENIED` preference on the
  *   recipient channel → `forbidden`, nothing is sent.
  * - Events emitted are registry-listed only: `conversation.started.v1`,
@@ -59,6 +62,19 @@ export const ingestMessageInput = z.object({
   text: z.string().max(8000).default(""),
   occurredAt: z.string().datetime({ offset: true }),
   session: z.string().max(120).nullable().optional(),
+  /**
+   * Media ingest (G01/WAHA closure): TEXT is the default and preserves the
+   * pre-existing contract. Non-TEXT requires `attachmentRef` (mirrors the
+   * `messages_content_present_check` DB constraint); `mediaMetadata` lands in
+   * `metadata_json` alongside the provider/session markers.
+   */
+  contentType: z.enum(["TEXT", "IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "LOCATION", "TEMPLATE", "SYSTEM_EVENT", "OTHER"]).default("TEXT"),
+  attachmentRef: z.string().trim().min(1).max(2000).nullable().optional(),
+  mediaMetadata: z.record(z.string(), z.unknown()).nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (value.contentType !== "TEXT" && value.contentType !== "SYSTEM_EVENT" && (value.attachmentRef ?? null) === null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "media messages require attachmentRef", path: ["attachmentRef"] });
+  }
 });
 export type IngestMessageInput = z.infer<typeof ingestMessageInput>;
 
@@ -432,6 +448,18 @@ async function handleSendManual(
   if (CLOSED_STATUSES.includes(conv.status)) {
     return { ok: false, code: "precondition_failed", message: `conversation is ${conv.status}` };
   }
+  if (conv.controlMode === "PAUSED") {
+    // Fail closed after an UNKNOWN gateway effect: the previous send may
+    // already have been applied provider-side, so a re-POST could double
+    // send. Refuse until a human reconciles (assign/release moves the
+    // conversation out of PAUSED). This is NOT exactly-once — it only
+    // blocks the unreconciled retry.
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: "reconcile_required: conversation is PAUSED after an UNKNOWN gateway effect; reconcile before resending",
+    };
+  }
   const block = await suppressionBlock(ctx, conv.personId, conv.channel);
   if (block.blocked) {
     return { ok: false, code: "forbidden", message: block.reason };
@@ -721,6 +749,10 @@ async function handleIngest(
     }
     const messageId = newId();
     const occurred = new Date(input.occurredAt);
+    const mediaExtra =
+      input.mediaMetadata !== null && input.mediaMetadata !== undefined
+        ? (input.mediaMetadata as Record<string, unknown>)
+        : {};
     await trx
       .insertInto("communication.messages")
       .values({
@@ -733,10 +765,10 @@ async function handleIngest(
         sender_type: "PERSON",
         external_message_id: input.externalMessageId,
         idempotency_key: null,
-        content_type: "TEXT",
+        content_type: input.contentType,
         body_text: input.text.length > 0 ? input.text : null,
-        attachment_ref: null,
-        metadata_json: { provider: "waha", session: input.session ?? null },
+        attachment_ref: input.attachmentRef ?? null,
+        metadata_json: { provider: "waha", session: input.session ?? null, ...mediaExtra },
         occurred_at: occurred,
         received_at: now(),
         created_at: now(),
@@ -845,6 +877,8 @@ async function handleIngest(
     externalMessageId: input.externalMessageId,
     bodyText: input.text.length > 0 ? input.text : null,
     occurredAt: new Date(input.occurredAt),
+    contentType: input.contentType,
+    attachmentRef: input.attachmentRef ?? null,
   });
   mem.deliveries.push({
     id: newId(),
