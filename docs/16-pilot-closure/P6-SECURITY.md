@@ -330,13 +330,31 @@ para tooling de provider via browser, documentado no próprio arquivo.
   respondeu 404, **todos** com os dois headers. Nenhum outro header de
   segurança foi adicionado.
 
-**Ainda pendente nesta seção (segue GAP; issue #44 registra o restante):**
+**Ainda pendente nesta seção (segue GAP parcial; issue #44 registra o restante):**
 
-1. **Rate limiting / throttling na API** — permanece sem implementação
+1. **Rate limiting / throttling na API** — IMPLEMENTADO em follow-up do issue
+   #44 (posterior a esta subfatia; ver `apps/api/src/auth/rate-limit*.ts`,
+   guard aplicado às rotas públicas de login/cadastro): limiter em memória
+   por processo, duas dimensões por tentativa (identidade = e-mail normalizado
+   hasheado; origem = IP do socket TCP por padrão — `hops=0` ignora
+   `X-Forwarded-For`): login 5 falhas/15min por identidade + 30 tent./15min por
+   origem; register 10/1h por identidade + 20/1h por origem. Saturação
+   fail-closed: em `maxEntries = 20000` chaves, contadores ATIVOS nunca são
+   removidos para admitir chaves novas — admissão nova é negada (429 com
+   `Retry-After`) após podar janelas expiradas; identidade+origem admitidas em
+   conjunto, sem estado parcial. Limite por processo: com N réplicas o limite
+   efetivo multiplica por N (sem store compartilhado/Redis — fora de escopo).
+   201/409 do registro preservados; falha interna do limiter continua
+   fail-open com log (decisão documentada no serviço). Lockout deliberado: o
+   orçamento de identidade de login é global por e-mail (não escopado por IP),
+   então 5 falhas travam o dono legítimo até o fim da janela de 15min;
+   escopar por IP abriria guessing distribuído — o reparo de princípio seria
+   um passo de challenge (ex. CAPTCHA), trabalho futuro, números mantidos.
+   O texto original desta subfatia (abaixo, "permanece sem implementação")
+   descrevia o estado ANTES do follow-up e foi mantido como histórico.
+   Estado original: rate limiting permanecia sem implementação
    (grep `throttle|rate.?limit`: 0). Login/cadastro são endpoints públicos;
-   não há controle compensatório de ingress comprovado nesta revisão. Não
-   liberar exposição pública irrestrita até fechar o issue #44 ou obter
-   evidência de mitigação equivalente autorizada.
+   não havia controle compensatório de ingress comprovado naquela revisão.
 2. **Security headers da API** (`Strict-Transport-Security`,
    `X-Content-Type-Options`, `Referrer-Policy`, helmet) — fora do escopo desta
    subfatia, que toca só a web.
@@ -348,8 +366,9 @@ para tooling de provider via browser, documentado no próprio arquivo.
    o conjunto (auth + framing); a presente subfatia cobre somente framing web.
    Nenhuma mudança de auth, CORS, sessão ou autorização foi feita aqui.
 
-**Estado honesto:** frame policy web = implementada e verificada. Rate limit,
-headers de API, CSP geral e exposição pública = **pendentes**. Nada nesta seção
+**Estado honesto:** frame policy web = implementada e verificada. Rate limit
+de auth pública = implementado em follow-up do issue #44 (ver item 1 acima).
+Headers de API, CSP geral e exposição pública = **pendentes**. Nada nesta seção
 declara "security pass" do piloto; a matriz S10 continua GAP residual.
 
 ## 9. Secrets — revisado

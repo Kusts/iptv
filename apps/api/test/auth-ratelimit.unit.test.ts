@@ -6,6 +6,7 @@ import {
   deriveClientOrigin,
   identityBucketKey,
   normalizeIdentityEmail,
+  RATE_LIMIT_MAX_ENTRIES,
   trustedProxyHopsFromEnv,
   RATE_LIMIT_POLICY_KEY,
   type AuthRateLimitKind,
@@ -97,18 +98,82 @@ describe("RateLimitStore (unit)", () => {
     expect(store.peek("k", 2).allowed).toBe(true);
   });
 
-  it("bounds memory to maxEntries and evicts the soonest-expiring key deterministically", () => {
+  it("bounds memory to maxEntries and NEVER evicts an active bucket to admit a new key (fail-closed, P1)", () => {
     let now = 0;
     const store = new RateLimitStore({ maxEntries: 3, now: () => now });
-    store.consume("a", 5000); // expires soonest
+    store.consume("a", 5000);
     store.consume("b", 9000);
     store.consume("c", 9000);
     expect(store.size).toBe(3);
-    // A brand-new key when full prunes/evicts instead of growing unbounded.
+    // A brand-new key when full of ACTIVE buckets is REFUSED, not admitted by
+    // evicting someone's live counter. The old code evicted the
+    // soonest-expiring entry here, which deleted the budget currently blocking
+    // an attacker (saturation evasion).
     now = 100;
-    store.consume("d", 9000);
+    expect(store.consume("d", 9000)).toBe(false);
     expect(store.size).toBe(3);
-    expect(store.peek("a", 1).allowed).toBe(true); // "a" was evicted (fresh)
+    expect(store.peek("a", 1).allowed).toBe(false); // "a" still counted, not evicted
+    expect(store.peek("d", 1).allowed).toBe(true); // "d" was never admitted
+    expect(store.saturationDenials).toBe(1);
+  });
+
+  it("still admits new keys at cap once expired buckets are pruned (recoverable, no false fail-closed)", () => {
+    let now = 0;
+    const store = new RateLimitStore({ maxEntries: 2, now: () => now });
+    store.consume("a", 500);
+    store.consume("b", 9000);
+    now = 600; // "a" expired
+    expect(store.consume("c", 9000)).toBe(true);
+    expect(store.size).toBe(2);
+    expect(store.peek("a", 1).allowed).toBe(true); // gone via expiry prune, not eviction
+    expect(store.peek("b", 1).allowed).toBe(false); // active counter preserved
+    expect(store.saturationDenials).toBe(0);
+  });
+
+  it("tryAcquire admits identity+origin jointly: under saturation NEITHER is admitted without the other (P1)", () => {
+    const store = new RateLimitStore({ maxEntries: 3, now: () => 0 });
+    store.consume("a", 9000);
+    store.consume("b", 9000);
+    store.consume("c", 9000);
+    const denied = store.tryAcquire([
+      { key: "id-x", limit: 5, windowMs: 9000 },
+      { key: "ip-x", limit: 30, windowMs: 9000 },
+    ]);
+    expect(denied.allowed).toBe(false);
+    expect(denied.retryAfterSeconds).toBeGreaterThan(0);
+    // No partial state: neither new key exists and no active counter was touched.
+    expect(store.size).toBe(3);
+    expect(store.peek("id-x", 5).allowed).toBe(true); // absent, never created
+    expect(store.peek("ip-x", 30).allowed).toBe(true); // absent, never created
+    expect(store.peek("a", 1).allowed).toBe(false); // pre-existing counter intact
+    expect(store.saturationDenials).toBe(1);
+  });
+
+  it("tryAcquire with room for exactly the new keys admits both jointly", () => {
+    const store = new RateLimitStore({ maxEntries: 3, now: () => 0 });
+    store.consume("a", 9000);
+    const admitted = store.tryAcquire([
+      { key: "id-x", limit: 5, windowMs: 9000 },
+      { key: "ip-x", limit: 30, windowMs: 9000 },
+    ]);
+    expect(admitted.allowed).toBe(true);
+    expect(store.size).toBe(3);
+    expect(store.peek("id-x", 1).allowed).toBe(false);
+    expect(store.peek("ip-x", 1).allowed).toBe(false);
+    expect(store.saturationDenials).toBe(0);
+  });
+
+  it("tryAcquire denies without charging when ANY budget is exhausted (both-or-neither preserved)", () => {
+    const store = new RateLimitStore({ maxEntries: 10, now: () => 0 });
+    store.consume("id-x", 9000);
+    const denied = store.tryAcquire([
+      { key: "id-x", limit: 1, windowMs: 9000 },
+      { key: "ip-fresh", limit: 30, windowMs: 9000 },
+    ]);
+    expect(denied.allowed).toBe(false);
+    // The fresh origin was NOT created as a side effect of the denied attempt.
+    expect(store.size).toBe(1);
+    expect(store.peek("ip-fresh", 30).allowed).toBe(true);
   });
 
   it("does not count a peek (peek then consume is not double-charged)", () => {
@@ -404,6 +469,63 @@ describe("RateLimitService.acquire (unit)", () => {
       expect(service.acquire("login", req(), undefined).allowed).toBe(true);
     }
     expect(service.acquire("login", req(), undefined).allowed).toBe(false);
+  });
+
+  it("saturation (P1 regression): an exhausted identity+origin stays DENIED past 30 attempts at a full 20000-key store", () => {
+    expect(RATE_LIMIT_MAX_ENTRIES).toBe(20_000); // regression is faithful only at the shipped cap
+    const store = new RateLimitStore({ maxEntries: RATE_LIMIT_MAX_ENTRIES });
+    const saturated = new RateLimitService({ store });
+    const victimIp = "203.0.113.7";
+    const victim = "saturation-victim@example.com";
+    // Exhaust the victim's identity budget FIRST (5 attempts from its origin).
+    for (let i = 0; i < 5; i += 1) {
+      expect(saturated.acquire("login", req(victimIp), victim).allowed).toBe(true);
+    }
+    expect(saturated.acquire("login", req(victimIp), victim).allowed).toBe(false);
+    // Fill the store to its real cap with disjoint identity+origin pairs.
+    // Denials are tolerated once full — the fill itself must not evict.
+    for (let i = 0; i < 10_000; i += 1) {
+      const ip = `10.${(i >>> 16) & 255}.${(i >>> 8) & 255}.${i & 255}`;
+      saturated.acquire("login", req(ip), `fill${i}@example.com`);
+    }
+    expect(store.size).toBe(RATE_LIMIT_MAX_ENTRIES);
+    expect(saturated.saturationDenials).toBeGreaterThan(0);
+    // The victim's ACTIVE blocked counters survived admission pressure: >30
+    // further attempts against the same email+IP stay denied. The old code
+    // evicted the sibling budget on every insert, so these stayed admitted.
+    for (let i = 0; i < 35; i += 1) {
+      const decision = saturated.acquire("login", req(victimIp), victim);
+      expect(decision.allowed).toBe(false);
+      expect(decision.retryAfterSeconds).toBeGreaterThan(0);
+    }
+    // Direct store evidence: both victim buckets are still present and over limit.
+    expect(store.peek(identityBucketKey("login", victim), 5).allowed).toBe(false);
+  });
+
+  it("saturation: registration identity+origin budgets hold at cap and new identities are fail-closed (bounded)", () => {
+    const store = new RateLimitStore({ maxEntries: RATE_LIMIT_MAX_ENTRIES });
+    const saturated = new RateLimitService({ store });
+    const victim = "sat-reg-victim@example.com";
+    const ip = "203.0.113.8";
+    // Exhaust the register identity budget FIRST (10 attempts).
+    for (let i = 0; i < 10; i += 1) {
+      expect(saturated.acquire("register", req(ip), victim).allowed).toBe(true);
+    }
+    for (let i = 0; i < 10_000; i += 1) {
+      const fillIp = `10.${(i >>> 16) & 255}.${(i >>> 8) & 255}.${i & 255}`;
+      saturated.acquire("register", req(fillIp), `regfill${i}@example.com`);
+    }
+    expect(store.size).toBe(RATE_LIMIT_MAX_ENTRIES);
+    // Identity budget holds (also from a fresh origin: identity is global).
+    for (let i = 0; i < 5; i += 1) {
+      expect(saturated.acquire("register", req(ip), victim).allowed).toBe(false);
+    }
+    expect(saturated.acquire("register", req("198.51.100.77"), victim).allowed).toBe(false);
+    // Overflow is bounded, not unlimited: a brand-new identity+origin at cap is
+    // DENIED (fail-closed) rather than admitted without counting.
+    const fresh = saturated.acquire("register", req("198.51.100.78"), "brand-new@example.com");
+    expect(fresh.allowed).toBe(false);
+    expect(fresh.retryAfterSeconds).toBeGreaterThan(0);
   });
 });
 
