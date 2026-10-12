@@ -38,7 +38,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** Adapter wired to an injected provider (tests only, no network). */
+/** Adapter wired to an injected provider (tests only, no network). `certified`
+ * is test-only mechanics exercise (see hatchet-durable.test.ts helper). */
 function testAdapter(
   provider: HatchetClientProvider,
   opts: { attempts?: number; baseDelayMs?: number } = {},
@@ -46,6 +47,7 @@ function testAdapter(
   return new HatchetWorkflowAdapter(TEST_ENV, {
     provider,
     workerName: "test-worker",
+    certified: true,
     retry: { attempts: opts.attempts ?? 5, baseDelayMs: opts.baseDelayMs ?? 1 },
     onWarning: () => undefined,
   });

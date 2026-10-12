@@ -48,5 +48,4 @@ export type {
   RealHatchetProviderOptions,
   ResolvedHatchetSdkInit,
 } from "./hatchet-provider.js";
-export { FakeHatchetEngine } from "./fake-hatchet.js";
 export type { FakeRunRecord, FakeRunStatus } from "./fake-hatchet.js";

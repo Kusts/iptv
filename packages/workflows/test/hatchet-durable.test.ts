@@ -38,9 +38,14 @@ function testAdapter(
   opts: { warnings?: string[]; attempts?: number; baseDelayMs?: number } = {},
 ): HatchetWorkflowAdapter {
   const warnings = opts.warnings;
+  // `certified: true` here is TEST-ONLY mechanics exercise: it lets the
+  // adapter walk the certified path against the in-memory double. It asserts
+  // NO real durability (the fake persists nothing) and NO W0-04
+  // certification — production adapters are uncertified by default.
   return new HatchetWorkflowAdapter(TEST_ENV, {
     provider: engine.createProvider(),
     workerName: "test-worker",
+    certified: true,
     retry: { attempts: opts.attempts ?? 5, baseDelayMs: opts.baseDelayMs ?? 1 },
     onWarning: (message: string) => {
       warnings?.push(message);
@@ -168,6 +173,41 @@ describe("hatchet durable slice: fail-closed guards", () => {
     const adapter = testAdapter(new FakeHatchetEngine());
     adapter.registerHandler("x", async () => undefined);
     expect(() => adapter.registerHandler("x", async () => undefined)).toThrow(/already registered/);
+  });
+
+  it("refuses durable claims without certification: uncertified enqueue throws before any trigger", async () => {
+    const engine = new FakeHatchetEngine();
+    const adapter = new HatchetWorkflowAdapter(TEST_ENV, {
+      provider: engine.createProvider(),
+      workerName: "test-worker",
+      retry: { attempts: 5, baseDelayMs: 1 },
+      onWarning: () => undefined,
+    });
+    adapter.registerHandler("trial.expire_due", async () => undefined);
+    await adapter.start();
+    try {
+      await expect(adapter.enqueue({ name: "trial.expire_due", payload: {} })).rejects.toThrow(/not certified/);
+      expect(engine.triggerAttempts).toBe(0);
+      expect(engine.runs).toHaveLength(0);
+    } finally {
+      await adapter.stop();
+    }
+  });
+
+  it("opts into the certified path only via explicit flag or HATCHET_DURABLE_CERTIFIED", async () => {
+    const engine = new FakeHatchetEngine();
+    const viaEnv = new HatchetWorkflowAdapter(
+      { ...TEST_ENV, HATCHET_DURABLE_CERTIFIED: "1" },
+      { provider: engine.createProvider(), workerName: "test-worker", onWarning: () => undefined },
+    );
+    viaEnv.registerHandler("trial.expire_due", async () => undefined);
+    await viaEnv.start();
+    try {
+      const result = await viaEnv.enqueue({ name: "trial.expire_due", payload: {} });
+      expect(result.durable).toBe(true);
+    } finally {
+      await viaEnv.stop();
+    }
   });
 });
 
@@ -350,6 +390,56 @@ describe("hatchet durable slice: cancel + graceful shutdown", () => {
     await adapter.stop();
     await expect(adapter.enqueue({ name: "trial.expire_due", payload: {} })).rejects.toThrow(/not started/);
     await expect(adapter.start()).rejects.toThrow(/stopped/);
+  });
+
+  it("aborts trigger retries after stop: no second engine call post-shutdown", async () => {
+    const engine = new FakeHatchetEngine();
+    engine.failTriggerTimes = 1;
+    const adapter = new HatchetWorkflowAdapter(TEST_ENV, {
+      provider: engine.createProvider(),
+      workerName: "test-worker",
+      certified: true,
+      retry: { attempts: 5, baseDelayMs: 200 },
+      onWarning: () => undefined,
+    });
+    adapter.registerHandler("trial.expire_due", async () => undefined);
+    await adapter.start();
+    const pending = adapter.enqueue({ name: "trial.expire_due", payload: {} });
+    await waitFor(() => engine.triggerAttempts === 1);
+    await adapter.stop();
+    await expect(pending).rejects.toThrow(/aborted/);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(engine.triggerAttempts).toBe(1);
+  });
+
+  it("stop waits for the active handler: graceful shutdown finishes in-flight work", async () => {
+    const engine = new FakeHatchetEngine();
+    const adapter = testAdapter(engine);
+    let entered = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let effects = 0;
+    adapter.registerHandler("trial.expire_due", async () => {
+      entered = true;
+      await gate;
+      effects += 1;
+    });
+    await adapter.start();
+    const result = await adapter.enqueue({ name: "trial.expire_due", payload: {} });
+    await waitFor(() => entered);
+    let stopped = false;
+    const stopping = adapter.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(stopped).toBe(false);
+    release();
+    await stopping;
+    expect(stopped).toBe(true);
+    expect(effects).toBe(1);
+    expect(engine.runById(result.id)?.status).toBe("succeeded");
   });
 });
 

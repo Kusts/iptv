@@ -13,8 +13,12 @@
   `registerHandler(name, fn, taskOptions?)` → `start()` (connect with
   bounded retry, declare tasks, create + start worker in background) →
   `enqueue()` → `cancel(runId)` → `stop()` (graceful, terminal).
-  `durable: true` is returned ONLY after the engine accepts the trigger (a
-  run id exists); every other outcome throws fail-closed. `tick()` stays a
+  `durable: true` is returned ONLY for a certified engine (`certified: true`
+  / `HATCHET_DURABLE_CERTIFIED=1`, asserting completed W0-04 durability
+  certification) AND after the engine accepts the trigger (a run id exists);
+  every other outcome throws fail-closed — including `enqueue()` on an
+  uncertified adapter, which throws BEFORE any trigger attempt so no run is
+  created that callers could mistake for durable. `tick()` stays a
   compatibility no-op (the engine drives execution server-side).
 - **`createWorkflowAdapter(env, opts?)`** — Hatchet when a client token
   resolves AND the SDK is installed; otherwise local with a logged warning.
@@ -25,6 +29,9 @@ Env (canonical, as read by the SDK `util/config-loader`):
 - `HATCHET_CLIENT_TOKEN` (required for Hatchet; absent ⇒ local),
 - `HATCHET_CLIENT_HOST_PORT` / `HATCHET_CLIENT_API_URL` (endpoint),
 - `HATCHET_CLIENT_NAMESPACE` (optional).
+- `HATCHET_DURABLE_CERTIFIED=1`/`true` (operator-owned, only after W0-04
+  durability certification): opts factory-built adapters into certified
+  durable claims. Absent ⇒ uncertified ⇒ `enqueue()` throws fail-closed.
 
 Legacy compat (deprecated, warn-once, canonical wins): `HATCHET_API_TOKEN`
 ⇒ token, `HATCHET_SERVER_URL` ⇒ API URL. Empty string counts as absent.
@@ -46,5 +53,8 @@ Tests (`vitest run`): local semantics + factory fallback
 `FakeHatchetEngine` — happy path, crash/restart resume without repeating a
 recorded side effect, provider-unavailable retry/exhaustion, cancel,
 graceful shutdown, env wiring, and a conditional real-SDK wiring proof
-(`hatchet-durable.test.ts`). `FakeHatchetEngine` is exported for reuse and
-is explicitly test-only (never durable).
+(`hatchet-durable.test.ts`). `FakeHatchetEngine` is importable from
+`./fake-hatchet.js` for tests and is explicitly test-only (never durable);
+it is NOT re-exported from the package index. Adapter-mechanics tests pass
+`certified: true` explicitly (test-only exercise, asserting no real
+durability and no W0-04 certification).
