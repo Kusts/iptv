@@ -178,3 +178,29 @@ Ask/confirm on first paid activation; tenant default may be ON. Customer can req
 ## Partner apps from playlist metadata
 
 Authorized playlist/test-account metadata may expose partner/recommended apps. Normalize these into the Technical App Catalog with source/provenance. They are recommendations/options, not automatically paid products or supplier licenses.
+
+## SIMULATED write-adapter seam (credential-independent, 2026-10-11)
+
+> Status: SIMULATED-ONLY. The CINEVISION write contract is UNOBSERVED —
+> contract-before-code holds. This section marks the seam; it invents no
+> endpoints, params, payloads, selectors, or routes.
+
+- Typed write-operation envelope + lease/fencing plumbing (migration 045
+  shape: fencing token + lease expiry + dispatch frontier), idempotency keys
+  with operation/payload fingerprinting, timeout→UNKNOWN classification,
+  readback interface + reconciliation hook:
+  `apps/browser-worker/src/providers/cinevision/writes.ts` and
+  `write-simulated.ts`. API seam: `apps/api/src/provider/provider-cinevision-simulated.ts`
+  (`CinevisionSimulatedWritePort`, `SimulatedWriteReadback`).
+- Every execution path is SIMULATED (in-memory ledger, single-effect
+  guarantee; all results carry `simulated: true`, including the API seam).
+  Key reuse with a divergent operation/payload parks MANUAL as a conflict —
+  never a new effect, never a ledger overwrite. A `timeout` send never
+  answers: the adapter budget classifies UNKNOWN (honest race), and the key
+  is reserved BEFORE hanging so retries replay the uncertain record. The
+  existing dispatcher (`resolveOpsPort` = `echo | manual`, claim filter =
+  `secret-required-v1`) is untouched — no new live path, no architecture
+  change.
+- Operator gates still required before any live write: provider account +
+  credentials in the operator vault, observed write contract per operation,
+  and capability certification.

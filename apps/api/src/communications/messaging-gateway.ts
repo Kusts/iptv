@@ -87,9 +87,20 @@ export class WahaGatewayAdapter implements MessagingGatewayPort {
         return { ok: false, code: "FAILED", message: `waha rejected send: HTTP ${res.status}` };
       }
       const body = (await res.json().catch(() => null)) as { id?: unknown } | null;
-      const providerMessageId = typeof body?.id === "string" ? body.id : `waha:${randomUUID()}`;
+      const providerMessageId = typeof body?.id === "string" && body.id.length > 0 ? body.id : null;
+      if (providerMessageId === null) {
+        // HTTP 2xx without an observable provider id is inconclusive: the
+        // send may or may not have been applied. Never record SENT with an
+        // invented id — surface UNKNOWN so the caller parks for reconcile.
+        throw new GatewayUnknownError("waha send confirmation inconclusive: HTTP 2xx without observable provider id");
+      }
       return { ok: true, providerMessageId };
     } catch (err) {
+      if (err instanceof GatewayUnknownError) {
+        // Inconclusive confirmation (thrown above) already is UNKNOWN —
+        // never downgrade it to FAILED.
+        throw err;
+      }
       if (err instanceof Error && err.name === "AbortError") {
         // The request may already have been applied provider-side.
         throw new GatewayUnknownError();
