@@ -32,9 +32,11 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import re
 import subprocess
 import tempfile
 import contextlib
+import tomllib
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -592,6 +594,99 @@ class TestAuditGateStrictness(unittest.TestCase):
         self.assert_gate_passes(
             audit_stdout(payload), returncode=1, baseline=baseline
         )
+
+
+# --- G01 gitleaks surgical-allowlist guards (FIX-G01-GITLEAKS) ---
+#
+# Triagem 2026-10-11: dois findings `generic-api-key` são fixtures sintéticas
+# (commit histórico cde8ae0, linha 53 — cadeia G01 com hash sha256 antes de
+# persistir e tráfego só em memória de teste; #40 7bd0023, linha 110 —
+# constante de teste compartilhada). O job security-scans usa `fetch-depth:
+# 0`, então o histórico continua varrido: a allowlist cobre os valores/paths
+# EXATOS para o passado sem enfraquecer o scanner (AND de path+secret,
+# defaults preservados). O fixture G01 vivo foi renomeado para forma
+# não-credential (`WAHA_FIXTURE_TOKEN`, valor com espaços, inequivocamente
+# sintético).
+GITLEAKS_SURGICAL_REGEXES = (
+    "g01-chain-secret",
+    "integration-test-secret-0123456789",
+)
+GITLEAKS_SURGICAL_PATHS = (
+    "apps/api/test/g01-manual-reply-chain.integration.test.ts",
+    "apps/api/test/security-altpath-evals.integration.test.ts",
+)
+
+
+def gitleaks_allowlist() -> dict:
+    with open(GITLEAKS_CONFIG, "rb") as fh:
+        return tomllib.load(fh)["allowlist"]
+
+
+class TestGitleaksSurgicalAllowlist(unittest.TestCase):
+    def test_allowlist_is_surgical(self):
+        # (a) allowlist cirúrgica: sem wildcard em regex, sem diretório
+        # inteiro em path, defaults preservados, entradas triadas presentes.
+        allowlist = gitleaks_allowlist()
+        for pattern in allowlist.get("regexes", []):
+            self.assertNotIn(".*", pattern, f"regex com wildcard: {pattern}")
+            self.assertNotIn(".+", pattern, f"regex com wildcard: {pattern}")
+        for path in allowlist.get("paths", []):
+            self.assertIn(
+                "\\.",
+                path,
+                f"path sem extensão ancorada (risco de diretório inteiro): {path}",
+            )
+            self.assertFalse(
+                path.endswith("/"), f"path de diretório inteiro: {path}"
+            )
+        config = GITLEAKS_CONFIG.read_text(encoding="utf-8")
+        self.assertIn("useDefault = true", config)
+        self.assertEqual(allowlist.get("regexTarget"), "secret")
+        for value in GITLEAKS_SURGICAL_REGEXES:
+            self.assertIn(value, allowlist.get("regexes", []))
+        # Paths no TOML escapam o ponto; compara a forma não-escapada.
+        stored = [p.replace("\\.", ".") for p in allowlist.get("paths", [])]
+        for path in GITLEAKS_SURGICAL_PATHS:
+            self.assertIn(path, stored)
+
+    def test_no_const_secret_form_in_triaged_tests(self):
+        # (b) a forma `const X_SECRET =` sumiu dos arquivos triados: o
+        # fixture vivo não se parece mais com credencial.
+        for rel in GITLEAKS_SURGICAL_PATHS:
+            target = ROOT / rel
+            if not target.exists():
+                self.skipTest(
+                    f"{rel} ausente nesta branch (vive em branch irmã; "
+                    "allowlist é preemptiva para o merge)"
+                )
+            text = target.read_text(encoding="utf-8")
+            self.assertNotRegex(
+                text,
+                r"(?m)^\s*const\s+\w+_SECRET\s*=",
+                f"forma credential-like ainda presente em {rel}",
+            )
+
+    def test_allowlist_does_not_cover_real_or_mutated_values(self):
+        # (c) entradas são valores exatos (fullmatch): um segredo realista
+        # novo e um derivado do valor antigo NÃO são cobertos.
+        allowlist = gitleaks_allowlist()
+        compiled = [re.compile(p) for p in allowlist.get("regexes", [])]
+        realistic = "sk-live-" + "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+        mutated = "g01-chain-secret-v2"
+        for candidate in (realistic, mutated):
+            for rx in compiled:
+                self.assertIsNone(
+                    rx.fullmatch(candidate),
+                    f"allowlist cobre valor não-triado {candidate!r} via {rx.pattern!r}",
+                )
+
+    def test_security_scans_job_is_fail_closed(self):
+        # (d) o job security-scans falha fechado: sem bypass silencioso.
+        job = workflow()["jobs"]["security-scans"]
+        dumped = yaml.safe_dump(job)
+        self.assertIn("set -euo pipefail", dumped)
+        self.assertNotIn("continue-on-error", dumped)
+        self.assertNotIn("|| true", dumped)
 
 
 if __name__ == "__main__":

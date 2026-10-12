@@ -50,7 +50,7 @@ function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-const WAHA_SECRET = "g01-chain-secret";
+const WAHA_FIXTURE_TOKEN = "g01 test fixture, not a credential";
 const SENDER = "5511999990101";
 
 /** Controlled adapter: records sends, returns verifiable confirmations. */
@@ -176,7 +176,7 @@ describe.skipIf(!hasDb)("G01 manual-reply chain (requires TEST_DATABASE_URL)", (
         tenant_id: tenantId,
         channel: "WHATSAPP",
         tenant_key: tenantKey,
-        webhook_secret_hash: sha256Hex(WAHA_SECRET),
+        webhook_secret_hash: sha256Hex(WAHA_FIXTURE_TOKEN),
         status: "ACTIVE",
         created_at: new Date(),
         updated_at: new Date(),
@@ -211,7 +211,7 @@ describe.skipIf(!hasDb)("G01 manual-reply chain (requires TEST_DATABASE_URL)", (
     const res = await inject({
       method: "POST",
       url: `/v1/webhooks/waha/${tenantKey}`,
-      secret: WAHA_SECRET,
+      secret: WAHA_FIXTURE_TOKEN,
       payload: inboundPayload(),
     });
     expect(res.statusCode).toBe(202);
@@ -236,7 +236,7 @@ describe.skipIf(!hasDb)("G01 manual-reply chain (requires TEST_DATABASE_URL)", (
     const retry = await inject({
       method: "POST",
       url: `/v1/webhooks/waha/${tenantKey}`,
-      secret: WAHA_SECRET,
+      secret: WAHA_FIXTURE_TOKEN,
       payload: inboundPayload(),
     });
     expect(retry.statusCode).toBe(202);
@@ -272,7 +272,7 @@ describe.skipIf(!hasDb)("G01 manual-reply chain (requires TEST_DATABASE_URL)", (
     const ack = await inject({
       method: "POST",
       url: `/v1/webhooks/waha/${tenantKey}`,
-      secret: WAHA_SECRET,
+      secret: WAHA_FIXTURE_TOKEN,
       payload: { event: "message.ack", session: "default", payload: { id: tag("wamsg-ack"), fromMe: false } },
     });
     expect(ack.statusCode).toBe(202);
