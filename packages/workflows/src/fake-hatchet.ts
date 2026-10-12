@@ -141,6 +141,7 @@ function createFakeProvider(engine: FakeHatchetEngine): HatchetClientProvider {
               stopResolve = resolve;
             });
             const registered = new Set<string>();
+            let active: Promise<void> | null = null;
             async function drain(): Promise<void> {
               while (alive) {
                 if (engine.pauseDrain) {
@@ -160,9 +161,22 @@ function createFakeProvider(engine: FakeHatchetEngine): HatchetClientProvider {
                 run.status = "running";
                 run.attempts += 1;
                 const retries = declaredOpts.get(run.taskName)?.retries ?? 0;
-                try {
-                  await fn(run.input);
-                } catch {
+                // Track the in-flight handler so stop() settles it: graceful
+                // shutdown finishes the ACTIVE run and takes nothing new.
+                let failed = false;
+                const invocation = (async (): Promise<void> => {
+                  try {
+                    await fn(run.input);
+                  } catch {
+                    failed = true;
+                  }
+                })();
+                active = invocation;
+                await invocation;
+                if (active === invocation) {
+                  active = null;
+                }
+                if (failed) {
                   if (run.attempts <= retries) {
                     run.status = "queued";
                   } else {
@@ -198,6 +212,12 @@ function createFakeProvider(engine: FakeHatchetEngine): HatchetClientProvider {
               },
               stop: async (): Promise<void> => {
                 alive = false;
+                // Graceful: let the ACTIVE handler finish (no new runs are
+                // taken once `alive` is false), then release `start()`.
+                const pending = active;
+                if (pending !== null) {
+                  await pending;
+                }
                 stopResolve?.();
               },
             };

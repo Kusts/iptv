@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- fix(workflows): durability-certification gate on Hatchet enqueue (F12 review HIGH): `durable: true` now requires asserted W0-04 certification (`certified: true` / `HATCHET_DURABLE_CERTIFIED=1`, operator-owned); uncertified `enqueue()` throws fail-closed BEFORE any trigger (no run created, nothing to mistake for durable). `FakeHatchetEngine` no longer re-exported from the package index (deep import for tests only). Trigger retries abort after `stop()` (no post-shutdown engine calls); fake `stop()` settles the in-flight handler (graceful). Regressions: uncertified refusal with zero trigger attempts, env/opt-in paths, retry-abort, graceful active-handler shutdown. F12 stays BLOCKED pending W0-04 live-engine certification.
+
 - fix(workflows): real Hatchet SDK shape, mandatory bootstrap and terminal stop (F12)
 
 - fix(security): per-rule AND gitleaks allowlist for triaged fixtures (G01, #40)

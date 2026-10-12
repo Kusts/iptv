@@ -15,10 +15,14 @@
  *   `stop()` (graceful shutdown, terminal).
  *
  * Honesty contract:
- * - `durable: true` is returned ONLY after the engine accepts the trigger
+ * - `durable: true` is returned ONLY for a certified engine
+ *   (`certified: true` / `HATCHET_DURABLE_CERTIFIED=1`, asserting completed
+ *   W0-04 durability certification) AND after the engine accepts the trigger
  *   (a run id exists server-side). Every other outcome throws — including
- *   enqueue-before-start, unknown handler, delayed `runAt` (not yet mapped
- *   to the SDK `schedule()` API), and exhausted provider retries.
+ *   enqueue on an uncertified adapter (fail-closed BEFORE any trigger, so no
+ *   run is created that callers could mistake for durable), enqueue-before-
+ *   start, unknown handler, delayed `runAt` (not yet mapped to the SDK
+ *   `schedule()` API), and exhausted provider retries.
  * - At-least-once: redelivered runs re-invoke the handler. The adapter
  *   propagates the caller `idempotencyKey` as run input `__dedupeKey` (fresh
  *   UUID when absent) and dedupes in-flight triggers per key within process
@@ -70,6 +74,18 @@ export interface HatchetRetryPolicy {
 export interface HatchetAdapterOptions {
   /** Injected provider (tests); default is the real SDK provider. */
   provider?: HatchetClientProvider;
+  /**
+   * Durability certification flag (W0-04 gate). `enqueue()` returns
+   * `{ durable: true }` ONLY when this is set: it asserts that the target
+   * engine completed durability certification (crash/restart proof with a
+   * real engine). Default `false` — uncertified adapters fail closed on
+   * `enqueue()` instead of claiming durability. NEVER set this for a
+   * non-durable double (including `FakeHatchetEngine`) outside tests that
+   * explicitly exercise adapter mechanics; the factory reads it from
+   * `HATCHET_DURABLE_CERTIFIED=1`/`true`, set by the operator only after
+   * W0-04 certification.
+   */
+  certified?: boolean;
   /** Worker name registered on the engine (default "iptv-worker"). */
   workerName?: string;
   /** Default task policy for handlers registered without explicit options. */
@@ -132,6 +148,7 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
 
   private provider: HatchetClientProvider | null;
   private client: HatchetEngineClient | null = null;
+  private readonly certified: boolean;
   private declarations = new Map<string, HatchetTaskDeclaration>();
   private worker: HatchetWorkerHandle | null = null;
   private workerDone: Promise<void> | null = null;
@@ -153,6 +170,7 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
       (opts.onWarning ?? defaultWarn)(warning);
     }
     this.provider = opts.provider ?? new RealHatchetProvider(resolution.config);
+    this.certified = isHatchetDurableCertified(env, opts);
     this.workerName = opts.workerName ?? "iptv-worker";
     this.taskDefaults = opts.taskDefaults ?? {};
     this.retryAttempts = Math.min(Math.max(Math.floor(opts.retry?.attempts ?? 5), 1), 10);
@@ -364,6 +382,16 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
         `hatchet enqueue refused: payload must not define reserved keys "${HATCHET_RUN_TASK_KEY}"/"${HATCHET_RUN_DEDUPE_KEY}"`,
       );
     }
+    if (!this.certified) {
+      // Adoption/certification gate (W0-04): without asserted durability
+      // certification the adapter must never claim it — not even when the
+      // engine would accept the trigger (including in-process doubles, which
+      // persist nothing durably). Refuse BEFORE any trigger attempt so no
+      // run is created that callers could mistake for durable.
+      throw new Error(
+        "hatchet enqueue refused: engine not certified (W0-04 gate pending); refusing to claim durability",
+      );
+    }
     const dedupeKey = task.idempotencyKey ?? newTaskId();
     const input: Record<string, unknown> = {
       ...task.payload,
@@ -507,6 +535,11 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
   private async withRetry<T>(operation: string, fn: () => Promise<T>): Promise<T> {
     let lastError: unknown;
     for (let attempt = 1; attempt <= this.retryAttempts; attempt += 1) {
+      if (attempt > 1 && this.shutdownRequested()) {
+        // A stop() that lands during backoff owns the terminal state: never
+        // emit a new engine operation after shutdown was requested.
+        throw new Error(`hatchet ${operation} aborted: adapter stopped during retry`);
+      }
       try {
         return await fn();
       } catch (err) {
@@ -565,6 +598,22 @@ export interface WorkflowAdapterFactoryOptions extends HatchetAdapterOptions {
   required?: boolean;
 }
 
+/** True when the operator asserted durability certification (W0-04 gate). Explicit option wins over env. */
+function isHatchetDurableCertified(
+  env: NodeJS.ProcessEnv | HatchetEnv,
+  opts: HatchetAdapterOptions,
+): boolean {
+  if (opts.certified !== undefined) {
+    return opts.certified;
+  }
+  const raw = (env as Record<string, string | undefined>)["HATCHET_DURABLE_CERTIFIED"];
+  if (raw === undefined) {
+    return false;
+  }
+  const normalized = raw.trim().toLowerCase();
+  return normalized === "1" || normalized === "true";
+}
+
 /** True when the factory must fail closed instead of falling back to local. */
 function isHatchetRequired(
   env: NodeJS.ProcessEnv | HatchetEnv,
@@ -588,7 +637,10 @@ function isHatchetRequired(
  * `HATCHET_REQUIRED=1`/`true`), which throws fail-closed on a missing
  * token, a missing SDK, or a construction failure instead of ever handing
  * out a silently non-durable adapter. Local mode is explicitly NON-durable.
- * Construction performs no network I/O — use `start()` on the
+ * The factory never asserts durability certification: adapters it builds
+ * are uncertified unless `HATCHET_DURABLE_CERTIFIED=1`/`true` is set in env
+ * (operator-owned, only after W0-04) or `certified: true` is passed
+ * explicitly. Construction performs no network I/O — use `start()` on the
  * `DurableWorkflowPort` to connect.
  */
 export function createWorkflowAdapter(
