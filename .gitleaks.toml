@@ -28,10 +28,10 @@ regexes = [
   '''^integration-test-secret-0123456789$''',
 ]
 paths = [
-  '''apps/api/test/billing-rls-rehearsal\.integration\.test\.ts''',
-  '''apps/api/test/experiments-w16\.integration\.test\.ts''',
-  '''apps/api/test/trial-dispatch\.unit\.test\.ts''',
-  '''docs/06-decisions/ADR-0015-auth-better-auth\.md''',
-  '''apps/api/test/g01-manual-reply-chain\.integration\.test\.ts''',
-  '''apps/api/test/security-altpath-evals\.integration\.test\.ts''',
+  '''^apps/api/test/billing-rls-rehearsal\.integration\.test\.ts$''',
+  '''^apps/api/test/experiments-w16\.integration\.test\.ts$''',
+  '''^apps/api/test/trial-dispatch\.unit\.test\.ts$''',
+  '''^docs/06-decisions/ADR-0015-auth-better-auth\.md$''',
+  '''^apps/api/test/g01-manual-reply-chain\.integration\.test\.ts$''',
+  '''^apps/api/test/security-altpath-evals\.integration\.test\.ts$''',
 ]
