@@ -460,6 +460,14 @@ export class HatchetWorkflowAdapter implements DurableWorkflowPort {
       return;
     }
     if (this.lifecycle !== "started") {
+      // `stopped` stays idempotent; `constructed` becomes terminal here so a
+      // pre-start shutdown can never be resumed (start/register past this
+      // point are rejected — construct a new adapter to resume).
+      if (this.lifecycle === "constructed") {
+        this.lifecycle = "stopped";
+        this.client = null;
+        this.provider = null;
+      }
       return;
     }
     this.lifecycle = "stopped";
@@ -542,30 +550,73 @@ export interface WorkflowAdapterSelection {
 export interface WorkflowAdapterFactoryOptions extends HatchetAdapterOptions {
   /**
    * Override provider construction (tests). When it throws, the factory
-   * falls back to local with a logged warning — same as a missing SDK.
+   * falls back to local with a logged warning — same as a missing SDK —
+   * unless `required` is set (see below).
    */
   createProvider?: () => HatchetClientProvider;
+  /**
+   * Fail-closed bootstrap: when true (or `HATCHET_REQUIRED=1`/`true` in
+   * env), a resolved token with a missing SDK or a provider-construction
+   * failure THROWS instead of falling back to the local adapter, and a
+   * missing token also throws. Deployments that must never run silently
+   * non-durable set this; the default (`false`/unset) preserves the
+   * optional-SDK fallback to local. An explicit option wins over env.
+   */
+  required?: boolean;
+}
+
+/** True when the factory must fail closed instead of falling back to local. */
+function isHatchetRequired(
+  env: NodeJS.ProcessEnv | HatchetEnv,
+  opts: WorkflowAdapterFactoryOptions,
+): boolean {
+  if (opts.required !== undefined) {
+    return opts.required;
+  }
+  const raw = (env as Record<string, string | undefined>)["HATCHET_REQUIRED"];
+  if (raw === undefined) {
+    return false;
+  }
+  const normalized = raw.trim().toLowerCase();
+  return normalized === "1" || normalized === "true";
 }
 
 /**
  * Factory: Hatchet only when a client token resolves AND the adapter
  * constructs; every failure falls back to the local adapter with a logged
- * warning. Local mode is explicitly NON-durable. Construction performs no
- * network I/O — use `start()` on the `DurableWorkflowPort` to connect.
+ * warning — UNLESS required mode (`required: true` or
+ * `HATCHET_REQUIRED=1`/`true`), which throws fail-closed on a missing
+ * token, a missing SDK, or a construction failure instead of ever handing
+ * out a silently non-durable adapter. Local mode is explicitly NON-durable.
+ * Construction performs no network I/O — use `start()` on the
+ * `DurableWorkflowPort` to connect.
  */
 export function createWorkflowAdapter(
   env: NodeJS.ProcessEnv | HatchetEnv = process.env,
   opts: WorkflowAdapterFactoryOptions = {},
 ): WorkflowAdapterSelection {
   const warn = opts.onWarning ?? defaultWarn;
+  const required = isHatchetRequired(env, opts);
   const resolution = resolveHatchetEnv(env);
+  if (!resolution.ok) {
+    if (required) {
+      throw new Error(
+        `hatchet adapter is required (HATCHET_REQUIRED) but unavailable: ${resolution.reason}; refusing to fall back to local (non-durable)`,
+      );
+    }
+    return { adapter: new LocalWorkflowAdapter(), kind: "local" };
+  }
   if (resolution.ok) {
     try {
-      const { createProvider, ...adapterOpts } = opts;
+      // Factory-only keys (`createProvider`, `required`) are consumed here
+      // and never forwarded: `required` was already read by
+      // `isHatchetRequired` above, so `void` marks the intentional drop.
+      const { createProvider, required, ...adapterOpts } = opts;
+      void required;
       if (createProvider === undefined) {
         // Fail fast when the optional SDK is absent (sync resolve, no
-        // network): the factory falls back to local instead of handing out
-        // an adapter that could only fail later at start().
+        // network): without required mode the factory falls back to local
+        // instead of handing out an adapter that could only fail at start().
         assertHatchetSdkPresent();
       }
       const provider = createProvider !== undefined ? createProvider() : undefined;
@@ -575,6 +626,11 @@ export function createWorkflowAdapter(
           : new HatchetWorkflowAdapter(env, { ...adapterOpts, provider });
       return { adapter, kind: "hatchet" };
     } catch (err) {
+      if (required) {
+        throw new Error(
+          `hatchet adapter is required (HATCHET_REQUIRED) but unavailable: ${err instanceof Error ? err.message : String(err)}; refusing to fall back to local (non-durable)`,
+        );
+      }
       warn(
         `[workflows] hatchet adapter unavailable, falling back to local (non-durable): ${err instanceof Error ? err.message : String(err)}`,
       );

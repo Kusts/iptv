@@ -28,6 +28,7 @@ import { FakeHatchetEngine } from "../src/fake-hatchet.js";
 import {
   HATCHET_SDK_SPECIFIER,
   HATCHET_SDK_VERSION,
+  resolveHatchetSdkInit,
 } from "../src/hatchet-provider.js";
 
 const TEST_ENV = { HATCHET_CLIENT_TOKEN: "test-token-not-a-secret" };
@@ -368,11 +369,14 @@ describe("hatchet real-SDK wiring proof", () => {
     const require = createRequire(import.meta.url);
     const pkg = require(`${HATCHET_SDK_SPECIFIER}/package.json`) as { version: string };
     expect(pkg.version).toBe(HATCHET_SDK_VERSION);
-    // Shape only — no client construction, no network.
+    // Shape only — no client construction, no network. Resolved through
+    // the same normalizer `RealHatchetProvider.connect()` uses, so the
+    // CJS-entry double-default interop (`exports.default = HatchetClient`)
+    // passes here exactly as it does in production wiring.
     const mod = (await import(HATCHET_SDK_SPECIFIER)) as unknown;
     expect(mod).toBeDefined();
-    const init = (mod as { default?: { init?: unknown } }).default?.init;
-    expect(typeof init).toBe("function");
+    const resolved = resolveHatchetSdkInit(mod);
+    expect(typeof resolved.init).toBe("function");
   }, 30_000);
 
   it("documents the fail-closed fallback when the SDK is absent", () => {

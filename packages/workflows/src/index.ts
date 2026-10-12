@@ -35,6 +35,7 @@ export {
   HATCHET_SDK_VERSION,
   RealHatchetProvider,
   assertHatchetSdkPresent,
+  resolveHatchetSdkInit,
 } from "./hatchet-provider.js";
 export type {
   HatchetClientProvider,
@@ -44,6 +45,8 @@ export type {
   HatchetRunsHandle,
   HatchetTaskDeclaration,
   HatchetWorkerHandle,
+  RealHatchetProviderOptions,
+  ResolvedHatchetSdkInit,
 } from "./hatchet-provider.js";
 export { FakeHatchetEngine } from "./fake-hatchet.js";
 export type { FakeRunRecord, FakeRunStatus } from "./fake-hatchet.js";

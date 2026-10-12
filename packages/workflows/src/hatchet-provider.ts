@@ -11,12 +11,24 @@
  * No `import type` from the SDK appears anywhere in `src/`: the structural
  * interfaces below are the only compile-time contract, so `tsc` stays green
  * with or without the optional dependency installed. The runtime shape is
- * asserted against the pinned SDK version (verified from the 1.37.0
- * tarball: default export with `.init(config)`, `client.task({ name, fn,
- * retries, executionTimeout, scheduleTimeout, backoff })`,
+ * normalized against the pinned SDK version (verified from the 1.37.0
+ * tarball: the CJS entry sets `exports.default = HatchetClient` — a CLASS
+ * with `static init(config)` — plus a named `Hatchet` export, so an ESM
+ * `await import()` observes the double-default interop
+ * `mod.default.default.init` / `mod.Hatchet.init`, never a bare
+ * `mod.default.init` object; `client.task({ name, fn, retries,
+ * executionTimeout, scheduleTimeout, backoff })`,
  * `client.worker(name)`, `worker.registerWorkflows/start/stop`,
- * `declaration.runNoWait(input) -> WorkflowRunRef { runId }`,
+ * `declaration.runNoWait(input) -> WorkflowRunRef { runId: Promise<string> }`,
  * `client.runs.cancel({ ids })`).
+ *
+ * TLS stays SDK-managed: `init()` receives only `{ token, host_port,
+ * api_url, namespace }` and the SDK's own config loader reads
+ * `HATCHET_CLIENT_TLS_*` from the environment, so this slice never selects
+ * a TLS mode (self-hosted `HATCHET_CLIENT_TLS_STRATEGY=none` included).
+ *
+ * F12 is NOT certified against a live engine: this wiring is proven by
+ * unit tests with tarball-faithful module shapes, never by a real cluster.
  */
 
 import { createRequire } from "node:module";
@@ -104,40 +116,105 @@ interface RealSdkClientShape {
   };
 }
 
-interface RealSdkModuleShape {
-  default: {
-    init(config: { token: string; host_port?: string; api_url?: string; namespace?: string }): RealSdkClientShape;
-  };
+interface RealSdkInitFn {
+  (config: { token: string; host_port?: string; api_url?: string; namespace?: string }): RealSdkClientShape;
+}
+
+export interface ResolvedHatchetSdkInit {
+  /** The SDK `init` (usually `HatchetClient.init`). */
+  init: RealSdkInitFn;
+  /** Where `init` was found (diagnostics only, never a secret). */
+  via: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function assertRealSdkShape(mod: unknown): asserts mod is RealSdkModuleShape {
-  if (!isRecord(mod) || !isRecord(mod["default"]) || typeof mod["default"]["init"] !== "function") {
-    throw new Error(
-      `hatchet SDK shape mismatch: ${HATCHET_SDK_SPECIFIER}@${HATCHET_SDK_VERSION} default export does not expose init() — refusing to wire an unverified SDK`,
-    );
+function initOn(value: unknown): value is { init: RealSdkInitFn } {
+  // Classes (like the real `HatchetClient` with `static init`) are
+  // `typeof "function"`, not `"object"` — accept both.
+  if (typeof value === "function") {
+    return typeof (value as unknown as Record<string, unknown>)["init"] === "function";
   }
+  return isRecord(value) && typeof value["init"] === "function";
+}
+
+/**
+ * Normalize the published SDK's module shape to its `init` entry point.
+ *
+ * Verified against `@hatchet-dev/typescript-sdk@1.37.0` (CJS entry:
+ * `exports.default = HatchetClient`, a class with `static init`, plus a
+ * named `Hatchet` export). Depending on the importer interop, `init` is
+ * observed at `mod.default.init` (legacy object or pre-unwrapped class),
+ * `mod.default.default.init` (ESM `await import()` of the CJS entry —
+ * `mod.default` is `module.exports`), or `mod.Hatchet.init` (named
+ * export); a bare `mod.init` is accepted last. Anything else throws a
+ * shape-mismatch error listing what was tried, so an unverified SDK can
+ * never be wired silently.
+ */
+export function resolveHatchetSdkInit(mod: unknown): ResolvedHatchetSdkInit {
+  if (isRecord(mod)) {
+    const def = mod["default"];
+    if (initOn(def)) {
+      return { init: def.init, via: "default.init" };
+    }
+    if (isRecord(def) && initOn(def["default"])) {
+      return { init: (def["default"] as { init: RealSdkInitFn }).init, via: "default.default.init" };
+    }
+    if (initOn(mod["Hatchet"])) {
+      return { init: (mod["Hatchet"] as { init: RealSdkInitFn }).init, via: "Hatchet.init" };
+    }
+  }
+  if (initOn(mod)) {
+    return { init: mod.init, via: "init" };
+  }
+  throw new Error(
+    `hatchet SDK shape mismatch: ${HATCHET_SDK_SPECIFIER}@${HATCHET_SDK_VERSION} exposes no init() ` +
+      `(tried default.init, default.default.init, Hatchet.init, init) — refusing to wire an unverified SDK`,
+  );
+}
+
+/** Options for `RealHatchetProvider` (tests inject `loadSdk`; default imports the pinned SDK). */
+export interface RealHatchetProviderOptions {
+  loadSdk?: () => Promise<unknown>;
+  /**
+   * Presence guard override (tests only): defaults to
+   * `assertHatchetSdkPresent`, so a missing optional dependency fails
+   * closed before any load is attempted.
+   */
+  assertSdkPresent?: () => void;
 }
 
 /** Production provider: builds the real SDK client from resolved config. */
 export class RealHatchetProvider implements HatchetClientProvider {
   readonly kind = "real" as const;
-  constructor(private readonly config: HatchetResolvedConfig) {}
+  private readonly loadSdk: () => Promise<unknown>;
+  private readonly assertSdkPresent: () => void;
+  constructor(
+    private readonly config: HatchetResolvedConfig,
+    opts: RealHatchetProviderOptions = {},
+  ) {
+    this.loadSdk = opts.loadSdk ?? (() => import(HATCHET_SDK_SPECIFIER));
+    this.assertSdkPresent = opts.assertSdkPresent ?? assertHatchetSdkPresent;
+  }
 
   async connect(): Promise<HatchetEngineClient> {
-    assertHatchetSdkPresent();
+    this.assertSdkPresent();
     let mod: unknown;
     try {
-      mod = await import(HATCHET_SDK_SPECIFIER);
+      mod = await this.loadSdk();
     } catch (err) {
       throw new Error(
         `hatchet SDK failed to load (${HATCHET_SDK_SPECIFIER}@${HATCHET_SDK_VERSION}): ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    assertRealSdkShape(mod);
+    let init: RealSdkInitFn;
+    try {
+      init = resolveHatchetSdkInit(mod).init;
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : String(err));
+    }
     const initConfig: { token: string; host_port?: string; api_url?: string; namespace?: string } = {
       token: this.config.token,
     };
@@ -152,7 +229,7 @@ export class RealHatchetProvider implements HatchetClientProvider {
     }
     let client: RealSdkClientShape;
     try {
-      client = mod.default.init(initConfig);
+      client = init(initConfig);
     } catch (err) {
       throw new Error(`hatchet client init failed: ${err instanceof Error ? err.message : String(err)}`);
     }

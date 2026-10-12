@@ -15,6 +15,12 @@
  * Fail-closed: when no token resolves from either source, resolution
  * reports `ok: false` and the caller must NOT construct a Hatchet client.
  * Secret values are never included in warnings or errors.
+ *
+ * TLS stays SDK-managed: the provider passes only `{ token, host_port,
+ * api_url, namespace }` to `init()` and the SDK's own config loader reads
+ * `HATCHET_CLIENT_TLS_*` from the environment (including
+ * `HATCHET_CLIENT_TLS_STRATEGY=none` for self-hosted plain-text gRPC), so
+ * no TLS mode is selected here.
  */
 
 export interface HatchetEnv {
@@ -26,6 +32,12 @@ export interface HatchetEnv {
   HATCHET_API_TOKEN?: string;
   /** @deprecated legacy name — maps to `HATCHET_CLIENT_API_URL` with a warning. */
   HATCHET_SERVER_URL?: string;
+  /**
+   * Fail-closed bootstrap flag (read by `createWorkflowAdapter`, never by
+   * `resolveHatchetEnv`): `1`/`true` means a missing/unusable Hatchet setup
+   * throws instead of falling back to local. Never a secret.
+   */
+  HATCHET_REQUIRED?: string;
 }
 
 export interface HatchetResolvedConfig {
