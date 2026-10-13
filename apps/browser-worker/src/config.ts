@@ -85,6 +85,15 @@ export interface WorkerConfig {
    * always carry the value.
    */
   launchSettleMs?: number;
+  /**
+   * Bounded wait for the SPA route/form to settle after navigation (ms).
+   * Optional so existing programmatic configs keep compiling; resolved
+   * configs always carry the value. No env wiring: the 10s production
+   * default covers the panel's ~5s boot+redirect; tests override per
+   * config object. Absent/empty form on a stable non-login route ends
+   * the wait early (already-logged-in sessions never pay the full bound).
+   */
+  routeSettleTimeoutMs?: number;
 }
 
 export class ConfigError extends Error {
@@ -136,6 +145,13 @@ export function parseLaunchSettleMs(raw: string | undefined): number {
   if (!Number.isInteger(n) || n < 500 || n > 15_000) return 3000;
   return n;
 }
+
+/**
+ * Default post-navigation route/form settle bound (ms). No env wiring:
+ * resolved configs always carry this value; tests override per config
+ * object. Covers the panel's ~5s boot + hash-redirect + form render.
+ */
+export const ROUTE_SETTLE_TIMEOUT_MS_DEFAULT = 10_000;
 
 /**
  * Opt-in real-Chrome channel from `BROWSER_WORKER_CHANNEL` (default-off).
@@ -455,6 +471,7 @@ export function resolveWorkerConfig(
     challengeWaitSeconds: parseChallengeWaitSeconds(env["BROWSER_WORKER_CHALLENGE_WAIT_SECONDS"]),
     commandTimeoutMs: parseCommandTimeoutMs(env["BROWSER_WORKER_COMMAND_TIMEOUT_MS"]),
     launchSettleMs: parseLaunchSettleMs(env["BROWSER_WORKER_LAUNCH_SETTLE_MS"]),
+    routeSettleTimeoutMs: ROUTE_SETTLE_TIMEOUT_MS_DEFAULT,
     profileRoot,
     profileDir: profileDirFor(profileRoot, tenantId, providerAccountId),
   };

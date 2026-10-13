@@ -50,6 +50,7 @@ describe("login path validation", () => {
 describe("exact sign-in route", () => {
   it("matches only the exact hash", () => {
     expect(isSignInRoute(`${ALLOWED}/#` + "/sign-in")).toBe(true);
+    expect(isSignInRoute(`${ALLOWED}/#/sign-in?redirect=/dashboard`)).toBe(true);
     for (const url of [
       `${ALLOWED}/#/sign-in-evil`,
       `${ALLOWED}/#/x-sign-in`,

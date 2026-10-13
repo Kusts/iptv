@@ -27,7 +27,7 @@ import {
   type WorkerEvidence,
   type WorkerResult,
 } from "../output.js";
-import { normalizeLoginPath } from "../policy.js";
+import { isSignInRoute, normalizeLoginPath } from "../policy.js";
 import { acquireProfileLock, ProfileLockError } from "../profileLock.js";
 import { SubmitAbortedError } from "../browser.js";
 import type { BrowserOpenOptions } from "./readIdentity.js";
@@ -298,7 +298,22 @@ async function establishSession(
     await sleep(2000);
   }
   throwIfAborted(signal);
-  const form = await page.probeLoginForm();
+  // The SPA boots async and redirects unauthenticated sessions to the
+  // sign-in route seconds after domcontentloaded: wait boundedly for the
+  // route/form to settle instead of reading a transitional DOM once.
+  // A stable non-login route with no form (already-logged-in session)
+  // ends the wait early via "settled" — it never pays the full bound.
+  const settled = await awaitRouteSettled(
+    page,
+    { timeoutMs: config.routeSettleTimeoutMs ?? ROUTE_SETTLE_TIMEOUT_MS },
+    signal,
+  );
+  if (settled.kind === "challenge") {
+    return outcome("HUMAN_REQUIRED", "CHALLENGE_DETECTED");
+  }
+  // "settled" already established form absence on a stable route — no
+  // re-probe. "timeout" keeps the legacy single-probe behavior.
+  const form = settled.kind === "form" ? settled.form : settled.kind === "timeout" ? await page.probeLoginForm() : null;
   throwIfAborted(signal);
   if (form !== null) {
     const unique =
@@ -436,6 +451,91 @@ export async function awaitReauthSettled(
 type ReauthResult = { ok: true } | { ok: false; outcome: Outcome };
 
 /**
+ * Bounded wait for the login form to APPEAR after navigation: a hash-routed
+ * SPA boots its JS, redirects unauthenticated sessions to `#/sign-in...`
+ * and renders the form seconds after `domcontentloaded`, so a single
+ * immediate probe would read a transitional DOM. Resolves with the form
+ * once present, `"challenge"` when a challenge appears, or `"timeout"`
+ * when the budget elapsed first. Abort-aware: throws on abort instead of
+ * starting another sondagem. Exported for unit tests.
+ */
+export const ROUTE_SETTLE_TIMEOUT_MS = 10000;
+export const ROUTE_SETTLE_POLL_MS = 250;
+
+type RouteSettled =
+  | { kind: "form"; form: NonNullable<Awaited<ReturnType<CinevisionCommandPage["probeLoginForm"]>>> }
+  | { kind: "challenge" }
+  | { kind: "settled" }
+  | { kind: "timeout" };
+
+/** Consecutive stable polls (non-login route, no form) that end the wait early. */
+const ROUTE_STABLE_POLLS = 3;
+
+/**
+ * Bounded wait for the SPA route/form to settle after navigation: the app
+ * boots its JS, redirects unauthenticated sessions to `#/sign-in...` and
+ * renders the form seconds after `domcontentloaded`, so a single immediate
+ * probe would read a transitional DOM. Resolves with the form once
+ * present, `"challenge"` when a challenge appears, `"settled"` when the
+ * route is stable off the sign-in route with no form (an already-logged-in
+ * session never pays the full bound), or `"timeout"` when the budget
+ * elapsed first. Abort-aware: throws on abort instead of starting another
+ * sondagem. Exported for unit tests.
+ */
+export async function awaitRouteSettled(
+  page: Pick<CinevisionCommandPage, "probeLoginForm" | "detectChallenge" | "currentUrl">,
+  opts: { timeoutMs?: number; pollMs?: number; stablePolls?: number } = {},
+  signal?: AbortSignal,
+): Promise<RouteSettled> {
+  const timeoutMs = opts.timeoutMs ?? ROUTE_SETTLE_TIMEOUT_MS;
+  const pollMs = opts.pollMs ?? ROUTE_SETTLE_POLL_MS;
+  const stablePolls = opts.stablePolls ?? ROUTE_STABLE_POLLS;
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let lastHash: string | null = null;
+  let stableCount = 0;
+  for (;;) {
+    // Abort/deadline gate BEFORE starting any sondagem.
+    throwIfAborted(signal);
+    if (Date.now() >= deadline) return { kind: "timeout" };
+    const challenge = await settleProbe(page.detectChallenge(), settleRemainingMs(deadline), signal);
+    if (challenge === SETTLE_EXPIRED) return { kind: "timeout" };
+    if (challenge) return { kind: "challenge" };
+    // Same gate between sondagens.
+    throwIfAborted(signal);
+    if (Date.now() >= deadline) return { kind: "timeout" };
+    const form = await settleProbe(page.probeLoginForm(), settleRemainingMs(deadline), signal);
+    if (form === SETTLE_EXPIRED) return { kind: "timeout" };
+    throwIfAborted(signal);
+    if (Date.now() >= deadline) return { kind: "timeout" };
+    if (form !== null) return { kind: "form", form };
+    let rawUrl: string | null = null;
+    let hash: string | null = null;
+    try {
+      rawUrl = page.currentUrl();
+      hash = new URL(rawUrl).hash;
+    } catch {
+      rawUrl = null;
+      hash = null;
+    }
+    if (hash !== null && rawUrl !== null && !isSignInRoute(rawUrl) && hash === lastHash) {
+      stableCount += 1;
+      if (stableCount >= stablePolls) return { kind: "settled" };
+    } else if (hash !== lastHash) {
+      lastHash = hash;
+      stableCount = 0;
+    }
+    const remaining = settleRemainingMs(deadline);
+    if (remaining <= 0) return { kind: "timeout" };
+    const nap = await settleProbe(
+      sleep(Math.min(Math.max(0, pollMs), remaining)),
+      remaining,
+      signal,
+    );
+    if (nap === SETTLE_EXPIRED) return { kind: "timeout" };
+  }
+}
+
+/**
  * Single bounded reauthentication after a classified 401: arm the ONE
  * policy reauth window, revisit the panel, submit only through the
  * strict-unique form, then settle boundedly. Returns success ONLY when
@@ -447,6 +547,7 @@ type ReauthResult = { ok: true } | { ok: false; outcome: Outcome };
 async function reauthenticateOnce(
   page: CinevisionCommandPage,
   credentials: SessionCredentials,
+  routeSettleTimeoutMs: number,
   signal?: AbortSignal,
 ): Promise<ReauthResult> {
   const fail = (status: WorkerStatus, errorCode: WorkerErrorCode): ReauthResult => ({
@@ -459,7 +560,9 @@ async function reauthenticateOnce(
     await page.goto(credentials.panelUrl);
     throwIfAborted(signal);
     if (await page.detectChallenge()) return fail("HUMAN_REQUIRED", "CHALLENGE_DETECTED");
-    const form = await page.probeLoginForm();
+    const settled = await awaitRouteSettled(page, { timeoutMs: routeSettleTimeoutMs }, signal);
+    if (settled.kind === "challenge") return fail("HUMAN_REQUIRED", "CHALLENGE_DETECTED");
+    const form = settled.kind === "form" ? settled.form : settled.kind === "timeout" ? await page.probeLoginForm() : null;
     throwIfAborted(signal);
     if (form === null) return fail("HUMAN_REQUIRED", "SESSION_EXPIRED");
     const unique =
@@ -501,6 +604,7 @@ function createReauthTracker(
   page: CinevisionCommandPage,
   credentials: SessionCredentials,
   state: { reauthenticated: boolean },
+  routeSettleTimeoutMs: number,
   signal?: AbortSignal,
 ): ReauthTracker {
   let attempted = false;
@@ -508,7 +612,7 @@ function createReauthTracker(
     attempt: async (): Promise<ReauthAttempt> => {
       if (attempted) return { kind: "spent" };
       attempted = true;
-      const result = await reauthenticateOnce(page, credentials, signal);
+      const result = await reauthenticateOnce(page, credentials, routeSettleTimeoutMs, signal);
       if (result.ok) {
         state.reauthenticated = true;
         return { kind: "reauthed" };
@@ -811,7 +915,13 @@ async function runBounded(
 
     const inPage = toCinevisionInPage(page);
     const readerDeps: ReaderDeps = { page: inPage, allowedOrigin: config.allowedOrigin };
-    const reauth = createReauthTracker(page, credentials, state, signal);
+    const reauth = createReauthTracker(
+      page,
+      credentials,
+      state,
+      config.routeSettleTimeoutMs ?? ROUTE_SETTLE_TIMEOUT_MS,
+      signal,
+    );
 
     if (command === "cinevision.readIdentity") {
       return done(await runIdentityRead(readerDeps, credentials, reauth, signal));

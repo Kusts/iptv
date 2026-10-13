@@ -192,12 +192,15 @@ export function decideRoutedRequest(input: RoutedRequestInput): PolicyDecision {
 }
 
 /**
- * True only when the current page URL hash is EXACTLY the sign-in route.
- * Substring matches (`#/sign-in-evil`, `?x=#/sign-in`, …) are NOT routes.
+ * True only when the current page URL hash is the sign-in route, with an
+ * optional query (e.g. `#/sign-in?redirect=/dashboard`, the panel's own
+ * post-login redirect parameter). Substring matches (`#/sign-in-evil`,
+ * `?x=#/sign-in`, `#/sign-in/extra`, …) are NOT routes.
  */
 export function isSignInRoute(pageUrl: string): boolean {
   try {
-    return new URL(pageUrl).hash === SIGN_IN_HASH;
+    const hash = new URL(pageUrl).hash;
+    return hash === SIGN_IN_HASH || hash.startsWith(`${SIGN_IN_HASH}?`);
   } catch {
     return false;
   }

@@ -51,6 +51,7 @@ function config(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
     headless: true,
     challengeWaitSeconds: 0,
     commandTimeoutMs: 60_000,
+    routeSettleTimeoutMs: 60,
     profileRoot: root,
     profileDir: join(root, "p-test"),
     ...overrides,
@@ -77,7 +78,25 @@ interface Script {
   form: { forms: number; emailInputs: number; passwordInputs: number; submitButtons: number } | null;
   /** Forms served after a reauth navigation (defaults to `form`). */
   formAfterReauth?: { forms: number; emailInputs: number; passwordInputs: number; submitButtons: number } | null;
+  /**
+   * Per-probe form outcomes, consumed in order across every
+   * `probeLoginForm()` call (establish + reauth). When present and
+   * non-empty it wins over `form`/`formAfterReauth` (which remain as
+   * fallback once exhausted) — models a form that renders late.
+   */
+  formProbeScript?: ({ forms: number; emailInputs: number; passwordInputs: number; submitButtons: number } | null)[];
+  /**
+   * Per-call page URLs, consumed in order across every `currentUrl()`
+   * call (fallback: the legacy `#/dashboard` URL) — models a
+   * hash-redirect that lands late.
+   */
+  urlScript?: string[];
   challenge?: boolean;
+  /**
+   * Per-poll challenge outcomes, consumed in order across every
+   * `detectChallenge()` call (fallback: static `challenge`).
+   */
+  challengeScript?: boolean[];
   loginResult?: boolean;
   /** In-page outcomes served to `evaluateCapability`, in order. */
   reads: InPageResult[];
@@ -116,13 +135,23 @@ function fakeBrowser(script: Script, calls: Calls): CinevisionCommandBrowser {
   // bounded reauth window as production (F4) instead of ignoring it.
   const policy = initialPolicyState();
   const page: CinevisionCommandPage = {
-    currentUrl: () => `${ALLOWED}/#/dashboard`,
+    currentUrl: () => {
+      if (script.urlScript !== undefined && script.urlScript.length > 0) {
+        const next = script.urlScript.shift();
+        if (next !== undefined) return next;
+      }
+      return `${ALLOWED}/#/dashboard`;
+    },
     goto: async () => {
       calls.gotos += 1;
       navigations += 1;
       submittedSinceNav = false;
     },
     probeLoginForm: async () => {
+      if (script.formProbeScript !== undefined && script.formProbeScript.length > 0) {
+        const next = script.formProbeScript.shift();
+        return next === undefined ? null : next;
+      }
       // A successful login removes the form (the real `submitLogin`
       // refuses while a form remains): probes after a submit since the
       // last navigation observe the logged-in DOM.
@@ -131,7 +160,13 @@ function fakeBrowser(script: Script, calls: Calls): CinevisionCommandBrowser {
         ? script.formAfterReauth
         : script.form);
     },
-    detectChallenge: async () => script.challenge ?? false,
+    detectChallenge: async () => {
+      if (script.challengeScript !== undefined && script.challengeScript.length > 0) {
+        const next = script.challengeScript.shift();
+        return next ?? false;
+      }
+      return script.challenge ?? false;
+    },
     submitLogin: async () => {
       const decision = decideRoutedRequest({
         method: "POST",
@@ -495,6 +530,83 @@ describe("session reauth (bounded, once, real policy)", () => {
     expect(result.errorCode).toBe("IDENTITY_MISMATCH");
     expect(result.reauthenticated).toBe(false);
     expect(calls.evaluates).toBe(1);
+    expect(calls.submitted).toBe(1);
+  });
+});
+
+describe("route settle (post-navigation SPA)", () => {
+  const loginForm = {
+    forms: 1, emailInputs: 1, passwordInputs: 1, submitButtons: 1,
+  };
+  const expired = (): InPageResult => ({ kind: "ok", status: 401, contentType: "application/json", data: {} });
+
+  it("waits for a late-rendered reauth form and confirms identity", async () => {
+    const calls = newCalls();
+    const result = await run("cinevision.readIdentity", {}, {
+      form: null,
+      formAfterReauth: loginForm,
+      formProbeScript: [null, null, loginForm, loginForm, null],
+      reads: [
+        expired(),
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+      ],
+    }, calls, config({ routeSettleTimeoutMs: 2000 }));
+    expect(result.status).toBe("READ_CONFIRMED");
+    expect(result.reauthenticated).toBe(true);
+    expect(result.identityMatched).toBe(true);
+    expect(calls.submitted).toBe(2);
+    expect(calls.gotos).toBe(2);
+  });
+
+  it("proceeds without login on a stable non-login route", async () => {
+    const calls = newCalls();
+    const result = await run("cinevision.readIdentity", {}, {
+      form: null,
+      reads: [
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+      ],
+    }, calls);
+    expect(result.status).toBe("READ_CONFIRMED");
+    expect(result.reauthenticated).toBe(false);
+    expect(calls.submitted).toBe(0);
+  });
+
+  it("fails closed on a challenge surfacing mid-settle", async () => {
+    const calls = newCalls();
+    const result = await run("cinevision.readIdentity", {}, {
+      form: null,
+      challengeScript: [false, false, false, true],
+      reads: [
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+      ],
+    }, calls, config({ routeSettleTimeoutMs: 2000 }));
+    expect(result.status).toBe("HUMAN_REQUIRED");
+    expect(result.errorCode).toBe("CHALLENGE_DETECTED");
+    expect(calls.submitted).toBe(0);
+    expect(calls.evaluates).toBe(0);
+  });
+
+  it("follows a late hash-redirect into the sign-in form", async () => {
+    const calls = newCalls();
+    const result = await run("cinevision.readIdentity", {}, {
+      form: null,
+      urlScript: [
+        `${ALLOWED}/#/dashboard`,
+        `${ALLOWED}/#/dashboard`,
+        `${ALLOWED}/#/sign-in?redirect=/dashboard`,
+        `${ALLOWED}/#/sign-in?redirect=/dashboard`,
+      ],
+      formProbeScript: [null, null, null, loginForm, null],
+      reads: [
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+      ],
+    }, calls, config({ routeSettleTimeoutMs: 2000 }));
+    expect(result.status).toBe("READ_CONFIRMED");
+    expect(result.identityMatched).toBe(true);
+    expect(result.reauthenticated).toBe(false);
     expect(calls.submitted).toBe(1);
   });
 });
