@@ -391,6 +391,38 @@ describe("V2 wiring", () => {
         args: {},
         body: { data: [{ id: "reseller-api", is_active: true }] },
       },
+      {
+        command: "cinevision.readServerBouquets",
+        args: { serverId: "srv-1" },
+        body: [{ id: "b-1", name: "Bouquet A" }],
+      },
+      {
+        command: "cinevision.readCustomerAudit",
+        args: { id: "cust-1" },
+        body: {
+          current_page: 1,
+          data: [
+            {
+              event: "updated",
+              created_at: "2026-10-13T10:00:00Z",
+              updated_at: "2026-10-13T10:00:00Z",
+              user_action: "update",
+              record_affected: "cust-1",
+              ip_address: "10.0.0.1",
+              user_agent: "agent",
+              changes: [],
+            },
+          ],
+          last_page: 1,
+          per_page: 25,
+          total: 1,
+        },
+      },
+      {
+        command: "cinevision.listResellers",
+        args: {},
+        body: [{ id: "r-1", username: "reseller-a", parent: null }],
+      },
     ];
     for (const c of cases) {
       const calls = newCalls();

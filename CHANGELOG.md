@@ -2,6 +2,14 @@
 
 ## Unreleased - Added
 
+- feat(browser-worker): readServerBouquets, readCustomerAudit e listResellers read-only via api_in_browser a partir de shapes observed-live (apêndice b do dossier customers/edit 2026-10-13): top-level arrays normalizados in-page (rootArray) e paginador laravel flat com meta no root (metaAtRoot), changes descartado na projeção, subcomandos read-server-bouquets/read-customer-audit/list-resellers
+
+- docs: tráfego live full-08 da plataforma cinevision no dossier customers/edit em docs/11-research/cinevision-customers-edit-2026-10-13.md (apêndice b, 7 loads e 179 eventos com tabela tela|método|path|status, promoções observed-live no §4, form edit com rótulos e contagens, bundle-only como unconfirmed, sem bodies e sem writes)
+
+- docs: fase dinâmica parcial do dossier customers/edit do cinevision em docs/11-research/cinevision-customers-edit-2026-10-13.md (apêndice a, dashboard observed-live 2026-10-13, edit não observado, delta confirmado/não-confirmado/novo, get/put customers/:id seguem unconfirmed)
+
+- docs: dossier estático da tela customers/edit do cinevision em docs/11-research/cinevision-customers-edit-2026-10-13.md (snapshot 2026-10-13, bundle público v3.94 sem login, base 19/09) — mapa da rota, catálogo de api método|path|uso|confiança e gates campo-a-campo, tudo observed-static ou unconfirmed; fase cdp dinâmica pendente
+
 - docs(release): evidência live parcial 2026-10-12 — B1 (customer + PIX R$5 PENDING + QR em sandbox; pagamento dashboard + webhook pendentes), M1 (sessão WORKING + 1 envio 201, provável duplicata de sonda, sem readback), vault CINEVISION vazio (Steps travados), W0-04 prova live em hatchet-lite descartável (durable:true + restart sem duplicar efeito) com `.env` local adotado; matriz G01/G05/F12 atualizada sem promoção indevida.
 
 - test(release): re-run parcial da matriz G/F em 2026-10-12 (main `cfec222`, PostgreSQL 16 descartável): G01/G02/G03/G04/G05/G06/G08/G09 verdes (85 testes no total; `last_run` real no YAML + nota P5). Demais IDs seguem `not_rerun_in_this_task`; lives e re-run integral seguem pendentes do operador.

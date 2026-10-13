@@ -22,7 +22,7 @@ describe("cli args", () => {
   });
 
   it("exposes one subcommand per certified read capability", () => {
-    expect(CINEVISION_READ_COMMANDS).toHaveLength(11);
+    expect(CINEVISION_READ_COMMANDS).toHaveLength(14);
     for (const entry of CINEVISION_READ_COMMANDS) {
       const argv: string[] = [entry.subcommand];
       if ((entry as { id?: boolean }).id === true) argv.push("--id", "test-id-1");
@@ -48,6 +48,11 @@ describe("cli args", () => {
     expect(
       parseArgs(["read-live-connections", "--server-id", "srv-1", "--page", "1"]).args,
     ).toEqual({ serverId: "srv-1", page: 1 });
+    expect(parseArgs(["read-server-bouquets", "--server-id", "srv-1"]).args).toEqual({
+      serverId: "srv-1",
+    });
+    expect(parseArgs(["read-customer-audit", "--id", "cust-1"]).args).toEqual({ id: "cust-1" });
+    expect(parseArgs(["list-resellers"]).args).toEqual({});
     // `--flag=value` form works too.
     expect(parseArgs(["read-customer", "--id=cust-1"]).args).toEqual({ id: "cust-1" });
   });
@@ -57,6 +62,8 @@ describe("cli args", () => {
     expect(failsClosed(["read-customer-status"])).toMatch(/--id/);
     expect(failsClosed(["read-connections"])).toMatch(/--id/);
     expect(failsClosed(["read-live-connections"])).toMatch(/--server-id/);
+    expect(failsClosed(["read-server-bouquets"])).toMatch(/--server-id/);
+    expect(failsClosed(["read-customer-audit"])).toMatch(/--id/);
   });
 
   it("rejects mistyped ids and pagination WITHOUT echoing the raw value", () => {

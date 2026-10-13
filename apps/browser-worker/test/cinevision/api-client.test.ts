@@ -155,6 +155,16 @@ describe("buildApiPath (closed capability map)", () => {
     );
   });
 
+  it("maps the three live-observed reads to fixed GET paths", () => {
+    expect(buildApiPath("serverBouquets", { serverId: "srv-9" })).toBe(
+      "/api/servers/bouquets/srv-9/true",
+    );
+    expect(buildApiPath("customerAudit", { customerId: "cust-1" })).toBe(
+      "/api/audit/record/customer/cust-1",
+    );
+    expect(buildApiPath("resellersList")).toBe("/api/resellers/list");
+  });
+
   it("rejects path-smuggling ids and out-of-range pagination", () => {
     for (const bad of ["../evil", "a/b", "", "x".repeat(65)]) {
       expect(() => buildApiPath("customer", { customerId: bad }), bad).toThrowError(
@@ -162,6 +172,11 @@ describe("buildApiPath (closed capability map)", () => {
       );
     }
     expect(() => buildApiPath("liveConnections", {})).toThrowError(CapabilityParamError);
+    expect(() => buildApiPath("serverBouquets", {})).toThrowError(CapabilityParamError);
+    expect(() => buildApiPath("customerAudit", {})).toThrowError(CapabilityParamError);
+    expect(() => buildApiPath("serverBouquets", { serverId: "../evil" })).toThrowError(
+      CapabilityParamError,
+    );
     expect(() => buildApiPath("customers", { perPage: 0 })).toThrowError(CapabilityParamError);
     expect(() => buildApiPath("customers", { perPage: 101 })).toThrowError(CapabilityParamError);
   });
@@ -380,6 +395,218 @@ describe("R3: boundary projection (primitive-only, meta allowlist)", () => {
     expect(line).not.toContain('"token"');
     // The nested object field is discarded, not copied.
     expect(res.body).toEqual({ username: "op", credits: 2 });
+  });
+});
+
+describe("R3b: rootArray + metaAtRoot projections (observed live 2026-10-13)", () => {
+  it("projects a top-level array to {data:items} with primitive-only pick", async () => {
+    const captured: Captured[] = [];
+    const res = await fetchCapability(
+      {
+        page: fakePage(
+          okBehavior({
+            bodyText: JSON.stringify([
+              { id: "b-1", name: "Bouquet A", token: TOKEN },
+              { id: "b-2", name: "Bouquet B", nested: { token: "nested-secret" } },
+            ]),
+          }),
+          captured,
+        ),
+        allowedOrigin: ALLOWED,
+      },
+      "serverBouquets",
+      { serverId: "srv-1" },
+    );
+    expect(res.transportFailed).toBe(false);
+    expect(captured[0]?.url).toBe("https://panel.example.test/api/servers/bouquets/srv-1/true");
+    expect(res.body).toEqual({ data: [{ id: "b-1", name: "Bouquet A" }, { id: "b-2", name: "Bouquet B" }] });
+    expect(JSON.stringify(res)).not.toContain(TOKEN);
+    expect(JSON.stringify(res)).not.toContain("nested-secret");
+  });
+
+  it("maps non-array rootArray payloads to {data:null}", async () => {
+    const captured: Captured[] = [];
+    const res = await fetchCapability(
+      {
+        page: fakePage(okBehavior({ bodyText: JSON.stringify({ data: [] }) }), captured),
+        allowedOrigin: ALLOWED,
+      },
+      "resellersList",
+    );
+    expect(res.transportFailed).toBe(false);
+    expect(captured[0]?.url).toBe("https://panel.example.test/api/resellers/list");
+    expect(res.body).toEqual({ data: null });
+  });
+
+  it("projects reseller rows keeping parent and dropping nested values", async () => {
+    const captured: Captured[] = [];
+    const res = await fetchCapability(
+      {
+        page: fakePage(
+          okBehavior({
+            bodyText: JSON.stringify([
+              { id: "r-1", username: "reseller-a", parent: null, token: TOKEN },
+            ]),
+          }),
+          captured,
+        ),
+        allowedOrigin: ALLOWED,
+      },
+      "resellersList",
+    );
+    expect(res.transportFailed).toBe(false);
+    expect(res.body).toEqual({ data: [{ id: "r-1", username: "reseller-a", parent: null }] });
+    expect(JSON.stringify(res)).not.toContain(TOKEN);
+  });
+
+  it("reads flat paginator counters from the root for customerAudit", async () => {
+    const captured: Captured[] = [];
+    const res = await fetchCapability(
+      {
+        page: fakePage(
+          okBehavior({
+            bodyText: JSON.stringify({
+              current_page: 1,
+              data: [
+                {
+                  event: "updated",
+                  created_at: "2026-10-13T10:00:00Z",
+                  updated_at: "2026-10-13T10:00:00Z",
+                  user_action: "update",
+                  record_affected: "cust-1",
+                  ip_address: "10.0.0.1",
+                  user_agent: "agent",
+                  changes: [{ field: "status" }],
+                },
+              ],
+              first_page_url: "https://panel.example.test/?page=1",
+              from: 1,
+              last_page: 3,
+              last_page_url: "https://panel.example.test/?page=3",
+              links: [{ url: null, label: "prev", active: false }],
+              next_page_url: null,
+              path: "https://panel.example.test/api/audit/record/customer/cust-1",
+              per_page: 25,
+              prev_page_url: null,
+              to: 1,
+              total: 55,
+            }),
+          }),
+          captured,
+        ),
+        allowedOrigin: ALLOWED,
+      },
+      "customerAudit",
+      { customerId: "cust-1" },
+    );
+    expect(res.transportFailed).toBe(false);
+    expect(captured[0]?.url).toBe(
+      "https://panel.example.test/api/audit/record/customer/cust-1",
+    );
+    expect(res.body).toEqual({
+      data: [
+        {
+          event: "updated",
+          created_at: "2026-10-13T10:00:00Z",
+          updated_at: "2026-10-13T10:00:00Z",
+          user_action: "update",
+          record_affected: "cust-1",
+          ip_address: "10.0.0.1",
+          user_agent: "agent",
+        },
+      ],
+      meta: { current_page: 1, last_page: 3, per_page: 25, total: 55, from: 1, to: 1 },
+    });
+    const line = JSON.stringify(res);
+    expect(line).not.toContain("changes");
+    expect(line).not.toContain("first_page_url");
+    expect(line).not.toContain("prev");
+  });
+
+  it("yields meta null when the flat root carries no counters", async () => {
+    const captured: Captured[] = [];
+    const res = await fetchCapability(
+      {
+        page: fakePage(okBehavior({ bodyText: JSON.stringify({ data: [] }) }), captured),
+        allowedOrigin: ALLOWED,
+      },
+      "customerAudit",
+      { customerId: "cust-1" },
+    );
+    expect(res.transportFailed).toBe(false);
+    expect(res.body).toEqual({ data: [], meta: null });
+  });
+
+  it("new flags stay serialization-safe (R1 isolation, no module bindings)", async () => {
+    const src = fetchProjectedInPage.toString();
+    for (const banned of ["PROJECTIONS", "CUSTOMER_PICK", "applyProjection", "pickOne"]) {
+      expect(src, banned).not.toContain(banned);
+    }
+    const isolated = new Function(`return (${src})`)() as typeof fetchProjectedInPage;
+    const scope = globalThis as unknown as Record<string, unknown>;
+    const prevFetch = scope["fetch"];
+    const prevStorage = scope["localStorage"];
+    const prevLocation = scope["location"];
+    scope["localStorage"] = { getItem: (key: string) => (key === "token" ? TOKEN : null) };
+    scope["location"] = { origin: ALLOWED };
+    try {
+      scope["fetch"] = (async () => ({
+        status: 200,
+        headers: { get: (name: string) => (name.toLowerCase() === "content-type" ? "application/json" : null) },
+        text: async () => JSON.stringify([{ id: "b-1", name: "B", token: TOKEN }]),
+      })) as unknown as typeof fetch;
+      const rooted = await isolated({
+        allowedOrigin: ALLOWED,
+        path: "/api/servers/bouquets/srv-1/true",
+        expectedPath: "/api/servers/bouquets/srv-1/true",
+        projection: { pick: ["id", "name"], rootArray: true },
+        timeoutMs: 1000,
+      });
+      expect(rooted.kind).toBe("ok");
+      if (rooted.kind !== "ok") return;
+      expect(rooted.data).toEqual({ data: [{ id: "b-1", name: "B" }] });
+
+      scope["fetch"] = (async () => ({
+        status: 200,
+        headers: { get: (name: string) => (name.toLowerCase() === "content-type" ? "application/json" : null) },
+        text: async () =>
+          JSON.stringify({
+            current_page: 2,
+            last_page: 4,
+            per_page: 25,
+            total: 90,
+            data: [
+              {
+                event: "created",
+                created_at: "c",
+                updated_at: "u",
+                user_action: "a",
+                record_affected: "r",
+                ip_address: "ip",
+                user_agent: "ua",
+                changes: [],
+              },
+            ],
+          }),
+      })) as unknown as typeof fetch;
+      const flat = await isolated({
+        allowedOrigin: ALLOWED,
+        path: "/api/audit/record/customer/cust-1",
+        expectedPath: "/api/audit/record/customer/cust-1",
+        projection: { unwrap: "data", pick: ["event"], metaAtRoot: true },
+        timeoutMs: 1000,
+      });
+      expect(flat.kind).toBe("ok");
+      if (flat.kind !== "ok") return;
+      expect(flat.data).toEqual({
+        data: [{ event: "created" }],
+        meta: { current_page: 2, last_page: 4, per_page: 25, total: 90 },
+      });
+    } finally {
+      scope["fetch"] = prevFetch;
+      scope["localStorage"] = prevStorage;
+      scope["location"] = prevLocation;
+    }
   });
 });
 

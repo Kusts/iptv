@@ -43,6 +43,20 @@ function optString(record: Record<string, unknown>, key: string): string | null 
   return value;
 }
 
+/**
+ * Required `string|null`: the key must be present. Absent keys stay
+ * absent through the primitive-only in-page projection (which also drops
+ * object/array values), so presence is the fail-closed signal against
+ * provider drift being misread as `null`.
+ */
+function reqStringOrNull(record: Record<string, unknown>, key: string): string | null {
+  if (!(key in record)) throw new SchemaViolation(`${key}: expected string|null`);
+  const value = record[key];
+  if (value === null) return null;
+  if (typeof value !== "string") throw new SchemaViolation(`${key}: expected string|null`);
+  return value;
+}
+
 function optNumber(record: Record<string, unknown>, key: string): number | null {
   const value = record[key];
   if (value === null || value === undefined) return null;
@@ -432,5 +446,237 @@ export function parseLiveConnectionPage(body: unknown): ParseResult<LiveConnecti
     return { ok: true, value: { items, meta: parsePageMeta(record["meta"]) } };
   } catch (err) {
     return fail(err instanceof SchemaViolation ? err.message : "live-connections: invalid shape");
+  }
+}
+
+/**
+ * Server bouquet entry (observed live 2026-10-13: top-level array
+ * `{id,name}[]` from `GET /api/servers/bouquets/{serverId}/true`, no
+ * envelope; the in-page projection normalizes it to `{data: items}`).
+ */
+export interface BouquetSummary {
+  id: string;
+  name: string;
+}
+
+const BOUQUET_FIELDS = ["id", "name"] as const;
+
+export function parseBouquet(item: unknown): ParseResult<BouquetSummary> {
+  try {
+    const entry = asRecord(item, "bouquets.data[]");
+    rejectUnknown(entry, BOUQUET_FIELDS, "bouquets.data[]");
+    return { ok: true, value: { id: reqString(entry, "id"), name: reqString(entry, "name") } };
+  } catch (err) {
+    return fail(err instanceof SchemaViolation ? err.message : "bouquets: invalid shape");
+  }
+}
+
+/**
+ * Parses the projected `{data: items}` envelope; a bare top-level array
+ * (the raw live shape) is accepted as well. Anything else fails closed.
+ */
+export function parseBouquetList(body: unknown): ParseResult<BouquetSummary[]> {
+  try {
+    const list = Array.isArray(body) ? body : asArray(asRecord(body, "bouquets")["data"], "bouquets.data");
+    return {
+      ok: true,
+      value: list.map((item) => {
+        const parsed = parseBouquet(item);
+        if (!parsed.ok) throw new SchemaViolation(parsed.reason);
+        return parsed.value;
+      }),
+    };
+  } catch (err) {
+    return fail(err instanceof SchemaViolation ? err.message : "bouquets: invalid shape");
+  }
+}
+
+/**
+ * Reseller list entry (observed live 2026-10-13, sample len 1: top-level
+ * array `{id,username,parent}[]` from `GET /api/resellers/list`, no
+ * envelope; the in-page projection normalizes it to `{data: items}`).
+ * `parent` is REQUIRED (`string|null`): the primitive-only in-page
+ * projection silently drops object/array values (and absent keys stay
+ * absent), so an optional read would misreport provider drift as "no
+ * parental link". Any other case (absent, object, array, number,
+ * boolean) fails closed.
+ */
+export interface ResellerListItem {
+  id: string;
+  username: string;
+  parent: string | null;
+}
+
+const RESELLER_LIST_FIELDS = ["id", "username", "parent"] as const;
+
+export function parseResellerListItem(item: unknown): ParseResult<ResellerListItem> {
+  try {
+    const entry = asRecord(item, "resellers.data[]");
+    rejectUnknown(entry, RESELLER_LIST_FIELDS, "resellers.data[]");
+    return {
+      ok: true,
+      value: {
+        id: reqString(entry, "id"),
+        username: reqString(entry, "username"),
+        parent: reqStringOrNull(entry, "parent"),
+      },
+    };
+  } catch (err) {
+    return fail(err instanceof SchemaViolation ? err.message : "resellers: invalid shape");
+  }
+}
+
+/**
+ * Parses the projected `{data: items}` envelope; a bare top-level array
+ * (the raw live shape) is accepted as well. Anything else fails closed.
+ */
+export function parseResellerList(body: unknown): ParseResult<ResellerListItem[]> {
+  try {
+    const list = Array.isArray(body) ? body : asArray(asRecord(body, "resellers")["data"], "resellers.data");
+    return {
+      ok: true,
+      value: list.map((item) => {
+        const parsed = parseResellerListItem(item);
+        if (!parsed.ok) throw new SchemaViolation(parsed.reason);
+        return parsed.value;
+      }),
+    };
+  } catch (err) {
+    return fail(err instanceof SchemaViolation ? err.message : "resellers: invalid shape");
+  }
+}
+
+/**
+ * Customer audit record (observed live 2026-10-13: Laravel FLAT paginator
+ * from `GET /api/audit/record/customer/{customerId}`).
+ *
+ * `user_action` is REQUIRED (`string|null`): `null` marks a system event
+ * (observed live DEBUG-17: `data[7].user_action` null in a 200 with 10
+ * items, the other keys present as strings). Null is preserved — never
+ * normalized to `""` — so system events stay distinguishable from named
+ * actions. The key must be present: the primitive-only in-page projection
+ * silently drops object/array values (and absent keys stay absent), so an
+ * optional read would misreport provider drift as a system event. Absent,
+ * object, array, number or boolean fail closed (BAD_RESPONSE).
+ *
+ * The nested `changes` array (sub-shape unknown) is discarded in-page by
+ * the primitive-only projection and never crosses into the process — it
+ * is intentionally absent from this interface. `links` entries never
+ * cross either (not in the meta allowlist).
+ */
+export interface AuditRecord {
+  event: string;
+  createdAt: string;
+  updatedAt: string;
+  userAction: string | null;
+  recordAffected: string;
+  ipAddress: string;
+  userAgent: string;
+}
+
+const AUDIT_RECORD_FIELDS = [
+  "event",
+  "created_at",
+  "updated_at",
+  "user_action",
+  "record_affected",
+  "ip_address",
+  "user_agent",
+] as const;
+
+export function parseAuditRecord(item: unknown): ParseResult<AuditRecord> {
+  try {
+    const entry = asRecord(item, "audit.data[]");
+    rejectUnknown(entry, AUDIT_RECORD_FIELDS, "audit.data[]");
+    return {
+      ok: true,
+      value: {
+        event: reqString(entry, "event"),
+        createdAt: reqString(entry, "created_at"),
+        updatedAt: reqString(entry, "updated_at"),
+        userAction: reqStringOrNull(entry, "user_action"),
+        recordAffected: reqString(entry, "record_affected"),
+        ipAddress: reqString(entry, "ip_address"),
+        userAgent: reqString(entry, "user_agent"),
+      },
+    };
+  } catch (err) {
+    return fail(err instanceof SchemaViolation ? err.message : "audit: invalid shape");
+  }
+}
+
+/**
+ * Audit page with FLAT-tolerant pagination: every counter is optional
+ * (`number|null`) because nulabilidade is amostral. Accepts the projected
+ * `{data: items, meta?}` envelope (meta null when the root carried no
+ * counters) as well as the raw flat shape (`data` plus counters/`links`
+ * at the same level; `links` and URL strings ignored).
+ */
+export interface AuditPage {
+  records: AuditRecord[];
+  total: number | null;
+  perPage: number | null;
+  currentPage: number | null;
+  lastPage: number | null;
+}
+
+/**
+ * Root keys tolerated on an audit page: `data`, the projected `meta`
+ * envelope, and the observed flat Laravel paginator keys (`links` and
+ * its URL strings ignored, anything else fails). Reasons use field
+ * names only.
+ */
+const AUDIT_PAGE_FIELDS = [
+  "data",
+  "meta",
+  "links",
+  "current_page",
+  "last_page",
+  "per_page",
+  "total",
+  "from",
+  "to",
+  "first_page_url",
+  "last_page_url",
+  "path",
+  "next_page_url",
+  "prev_page_url",
+] as const;
+
+export function parseAuditPage(body: unknown): ParseResult<AuditPage> {
+  try {
+    const record = asRecord(body, "audit");
+    rejectUnknown(record, AUDIT_PAGE_FIELDS, "audit");
+    const records = asArray(record["data"], "audit.data").map((item) => {
+      const parsed = parseAuditRecord(item);
+      if (!parsed.ok) throw new SchemaViolation(parsed.reason);
+      return parsed.value;
+    });
+    // Projected `meta` wins when present; otherwise read the flat root
+    // counters. A null/absent `meta` with no flat counters yields nulls.
+    const metaRaw = record["meta"];
+    const meta =
+      metaRaw !== null && metaRaw !== undefined
+        ? asRecord(metaRaw, "audit.meta")
+        : record;
+    if (metaRaw !== null && metaRaw !== undefined) {
+      rejectUnknown(
+        meta,
+        ["current_page", "last_page", "per_page", "total", "from", "to"],
+        "audit.meta",
+      );
+    }
+    return {
+      ok: true,
+      value: {
+        records,
+        total: optNumber(meta, "total"),
+        perPage: optNumber(meta, "per_page"),
+        currentPage: optNumber(meta, "current_page"),
+        lastPage: optNumber(meta, "last_page"),
+      },
+    };
+  } catch (err) {
+    return fail(err instanceof SchemaViolation ? err.message : "audit: invalid shape");
   }
 }

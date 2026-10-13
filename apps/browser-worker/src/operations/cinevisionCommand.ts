@@ -47,13 +47,16 @@ import {
   listCustomers,
   listIntegrations,
   listPackagePrices,
+  listResellers,
   listServers,
   readConnections,
   readCreditBalance,
   readCustomer,
+  readCustomerAudit,
   readCustomerStatus,
   readIdentity,
   readLiveConnections,
+  readServerBouquets,
   readServerStatus,
   type ListArgs,
   type ReaderDeps,
@@ -659,6 +662,12 @@ function dispatchReader(
       return readLiveConnections(deps, { serverId: args.serverId ?? "", ...paginationArgs(args) });
     case "cinevision.listIntegrations":
       return listIntegrations(deps);
+    case "cinevision.readServerBouquets":
+      return readServerBouquets(deps, { serverId: args.serverId ?? "" });
+    case "cinevision.readCustomerAudit":
+      return readCustomerAudit(deps, { customerId: args.id ?? "" });
+    case "cinevision.listResellers":
+      return listResellers(deps);
   }
 }
 

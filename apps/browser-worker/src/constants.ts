@@ -112,6 +112,9 @@ export const CINEVISION_READ_COMMANDS = [
     pagination: true,
   },
   { subcommand: "list-integrations", operation: "cinevision.listIntegrations" },
+  { subcommand: "read-server-bouquets", operation: "cinevision.readServerBouquets", serverId: true },
+  { subcommand: "read-customer-audit", operation: "cinevision.readCustomerAudit", id: true },
+  { subcommand: "list-resellers", operation: "cinevision.listResellers" },
 ] as const;
 
 export type CinevisionSubcommand =

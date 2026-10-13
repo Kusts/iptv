@@ -23,6 +23,16 @@ export interface InPageProjection {
   pick: string[];
   /** Keep the pagination `meta` alongside projected `data`. */
   keepMeta?: boolean;
+  /**
+   * The live payload is a top-level array (no envelope): project each
+   * item and return `{ data: items }` (or `{ data: null }` for non-array).
+   */
+  rootArray?: boolean;
+  /**
+   * Laravel FLAT paginator: pagination counters live at the response
+   * root (no `meta` subobject). Read `metaAllow` from the root.
+   */
+  metaAtRoot?: boolean;
 }
 
 /** Structured request executed inside the page (no arbitrary URLs). */
@@ -93,7 +103,10 @@ export type ReadCapability =
   | "serverStatus"
   | "packagePrices"
   | "liveConnections"
-  | "integrations";
+  | "integrations"
+  | "serverBouquets"
+  | "customerAudit"
+  | "resellersList";
 
 export interface CapabilityParams {
   customerId?: string;
@@ -176,6 +189,12 @@ export function buildApiPath(capability: ReadCapability, params?: CapabilityPara
     }
     case "integrations":
       return "/api/integrations";
+    case "serverBouquets":
+      return `/api/servers/bouquets/${encodeURIComponent(reqId(params?.serverId))}/true`;
+    case "customerAudit":
+      return `/api/audit/record/customer/${encodeURIComponent(reqId(params?.customerId))}`;
+    case "resellersList":
+      return "/api/resellers/list";
   }
 }
 
@@ -231,6 +250,29 @@ const PROJECTIONS: Record<ReadCapability, InPageProjection> = {
     keepMeta: true,
   },
   integrations: { unwrap: "data", pick: ["id", "is_active"] },
+  // Observed live 2026-10-13 (dossier customers-edit Apêndice B): top-level
+  // array `{id,name}[]`, no envelope — normalized in-page to `{data:items}`.
+  serverBouquets: { pick: ["id", "name"], rootArray: true },
+  // Observed live 2026-10-13 (dossier customers-edit Apêndice B): Laravel
+  // FLAT paginator (counters at the root, no `meta` subobject). The nested
+  // `changes` array is discarded in-page (primitive-only pick); `links`
+  // never crosses (not in the meta allowlist).
+  customerAudit: {
+    unwrap: "data",
+    pick: [
+      "event",
+      "created_at",
+      "updated_at",
+      "user_action",
+      "record_affected",
+      "ip_address",
+      "user_agent",
+    ],
+    metaAtRoot: true,
+  },
+  // Observed live 2026-10-13 (dossier customers-edit Apêndice B, len 1):
+  // top-level array `{id,username,parent}[]`, no envelope.
+  resellersList: { pick: ["id", "username", "parent"], rootArray: true },
 };
 
 /**
@@ -430,6 +472,8 @@ export async function fetchProjectedInPage(req: InPageRequest): Promise<InPageRe
       unwrap?: unknown;
       pick?: unknown;
       keepMeta?: unknown;
+      rootArray?: unknown;
+      metaAtRoot?: unknown;
     };
     const pickList: string[] = Array.isArray(projection.pick)
       ? (projection.pick as unknown[]).filter(
@@ -462,6 +506,16 @@ export async function fetchProjectedInPage(req: InPageRequest): Promise<InPageRe
       }
       return out;
     };
+    if (projection.rootArray === true) {
+      if (Array.isArray(parsed)) {
+        const items: Array<Record<string, unknown> | null> = [];
+        for (const item of parsed) {
+          items.push(pickPrimitive(item));
+        }
+        return { kind: "ok", status, contentType, data: { data: items } };
+      }
+      return { kind: "ok", status, contentType, data: { data: null } };
+    }
     if (projection.unwrap === "data") {
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
         return { kind: "ok", status, contentType, data: { data: null } };
@@ -472,6 +526,25 @@ export async function fetchProjectedInPage(req: InPageRequest): Promise<InPageRe
         const items: Array<Record<string, unknown> | null> = [];
         for (const item of inner) {
           items.push(pickPrimitive(item));
+        }
+        if (projection.metaAtRoot === true) {
+          const metaOut: Record<string, unknown> = {};
+          for (const key of metaAllow) {
+            if (!(key in root)) continue;
+            const value: unknown = root[key];
+            if (
+              value === null ||
+              typeof value === "string" ||
+              typeof value === "number" ||
+              typeof value === "boolean"
+            ) {
+              metaOut[key] = value;
+            }
+          }
+          if (Object.keys(metaOut).length === 0) {
+            return { kind: "ok", status, contentType, data: { data: items, meta: null } };
+          }
+          return { kind: "ok", status, contentType, data: { data: items, meta: metaOut } };
         }
         if (projection.keepMeta === true) {
           const metaRaw: unknown = root["meta"];

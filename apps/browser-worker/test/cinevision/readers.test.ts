@@ -4,13 +4,16 @@ import {
   listCustomers,
   listIntegrations,
   listPackagePrices,
+  listResellers,
   listServers,
   readConnections,
   readCreditBalance,
   readCustomer,
+  readCustomerAudit,
   readCustomerStatus,
   readIdentity,
   readLiveConnections,
+  readServerBouquets,
   readServerStatus,
   type ReaderDeps,
 } from "../../src/providers/cinevision/readers.js";
@@ -187,6 +190,166 @@ describe("readers: happy paths", () => {
     if (!result.ok) return;
     expect(result.data.items).toHaveLength(1);
     expect(result.evidence.path).toContain("/api/customers/live-connections/srv-1");
+  });
+
+  it("readServerBouquets/listResellers read top-level arrays (observed live 2026-10-13)", async () => {
+    const bouquets = await readServerBouquets(
+      fakeDeps(jsonCanned(200, [{ id: "b-1", name: "Bouquet A", token: TOKEN }])),
+      { serverId: "srv-1" },
+    );
+    expect(bouquets.ok).toBe(true);
+    if (!bouquets.ok) return;
+    expect(bouquets.data).toEqual([{ id: "b-1", name: "Bouquet A" }]);
+    expect(bouquets.evidence.path).toBe("/api/servers/bouquets/srv-1/true");
+    expect(JSON.stringify(bouquets)).not.toContain(TOKEN);
+
+    const resellers = await listResellers(
+      fakeDeps(jsonCanned(200, [{ id: "r-1", username: "reseller-a", parent: null }])),
+    );
+    expect(resellers.ok).toBe(true);
+    if (!resellers.ok) return;
+    expect(resellers.data).toEqual([{ id: "r-1", username: "reseller-a", parent: null }]);
+    expect(resellers.evidence.path).toBe("/api/resellers/list");
+  });
+
+  it("listResellers fails closed when parent is absent or a non-string object (real projection)", async () => {
+    const missing = await listResellers(
+      fakeDeps(jsonCanned(200, [{ id: "r-1", username: "reseller-a" }])),
+    );
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error.code).toBe("BAD_RESPONSE");
+    const objectParent = await listResellers(
+      fakeDeps(jsonCanned(200, [{ id: "r-1", username: "reseller-a", parent: { id: "p-1" } }])),
+    );
+    expect(objectParent.ok).toBe(false);
+    if (!objectParent.ok) expect(objectParent.error.code).toBe("BAD_RESPONSE");
+  });
+
+  it("readCustomerAudit parses the flat paginator with meta from the root", async () => {
+    const result = await readCustomerAudit(
+      fakeDeps(
+        jsonCanned(200, {
+          current_page: 1,
+          data: [
+            {
+              event: "updated",
+              created_at: "2026-10-13T10:00:00Z",
+              updated_at: "2026-10-13T10:00:00Z",
+              user_action: "update",
+              record_affected: "cust-1",
+              ip_address: "10.0.0.1",
+              user_agent: "agent",
+              changes: [{ field: "status" }],
+            },
+          ],
+          from: 1,
+          last_page: 3,
+          links: [{ url: null, label: "prev", active: false }],
+          per_page: 25,
+          to: 1,
+          total: 55,
+        }),
+      ),
+      { customerId: "cust-1" },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.records).toHaveLength(1);
+    expect(result.data.records[0]).toEqual({
+      event: "updated",
+      createdAt: "2026-10-13T10:00:00Z",
+      updatedAt: "2026-10-13T10:00:00Z",
+      userAction: "update",
+      recordAffected: "cust-1",
+      ipAddress: "10.0.0.1",
+      userAgent: "agent",
+    });
+    expect(result.data).toMatchObject({ total: 55, perPage: 25, currentPage: 1, lastPage: 3 });
+    expect(result.evidence.path).toBe("/api/audit/record/customer/cust-1");
+    expect(JSON.stringify(result)).not.toContain("changes");
+  });
+
+  it("readCustomerAudit preserves user_action null as a system event (real projection)", async () => {
+    const result = await readCustomerAudit(
+      fakeDeps(
+        jsonCanned(200, {
+          current_page: 1,
+          data: [
+            {
+              event: "updated",
+              created_at: "2026-10-13T10:00:00Z",
+              updated_at: "2026-10-13T10:00:00Z",
+              user_action: null,
+              record_affected: "cust-1",
+              ip_address: "10.0.0.1",
+              user_agent: "agent",
+              changes: [{ field: "status" }],
+            },
+          ],
+          from: 1,
+          last_page: 1,
+          links: [],
+          per_page: 25,
+          to: 1,
+          total: 1,
+        }),
+      ),
+      { customerId: "cust-1" },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.records).toHaveLength(1);
+    expect(result.data.records[0]?.userAction).toBeNull();
+  });
+
+  it("readCustomerAudit fails closed when user_action is absent or a non-string object (real projection)", async () => {
+    function auditBody(item: Record<string, unknown>): Canned {
+      return jsonCanned(200, {
+        current_page: 1,
+        data: [item],
+        from: 1,
+        last_page: 1,
+        links: [],
+        per_page: 25,
+        to: 1,
+        total: 1,
+      });
+    }
+    const base = {
+      event: "updated",
+      created_at: "2026-10-13T10:00:00Z",
+      updated_at: "2026-10-13T10:00:00Z",
+      record_affected: "cust-1",
+      ip_address: "10.0.0.1",
+      user_agent: "agent",
+    };
+    const missing = await readCustomerAudit(fakeDeps(auditBody({ ...base })), {
+      customerId: "cust-1",
+    });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error.code).toBe("BAD_RESPONSE");
+    const objectAction = await readCustomerAudit(
+      fakeDeps(auditBody({ ...base, user_action: { action: "update" } })),
+      { customerId: "cust-1" },
+    );
+    expect(objectAction.ok).toBe(false);
+    if (!objectAction.ok) expect(objectAction.error.code).toBe("BAD_RESPONSE");
+    const nulled = await readCustomerAudit(
+      fakeDeps(auditBody({ ...base, user_action: null })),
+      { customerId: "cust-1" },
+    );
+    expect(nulled.ok).toBe(true);
+  });
+
+  it("new readers fail closed on invalid ids without throwing", async () => {
+    const bouquets = await readServerBouquets(fakeDeps(jsonCanned(200, [])), {
+      serverId: "../../evil",
+    });
+    expect(bouquets.ok).toBe(false);
+    if (!bouquets.ok) expect(bouquets.error.code).toBe("BAD_RESPONSE");
+    const audit = await readCustomerAudit(fakeDeps(jsonCanned(200, {})), { customerId: "" });
+    expect(audit.ok).toBe(false);
+    if (!audit.ok) expect(audit.error.code).toBe("BAD_RESPONSE");
   });
 });
 

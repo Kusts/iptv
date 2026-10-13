@@ -23,6 +23,9 @@ selector flags — args are numeric ids/pagination only, validated fail-closed.
 | `list-package-prices` | `cinevision.listPackagePrices` | `GET /api/packages/price` — package price table snapshot. |
 | `read-live-connections --server-id X` | `cinevision.readLiveConnections` | `GET /api/customers/live-connections/{serverId}` — live sessions (paginated). |
 | `list-integrations` | `cinevision.listIntegrations` | `GET /api/integrations` — integration catalog snapshot. |
+| `read-server-bouquets --server-id X` | `cinevision.readServerBouquets` | `GET /api/servers/bouquets/{serverId}/true` — bouquet catalog snapshot. |
+| `read-customer-audit --id X` | `cinevision.readCustomerAudit` | `GET /api/audit/record/customer/{customerId}` — customer audit trail (flat paginator). |
+| `list-resellers` | `cinevision.listResellers` | `GET /api/resellers/list` — reseller catalog snapshot. |
 
 `--operation <name>` (dotted) and `--help` are accepted; any other
 `--*` flag fails closed. DOM selection (`--selector`, `--dom`, `--xpath`,

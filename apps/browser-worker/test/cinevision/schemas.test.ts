@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   normalizeIsTrial,
+  parseAuditPage,
+  parseBouquetList,
   parseCustomer,
   parseCustomerPage,
   parseIdentity,
   parseIntegrationList,
   parseLiveConnectionPage,
   parsePackagePriceList,
+  parseResellerList,
   parseServerList,
   parseServerStatusList,
 } from "../../src/providers/cinevision/schemas.js";
@@ -226,6 +229,153 @@ describe("parsePackagePriceList / parseIntegrationList", () => {
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     expect(parsed.value).toEqual([{ id: "reseller-api", active: false }]);
+  });
+});
+
+describe("parseBouquetList / parseResellerList (top-level arrays, observed live 2026-10-13)", () => {
+  it("parses the projected {data} envelope and the bare top-level array", () => {
+    const rows = [
+      { id: "b-1", name: "Bouquet A" },
+      { id: "b-2", name: "Bouquet B" },
+    ];
+    for (const body of [{ data: rows }, rows]) {
+      const parsed = parseBouquetList(body);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      expect(parsed.value).toEqual(rows);
+    }
+    const resellers = [{ id: "r-1", username: "reseller-a", parent: null }];
+    for (const body of [{ data: resellers }, resellers]) {
+      const parsed = parseResellerList(body);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      expect(parsed.value).toEqual(resellers);
+    }
+  });
+
+  it("rejects unexpected fields, wrong types and non-array data", () => {
+    expect(parseBouquetList({ data: [{ id: "b-1", name: "B", extra: 1 }] }).ok).toBe(false);
+    expect(parseBouquetList({ data: [{ id: "b-1" }] }).ok).toBe(false);
+    expect(parseBouquetList({ data: [{ id: 7, name: "B" }] }).ok).toBe(false);
+    expect(parseBouquetList({ data: "nope" }).ok).toBe(false);
+    expect(parseBouquetList(null).ok).toBe(false);
+    expect(parseResellerList({ data: [{ id: "r-1", username: "a", parent: 7 }] }).ok).toBe(false);
+    expect(parseResellerList({ data: [{ id: "r-1", username: "a", injected: 1 }] }).ok).toBe(false);
+    expect(parseResellerList({ data: {} }).ok).toBe(false);
+  });
+
+  it("requires parent presence (absent/object/array fail closed, string|null ok)", () => {
+    expect(parseResellerList({ data: [{ id: "r-1", username: "a" }] }).ok).toBe(false);
+    expect(
+      parseResellerList({ data: [{ id: "r-1", username: "a", parent: { id: "p-1" } }] }).ok,
+    ).toBe(false);
+    expect(parseResellerList({ data: [{ id: "r-1", username: "a", parent: ["p-1"] }] }).ok).toBe(
+      false,
+    );
+    expect(parseResellerList({ data: [{ id: "r-1", username: "a", parent: true }] }).ok).toBe(false);
+    for (const parent of ["p-1", null]) {
+      const parsed = parseResellerList({ data: [{ id: "r-1", username: "a", parent }] });
+      expect(parsed.ok).toBe(true);
+    }
+  });
+});
+
+describe("parseAuditPage (flat Laravel paginator, observed live 2026-10-13)", () => {
+  function record(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      event: "updated",
+      created_at: "2026-10-13T10:00:00Z",
+      updated_at: "2026-10-13T10:00:00Z",
+      user_action: "update",
+      record_affected: "cust-1",
+      ip_address: "10.0.0.1",
+      user_agent: "agent",
+      ...overrides,
+    };
+  }
+
+  it("parses the projected {data,meta} envelope (meta null when root had no counters)", () => {
+    const parsed = parseAuditPage({
+      data: [record()],
+      meta: { current_page: 1, last_page: 3, per_page: 25, total: 55, from: 1, to: 1 },
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.records).toHaveLength(1);
+    expect(parsed.value.records[0]).toEqual({
+      event: "updated",
+      createdAt: "2026-10-13T10:00:00Z",
+      updatedAt: "2026-10-13T10:00:00Z",
+      userAction: "update",
+      recordAffected: "cust-1",
+      ipAddress: "10.0.0.1",
+      userAgent: "agent",
+    });
+    expect(parsed.value).toMatchObject({ total: 55, perPage: 25, currentPage: 1, lastPage: 3 });
+    const nulled = parseAuditPage({ data: [], meta: null });
+    expect(nulled.ok).toBe(true);
+    if (!nulled.ok) return;
+    expect(nulled.value).toEqual({ records: [], total: null, perPage: null, currentPage: null, lastPage: null });
+  });
+
+  it("accepts the raw flat shape (counters + links at the root, links ignored)", () => {
+    const parsed = parseAuditPage({
+      current_page: 2,
+      data: [record()],
+      first_page_url: "https://panel.example.test/?page=1",
+      from: 26,
+      last_page: 4,
+      last_page_url: "https://panel.example.test/?page=4",
+      links: [{ url: null, label: "prev", active: false }],
+      next_page_url: null,
+      path: "https://panel.example.test/api/audit/record/customer/cust-1",
+      per_page: 25,
+      prev_page_url: null,
+      to: 50,
+      total: 90,
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.records).toHaveLength(1);
+    expect(parsed.value).toMatchObject({ total: 90, perPage: 25, currentPage: 2, lastPage: 4 });
+  });
+
+  it("preserves user_action null (system event, observed live DEBUG-17) and rejects non-string types", () => {
+    const nulled = parseAuditPage({ data: [record({ user_action: null })], meta: null });
+    expect(nulled.ok).toBe(true);
+    if (!nulled.ok) return;
+    expect(nulled.value.records).toHaveLength(1);
+    expect(nulled.value.records[0]?.userAction).toBeNull();
+    expect(parseAuditPage({ data: [record({ user_action: 7 })], meta: null }).ok).toBe(false);
+    expect(parseAuditPage({ data: [record({ user_action: { action: "update" } })], meta: null }).ok).toBe(
+      false,
+    );
+    expect(parseAuditPage({ data: [record({ user_action: ["update"] })], meta: null }).ok).toBe(
+      false,
+    );
+    expect(parseAuditPage({ data: [record({ user_action: true })], meta: null }).ok).toBe(false);
+  });
+
+  it("requires user_action presence (absent fails closed, string|null ok)", () => {
+    const missing: Record<string, unknown> = { ...record() };
+    delete missing["user_action"];
+    expect(parseAuditPage({ data: [missing], meta: null }).ok).toBe(false);
+    for (const userAction of ["update", null]) {
+      const parsed = parseAuditPage({ data: [record({ user_action: userAction })], meta: null });
+      expect(parsed.ok).toBe(true);
+    }
+  });
+
+  it("fails on drift: unexpected fields, wrong types, non-array data", () => {
+    expect(parseAuditPage({ data: [record({ injected: 1 })] }).ok).toBe(false);
+    expect(parseAuditPage({ data: [record({ event: 7 })] }).ok).toBe(false);
+    const missing: Record<string, unknown> = { ...record() };
+    delete missing["ip_address"];
+    expect(parseAuditPage({ data: [missing], meta: null }).ok).toBe(false);
+    expect(parseAuditPage({ data: "nope", meta: null }).ok).toBe(false);
+    expect(parseAuditPage({ data: [], meta: { current_page: 1, token: "secret" } }).ok).toBe(false);
+    expect(parseAuditPage({ data: [], meta: null, injected: 1 }).ok).toBe(false);
+    expect(parseAuditPage(null).ok).toBe(false);
   });
 });
 
