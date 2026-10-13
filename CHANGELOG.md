@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- docs(operations): B1 `local-api` restaurado via caminho (c) 2026-10-13 — origem do túnel `iptv-local` (DOWN desde 30/09) inalcançável nos 3 hosts; DNS `local-api…` re-apontado ao túnel `iptv-pilot` + ingress adicional para a API piloto :3201; ambos os hosts sem 530 em 2 rodadas; rollback documentado (DNS anterior + config .bak); túnel `iptv-pilot` em tarefa oculta `\IPTV-Pilot-Tunnel` (INFRA-B1-LOCALAPI-20261013, INFRA-TUNNEL-BG-20261013). `iptv-local` segue DOWN para aposentadoria futura.
+
 - feat(browser-worker): readServerBouquets, readCustomerAudit e listResellers read-only via api_in_browser a partir de shapes observed-live (apêndice b do dossier customers/edit 2026-10-13): top-level arrays normalizados in-page (rootArray) e paginador laravel flat com meta no root (metaAtRoot), changes descartado na projeção, subcomandos read-server-bouquets/read-customer-audit/list-resellers
 
 - docs: tráfego live full-08 da plataforma cinevision no dossier customers/edit em docs/11-research/cinevision-customers-edit-2026-10-13.md (apêndice b, 7 loads e 179 eventos com tabela tela|método|path|status, promoções observed-live no §4, form edit com rótulos e contagens, bundle-only como unconfirmed, sem bodies e sem writes)
