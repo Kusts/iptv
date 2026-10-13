@@ -6,7 +6,7 @@
 
 ## Entrada (tudo antes de qualquer tráfego real)
 
-- [ ] PRs #12–#26 mergeados em ordem, CI verde na main.
+- [x] PRs #12–#26 mergeados em ordem, CI verde na main. (verificado 2026-10-13: #12–#26 MERGED; CI success na main até #63)
 - [ ] Staging rehearsal repetido pós-merge (P1-exit parte 2 + P7) com API `iptv_app`.
 - [ ] Gates de operador com decisão explícita: B1/B2 (Asaas sandbox→canary),
       M1/M2 (WAHA), G07 (MK — diferido pós-MVP per ADR-0027, 2026-10-12), Steps 3/6–9 (CINEVISION), F12 (Hatchet ou
