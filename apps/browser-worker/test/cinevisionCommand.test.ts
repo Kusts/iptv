@@ -21,6 +21,7 @@ import {
   decideRoutedRequest,
   initialPolicyState,
 } from "../src/policy.js";
+import { awaitReauthSettled } from "../src/operations/cinevisionCommand.js";
 import {
   fetchProjectedInPage,
   type InPageRequest,
@@ -50,6 +51,7 @@ function config(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
     headless: true,
     challengeWaitSeconds: 0,
     commandTimeoutMs: 60_000,
+    routeSettleTimeoutMs: 60,
     profileRoot: root,
     profileDir: join(root, "p-test"),
     ...overrides,
@@ -76,7 +78,25 @@ interface Script {
   form: { forms: number; emailInputs: number; passwordInputs: number; submitButtons: number } | null;
   /** Forms served after a reauth navigation (defaults to `form`). */
   formAfterReauth?: { forms: number; emailInputs: number; passwordInputs: number; submitButtons: number } | null;
+  /**
+   * Per-probe form outcomes, consumed in order across every
+   * `probeLoginForm()` call (establish + reauth). When present and
+   * non-empty it wins over `form`/`formAfterReauth` (which remain as
+   * fallback once exhausted) — models a form that renders late.
+   */
+  formProbeScript?: ({ forms: number; emailInputs: number; passwordInputs: number; submitButtons: number } | null)[];
+  /**
+   * Per-call page URLs, consumed in order across every `currentUrl()`
+   * call (fallback: the legacy `#/dashboard` URL) — models a
+   * hash-redirect that lands late.
+   */
+  urlScript?: string[];
   challenge?: boolean;
+  /**
+   * Per-poll challenge outcomes, consumed in order across every
+   * `detectChallenge()` call (fallback: static `challenge`).
+   */
+  challengeScript?: boolean[];
   loginResult?: boolean;
   /** In-page outcomes served to `evaluateCapability`, in order. */
   reads: InPageResult[];
@@ -110,19 +130,43 @@ function httpData(status: number, contentType: string, data: unknown): InPageRes
 
 function fakeBrowser(script: Script, calls: Calls): CinevisionCommandBrowser {
   let navigations = 0;
+  let submittedSinceNav = false;
   // Real policy state: the fake enforces the SAME single-POST + single
   // bounded reauth window as production (F4) instead of ignoring it.
   const policy = initialPolicyState();
   const page: CinevisionCommandPage = {
-    currentUrl: () => `${ALLOWED}/#/dashboard`,
+    currentUrl: () => {
+      if (script.urlScript !== undefined && script.urlScript.length > 0) {
+        const next = script.urlScript.shift();
+        if (next !== undefined) return next;
+      }
+      return `${ALLOWED}/#/dashboard`;
+    },
     goto: async () => {
       calls.gotos += 1;
       navigations += 1;
+      submittedSinceNav = false;
     },
-    probeLoginForm: async () => (navigations > 1 && script.formAfterReauth !== undefined
-      ? script.formAfterReauth
-      : script.form),
-    detectChallenge: async () => script.challenge ?? false,
+    probeLoginForm: async () => {
+      if (script.formProbeScript !== undefined && script.formProbeScript.length > 0) {
+        const next = script.formProbeScript.shift();
+        return next === undefined ? null : next;
+      }
+      // A successful login removes the form (the real `submitLogin`
+      // refuses while a form remains): probes after a submit since the
+      // last navigation observe the logged-in DOM.
+      if (submittedSinceNav) return null;
+      return (navigations > 1 && script.formAfterReauth !== undefined
+        ? script.formAfterReauth
+        : script.form);
+    },
+    detectChallenge: async () => {
+      if (script.challengeScript !== undefined && script.challengeScript.length > 0) {
+        const next = script.challengeScript.shift();
+        return next ?? false;
+      }
+      return script.challenge ?? false;
+    },
     submitLogin: async () => {
       const decision = decideRoutedRequest({
         method: "POST",
@@ -139,7 +183,9 @@ function fakeBrowser(script: Script, calls: Calls): CinevisionCommandBrowser {
       if (decision !== "allow-login-post") return false;
       consumeLoginPost(policy);
       calls.submitted += 1;
-      return script.loginResult ?? true;
+      const ok = script.loginResult ?? true;
+      if (ok) submittedSinceNav = true;
+      return ok;
     },
     armReauthWindow: () => armReauthWindow(policy),
     fetchIdentity: async () => {
@@ -345,6 +391,38 @@ describe("V2 wiring", () => {
         args: {},
         body: { data: [{ id: "reseller-api", is_active: true }] },
       },
+      {
+        command: "cinevision.readServerBouquets",
+        args: { serverId: "srv-1" },
+        body: [{ id: "b-1", name: "Bouquet A" }],
+      },
+      {
+        command: "cinevision.readCustomerAudit",
+        args: { id: "cust-1" },
+        body: {
+          current_page: 1,
+          data: [
+            {
+              event: "updated",
+              created_at: "2026-10-13T10:00:00Z",
+              updated_at: "2026-10-13T10:00:00Z",
+              user_action: "update",
+              record_affected: "cust-1",
+              ip_address: "10.0.0.1",
+              user_agent: "agent",
+              changes: [],
+            },
+          ],
+          last_page: 1,
+          per_page: 25,
+          total: 1,
+        },
+      },
+      {
+        command: "cinevision.listResellers",
+        args: {},
+        body: [{ id: "r-1", username: "reseller-a", parent: null }],
+      },
     ];
     for (const c of cases) {
       const calls = newCalls();
@@ -452,6 +530,202 @@ describe("session reauth (bounded, once, real policy)", () => {
     expect(calls.evaluates).toBe(3);
     expect(calls.submitted).toBe(1);
   });
+
+  it("fails closed without retrying when reauth finds no login form", async () => {
+    const calls = newCalls();
+    const result = await run("cinevision.listServers", {}, {
+      form: null,
+      formAfterReauth: null,
+      // Gate 401s; the reauth navigation finds no login form, so the
+      // runner must NOT treat the absence as authenticated (no retry).
+      reads: [expired(), okData(identityBody()), okData(serversBody())],
+    }, calls);
+    expect(result.status).toBe("HUMAN_REQUIRED");
+    expect(result.errorCode).toBe("SESSION_EXPIRED");
+    expect(result.reauthenticated).toBe(false);
+    // No retry read ran: only the initial gate attempt.
+    expect(calls.evaluates).toBe(1);
+    // No login was ever submitted (the initial session needed none).
+    expect(calls.submitted).toBe(0);
+    expect(calls.gotos).toBe(2);
+  });
+
+  it("reports the reauth failure when the reauth submit does not log in", async () => {
+    const calls = newCalls();
+    const result = await run("cinevision.readIdentity", {}, {
+      form: null,
+      formAfterReauth: loginForm,
+      loginResult: false,
+      reads: [expired()],
+    }, calls);
+    expect(result.status).toBe("HUMAN_REQUIRED");
+    expect(result.errorCode).toBe("IDENTITY_MISMATCH");
+    expect(result.reauthenticated).toBe(false);
+    expect(calls.evaluates).toBe(1);
+    expect(calls.submitted).toBe(1);
+  });
+});
+
+describe("route settle (post-navigation SPA)", () => {
+  const loginForm = {
+    forms: 1, emailInputs: 1, passwordInputs: 1, submitButtons: 1,
+  };
+  const expired = (): InPageResult => ({ kind: "ok", status: 401, contentType: "application/json", data: {} });
+
+  it("waits for a late-rendered reauth form and confirms identity", async () => {
+    const calls = newCalls();
+    const result = await run("cinevision.readIdentity", {}, {
+      form: null,
+      formAfterReauth: loginForm,
+      formProbeScript: [null, null, loginForm, loginForm, null],
+      reads: [
+        expired(),
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+      ],
+    }, calls, config({ routeSettleTimeoutMs: 2000 }));
+    expect(result.status).toBe("READ_CONFIRMED");
+    expect(result.reauthenticated).toBe(true);
+    expect(result.identityMatched).toBe(true);
+    expect(calls.submitted).toBe(2);
+    expect(calls.gotos).toBe(2);
+  });
+
+  it("proceeds without login on a stable non-login route", async () => {
+    const calls = newCalls();
+    const result = await run("cinevision.readIdentity", {}, {
+      form: null,
+      reads: [
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+      ],
+    }, calls);
+    expect(result.status).toBe("READ_CONFIRMED");
+    expect(result.reauthenticated).toBe(false);
+    expect(calls.submitted).toBe(0);
+  });
+
+  it("fails closed on a challenge surfacing mid-settle", async () => {
+    const calls = newCalls();
+    const result = await run("cinevision.readIdentity", {}, {
+      form: null,
+      challengeScript: [false, false, false, true],
+      reads: [
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+      ],
+    }, calls, config({ routeSettleTimeoutMs: 2000 }));
+    expect(result.status).toBe("HUMAN_REQUIRED");
+    expect(result.errorCode).toBe("CHALLENGE_DETECTED");
+    expect(calls.submitted).toBe(0);
+    expect(calls.evaluates).toBe(0);
+  });
+
+  it("follows a late hash-redirect into the sign-in form", async () => {
+    const calls = newCalls();
+    const result = await run("cinevision.readIdentity", {}, {
+      form: null,
+      urlScript: [
+        `${ALLOWED}/#/dashboard`,
+        `${ALLOWED}/#/dashboard`,
+        `${ALLOWED}/#/sign-in?redirect=/dashboard`,
+        `${ALLOWED}/#/sign-in?redirect=/dashboard`,
+      ],
+      formProbeScript: [null, null, null, loginForm, null],
+      reads: [
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+        okData({ id: "u-1", username: EMAIL, credits: 2 }),
+      ],
+    }, calls, config({ routeSettleTimeoutMs: 2000 }));
+    expect(result.status).toBe("READ_CONFIRMED");
+    expect(result.identityMatched).toBe(true);
+    expect(result.reauthenticated).toBe(false);
+    expect(calls.submitted).toBe(1);
+  });
+});
+
+describe("reauth settle (bounded login completion)", () => {
+  type Form = { forms: number; emailInputs: number; passwordInputs: number; submitButtons: number } | null;
+  function settlePage(form: Form, challenge = false) {
+    return {
+      probeLoginForm: async (): Promise<Form> => form,
+      detectChallenge: async (): Promise<boolean> => challenge,
+    };
+  }
+
+  it("resolves as soon as the login form is gone", async () => {
+    await expect(awaitReauthSettled(settlePage(null), { timeoutMs: 1000 })).resolves.toBe(true);
+  });
+
+  it("fails when a challenge is visible", async () => {
+    await expect(awaitReauthSettled(settlePage(null, true), { timeoutMs: 1000 })).resolves.toBe(false);
+  });
+
+  it("fails boundedly when the form never disappears", async () => {
+    const loginForm = { forms: 1, emailInputs: 1, passwordInputs: 1, submitButtons: 1 };
+    const started = Date.now();
+    await expect(
+      awaitReauthSettled(settlePage(loginForm), { timeoutMs: 200, pollMs: 20 }),
+    ).resolves.toBe(false);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("respects the bound when a probe hangs (never resolves)", async () => {
+    const hanging = {
+      probeLoginForm: (): Promise<Form> => new Promise<Form>(() => undefined),
+      detectChallenge: async (): Promise<boolean> => false,
+    };
+    const started = Date.now();
+    await expect(
+      awaitReauthSettled(hanging, { timeoutMs: 200, pollMs: 20 }),
+    ).resolves.toBe(false);
+    expect(Date.now() - started).toBeLessThan(2000);
+  }, 10_000);
+
+  it("fails when the form only disappears after the deadline", async () => {
+    const late: {
+      probeLoginForm: () => Promise<Form>;
+      detectChallenge: () => Promise<boolean>;
+    } = {
+      probeLoginForm: async (): Promise<Form> => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 300));
+        return null;
+      },
+      detectChallenge: async (): Promise<boolean> => false,
+    };
+    await expect(
+      awaitReauthSettled(late, { timeoutMs: 100, pollMs: 20 }),
+    ).resolves.toBe(false);
+  }, 10_000);
+
+  it("aborts during a hanging probe without starting a new one", async () => {
+    const loginForm = { forms: 1, emailInputs: 1, passwordInputs: 1, submitButtons: 1 };
+    let probes = 0;
+    let challenges = 0;
+    const controller = new AbortController();
+    const page: {
+      probeLoginForm: () => Promise<Form>;
+      detectChallenge: () => Promise<boolean>;
+    } = {
+      probeLoginForm: (): Promise<Form> => {
+        probes += 1;
+        if (probes === 1) return Promise.resolve(loginForm);
+        return new Promise<Form>(() => undefined);
+      },
+      detectChallenge: async (): Promise<boolean> => {
+        challenges += 1;
+        return false;
+      },
+    };
+    const pending = awaitReauthSettled(page, { timeoutMs: 5000, pollMs: 20 }, controller.signal);
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    const probesAfter = probes;
+    const challengesAfter = challenges;
+    await new Promise<void>((resolve) => setTimeout(resolve, 150));
+    expect(probes).toBe(probesAfter);
+    expect(challenges).toBe(challengesAfter);
+  }, 10_000);
 });
 
 describe("session identity gate (F3, all commands)", () => {

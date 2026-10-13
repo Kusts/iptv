@@ -1,0 +1,103 @@
+# drills.log — transcrição da sessão do rerun 2026-10-13 (lane `iptv-rehearsal2`)
+
+> Transcrita dos outputs de terminal da sessão de execução (tokens de sessão
+> e segredos OMITIDOS aqui; ver nota de retenção no `report.md`).
+> Lane destruída após a coleta. Imagens: `iptv-rehearsal2-migrate/api/web:local`.
+
+## 0. Pré-voo
+
+- Portas 5439/5440/3210/3211/3100/3101/6432 livres (sem listener).
+- `docker compose ... config --quiet` → `CONFIG_OK`.
+- Dev/piloto/`synkroo-db` intocados (só listados).
+
+## 1. Build
+
+- `Image iptv-rehearsal2-migrate:local Built`
+- `Image iptv-rehearsal2-api:local Built`
+- `Image iptv-rehearsal2-web:local Built`
+
+## 2. Postgres + migrate
+
+- `Container iptv-rehearsal2-postgres Started` → `pg_isready: accepting connections` → `PG_HEALTHY`
+- `iptv-migrate: applied=60 skipped=0 total=60 dir=/app/db/migrations`
+
+## 3. Roles + API/web
+
+- `ALTER ROLE iptv_app ...` → `ALTER_EXIT=0`; auth TCP como `iptv_app` ok.
+- `roles:iptv_app,iptv_owner,outbox_executor,outbox_worker`
+- `READY: {"status":"ok","checks":{"database":"ok"}}`; `GET /v1/health` → 200
+- web `/` → 200 (após warmup; 1ª tentativa `ResponseEnded` transiente);
+  API `State.Health.Status: healthy`.
+
+## 4. Postura PG
+
+- `pg_stat_activity`: só `iptv_owner 1` (a própria sonda; pool da API ocioso).
+- `rolbypassrls`: só `iptv_owner`.
+- `outbox_runtime_control`: `LEGACY | 1`.
+- unfenced: `0`.
+
+## 5. Seeds + A/B direto
+
+- Seeds 001 aplicadas (sem erro; exit 0).
+- `cutover-ab-matrix.integration.test.ts`: `Test Files 1 passed (1)`,
+  `Tests 16 passed (16)`, `Duration 40.75s`.
+- Incidente: o afterAll do teste (`:574 PASSWORD NULL`, higiene cluster-global)
+  zerou a senha do `iptv_app` da lane → API 28P01 nos writes seguintes.
+  Recuperado com re-senha + `restart api` (ver §8). Lição registrada no report.
+
+## 6. drain-state (sessão platform-admin via SQL owner, depois removida)
+
+- `drain-state: enabled=True inFlight=0`
+- Pós-uso: `is_platform_admin=false` (0 admins restantes) + logout 200.
+
+## 7. Pgbouncer + A/B via pooler
+
+- `PgBouncer 1.25.2 ... listening on 0.0.0.0:6432`.
+- Via pooler como `iptv_app` em `identity.persons`: A → `1`, B → `1`,
+  sem contexto → `0`, x-insert (tenant B sob contexto A) →
+  `ERROR: new row violates row-level security policy for table "persons"`.
+
+## 8. Fluxo P7 live (canal `p7r2-live-waha`, segredo local descartável)
+
+- `register 201` (tenant + revision 0).
+- `inbound1: {"accepted":true,"deduped":false} HTTP:202`
+- `replay: {"accepted":true,"deduped":true} HTTP:202`
+- `exceptions OPEN=1`; `person: <uuid>`; `resolve: status=RESOLVED` + conversa criada.
+- `inbound2: {"accepted":true,"deduped":false} HTTP:202`
+- `send-manual: delivery=SENT` (echo, `providerMessageId` echo:*).
+- `copilot-ask: confidence=OBSERVED` ("1 conversa(s) aberta(s) neste tenant").
+- `messages count=2 dirs=INBOUND,OUTBOUND`.
+
+## 9. Suites (TEST_DATABASE_URL = base owner da lane; scratch DBs próprias)
+
+- `SUITES_EXIT=0`; `Test Files 11 passed (11)`; `Tests 113 passed (113)`.
+  (detalhe integral em `suites-summary.log`).
+- Pós-suites: re-senha do `iptv_app` + `restart api` → `READY_OK` (higiene
+  `PASSWORD NULL` das suites, mesmo mecanismo do §5).
+
+## 10. Drills
+
+- WAHA down (URL+KEY mortos): `send-manual` → `delivery=FAILED` em 70ms.
+  Nota: só `WAHA_BASE_URL` mantém echo (gateway exige URL+KEY —
+  `messaging-gateway.ts:117-124`); primeira tentativa registrou SENT por isso.
+- WAHA recovery (env revertido, api recriada): `delivery=SENT` em 50ms.
+- DB restart: antes persons=114 orders=70; `docker restart` → API seguiu
+  `running` (exit 0 — NÃO reproduziu o exit 1 do P7); após `up -d api`:
+  ready ok; depois persons=114 orders=70 → `COUNTS_EQUAL`.
+- Secret rotation: `ALTER_EXIT=0` → api recriada → ready ok → `register:201`.
+- Backup restore: `FINGERPRINT_PRE=114/70/29/51/41`; `DUMP_EXIT=0`
+  (`DUMP_SIZE=1291508`); `RESTORE_EXIT=0` em DB scratch;
+  `FINGERPRINT_POST=114/70/29/51/41` → `RESTORE_MATCH`; scratch dropado;
+  dump apagado no container e no host. Perna encrypt/offsite NÃO exercitada
+  (sem gpg/openssl/bash no host).
+
+## 11. Gates Python
+
+- `validate_docs.py` → `OK`; `test_contracts.py` → `OK`;
+  `test_seed_contract.py` → `OK`.
+
+## Não executado (gaps = P7)
+
+- Worker kill (sem worker em modo LEGACY); provider-down/model-outage/stale
+  live (só suite); PIX sandbox (SKIP motivado); sessão antiga pós-rotation
+  (P7 cobriu).

@@ -26,6 +26,12 @@
  * accepted in CI and in production. Host-fs comparisons (repo checkout,
  * home dir) apply only when the path semantics matches the host namespace.
  * Every fail-closed guarantee is preserved and errors never echo the value.
+ *
+ * Opt-in real-Chrome channel (`BROWSER_WORKER_CHANNEL`, default-off): absent
+ * or empty selects the bundled Chromium (current behavior, unchanged). The
+ * ONLY accepted non-empty value is exactly `chrome` (passed as
+ * `channel: "chrome"` to `launchPersistentContext`); any other value fails
+ * closed with `ConfigError` (never echoes the value).
  */
 
 import { createHash } from "node:crypto";
@@ -60,6 +66,12 @@ export interface WorkerConfig {
   infisicalClientId: string;
   infisicalClientSecret: string;
   headless: boolean;
+  /**
+   * Opt-in browser channel (default-off). `undefined` = bundled Chromium
+   * (current behavior). `"chrome"` = real Chrome via `channel: "chrome"`.
+   * No other value is representable (parser fails closed).
+   */
+  browserChannel?: "chrome";
   profileRoot: string;
   profileDir: string;
   /** Bounded wait for a managed challenge to auto-clear (seconds). */
@@ -73,6 +85,15 @@ export interface WorkerConfig {
    * always carry the value.
    */
   launchSettleMs?: number;
+  /**
+   * Bounded wait for the SPA route/form to settle after navigation (ms).
+   * Optional so existing programmatic configs keep compiling; resolved
+   * configs always carry the value. No env wiring: the 10s production
+   * default covers the panel's ~5s boot+redirect; tests override per
+   * config object. Absent/empty form on a stable non-login route ends
+   * the wait early (already-logged-in sessions never pay the full bound).
+   */
+  routeSettleTimeoutMs?: number;
 }
 
 export class ConfigError extends Error {
@@ -123,6 +144,26 @@ export function parseLaunchSettleMs(raw: string | undefined): number {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 500 || n > 15_000) return 3000;
   return n;
+}
+
+/**
+ * Default post-navigation route/form settle bound (ms). No env wiring:
+ * resolved configs always carry this value; tests override per config
+ * object. Covers the panel's ~5s boot + hash-redirect + form render.
+ */
+export const ROUTE_SETTLE_TIMEOUT_MS_DEFAULT = 10_000;
+
+/**
+ * Opt-in real-Chrome channel from `BROWSER_WORKER_CHANNEL` (default-off).
+ * Absent/empty/whitespace-only → `undefined` (bundled Chromium, unchanged).
+ * Exactly `chrome` (after trimming) → `"chrome"`. Anything else fails
+ * closed with `ConfigError` (never echoes the value).
+ */
+export function parseBrowserChannel(raw: string | undefined): "chrome" | undefined {
+  const value = (raw ?? "").trim();
+  if (value.length === 0) return undefined;
+  if (value === "chrome") return "chrome";
+  throw new ConfigError("BROWSER_WORKER_CHANNEL must be chrome or unset");
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -411,6 +452,10 @@ export function resolveWorkerConfig(
     throw new ConfigError("BROWSER_INFISICAL_SITE_URL must be an absolute https:// url");
   }
   const profileRoot = defaultProfileRoot(env, opts);
+  // `exactOptionalPropertyTypes`: the key stays ABSENT when unconfigured
+  // (bundled Chromium default) — never an explicit `undefined`.
+  const channelOpts =
+    parseBrowserChannel(env["BROWSER_WORKER_CHANNEL"]) === "chrome" ? { browserChannel: "chrome" as const } : {};
   return {
     provider,
     tenantId,
@@ -422,9 +467,11 @@ export function resolveWorkerConfig(
     infisicalClientId,
     infisicalClientSecret,
     headless: env["BROWSER_WORKER_HEADLESS"] !== "0",
+    ...channelOpts,
     challengeWaitSeconds: parseChallengeWaitSeconds(env["BROWSER_WORKER_CHALLENGE_WAIT_SECONDS"]),
     commandTimeoutMs: parseCommandTimeoutMs(env["BROWSER_WORKER_COMMAND_TIMEOUT_MS"]),
     launchSettleMs: parseLaunchSettleMs(env["BROWSER_WORKER_LAUNCH_SETTLE_MS"]),
+    routeSettleTimeoutMs: ROUTE_SETTLE_TIMEOUT_MS_DEFAULT,
     profileRoot,
     profileDir: profileDirFor(profileRoot, tenantId, providerAccountId),
   };

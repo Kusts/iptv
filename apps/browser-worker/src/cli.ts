@@ -6,7 +6,8 @@
  * `list-customers`, `read-customer --id X`, `read-customer-status --id X`,
  * `read-connections --id X`, `list-servers`, `read-server-status`,
  * `list-package-prices`, `read-live-connections --server-id X`,
- * `list-integrations`. Pagination via `--page N`/`--per-page M` where
+ * `list-integrations`, `read-server-bouquets --server-id X`,
+ * `read-customer-audit --id X`, `list-resellers`. Pagination via `--page N`/`--per-page M` where
  * accepted. No write commands exist; no path/URL/method/selector flags
  * exist — args are numeric ids/pagination only, validated fail-closed.
  * Any unknown `--*` flag or unexpected value fails closed WITHOUT

@@ -6,6 +6,7 @@ import {
   findRepoRoot,
   isWorkerEnabled,
   normalizeAllowedOrigin,
+  parseBrowserChannel,
   profileDirFor,
   resolveBindingProvider,
   resolveWorkerConfig,
@@ -289,5 +290,37 @@ describe("config validation", () => {
     expect(normalizeSep(config.profileDir).startsWith(normalizeSep(`${CONTAINER}/iptv-test/profiles`))).toBe(
       true,
     );
+  });
+});
+
+describe("opt-in real-Chrome channel (default-off)", () => {
+  it("defaults to bundled Chromium when absent/empty", () => {
+    expect(parseBrowserChannel(undefined)).toBeUndefined();
+    expect(parseBrowserChannel("")).toBeUndefined();
+    expect(parseBrowserChannel("   ")).toBeUndefined();
+    const config = resolveWorkerConfig(baseEnv(), { hostSemantics: "windows" });
+    expect(config.browserChannel).toBeUndefined();
+  });
+
+  it("accepts exactly chrome", () => {
+    expect(parseBrowserChannel("chrome")).toBe("chrome");
+    const config = resolveWorkerConfig(
+      { ...baseEnv(), BROWSER_WORKER_CHANNEL: "chrome" },
+      { hostSemantics: "windows" },
+    );
+    expect(config.browserChannel).toBe("chrome");
+  });
+
+  it("fails closed on any other value (never echoes it)", () => {
+    for (const bad of ["chromium", "CHROME", "Chrome", "chrome-beta", "msedge", "firefox", "1"]) {
+      expect(() => parseBrowserChannel(bad), bad).toThrowError(/BROWSER_WORKER_CHANNEL/);
+      // Fixed words only: the rejected value is never echoed.
+      expect(() => parseBrowserChannel(bad), bad).not.toThrowError(bad);
+      expect(
+        () =>
+          resolveWorkerConfig({ ...baseEnv(), BROWSER_WORKER_CHANNEL: bad }, { hostSemantics: "windows" }),
+        bad,
+      ).toThrowError(/BROWSER_WORKER_CHANNEL/);
+    }
   });
 });

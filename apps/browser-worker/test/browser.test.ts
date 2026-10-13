@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { BrowserContext, Page } from "playwright";
 import {
+  awaitLoginSettled,
   buildIdentityUrl,
   isCrossOriginRedirect,
   performSubmitLogin,
@@ -49,6 +50,67 @@ describe("redirect host check", () => {
       isCrossOriginRedirect(ALLOWED, `${ALLOWED}/api/auth/me`, "https://panel.example.test.evil.test/"),
     ).toBe(true);
     expect(isCrossOriginRedirect(ALLOWED, `${ALLOWED}/api/auth/me`, "")).toBe(true);
+  });
+});
+
+describe("submitLogin settle", () => {
+  const FORM = { forms: 1, emailInputs: 1, passwordInputs: 1, submitButtons: 1 };
+
+  it("returns true when the form disappears within budget", async () => {
+    let calls = 0;
+    const probe = async (): Promise<unknown> => {
+      calls += 1;
+      return calls < 3 ? FORM : null;
+    };
+    await expect(awaitLoginSettled(probe, { timeoutMs: 500, pollMs: 5 })).resolves.toBe(true);
+    expect(calls).toBe(3);
+  });
+
+  it("returns false when the form persists past the deadline", async () => {
+    let calls = 0;
+    const probe = async (): Promise<unknown> => {
+      calls += 1;
+      return FORM;
+    };
+    await expect(awaitLoginSettled(probe, { timeoutMs: 30, pollMs: 5 })).resolves.toBe(false);
+    expect(calls).toBeGreaterThan(1);
+  });
+
+  it("returns false when the form resolves only after the deadline", async () => {
+    const probe = async (): Promise<unknown> => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return null;
+    };
+    await expect(awaitLoginSettled(probe, { timeoutMs: 20, pollMs: 5 })).resolves.toBe(false);
+  });
+
+  it("rejects on a pre-aborted budget without probing", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let calls = 0;
+    const probe = async (): Promise<unknown> => {
+      calls += 1;
+      return FORM;
+    };
+    await expect(awaitLoginSettled(probe, { timeoutMs: 500, pollMs: 5 }, controller.signal)).rejects.toThrowError(
+      SubmitAbortedError,
+    );
+    expect(calls).toBe(0);
+  });
+
+  it("rejects on abort mid-wait without further probes", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const probe = async (): Promise<unknown> => {
+      calls += 1;
+      return FORM;
+    };
+    const pending = awaitLoginSettled(probe, { timeoutMs: 5000, pollMs: 500 }, controller.signal);
+    const assertion = expect(pending).rejects.toThrowError(SubmitAbortedError);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort();
+    await assertion;
+    expect(calls).toBe(1);
   });
 });
 
@@ -423,5 +485,70 @@ describe("launch quiescence F1 (PlaywrightBrowser.open, mocked launch)", () => {
     ).rejects.toThrowError("setup failed");
     expect(closes).toBe(1);
     expect(Date.now() - started).toBeLessThan(5000);
+  });
+});
+
+describe("opt-in real-Chrome channel passthrough (default-off)", () => {
+  function channelWorkerConfig(channel?: "chrome"): WorkerConfig {
+    const root = mkdtempSync(join(tmpdir(), "bw-channel-"));
+    const channelOpts = channel === "chrome" ? { browserChannel: "chrome" as const } : {};
+    return {
+      provider: BINDING_PROVIDER,
+      tenantId: "tenant-a",
+      providerAccountId: "acct-1",
+      allowedOrigin: ALLOWED,
+      loginPath: LOGIN_PATH,
+      infisicalSiteUrl: "https://infisical.example.test",
+      infisicalProjectId: "proj-1",
+      infisicalClientId: "id-1",
+      infisicalClientSecret: "secret-1",
+      headless: true,
+      ...channelOpts,
+      challengeWaitSeconds: 0,
+      commandTimeoutMs: 60_000,
+      launchSettleMs: 500,
+      profileRoot: root,
+      profileDir: join(root, "p-test"),
+    };
+  }
+
+  function fakeContext(): BrowserContext {
+    const mainPage = {
+      url: () => "about:blank",
+      mainFrame: () => ({}),
+    } as unknown as Page;
+    return {
+      on: () => undefined,
+      pages: () => [mainPage],
+      newPage: async () => mainPage,
+      route: async () => undefined,
+      close: async () => undefined,
+    } as unknown as BrowserContext;
+  }
+
+  it("passes channel chrome to the launcher only when configured", async () => {
+    const cfg = channelWorkerConfig("chrome");
+    let seen: Record<string, unknown> | null = null;
+    const browser = new PlaywrightBrowser(cfg, async (_dir, options) => {
+      seen = { ...options };
+      return fakeContext();
+    });
+    const page = await browser.open(cfg.profileDir, ALLOWED, LOGIN_PATH);
+    expect(seen).not.toBeNull();
+    expect((seen as unknown as Record<string, unknown>)["channel"]).toBe("chrome");
+    await page.close();
+  });
+
+  it("omits the channel key by default (bundled Chromium, unchanged)", async () => {
+    const cfg = channelWorkerConfig(undefined);
+    let seen: Record<string, unknown> | null = null;
+    const browser = new PlaywrightBrowser(cfg, async (_dir, options) => {
+      seen = { ...options };
+      return fakeContext();
+    });
+    const page = await browser.open(cfg.profileDir, ALLOWED, LOGIN_PATH);
+    expect(seen).not.toBeNull();
+    expect("channel" in (seen as unknown as Record<string, unknown>)).toBe(false);
+    await page.close();
   });
 });

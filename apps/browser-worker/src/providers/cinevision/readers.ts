@@ -2,10 +2,12 @@
  * Semantic CINEVISION readers (FASE 1, GET-only, `API_IN_BROWSER`).
  *
  * One function per capability with OBSERVED live evidence (see
- * `docs/11-research/cinevision-api-investigation-2026-09-30.md`).
- * Omitted on purpose: `READ_SERVER` detail/packages/bouquets and
- * `READ_PLAYLIST` (UNCONFIRMED, never observed live; playlist is also
- * SPEC-blocked), `CALCULATE_*` (UNCONFIRMED POST), all writes, and the
+ * `docs/11-research/cinevision-api-investigation-2026-09-30.md` and, for
+ * bouquets/audit/resellers-list,
+ * `docs/11-research/cinevision-customers-edit-2026-10-13.md` Apêndice B).
+ * Omitted on purpose: `READ_SERVER` detail/packages and `READ_PLAYLIST`
+ * (UNCONFIRMED, never observed live; playlist is also SPEC-blocked),
+ * `CALCULATE_*` (UNCONFIRMED POST), all writes, and the remaining
  * reseller surface (inactive 402 / UNCONFIRMED). `readCustomerStatus`,
  * `readConnections`, and `readCreditBalance` are derived from the same
  * live responses as their parents — no separate endpoint exists.
@@ -25,14 +27,19 @@ import {
   type ReaderResult,
 } from "./errors.js";
 import {
+  parseAuditPage,
+  parseBouquetList,
   parseCustomer,
   parseCustomerPage,
   parseIdentity,
   parseIntegrationList,
   parseLiveConnectionPage,
   parsePackagePriceList,
+  parseResellerList,
   parseServerList,
   parseServerStatusList,
+  type AuditPage,
+  type BouquetSummary,
   type CustomerPage,
   type CustomerResult,
   type IdentityResult,
@@ -40,6 +47,7 @@ import {
   type LiveConnectionPage,
   type PackagePrice,
   type ParseResult,
+  type ResellerListItem,
   type ServerStatus,
   type ServerSummary,
 } from "./schemas.js";
@@ -63,6 +71,10 @@ export interface LiveConnectionsArgs {
   serverId: string;
   perPage?: number;
   page?: number;
+}
+
+export interface ServerArgs {
+  serverId: string;
 }
 
 /** Derived customer status (from `READ_CUSTOMER` fields, no own endpoint). */
@@ -289,4 +301,36 @@ export function readLiveConnections(
 /** `GET /api/integrations` — integration catalog snapshot. */
 export function listIntegrations(deps: ReaderDeps): Promise<ReaderResult<IntegrationSummary[]>> {
   return runRead(deps, "integrations", undefined, parseIntegrationList);
+}
+
+/**
+ * `GET /api/servers/bouquets/{serverId}/true` — bouquet catalog snapshot
+ * (observed live 2026-10-13; top-level array normalized in-page).
+ */
+export function readServerBouquets(
+  deps: ReaderDeps,
+  args: ServerArgs,
+): Promise<ReaderResult<BouquetSummary[]>> {
+  return runRead(deps, "serverBouquets", { serverId: args.serverId }, parseBouquetList);
+}
+
+/**
+ * `GET /api/audit/record/customer/{customerId}` — customer audit trail
+ * (observed live 2026-10-13; Laravel FLAT paginator). The in-page
+ * projection delivers `{data: items, meta}` (meta null when the root
+ * carried no counters); the nested `changes` array never crosses.
+ */
+export function readCustomerAudit(
+  deps: ReaderDeps,
+  args: CustomerArgs,
+): Promise<ReaderResult<AuditPage>> {
+  return runRead(deps, "customerAudit", { customerId: args.customerId }, parseAuditPage);
+}
+
+/**
+ * `GET /api/resellers/list` — reseller catalog snapshot (observed live
+ * 2026-10-13, sample len 1; top-level array normalized in-page).
+ */
+export function listResellers(deps: ReaderDeps): Promise<ReaderResult<ResellerListItem[]>> {
+  return runRead(deps, "resellersList", undefined, parseResellerList);
 }
