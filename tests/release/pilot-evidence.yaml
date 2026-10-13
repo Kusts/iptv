@@ -13,13 +13,15 @@
 # descartável, TEST_DATABASE_URL próprio); demais IDs mantêm
 # not_rerun_in_this_task. PASS = suíte/evidência existente no repo,
 # citada por arquivo:teste exato.
+# B2 2026-10-13: G01/G02/G03/G04/G06/G08/G09 promovidos ao re-run integral
+# (pnpm test --concurrency=1, 20/20 tasks verdes, PG 17 descartável).
 
 - id: G01
   status: PASS
   test: 'apps/api/test/golden-loop.integration.test.ts:"legs a-b: inbound WhatsApp → lead/person/conversation → durable trial ACTIVE + binding"'
   environment: integration (TEST_DATABASE_URL descartável; echo gateway, zero live)
   evidence: código + suíte existente
-  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
+  last_run: 2026-10-13 (re-executed green, branch closure/browser-worker-real-chrome f26597c, disposable PostgreSQL 17)
   owner: coder
   limitations: 'outbound live (entrega real 1×) pendente de M1 (sessão sandbox + destinatário opt-in); suíte usa echo gateway. Parcial live 2026-10-12 (evidence/p3-waha/m1-send-20261012.md): sessão WORKING + 1 envio sintético 201 ao contato de teste (id 3EB0…, provável duplicata de sonda); entrega/readback não observados, M2 segue aberto'
 - id: G02
@@ -27,7 +29,7 @@
   test: 'apps/api/test/agent-shadow-approval.integration.test.ts:"inbound → SHADOW run persisted + HumanReview created; shadow NEVER sends"'
   environment: integration (echo gateway)
   evidence: código + suíte existente
-  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
+  last_run: 2026-10-13 (re-executed green, branch closure/browser-worker-real-chrome f26597c, disposable PostgreSQL 17)
   owner: coder
   limitations: nenhuma (suite re-executada em 2026-10-12)
 - id: G03
@@ -35,7 +37,7 @@
   test: 'apps/api/test/trial-compat.integration.test.ts:"happy path: request -> provisioning(echo) -> ACTIVE -> technical PASSED -> trust renewal -> ENDED"'
   environment: integration (echo provider)
   evidence: código + suíte existente; readback em apps/api/test/trial-readback.integration.test.ts
-  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
+  last_run: 2026-10-13 (re-executed green, branch closure/browser-worker-real-chrome f26597c, disposable PostgreSQL 17)
   owner: coder
   limitations: provider live real (CINEVISION writes) pendente de Fase 6 Step 3; caminho echo certificado em software
 - id: G04
@@ -43,7 +45,7 @@
   test: 'apps/api/test/trial-compat.integration.test.ts:"retrial after INVALIDATED goes through human review, then provisions"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
+  last_run: 2026-10-13 (re-executed green, branch closure/browser-worker-real-chrome f26597c, disposable PostgreSQL 17)
   owner: coder
   limitations: nenhuma (suite re-executada em 2026-10-12)
 - id: G05
@@ -59,7 +61,7 @@
   test: 'apps/api/test/subscription-fulfillment.integration.test.ts:"full loop: SETTLED → PENDING + cycle → MANUAL resolve SUCCEEDED → ACTIVE + grants + notification"'
   environment: integration (echo provider)
   evidence: código + suíte existente
-  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
+  last_run: 2026-10-13 (re-executed green, branch closure/browser-worker-real-chrome f26597c, disposable PostgreSQL 17)
   owner: coder
   limitations: provisionamento em provider live pendente de Fase 6 Steps 3/6–9
 - id: G07
@@ -78,7 +80,7 @@
   test: 'apps/api/test/renewal-retention.integration.test.ts:"full renewal happy path: quote → charge → webhook → renew → new OPEN cycle"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
+  last_run: 2026-10-13 (re-executed green, branch closure/browser-worker-real-chrome f26597c, disposable PostgreSQL 17)
   owner: coder
   limitations: nenhuma (suite re-executada em 2026-10-12)
 - id: G09
@@ -86,7 +88,7 @@
   test: 'apps/api/test/trial-compat.integration.test.ts:"trust renewal boundary: 4 days denied, 3 days allowed"'
   environment: integration
   evidence: 'código + suíte existente; também renewal-retention "trust renewal: forbidden without review, bounded extension once with approval"'
-  last_run: 2026-10-12 (re-executed green on main cfec222, disposable PostgreSQL 16)
+  last_run: 2026-10-13 (re-executed green, branch closure/browser-worker-real-chrome f26597c, disposable PostgreSQL 17)
   owner: coder
   limitations: nenhuma (suite re-executada em 2026-10-12)
 - id: G10
