@@ -347,6 +347,7 @@ export class PlaywrightBrowser implements ReadIdentityBrowser {
       headless: boolean;
       serviceWorkers: "block";
       acceptDownloads: false;
+      channel?: "chrome";
     },
   ) => Promise<BrowserContext>;
 
@@ -358,6 +359,7 @@ export class PlaywrightBrowser implements ReadIdentityBrowser {
         headless: boolean;
         serviceWorkers: "block";
         acceptDownloads: false;
+        channel?: "chrome";
       },
     ) => Promise<BrowserContext> = (dir, options) =>
       chromium.launchPersistentContext(dir, options),
@@ -389,10 +391,15 @@ export class PlaywrightBrowser implements ReadIdentityBrowser {
     // Claimed once the winner takes ownership; a tardy launch that loses
     // the abort race closes itself instead of leaking a live context.
     let claimed: BrowserContext | null = null;
+    // Opt-in real-Chrome channel (default-off): `channel: "chrome"` is
+    // present ONLY when configured; otherwise the key stays absent and the
+    // bundled Chromium behavior is unchanged.
+    const channelOpts = this.config.browserChannel === "chrome" ? { channel: "chrome" as const } : {};
     const launch = this.launcher(profileDir, {
       headless: this.config.headless,
       serviceWorkers: "block",
       acceptDownloads: false,
+      ...channelOpts,
       // No video/HAR/tracing/storageState by construction.
     });
     // F1 quiescence: settles when the pending launch settles AND any

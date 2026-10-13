@@ -425,3 +425,68 @@ describe("launch quiescence F1 (PlaywrightBrowser.open, mocked launch)", () => {
     expect(Date.now() - started).toBeLessThan(5000);
   });
 });
+
+describe("opt-in real-Chrome channel passthrough (default-off)", () => {
+  function channelWorkerConfig(channel?: "chrome"): WorkerConfig {
+    const root = mkdtempSync(join(tmpdir(), "bw-channel-"));
+    const channelOpts = channel === "chrome" ? { browserChannel: "chrome" as const } : {};
+    return {
+      provider: BINDING_PROVIDER,
+      tenantId: "tenant-a",
+      providerAccountId: "acct-1",
+      allowedOrigin: ALLOWED,
+      loginPath: LOGIN_PATH,
+      infisicalSiteUrl: "https://infisical.example.test",
+      infisicalProjectId: "proj-1",
+      infisicalClientId: "id-1",
+      infisicalClientSecret: "secret-1",
+      headless: true,
+      ...channelOpts,
+      challengeWaitSeconds: 0,
+      commandTimeoutMs: 60_000,
+      launchSettleMs: 500,
+      profileRoot: root,
+      profileDir: join(root, "p-test"),
+    };
+  }
+
+  function fakeContext(): BrowserContext {
+    const mainPage = {
+      url: () => "about:blank",
+      mainFrame: () => ({}),
+    } as unknown as Page;
+    return {
+      on: () => undefined,
+      pages: () => [mainPage],
+      newPage: async () => mainPage,
+      route: async () => undefined,
+      close: async () => undefined,
+    } as unknown as BrowserContext;
+  }
+
+  it("passes channel chrome to the launcher only when configured", async () => {
+    const cfg = channelWorkerConfig("chrome");
+    let seen: Record<string, unknown> | null = null;
+    const browser = new PlaywrightBrowser(cfg, async (_dir, options) => {
+      seen = { ...options };
+      return fakeContext();
+    });
+    const page = await browser.open(cfg.profileDir, ALLOWED, LOGIN_PATH);
+    expect(seen).not.toBeNull();
+    expect((seen as unknown as Record<string, unknown>)["channel"]).toBe("chrome");
+    await page.close();
+  });
+
+  it("omits the channel key by default (bundled Chromium, unchanged)", async () => {
+    const cfg = channelWorkerConfig(undefined);
+    let seen: Record<string, unknown> | null = null;
+    const browser = new PlaywrightBrowser(cfg, async (_dir, options) => {
+      seen = { ...options };
+      return fakeContext();
+    });
+    const page = await browser.open(cfg.profileDir, ALLOWED, LOGIN_PATH);
+    expect(seen).not.toBeNull();
+    expect("channel" in (seen as unknown as Record<string, unknown>)).toBe(false);
+    await page.close();
+  });
+});
