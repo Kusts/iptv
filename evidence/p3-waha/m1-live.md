@@ -1,7 +1,7 @@
 # M1-live WAHA — evidência parcial (2026-10-08, sessão `ted`, VPS Contabo)
 
-> Sem segredos neste arquivo (URLs + nomes + status apenas). Raw secrets
-> viveram só em `%TEMP%` e foram destruídos; backup do webhook restaurado.
+> Sem segredos, sem PII completa, sem bodies neste arquivo (URLs + status apenas; destinatário mascarado como `55***25`).
+> Raw secrets viveram só em `%TEMP%` e foram destruídos; backup do webhook restaurado.
 
 ## Provado ao vivo
 
@@ -9,8 +9,8 @@
 - Restart via `POST /api/sessions/ted/restart` → `WORKING` em <10s (2×).
 - Outbound: `POST /api/sendText` 201 para o contato de teste (2 envios);
   segundo envio entregue no telefone (confirmado pelo operador) com `ack=1`
-  no chat correto (JID canônico de 12 dígitos — nono dígito: `5561995613225`
-  não é o JID; o correto é `556195613225`).
+  no chat correto (JID canônico de 12 dígitos — nono dígito: `55***25` (13 dígitos)
+  não é o JID; o correto é `55***25` (12 dígitos)).
 - Webhook da sessão reapontado para
   `https://iptv.synkroo.com.br/v1/webhooks/waha/synkroo-iptv` (header
   `x-waha-secret`, canal `communication.tenant_channels` com hash, ACTIVE)
@@ -23,7 +23,7 @@
   (~10/min) — outro cliente derruba a conexão continuamente. Sidecar pausado
   durante a janela NÃO removeu o conflito (portanto não é o competidor);
   sidecar religado e ambiente devolvido como encontrado.
-- Respostas do operador (`Teste=piloto-ok`, `Teste-piloto-ok-2`, `Funcionou`)
+- Respostas do operador (3× `<texto-sintetico-M1>`)
   chegaram na sessão mas eventos se perderam na instabilidade; zero linhas
   `waha` no inbox do piloto (correto: nada a processar sem entrega).
 - Próximo: identificar o competidor (Aparelhos conectados no WhatsApp —
@@ -40,8 +40,8 @@
 - Causa do loop: duas instâncias WAHA com a mesma sessão (`ted`) — Hostinger
   (removida pelo operador) + Contabo; sidecar inocentado por teste A/B.
 - Re-apontamento refeito no Contabo (PUT 200) + canal re-ativado.
-- Inbound `TESTE-4` (`Teste-4`, LID `125842558599202@lid` → `556195613225`,
-  pushName do operador): recebido + `PROCESSED`; sem identidade vinculada →
+- Inbound `<texto-sintetico-M1>` (LID `<lid-masked>` → `55***25`,
+  remetente `<operador>`): recebido + `PROCESSED`; sem identidade vinculada →
   `UNMATCHED_INBOUND` OPEN (fail-closed correto, sem conversa fabricada).
 - Dedupe ao vivo: replay byte-idêntico → `202 {accepted:true, deduped:true}`,
   contagens intactas (1 inbox, 0 pagamentos extras, mesmas 2 exceções).
