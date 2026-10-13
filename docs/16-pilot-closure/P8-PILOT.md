@@ -7,12 +7,12 @@
 ## Entrada (tudo antes de qualquer tráfego real)
 
 - [x] PRs #12–#26 mergeados em ordem, CI verde na main. (verificado 2026-10-13: #12–#26 MERGED; CI success na main até #63)
-- [ ] Staging rehearsal repetido pós-merge (P1-exit parte 2 + P7) com API `iptv_app`.
+- [x] Staging rehearsal repetido pós-merge (P1-exit parte 2 + P7) com API `iptv_app`. (verificado 2026-10-13: lane descartável `iptv-rehearsal2`, evidência em `evidence/p8-rehearsal-rerun-20261013/`)
 - [ ] Gates de operador com decisão explícita: B1/B2 (Asaas sandbox→canary),
       M1/M2 (WAHA), G07 (MK — diferido pós-MVP per ADR-0027, 2026-10-12), Steps 3/6–9 (CINEVISION), F12 (Hatchet ou
       local-honesto aceito), legal/provider/tax (SPEC §12.4, M1–M4).
 - [ ] Observabilidade ativa (P6) + alertas + `TEST_DATABASE_URL` documentada p/ reruns.
-- [ ] `pilot-evidence.yaml`: re-run integral com `last_run` real por ID (P5 follow-up).
+- [x] `pilot-evidence.yaml`: re-run integral com `last_run` real por ID (P5 follow-up). (verificado 2026-10-13: B2 20/20 tasks verdes, 0 IDs `not_rerun_in_this_task`; F12 segue BLOCKED, G07 DEFERRED)
 
 ## Operação (tenant interno, canaries com capability-scoped)
 
