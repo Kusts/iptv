@@ -143,6 +143,95 @@ async function settleBounded(quiescence: Promise<void>, timeoutMs: number): Prom
 function throwIfSubmitAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted === true) throw new SubmitAbortedError();
 }
+
+/**
+ * Bounded post-submit settle for the login form: a slow async SPA login
+ * keeps the form briefly after the click, so a single immediate check
+ * would report a false mismatch. Default 5s/250ms; exported for tests.
+ */
+export const LOGIN_SETTLE_TIMEOUT_MS = 5000;
+export const LOGIN_SETTLE_POLL_MS = 250;
+
+const LOGIN_SETTLE_EXPIRED = Symbol("login-settle-expired");
+
+async function settleRace<T>(
+  work: Promise<T>,
+  remainingMs: number,
+  signal: AbortSignal | undefined,
+): Promise<T | typeof LOGIN_SETTLE_EXPIRED> {
+  throwIfSubmitAborted(signal);
+  if (remainingMs <= 0) return LOGIN_SETTLE_EXPIRED;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    const guarded = work.then(
+      (value) => ({ kind: "value" as const, value }),
+      (error: unknown) => {
+        throw error;
+      },
+    );
+    const expired = new Promise<{ kind: "expired" }>((resolve) => {
+      timer = setTimeout(() => resolve({ kind: "expired" }), remainingMs);
+    });
+    let resolveAborted: ((v: { kind: "aborted" }) => void) | undefined;
+    const aborted = new Promise<{ kind: "aborted" }>((resolve) => {
+      resolveAborted = resolve;
+    });
+    if (signal !== undefined) {
+      onAbort = (): void => {
+        resolveAborted?.({ kind: "aborted" });
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    const winner = await Promise.race([
+      guarded,
+      expired,
+      ...(signal !== undefined ? [aborted] : []),
+    ]);
+    if (winner.kind === "aborted") throw new SubmitAbortedError();
+    if (winner.kind === "expired") return LOGIN_SETTLE_EXPIRED;
+    return winner.value;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (signal !== undefined && onAbort !== undefined) {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+}
+
+/**
+ * Wait boundedly for the login form to disappear after submit. Returns
+ * true only when the form is gone IN budget; a late resolution, an
+ * elapsed deadline, or an abort fails/throws instead of reporting a
+ * false mismatch. Probe rejections propagate (same as the former
+ * single check).
+ */
+export async function awaitLoginSettled(
+  probe: () => Promise<unknown>,
+  opts: { timeoutMs?: number; pollMs?: number } = {},
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const timeoutMs = opts.timeoutMs ?? LOGIN_SETTLE_TIMEOUT_MS;
+  const pollMs = opts.pollMs ?? LOGIN_SETTLE_POLL_MS;
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  for (;;) {
+    // Abort/deadline gate BEFORE starting any sondagem.
+    throwIfSubmitAborted(signal);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    const form = await settleRace(probe(), remaining, signal);
+    if (form === LOGIN_SETTLE_EXPIRED) return false;
+    // Same gate between sondagens: an abort/deadline observed while the
+    // probe was in flight must not start another wait.
+    throwIfSubmitAborted(signal);
+    if (Date.now() >= deadline) return false;
+    if (form === null || form === undefined) return true;
+    const rest = deadline - Date.now();
+    if (rest <= 0) return false;
+    const nap = await settleRace(sleep(Math.min(Math.max(0, pollMs), rest)), rest, signal);
+    if (nap === LOGIN_SETTLE_EXPIRED) return false;
+  }
+}
 export interface SubmitLoginSteps {
   fillEmail(): Promise<void>;
   fillPassword(): Promise<void>;
@@ -285,10 +374,10 @@ export class PlaywrightPage implements ReadIdentityPage {
         await this.page.waitForLoadState("domcontentloaded").catch(() => undefined);
       },
     }, signal);
-    // Success heuristic: no login form remains and no challenge visible.
-    const formNow = await this.probeLoginForm();
-    if (formNow !== null) return false;
-    return true;
+    // Success heuristic: the login form is gone within a bounded
+    // settle (a slow async SPA login keeps the form briefly after the
+    // click — a single immediate check would report a false mismatch).
+    return awaitLoginSettled(() => this.probeLoginForm(), {}, signal);
   }
 
   async fetchIdentity(): Promise<unknown> {
