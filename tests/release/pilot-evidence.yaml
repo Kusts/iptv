@@ -21,9 +21,9 @@
   test: 'apps/api/test/golden-loop.integration.test.ts:"legs a-b: inbound WhatsApp → lead/person/conversation → durable trial ACTIVE + binding"'
   environment: integration (TEST_DATABASE_URL descartável; echo gateway, zero live)
   evidence: código + suíte existente
-  last_run: 2026-10-13 (re-executed green, branch closure/browser-worker-real-chrome f26597c, disposable PostgreSQL 17)
+  last_run: 2026-10-14 (re-executed green, branch gw3/security-headers-referrer-nosniff d415290, disposable PostgreSQL 17)
   owner: coder
-  limitations: 'outbound live (entrega real 1×) pendente de M1 (sessão sandbox + destinatário opt-in); suíte usa echo gateway. Parcial live 2026-10-12 (evidence/p3-waha/m1-send-20261012.md): sessão WORKING + 1 envio sintético 201 ao contato de teste (id 3EB0…, provável duplicata de sonda); entrega/readback não observados, M2 segue aberto'
+  limitations: 'M1 live PASS em 2026-10-14 (evidence/p3-waha/m1-adopt-20261014.md): session/restart/outbound-texto/inbound/auth/dedupe ao vivo (send 201 com id + entrega no aparelho + inbound PROCESSED + replay deduped:true + restore); suíte usa echo gateway. M2 drill manual PASS em 2026-10-14 (evidence/p3-waha/m2-drill-20261014.md). Residuais live: media/audio outbound (não implementado), multi-sessão, reconnect profundo, restriction/timelock (nunca provocar)'
 - id: G02
   status: PASS
   test: 'apps/api/test/agent-shadow-approval.integration.test.ts:"inbound → SHADOW run persisted + HumanReview created; shadow NEVER sends"'
