@@ -2,6 +2,10 @@
 
 ## Unreleased - Added
 
+- feat(web): support ticket create form with person autofill
+- docs: registrar M2 drill PASS no registry e evidência
+- test: revalidar G01 na matriz com M1/M2 live PASS
+
 - docs(operations): B1 `local-api` restaurado via caminho (c) 2026-10-13 — origem do túnel `iptv-local` (DOWN desde 30/09) inalcançável nos 3 hosts; DNS `local-api…` re-apontado ao túnel `iptv-pilot` + ingress adicional para a API piloto :3201; ambos os hosts sem 530 em 2 rodadas; rollback documentado (DNS anterior + config .bak); túnel `iptv-pilot` em tarefa oculta `\IPTV-Pilot-Tunnel` (INFRA-B1-LOCALAPI-20261013, INFRA-TUNNEL-BG-20261013). `iptv-local` segue DOWN para aposentadoria futura.
 
 - feat(browser-worker): readServerBouquets, readCustomerAudit e listResellers read-only via api_in_browser a partir de shapes observed-live (apêndice b do dossier customers/edit 2026-10-13): top-level arrays normalizados in-page (rootArray) e paginador laravel flat com meta no root (metaAtRoot), changes descartado na projeção, subcomandos read-server-bouquets/read-customer-audit/list-resellers
