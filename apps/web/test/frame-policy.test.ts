@@ -8,7 +8,8 @@ import nextConfig from "../next.config.mjs";
 // framing/clickjacking em TODAS as respostas web.
 //
 // Este teste chama o `headers()` real da config (não uma cópia) e trava o
-// contrato: matcher global + exatamente os dois headers de framing.
+// contrato: matcher global + exatamente os quatro headers de segurança
+// (framing + referrer-policy + nosniff).
 // Escopo fora daqui (não travado aqui de propósito): CSP geral, rate limiting,
 // headers de segurança da API, exposição pública — ver
 // docs/16-pilot-closure/P6-SECURITY.md §8.
@@ -79,9 +80,9 @@ describe("web frame policy (issue #44)", () => {
     expect(matches("/_next/static/chunks/app.js")).toBeTruthy();
   });
 
-  it("declares exactly the two framing headers — no CSP geral", () => {
+  it("declares exactly the four security headers — no CSP geral", () => {
     const [rule] = rules ?? [];
-    expect(rule?.headers).toHaveLength(2);
+    expect(rule?.headers).toHaveLength(4);
 
     const byKey = new Map(
       (rule?.headers ?? []).map((header) => [
@@ -92,12 +93,14 @@ describe("web frame policy (issue #44)", () => {
 
     expect(byKey.get("content-security-policy")).toBe("frame-ancestors 'none'");
     expect(byKey.get("x-frame-options")).toBe("DENY");
+    expect(byKey.get("referrer-policy")).toBe(
+      "strict-origin-when-cross-origin",
+    );
+    expect(byKey.get("x-content-type-options")).toBe("nosniff");
 
-    // Guarda de escopo: esta subfatia NÃO introduz CSP geral, nonce, HSTS,
-    // referrer-policy ou nosniff — cada um tem sua própria fatia/gate.
+    // Guarda de escopo: esta fatia NÃO introduz CSP geral, nonce, HSTS —
+    // cada um tem sua própria fatia/gate.
     expect(byKey.has("strict-transport-security")).toBe(false);
-    expect(byKey.has("referrer-policy")).toBe(false);
-    expect(byKey.has("x-content-type-options")).toBe(false);
     expect(
       (rule?.headers ?? []).some((header) =>
         /default-src|script-src|nonce|strict-dynamic/i.test(header.value),
@@ -110,6 +113,11 @@ describe("web frame policy (issue #44)", () => {
     const keys = (rule?.headers ?? []).map((header) => header.key).sort();
     // HTTP é case-insensitive, mas emitimos a forma canônica para inspeção
     // humana e para o smoke contra o servidor real.
-    expect(keys).toEqual(["Content-Security-Policy", "X-Frame-Options"]);
+    expect(keys).toEqual([
+      "Content-Security-Policy",
+      "Referrer-Policy",
+      "X-Content-Type-Options",
+      "X-Frame-Options",
+    ]);
   });
 });

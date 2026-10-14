@@ -10,10 +10,11 @@ const nextConfig = {
   // todas as rotas (raiz, rotas dinâmicas, route groups) e os assets servidos
   // pelo próprio servidor. `headers` é incondicional (sem `has`/`missing`).
   //
-  // Escopo deliberadamente mínimo desta subfatia: exatamente os dois headers de
-  // framing. NÃO é uma CSP geral (sem default-src/script-src/nonce) — CSP ampla
-  // exigiria inventariar os recursos inline do App Router e poderia quebrar a UI; fica
-  // como follow-up. Rate limiting, security headers da API e exposição pública
+  // Escopo desta fatia (Golden Workflow 3, ETAPA 2): os dois headers de
+  // framing + Referrer-Policy + X-Content-Type-Options. NÃO é uma CSP geral
+  // (sem default-src/script-src/nonce) — CSP ampla exigiria inventariar os
+  // recursos inline do App Router e poderia quebrar a UI; fica como
+  // follow-up. Rate limiting, security headers da API e exposição pública
   // seguem pendentes, registrados em docs/16-pilot-closure/P6-SECURITY.md §8.
   //
   // Contrato coberto pelo teste de regressão `test/frame-policy.test.ts`
@@ -33,6 +34,16 @@ const nextConfig = {
             // Legado para navegadores sem suporte a `frame-ancestors`.
             key: "X-Frame-Options",
             value: "DENY",
+          },
+          {
+            // Limita o Referer enviado em navegações cross-origin.
+            key: "Referrer-Policy",
+            value: "strict-origin-when-cross-origin",
+          },
+          {
+            // Impede MIME-sniffing: o browser respeita o Content-Type declarado.
+            key: "X-Content-Type-Options",
+            value: "nosniff",
           },
         ],
       },
