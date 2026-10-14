@@ -38,10 +38,10 @@
 | MK Ativador | Echo/manual adapters only (existing) | Unvalidated in this environment | **G07**: supplier account/terms + controlled test purchase + unknown-effect reconciliation + explicit spending limits. |
 | Infisical secrets | `packages/secrets` (existing, ADR-0014) | LAB_VALIDATED (machine-identity lab reads, unchanged) | Per-environment operator smoke (presence/length only) before any live gate references production paths. CINEVISION/MK live credentials stay in the operator vault — never repo/`.env`. |
 
-## Live-blocked summary (nothing promoted)
+## Live-blocked summary (WAHA M1 text path promoted 2026-10-14; remainder blocked)
 
 - Asaas PIX-live: BLOCKED → B1/B2 (→ M4/M5).
-- WAHA live session/media/reconnect/restriction/fallback: BLOCKED → M1/M2.
+- WAHA live text path (session/restart/outbound/inbound/auth/dedupe): PROMOTED live 2026-10-14 (`evidence/p3-waha/m1-adopt-20261014.md` — send 201+id, inbound `PROCESSED`, replay `deduped:true`, restore verified). Still BLOCKED → M2 + implementation: media/audio outbound (N-A — unimplemented), multi-session, deep reconnect, restriction/timelock (never provoke), manual fallback drill, transcription (`PENDING_FOLLOW_UP`).
 - Hatchet durability: BLOCKED → adopt decision + 9-item gate (F12 BLOCKED).
 - CINEVISION writes: BLOCKED → Step 3 observation first; reads canary → Steps 6–9.
 - MK purchase: BLOCKED → G07.
