@@ -122,3 +122,13 @@ host-local, fora do repo); scripts em `scripts/load/`
 p95 24,9/21,1 ms na janela Contabo 2026-10-17 — gap 3 do §4 fechado para
 read-path). Fulfillment p95 + challenge/drift seguem **INCONCLUSIVE**
 (operator-gated, exigem janela com envio autorizado).
+
+## 6. Rerun em staging re-migrado (2026-10-17)
+
+Staging re-migrado: `platform.migration_history` head = `202610120005_060_billing_customer_provider_binding.sql` (051→060), fechando a re-migração pedida no §4.5 antes de transformar os números antigos em referência. Reruns executados do loopback interno do container `api` (`http://127.0.0.1:3001`) — ressalva honesta: a medida NÃO atravessa o TLS/reverse-proxy do path público.
+
+- **scheduler-soak — PASS**: `/v1/health` p95 6,6 ms, `/health/ready` p95 8,3 ms (target 500 ms), webhook unknown-tenant `404×200` p95 9,8 ms (target 2 s), scheduler `enabled` em 200/200 amostras sem flip mid-soak, drift thirds 9,4→5,2 ms (sem sinal de backlog), zero erros de transporte. O que este probe NÃO provou (honestidade do script): webhook accept nominal (202) e drain/backlog sob volume continuam pertencendo ao `outbox-volume.sh` (§4.4 segue aberto).
+- **api-load — nominal (defaults atuais, 300 reqs C10)**: health p95 72,9 ms, ready p95 95,0 ms, webhook `404×100`, ERRORS=0. Os defaults divergem do ensaio 2026-10-08 (600/C20) — NÃO comparar p95s entre ensaios com forma diferente.
+- **Pendente**: rerun `outbox-volume.sh` (container descartável + 130k rows + replay de cutover) — único caminho para re-medir claim/pool sob volume na 060.
+
+Evidência bruta no host: `/home/deploy/iptv/artifacts/staging-scheduler-soak-20261017/` (`run.txt`, `api-load.txt`). Nenhum claim de SLO novo: os targets do §1 continuam referência, não SLA.
