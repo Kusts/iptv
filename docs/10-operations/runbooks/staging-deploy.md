@@ -46,6 +46,7 @@ Deploy order is expressed in `depends_on` and must not be reordered by hand:
 5. Infisical reachable from the host and from the containers when
    `INFISICAL_*` is filled: without it the secrets adapter stays noop and every
    `infisical://` ref fails closed (ADR-0014, `packages/secrets/README.md`).
+   The live-activation path is "Infisical activation (staging, opt-in)" below.
 6. `APP_DATABASE_URL` must be SET to a valid restricted `iptv_app` connection
    (the fail-closed boot guard refuses to start the API without it when
    `NODE_ENV=production` — there is no owner fallback). This is rehearsal,
@@ -244,6 +245,155 @@ re-arm — residual fenced rows are forward-fix via the worker (the legacy
 drain cannot reclaim them). Full procedure and crash semantics:
 [RLS role split cutover](rls-role-split-cutover.md) ("Worker process +
 legacy quiescence") and `apps/outbox-worker/README.md`.
+
+## Infisical activation (staging, opt-in)
+
+Canonical live-activation path for the API-side Infisical identity on
+staging. Starting state on the host (2026-10-17):
+`deploy/staging/.env.staging` (full host path
+`/home/deploy/iptv/deploy/staging/.env.staging`) already carries a commented
+placeholder block for the four vars below (marker
+`STAGING-INFISICAL-ACTIVATION 2026-10-17`) — the operator fills/uncomments
+it; nobody needs to create it. Only `INFISICAL_ENVIRONMENT=staging` is
+active, so the API boots into the noop adapter: boot succeeds, every secret
+consumption fails closed. Authority:
+[ADR-0014](../../06-decisions/ADR-0014-infisical-secrets.md) and the
+[packages/secrets](../../../packages/secrets/README.md) resolution contract;
+identity/RBAC shape follows
+[deploy/infisical/machine-identities.md](../../../deploy/infisical/machine-identities.md).
+
+File-path rule: the `api` service consumes `env_file: - .env.staging`
+relative to the compose file's directory
+(`deploy/staging/docker-compose.staging.yml`, `api` service), so the
+effective file is ALWAYS
+`/home/deploy/iptv/deploy/staging/.env.staging`. A `.env.staging` at the
+repo/host ROOT is NOT consumed by compose — do not create or edit one.
+Every compose invocation below runs from `cd /home/deploy/iptv` in the
+canonical form:
+
+```sh
+docker compose -p iptv-staging --env-file deploy/staging/.env.staging \
+  -f deploy/staging/docker-compose.staging.yml <subcommand>
+```
+
+### 1. Prerequisites (cofre operator owns this step)
+
+- The cofre operator/operadora creates a dedicated Universal Auth machine
+  identity (client-id + client-secret) for the staging API, bound to a
+  minimal project role: read-only on the API-owned secret paths for the
+  `staging` environment, no write, no worker paths.
+- The agent NEVER creates, rotates, or re-issues credentials; it only
+  receives the four values through the host channel in step 2.
+- CINEVISION/MK Ativador credentials already live in the cofre as secrets —
+  raw values stay in the operator's vault, never in this repo.
+
+### 2. Fill the four vars in the compose env_file (no Git/PR/log/ticket)
+
+On the host, over SSH, from `cd /home/deploy/iptv`, edit
+`deploy/staging/.env.staging` directly with an editor (no `echo` into shared
+history, no paste into tickets or PRs): uncomment the
+`STAGING-INFISICAL-ACTIVATION 2026-10-17` block and fill it:
+
+```text
+INFISICAL_SITE_URL=<from the operator>
+INFISICAL_PROJECT_ID=<from the operator>
+INFISICAL_CLIENT_ID=<from the operator>
+INFISICAL_CLIENT_SECRET=<from the operator>
+```
+
+`INFISICAL_ENVIRONMENT=staging` is already active. The commented
+placeholders in the repo-side `deploy/staging/.env.staging.example` stay
+as-is; the real host file is gitignored. Back up the previous file first —
+rollback needs it.
+
+### 3. Activate at least one real ref
+
+Point at least one already-registered secret in the cofre's `staging`
+environment, stored as a `secret_ref` in the
+`infisical://<environment>/<path...>/<key>` grammar
+([packages/secrets](../../../packages/secrets/README.md); lab-documented
+shape `infisical://dev/browser-worker/CINEVISION_URL` — real key names are
+read from the cofre panel, never invented here).
+
+### 4. Apply (api service only)
+
+```sh
+cd /home/deploy/iptv
+docker compose -p iptv-staging --env-file deploy/staging/.env.staging \
+  -f deploy/staging/docker-compose.staging.yml up -d --force-recreate api
+```
+
+Restricted to the `api` service. Never `down` the stack for this change;
+never `down -v` (a FRESH re-provision is a DR decision, not an activation
+step).
+
+### 5. Smoke (proves the activation; health/ready alone do not)
+
+`/v1/health` and `/v1/health/ready` CANNOT prove the activation: the adapter
+resolves and authenticates lazily, only inside `getSecret`.
+
+a) Effective-env name inventory (after the recreate, with the four vars
+   filled) — names only, never values:
+
+```sh
+docker exec iptv-staging-api sh -c "env | grep -oE '^INFISICAL_[A-Z_]+' | sort"
+```
+
+Expect the four names (`INFISICAL_SITE_URL`, `INFISICAL_PROJECT_ID`,
+`INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET`) plus
+`INFISICAL_ENVIRONMENT`.
+
+b) Real cofre read through the adapter's own mechanics, running the repo's
+   standalone script INSIDE the api container. The image ships no linkable
+   `node_modules/@iptv` copy and no script, so the script travels over stdin
+   (delivery validated on the host; removed right after the run):
+
+```sh
+cd /home/deploy/iptv
+docker exec -i iptv-staging-api sh -c 'cat > /tmp/infisical-smoke.mjs && node /tmp/infisical-smoke.mjs <SECRET_KEY> staging <SECRET_PATH>; rc=$?; rm -f /tmp/infisical-smoke.mjs; exit $rc' < packages/secrets/scripts/infisical-smoke.mjs
+```
+
+- `<SECRET_KEY>` is a REAL key already in the cofre (the operator reads the
+  name from the cofre panel, e.g. a CINEVISION/MK key — values are never
+  invented or printed).
+- `<SECRET_PATH>` is optional: REQUIRED when the activated ref lives in a
+  folder (copy the secretPath shown in the panel, e.g. `/api`); omit it for a
+  root secret (default `/`).
+- The relative `packages/secrets/scripts/...` path is the host's `git archive`
+  tree, resolved from `cd /home/deploy/iptv`.
+- Success expect: `ok: secret presente, len=N` — nothing else printed. The
+  script performs Universal Auth login + raw read, the same login/read flow
+  as the adapter.
+
+Honest scope note: `@iptv/secrets` is only exercised end-to-end at the API's
+first real consumption (the adapter is lazy); this smoke validates
+credential + RBAC + presence with the adapter's SAME login/read flow
+(Infisical UA login + `/api/v3/secrets/raw`), in the api's effective
+environment.
+
+c) Complementary process/database check (not activation proof):
+
+```sh
+curl -i http://127.0.0.1:3001/v1/health
+curl -i http://127.0.0.1:3001/v1/health/ready
+```
+
+Expect `200` on both. Never print secret values — presence/length only.
+
+### 6. Rollback
+
+Restore the backed-up `deploy/staging/.env.staging` (without the four vars)
+and recreate `api` as in step 4. The stack returns to the noop fail-closed
+state (boot ok, secret consumption refused with typed `CONFIG` errors).
+
+### 7. Safety restrictions
+
+- The self-hosted Infisical server on this host runs as the NEIGHBOUR
+  project's container (`infisical`, synkroo production) — never mutate,
+  restart, or reconfigure it, nor `synkroo-prod-*` / `traefik` from this lane.
+- Secrets never enter the repo, logs, docs, or tickets — refs only.
+- Do not re-grant `iptv_app` to the outbox path: stranded-row triage stays
+  forward-fix via the worker (see "Outbox worker activation" above).
 
 ## Rollback
 

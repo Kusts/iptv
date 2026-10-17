@@ -8,8 +8,10 @@
  * prints ONLY "ok: secret presente, len=N" — NEVER the value.
  *
  * Usage:
- *   node packages/secrets/scripts/infisical-smoke.mjs [SECRET_KEY] [ENVIRONMENT]
- *   (defaults: TEST_SECRET, $INFISICAL_ENVIRONMENT or "development")
+ *   node packages/secrets/scripts/infisical-smoke.mjs [SECRET_KEY] [ENVIRONMENT] [SECRET_PATH]
+ *   (defaults: TEST_SECRET, $INFISICAL_ENVIRONMENT or "development", "/")
+ *   Pass SECRET_PATH when the secret lives in a folder (copy the secretPath
+ *   shown in the panel, e.g. "/api"); omit it for root secrets.
  */
 
 const site = (process.env.INFISICAL_SITE_URL ?? "").trim().replace(/\/+$/, "");
@@ -22,6 +24,7 @@ const environment = (
   (process.env.INFISICAL_ENVIRONMENT ?? "").trim() ??
   "development"
 ).trim() || "development";
+const secretPath = ((process.argv[4] ?? "/").trim() || "/");
 
 if (!site || !projectId || !clientId || !clientSecret) {
   console.error(
@@ -31,6 +34,10 @@ if (!site || !projectId || !clientId || !clientSecret) {
 }
 if (!key || key.includes("/") || /\s/.test(key)) {
   console.error("smoke: invalid secret key");
+  process.exit(2);
+}
+if (!secretPath.startsWith("/") || secretPath.includes("..") || /\s/.test(secretPath)) {
+  console.error("smoke: invalid secret path");
   process.exit(2);
 }
 
@@ -69,7 +76,7 @@ const url =
   `${site}/api/v3/secrets/raw/${encodeURIComponent(key)}` +
   `?workspaceId=${encodeURIComponent(projectId)}` +
   `&environment=${encodeURIComponent(environment)}` +
-  `&secretPath=${encodeURIComponent("/")}`;
+  `&secretPath=${encodeURIComponent(secretPath)}`;
 
 let readRes;
 try {
