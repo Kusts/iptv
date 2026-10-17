@@ -350,12 +350,15 @@ b) Real cofre read through the adapter's own mechanics, running the repo's
 
 ```sh
 cd /home/deploy/iptv
-docker exec -i iptv-staging-api sh -c 'cat > /tmp/infisical-smoke.mjs && node /tmp/infisical-smoke.mjs <SECRET_KEY> staging; rc=$?; rm -f /tmp/infisical-smoke.mjs; exit $rc' < packages/secrets/scripts/infisical-smoke.mjs
+docker exec -i iptv-staging-api sh -c 'cat > /tmp/infisical-smoke.mjs && node /tmp/infisical-smoke.mjs <SECRET_KEY> staging <SECRET_PATH>; rc=$?; rm -f /tmp/infisical-smoke.mjs; exit $rc' < packages/secrets/scripts/infisical-smoke.mjs
 ```
 
 - `<SECRET_KEY>` is a REAL key already in the cofre (the operator reads the
   name from the cofre panel, e.g. a CINEVISION/MK key — values are never
   invented or printed).
+- `<SECRET_PATH>` is optional: REQUIRED when the activated ref lives in a
+  folder (copy the secretPath shown in the panel, e.g. `/api`); omit it for a
+  root secret (default `/`).
 - The relative `packages/secrets/scripts/...` path is the host's `git archive`
   tree, resolved from `cd /home/deploy/iptv`.
 - Success expect: `ok: secret presente, len=N` — nothing else printed. The
@@ -371,8 +374,8 @@ environment.
 c) Complementary process/database check (not activation proof):
 
 ```sh
-curl.exe -i http://127.0.0.1:3001/v1/health
-curl.exe -i http://127.0.0.1:3001/v1/health/ready
+curl -i http://127.0.0.1:3001/v1/health
+curl -i http://127.0.0.1:3001/v1/health/ready
 ```
 
 Expect `200` on both. Never print secret values — presence/length only.
