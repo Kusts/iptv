@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- docs(operations): canonical LIVE activation path for the staging Infisical identity in `docs/10-operations/runbooks/staging-deploy.md` ("Infisical activation (staging, opt-in)"): cofre-operator-owned Universal Auth prerequisites, host-only reception of the four `INFISICAL_*` vars, first real `infisical://` ref, api-only `--force-recreate`, health/ready + boot-log smoke, noop fail-closed rollback, and neighbour-container (`infisical`/`synkroo-prod-*`/`traefik`) restrictions.
+
 - feat(web): support ticket create form with person autofill
 - docs: registrar M2 drill PASS no registry e evidência
 - test: revalidar G01 na matriz com M1/M2 live PASS
