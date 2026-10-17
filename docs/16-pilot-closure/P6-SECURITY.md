@@ -546,6 +546,31 @@ Sem achado.
   race e não foi alterado nesta fatia. Nenhuma readiness/security PASS ou
   capability é promovida por este candidato.
 
+### 12.4 Triagem do defect de cutover — LEGACY drain sob pool `iptv_app` (2026-10-17)
+
+- **Defeito**: a combinação pool `iptv_app` + LEGACY gen1 + drain enabled
+  **nunca foi suportada** — nenhuma migration dá leitura a `iptv_app` em
+  `outbox_messages`: 050 só cria a policy executor-only
+  (`db/migrations/202610070000_050_platform_outbox_worker.sql:579-592`,
+  sem policy para `iptv_app` por desenho); 051 só concede EXECUTE em
+  `mode()` (`db/migrations/202610080000_051_platform_outbox_runtime_interlock.sql:300-306`,
+  leitura de modo, zero acesso a tabela); 053 não toca nos grants/policies
+  do outbox (`db/migrations/202610100000_053_platform_spine_rollout.sql:75-77`).
+  O erro per-tick era fail-closed (sem leak), mas o estado era
+  não-sustentável: dreno que nunca drena.
+- **Contradição de runbook corrigida**: o `staging-deploy.md` descrevia a
+  lane pós-050/051 com API `iptv_app` + legacy drain enabled — combinação
+  que viola a prova de coexistência-zero
+  (`rls-role-split-cutover.md:866-871`: legacy-enabled+worker-disabled OU
+  legacy-disabled+quiesced+worker-enabled, nunca ambos; e pós-cutover o
+  dreno legacy sequer tem grants para ler). Corrigido para
+  `LEGACY_OUTBOX_DRAIN_ENABLED=0` na lane de staging.
+- **Resolução pelo caminho forward (Opção B do runbook)**: flag 0 +
+  interlock `LEGACY→QUIESCING→WORKER` (gens 1→2→3, operador, ator
+  registrado) + worker profile ativo e drenando — ver §5.1 do `P6-DR.md`.
+  **Sem re-grant, sem re-código**: nenhuma policy/grant nova, nenhuma
+  função alterada. Nenhum ADR novo (sem mudança de arquitetura).
+
 ## Follow-ups (fora desta slice)
 
 1. ~~Migração **Vitest 3 → 4** (resolve `tinypool` critical ×2 e os moderates

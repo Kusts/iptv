@@ -113,6 +113,21 @@ vazios — staging sem dados de pilot). Evidência local (gitignored):
    base backup + restore point-in-time ensaiado em staging descartável com
    perda medida ≤ 15 min; só então RPO/RTO viram SLO.
 
+### 5.1 Resolução do drift em 2026-10-17 (re-provision FRESH)
+
+Os itens 2 e 3 acima estão **RESOLVIDOS** — o stack staging anterior não
+existe mais (`down -v`, volume removido): re-provision FRESH em 2026-10-17
+na revisão `fb06e9ee` com **60/60 migrations** (no-op idempotente no
+re-run). Origem == HEAD: o drill DR volta a ser re-confiável via
+`db-restore-drill` (verde 60/60, **DRILL PASS em 25 s** — ver §6 do
+`P6-PERFORMANCE.md`).
+
+Ciclos de ativação registrados (operador via `outbox_runtime_set`, ator
+registrado): legacy silenciado (`LEGACY_OUTBOX_DRAIN_ENABLED=0`) →
+`LEGACY→QUIESCING→WORKER` (gens 1→2→3) → modo **WORKER** com worker
+profile ativo e drenando (claimed 1 / published 1, PENDING→0). Sem
+PITR novo: o §1 segue válido (RPO/RTO nominais, sem SLO).
+
 ## 6. Validação desta slice
 
 - `backup-dr.sh drill` → **DRILL PASS 91 s** (acima, §4).
