@@ -20,11 +20,11 @@ import { providerDispatchModeFromEnv } from "../provider/provider-port.js";
  * touches the API critical path, which shares no state with the loop
  * beyond the database).
  *
- * IDENTITY (declared, 054): the loop runs TODAY as the pool owner role (the
- * `DATABASE_URL` runtime identity, which bypasses RLS); at cutover it runs
- * as `iptv_app` (NOBYPASSRLS). Both `drainPending` entry points claim through
- * the `platform.inbox_claim` definer (EXECUTE to `iptv_app`), so they behave
- * identically under either identity.
+ * IDENTITY (post-cutover): the loop runs as the `APP_DATABASE_URL`
+ * runtime identity (`iptv_app`, NOBYPASSRLS) — the pre-cutover pool-owner
+ * identity no longer exists in this lane. Both `drainPending` entry points
+ * claim through the `platform.inbox_claim` definer (EXECUTE to `iptv_app`),
+ * so they behave identically under either identity.
  *
  * Each tick:
  * 1. enumerates tenants through the narrow platform-owned registry
