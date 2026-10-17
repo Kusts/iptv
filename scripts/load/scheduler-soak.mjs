@@ -37,21 +37,32 @@
 // Scheduler field: `scheduler` ("enabled"|"disabled") and `tickSeconds` are
 // read from the `GET /v1/health` payload — the only health payload that
 // carries them (`/ready` answers only status/checks). Zero samples carrying
-// the field -> veredicto INCONCLUSIVE (exit != 0, never PASS); a flip
-// mid-soak -> SCHEDULER_FLIP (FAIL).
+// the field -> SCHEDULER_ABSENT; a flip mid-soak -> SCHEDULER_FLIP (FAIL).
+//
+// Result precedence (exit 1 for both): any entry in `failures` forces
+// RESULT=FAIL even when SCHEDULER_ABSENT also occurs; RESULT=INCONCLUSIVE
+// only when failures is empty and SCHEDULER_ABSENT fired.
 //
 // Coverage floors (checked before any PASS verdict):
 //   (a) >= 9 load-window samples per route (the thirds drift comparison
-//       needs them); (b) observe window >= 2 scheduler ticks (tickSeconds
-//       from the /health payload when present, else 60). Short of either ->
-//       COVERAGE (exit != 0, never PASS).
+//       needs them); (b) the observe window runs BY TIME for
+//       observeSeconds = max(--observe, 2 x tickSeconds) (tickSeconds
+//       from the /health payload when present, else 60) and the EFFECTIVE
+//       elapsed must reach observeSeconds within tolerance (0.5 s clock
+//       skew); short of either -> COVERAGE (exit != 0, never PASS).
+//   (--observe means seconds of real observed duration, not a sample
+//   count; a small configured value is raised to 2 ticks, never shrunk.)
 //
-// Pacing (open-loop): launches are timer-driven and never gated on the
-// previous response, so a degraded server cannot relieve its own load.
+// Pacing (open-loop, honest): launches are timer-driven on a fixed spacing
+// and NEVER wait for responses, so a degraded server cannot relieve its own
+// load and there is no catch-up burst to recover lost spacing.
 // Concurrency is bounded by an explicit cap of 3x the configured rate
-// (MAX_INFLIGHT); excess launches wait for a slot, which stretches the
-// window and surfaces as an OFFERED_RATE shortfall (achieved < 90% of the
-// configured rate across the load window -> FAIL), never as silent relief.
+// (MAX_INFLIGHT); when inflight == MAX_INFLIGHT the launch opportunity is
+// DEFERRED (counted with first/last timestamp, nothing launched), which
+// surfaces as an OFFERED_RATE shortfall: deferred share > 5% of offered
+// across the load window -> FAIL with a cap-deferral reason, while
+// achieved < 90% of offered without cap pressure -> FAIL with a slowness
+// reason — never as silent relief.
 //
 // SLO defaults (docs/15-implementation-baseline/13-nfr-slo-dr.md):
 //   reads p95 <= 500 ms, webhook ingest ack p95 <= 2000 ms.
@@ -67,6 +78,8 @@
 //   node scripts/load/scheduler-soak.mjs [--base URL] [--duration S]
 //     [--rate RPS] [--observe S] [--read-p95-ms N] [--webhook-p95-ms N]
 //     [--timeout-ms N] [--help]
+// (--observe = seconds of REAL observed duration for the observe window;
+//  the load window stays count-based at --duration x --rate.)
 //
 // Never touches staging/production data: the webhook path uses a fixed
 // unknown-tenant slug (fail-closed 404/500, zero real effects) and every
@@ -223,32 +236,127 @@ function report(prefix, samples, elapsedS) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Open-loop pace with an explicit concurrency cap: 3x the configured rate
-// (3s worth of offered load). Launches are timer-driven and never gated on
-// the previous response, so a degraded server cannot relieve its own load;
-// excess launches wait for a slot, stretching the window instead.
+// (3s worth of offered load). Launches are timer-driven on a FIXED spacing
+// and never gated on the previous response, so a degraded server cannot
+// relieve its own load and there is no catch-up burst: when in-flight is at
+// the cap the opportunity is counted as DEFERRED (with timestamps) and
+// skipped, surfacing as OFFERED_RATE instead of silent relief.
 const MAX_INFLIGHT = Math.max(1, Math.ceil(RATE * 3));
 
+function makeTracker() {
+  return {
+    samples: [],
+    inFlight: new Set(),
+    maxInflight: 0,
+    deferred: 0,
+    firstDeferredAt: null,
+    lastDeferredAt: null,
+    capSince: null,
+    maxInflightHoldMs: 0,
+  };
+}
+
 async function pacedRun(count, intervalMs, pick) {
-  const samples = [];
-  const inFlight = new Set();
-  let maxInflight = 0;
+  const tr = makeTracker();
   const t0 = Date.now();
   for (let i = 0; i < count; i += 1) {
-    const slot = t0 + i * intervalMs;
-    const wait = slot - Date.now();
-    if (wait > 0) await sleep(wait);
-    while (inFlight.size >= MAX_INFLIGHT) {
-      await Promise.race(inFlight);
+    // Fixed spacing, never a catch-up burst: each opportunity after the
+    // first waits exactly intervalMs, even when behind schedule.
+    if (i > 0) await sleep(intervalMs);
+    if (tr.inFlight.size >= MAX_INFLIGHT) {
+      tr.deferred += 1;
+      const now = Date.now();
+      if (tr.firstDeferredAt === null) tr.firstDeferredAt = now;
+      tr.lastDeferredAt = now;
+      if (tr.capSince === null) tr.capSince = now;
+      continue;
+    }
+    // Self-referencing `p` inside .then is safe: the callback runs after
+    // assignment, so inFlight.delete(p) removes the right handle.
+    const p = one(pick(i)).then((s) => {
+      const wasFull = tr.inFlight.size >= MAX_INFLIGHT;
+      tr.inFlight.delete(p);
+      tr.samples.push(s);
+      // Close a cap-hold streak when a slot frees up.
+      if (wasFull && tr.inFlight.size < MAX_INFLIGHT && tr.capSince !== null) {
+        const hold = Date.now() - tr.capSince;
+        if (hold > tr.maxInflightHoldMs) tr.maxInflightHoldMs = hold;
+        tr.capSince = null;
+      }
+    });
+    tr.inFlight.add(p);
+    if (tr.inFlight.size >= MAX_INFLIGHT && tr.capSince === null) {
+      tr.capSince = Date.now();
+    }
+    if (tr.inFlight.size > tr.maxInflight) tr.maxInflight = tr.inFlight.size;
+  }
+  await Promise.all(tr.inFlight);
+  if (tr.capSince !== null) {
+    const hold = Date.now() - tr.capSince;
+    if (hold > tr.maxInflightHoldMs) tr.maxInflightHoldMs = hold;
+    tr.capSince = null;
+  }
+  return {
+    samples: tr.samples,
+    elapsedS: (Date.now() - t0) / 1000,
+    maxInflight: tr.maxInflight,
+    offered: count,
+    deferred: tr.deferred,
+    maxInflightHoldMs: tr.maxInflightHoldMs,
+  };
+}
+
+// Time-based observe: launches every intervalMs until the clock reaches
+// t0 + durationS (observeStart + observeSeconds). Opportunity count is
+// derived from elapsed time, never fixed up front.
+async function timedRun(durationS, intervalMs, pick) {
+  const tr = makeTracker();
+  const t0 = Date.now();
+  const tEnd = t0 + Math.max(1, durationS) * 1000;
+  let i = 0;
+  while (Date.now() < tEnd) {
+    if (i > 0) await sleep(intervalMs);
+    if (Date.now() >= tEnd) break;
+    if (tr.inFlight.size >= MAX_INFLIGHT) {
+      tr.deferred += 1;
+      const now = Date.now();
+      if (tr.firstDeferredAt === null) tr.firstDeferredAt = now;
+      tr.lastDeferredAt = now;
+      if (tr.capSince === null) tr.capSince = now;
+      i += 1;
+      continue;
     }
     const p = one(pick(i)).then((s) => {
-      samples.push(s);
-      inFlight.delete(p);
+      const wasFull = tr.inFlight.size >= MAX_INFLIGHT;
+      tr.inFlight.delete(p);
+      tr.samples.push(s);
+      if (wasFull && tr.inFlight.size < MAX_INFLIGHT && tr.capSince !== null) {
+        const hold = Date.now() - tr.capSince;
+        if (hold > tr.maxInflightHoldMs) tr.maxInflightHoldMs = hold;
+        tr.capSince = null;
+      }
     });
-    inFlight.add(p);
-    if (inFlight.size > maxInflight) maxInflight = inFlight.size;
+    tr.inFlight.add(p);
+    if (tr.inFlight.size >= MAX_INFLIGHT && tr.capSince === null) {
+      tr.capSince = Date.now();
+    }
+    if (tr.inFlight.size > tr.maxInflight) tr.maxInflight = tr.inFlight.size;
+    i += 1;
   }
-  await Promise.all(inFlight);
-  return { samples, elapsedS: (Date.now() - t0) / 1000, maxInflight };
+  await Promise.all(tr.inFlight);
+  if (tr.capSince !== null) {
+    const hold = Date.now() - tr.capSince;
+    if (hold > tr.maxInflightHoldMs) tr.maxInflightHoldMs = hold;
+    tr.capSince = null;
+  }
+  return {
+    samples: tr.samples,
+    elapsedS: (Date.now() - t0) / 1000,
+    maxInflight: tr.maxInflight,
+    offered: i,
+    deferred: tr.deferred,
+    maxInflightHoldMs: tr.maxInflightHoldMs,
+  };
 }
 
 const failures = [];
@@ -260,10 +368,20 @@ const load = await pacedRun(loadCount, 1000 / RATE, (i) => LOAD_PATHS[i % LOAD_P
 const loadSums = report("LOAD", load.samples, load.elapsedS);
 
 // Open-loop honesty: achieved vs. offered rate across the load window.
+// Deferred share > 5% of offered -> cap-deferral FAIL; otherwise achieved
+// < 90% of offered -> slowness FAIL.
 const achievedRps = load.samples.length / Math.max(load.elapsedS, 1e-3);
-console.log(`OFFERED offered=${RATE.toFixed(2)}/s achieved=${achievedRps.toFixed(2)}/s maxInflight=${load.maxInflight}`);
-if (achievedRps < 0.9 * RATE) {
-  failures.push(`OFFERED_RATE achieved=${achievedRps.toFixed(2)}/s < 90% of offered=${RATE.toFixed(2)}/s`);
+const deferredShare = load.deferred / Math.max(load.offered, 1);
+console.log(
+  `OFFERED offered=${RATE.toFixed(2)}/s achieved=${achievedRps.toFixed(2)}/s ` +
+    `deferred=${load.deferred} maxInflightHold=${load.maxInflightHoldMs}ms maxInflight=${load.maxInflight}`,
+);
+if (deferredShare > 0.05) {
+  failures.push(
+    `OFFERED_RATE deferred=${load.deferred}/${load.offered} (${(deferredShare * 100).toFixed(1)}% > 5%) cap-deferral at maxInflight=${load.maxInflight}`,
+  );
+} else if (achievedRps < 0.9 * RATE) {
+  failures.push(`OFFERED_RATE achieved=${achievedRps.toFixed(2)}/s < 90% of offered=${RATE.toFixed(2)}/s slowness (deferred=${load.deferred})`);
 }
 
 // Coverage floor (a): >= 9 load-window samples per route (the thirds drift
@@ -275,7 +393,8 @@ for (const { path } of LOAD_PATHS) {
 
 // Scheduler field must not flip mid-soak (environment changed under test).
 // Field source: the /v1/health payload (the only health payload carrying
-// it); zero samples carrying it -> INCONCLUSIVE, never PASS.
+// it); zero samples carrying it -> SCHEDULER_ABSENT (INCONCLUSIVE only when
+// failures is empty, else FAIL wins — see result precedence).
 const seen = new Set(
   load.samples.map((s) => s.scheduler).filter((v) => v !== null),
 );
@@ -290,16 +409,28 @@ if (schedulerSamples === 0) {
   inconclusive.push("SCHEDULER_ABSENT no /v1/health sample carried the scheduler field");
 }
 
-// Coverage floor (b): observe window must cover >= 2 scheduler ticks.
-if (OBSERVE < 2 * tickSeen) {
-  failures.push(`COVERAGE observe=${OBSERVE}s < 2 ticks (${tickSeen}s)`);
-}
+// Time floor: observe runs BY TIME for observeSeconds =
+// max(configured, 2 ticks) when a tick is known; when no sample carried
+// tickSeconds the configured value is used as-is (the effective-duration
+// check below still applies, and SCHEDULER_ABSENT is reported separately).
+const observeSeconds = schedulerSamples > 0 ? Math.max(OBSERVE, 2 * tickSeen) : OBSERVE;
 
 // Phase 2: observe window (readiness only, whole-window convergence).
-const obsCount = Math.max(1, OBSERVE);
-console.log(`SOAK-OBSERVE path=${OBSERVE_PATH.path} duration=${OBSERVE}s`);
-const obs = await pacedRun(obsCount, 1000, () => OBSERVE_PATH);
+// Runs BY TIME: launches every ~1s until the clock reaches
+// observeStart + observeSeconds.
+console.log(`SOAK-OBSERVE path=${OBSERVE_PATH.path} duration=${observeSeconds}s (configured=${OBSERVE}s ticks=${tickSeen}s)`);
+const obs = await timedRun(observeSeconds, 1000, () => OBSERVE_PATH);
 const obsSums = report("OBSERVE", obs.samples, obs.elapsedS);
+
+// Coverage floor (b): effective observed duration must reach the time
+// floor within tolerance (clock/skew), else the observe window did not
+// actually cover whole ticks.
+const OBSERVE_TOL_S = 0.5;
+if (obs.elapsedS < observeSeconds - OBSERVE_TOL_S) {
+  failures.push(
+    `COVERAGE observe-elapsed=${obs.elapsedS.toFixed(2)}s < ${observeSeconds}s (tol ${OBSERVE_TOL_S}s)`,
+  );
+}
 
 // Backlog-growth signal: readiness p95 drift across load thirds (floor
 // guards tiny-number flakiness; whole thirds, never single samples).
@@ -353,10 +484,17 @@ if (!obsReady || obsReady.transportErrors > 0 || obsReady.p95 > READ_P95) {
 }
 
 console.log(`ERRORS=${transportErrors}`);
-if (failures.length > 0 || inconclusive.length > 0) {
+// Result precedence (exit 1 for both): any failure forces FAIL, even with
+// SCHEDULER_ABSENT present; INCONCLUSIVE only when failures is empty.
+if (failures.length > 0) {
   for (const f of failures) console.log(`FAIL ${f}`);
   for (const f of inconclusive) console.log(`INCONCLUSIVE ${f}`);
-  console.log(inconclusive.length > 0 ? "RESULT=INCONCLUSIVE" : "RESULT=FAIL");
+  console.log("RESULT=FAIL");
+  process.exit(1);
+}
+if (inconclusive.length > 0) {
+  for (const f of inconclusive) console.log(`INCONCLUSIVE ${f}`);
+  console.log("RESULT=INCONCLUSIVE");
   process.exit(1);
 }
 console.log("RESULT=PASS");
