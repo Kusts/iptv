@@ -414,7 +414,14 @@ only LOCAL artefact is `IPTV_STAGING_TUNNEL_TOKEN` in the compose env_file
 
 ### 2. Apply
 
-1. `cd /home/deploy/iptv && git pull` (compose service + example updated).
+1. Land the changed deploy files on the pinned tree. The staging host is a
+   PINNED-COPY deploy (`.staging-revision` marker, no `.git`): fetch a
+   reference checkout locally and `scp` the runtime file(s) you changed —
+   for this entrance, `deploy/staging/docker-compose.staging.yml` — from it,
+   backing the old file up as `.bak-pre-<tag>` first (mode 600) and md5sum
+   both. The `.staging-revision` marker stays AS-IS for a partial-copy sync
+   (the tree is not a full checkout of the pinned revision); record the
+   synced-file md5s in the artifacts report.
 2. Ensure `IPTV_STAGING_TUNNEL_TOKEN` is set in `deploy/staging/.env.staging`.
 3. Boot the tunnel only:
    `docker compose -p iptv-staging --env-file deploy/staging/.env.staging -f
@@ -438,7 +445,10 @@ Remove (or empty) the `IPTV_STAGING_TUNNEL_TOKEN` line and
 `docker compose -p iptv-staging ... rm -sf tunnel`, or flip the tunnel paused
 at the Cloudflare edge (Zero Trust -> Tunnels). Baked origins revert only by
 re-rebuilding web with the private assumptions; API-side vars revert by
-recreate with the restored env (see the generic Rollback section below).
+recreate with the restored env (see the generic Rollback section below). Also
+restore `docker-compose.staging.yml` from `.bak-pre-<tag>` (and re-sync the
+marker protocol expectations) so the tree matches what the edge no longer
+points to.
 
 ## Rollback
 
