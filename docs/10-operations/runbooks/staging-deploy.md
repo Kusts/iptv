@@ -145,8 +145,16 @@ database health are covered by
 ## Outbox worker activation (051 interlock, opt-in)
 
 The dedicated worker (`--profile outbox`) is NEVER part of the default `up`.
-Fresh staging order: `postgres → migrate 001–051 (owner) → api (as
-`iptv_app`, legacy drain still enabled by default) → web`, then:
+Fresh staging order (pós-050/051, corrigido 2026-10-17 — ver §12.4 do
+`P6-SECURITY.md`): `postgres → migrate 001–060 (owner, re-provision FRESH)
+→ api (as `iptv_app`, `LEGACY_OUTBOX_DRAIN_ENABLED=0`) → web`, then:
+
+> Nota 2026-10-17: stacks com drift de migration (origem ≠ HEAD) seguem
+> re-provision FRESH (`down -v` + migrate total), nunca migração
+> incremental sobre stack antigo — ver §5.1 do `P6-DR.md`. A ativação
+> abaixo é o caminho forward (Opção B) com worker profile; o combo
+> `iptv_app` + LEGACY + drain enabled jamais foi suportado
+> (ver §12.4 do `P6-SECURITY.md`).
 
 > SUPERSEDED (migration 051): the old env-copy activation (copying observed
 > drain-state values into the worker env as the authority) is replaced by the
