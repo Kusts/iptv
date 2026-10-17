@@ -14,6 +14,7 @@ import { ConversationsPanel } from "../components/ConversationsPanel";
 import { HitlCenter } from "../components/HitlCenter";
 import { ProviderOperations } from "../components/ProviderOperations";
 import { NeedsAttention } from "../components/NeedsAttention";
+import SupportPage from "../app/support/page";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -4734,5 +4735,291 @@ describe("deep link de provider_operation no Centro HITL", () => {
     // deepLink cru da API nunca vira href; as outras origens seguem em texto.
     expect(screen.getByText(/Tratar na fila de origem/)).toBeTruthy();
     expect(screen.queryByText("/v1/provider/operations/33333333-3333-4333-8333-333333333333")).toBeNull();
+  });
+});
+
+describe("criação de ticket (suporte)", () => {
+  const PERSON_ID = "11111111-1111-4111-8111-111111111111";
+
+  function ticketRow(id: string, summary: string): Record<string, unknown> {
+    return {
+      id,
+      status: "NEW",
+      priority: "NORMAL",
+      summary,
+      personId: PERSON_ID,
+      assigneeUserId: null,
+      createdAt: new Date().toISOString(),
+      resolvedAt: null,
+    };
+  }
+
+  /** Sessão autenticada com as permissões informadas + fila de tickets mockada. */
+  function stubSupport(
+    permissions: string[],
+    tickets: Record<string, unknown>[],
+    post?: { status: number; body: unknown },
+    persons?: { status: number; body: unknown },
+  ): {
+    posts: Array<{ url: string; body: unknown }>;
+    gets: string[];
+  } {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const gets: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/v1/auth/session")) {
+          return jsonResponse(200, {
+            user: { id: "u1", email: "op@tenant.com", displayName: null },
+            activeTenantId: "t1",
+            memberships: [{ tenantId: "t1", tenantSlug: "t1", tenantName: "Tenant 1", roleKey: "owner", status: "ACTIVE" }],
+            tenantContextRevision: "0",
+          });
+        }
+        if (url.endsWith("/v1/me")) {
+          return jsonResponse(200, {
+            user: { id: "u1", email: "op@tenant.com" },
+            activeTenant: { id: "t1" },
+            roleKeys: [],
+            permissions,
+          });
+        }
+        if (url.endsWith("/v1/crm/persons") && (init?.method ?? "GET") === "GET") {
+          gets.push(url);
+          if (persons !== undefined) return jsonResponse(persons.status, persons.body);
+          return jsonResponse(404, { code: "NOT_FOUND" });
+        }
+        if (url.endsWith("/v1/tickets") && (init?.method ?? "GET") === "POST") {
+          posts.push({ url, body: init?.body !== undefined ? JSON.parse(String(init.body)) : null });
+          if (post !== undefined) return jsonResponse(post.status, post.body);
+          return jsonResponse(201, { id: "new-ticket-id", status: "NEW" });
+        }
+        if (url.endsWith("/v1/tickets")) {
+          gets.push(url);
+          return jsonResponse(200, { tickets });
+        }
+        return jsonResponse(404, { code: "NOT_FOUND" });
+      }),
+    );
+    return { posts, gets };
+  }
+
+  it("com support.ticket.write abre ticket via POST, recarrega a lista e limpa o form", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    const { posts, gets } = stubSupport(["support.ticket.write"], [ticketRow("t1", "ticket existente")]);
+    render(
+      <AuthProvider>
+        <ToastProvider>
+          <SupportPage />
+        </ToastProvider>
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("ticket existente")).toBeTruthy());
+    expect(screen.getByText("Novo ticket")).toBeTruthy();
+    const getsBefore = gets.length;
+
+    fireEvent.change(screen.getByLabelText(/ID da pessoa/), { target: { value: PERSON_ID } });
+    fireEvent.change(screen.getByLabelText("Resumo"), { target: { value: "queda de sinal à noite" } });
+    fireEvent.change(screen.getByLabelText("Prioridade"), { target: { value: "HIGH" } });
+    fireEvent.click(screen.getByRole("button", { name: "Abrir ticket" }));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.body).toEqual({ personId: PERSON_ID, summary: "queda de sinal à noite", priority: "HIGH" });
+    // Sucesso recarrega a lista (novo GET) e limpa os campos.
+    await waitFor(() => expect(gets.length).toBeGreaterThan(getsBefore));
+    await waitFor(() => expect(screen.getByText("Ticket aberto.")).toBeTruthy());
+    expect((screen.getByLabelText(/ID da pessoa/) as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Resumo") as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("com 1 pessoa no tenant, auto-seleciona sem digitar UUID", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    const { posts } = stubSupport(
+      ["support.ticket.write", "crm.person.read"],
+      [ticketRow("t1", "ticket existente")],
+      undefined,
+      {
+        status: 200,
+        body: {
+          persons: [
+            {
+              id: PERSON_ID,
+              status: "ACTIVE",
+              canonicalName: "Maria Silva",
+              locale: null,
+              timezone: null,
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        },
+      },
+    );
+    render(
+      <AuthProvider>
+        <ToastProvider>
+          <SupportPage />
+        </ToastProvider>
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("ticket existente")).toBeTruthy());
+    // Autofill: sem campo UUID manual, com indicação de seleção automática.
+    await waitFor(() => expect(screen.getByText(/Maria Silva/)).toBeTruthy());
+    expect(screen.queryByLabelText(/ID da pessoa/)).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Resumo"), { target: { value: "queda de sinal à noite" } });
+    fireEvent.click(screen.getByRole("button", { name: "Abrir ticket" }));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.body).toEqual({ personId: PERSON_ID, summary: "queda de sinal à noite", priority: "NORMAL" });
+    await waitFor(() => expect(screen.getByText("Ticket aberto.")).toBeTruthy());
+  });
+
+  it("com várias pessoas, select por nome sem digitar UUID", async () => {
+    const PERSON_2 = "22222222-2222-4222-8222-222222222222";
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    const { posts } = stubSupport(
+      ["support.ticket.write", "crm.person.read"],
+      [ticketRow("t1", "ticket existente")],
+      undefined,
+      {
+        status: 200,
+        body: {
+          persons: [
+            { id: PERSON_ID, status: "ACTIVE", canonicalName: "Maria Silva", locale: null, timezone: null, createdAt: new Date().toISOString() },
+            { id: PERSON_2, status: "ACTIVE", canonicalName: "João Souza", locale: null, timezone: null, createdAt: new Date().toISOString() },
+          ],
+        },
+      },
+    );
+    render(
+      <AuthProvider>
+        <ToastProvider>
+          <SupportPage />
+        </ToastProvider>
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("ticket existente")).toBeTruthy());
+    const select = await screen.findByLabelText("Pessoa");
+    expect(screen.queryByLabelText(/ID da pessoa/)).toBeNull();
+
+    fireEvent.change(select, { target: { value: PERSON_2 } });
+    fireEvent.change(screen.getByLabelText("Resumo"), { target: { value: "queda de sinal à noite" } });
+    fireEvent.click(screen.getByRole("button", { name: "Abrir ticket" }));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.body).toEqual({ personId: PERSON_2, summary: "queda de sinal à noite", priority: "NORMAL" });
+  });
+
+  it("com várias pessoas, envio sem seleção bloqueia o POST", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    const { posts } = stubSupport(
+      ["support.ticket.write", "crm.person.read"],
+      [ticketRow("t1", "ticket existente")],
+      undefined,
+      {
+        status: 200,
+        body: {
+          persons: [
+            { id: PERSON_ID, status: "ACTIVE", canonicalName: "Maria Silva", locale: null, timezone: null, createdAt: new Date().toISOString() },
+            { id: "22222222-2222-4222-8222-222222222222", status: "ACTIVE", canonicalName: null, locale: null, timezone: null, createdAt: new Date().toISOString() },
+          ],
+        },
+      },
+    );
+    render(
+      <AuthProvider>
+        <SupportPage />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("ticket existente")).toBeTruthy());
+    await screen.findByLabelText("Pessoa");
+
+    fireEvent.change(screen.getByLabelText("Resumo"), { target: { value: "algum resumo" } });
+    fireEvent.click(screen.getByRole("button", { name: "Abrir ticket" }));
+
+    await waitFor(() => expect(screen.getByText("Selecione uma pessoa.")).toBeTruthy());
+    expect(posts).toHaveLength(0);
+  });
+
+  it("fallback manual quando a lista de pessoas falha", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    const { posts } = stubSupport(
+      ["support.ticket.write", "crm.person.read"],
+      [ticketRow("t1", "ticket existente")],
+      undefined,
+      { status: 403, body: { code: "FORBIDDEN" } },
+    );
+    render(
+      <AuthProvider>
+        <ToastProvider>
+          <SupportPage />
+        </ToastProvider>
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("ticket existente")).toBeTruthy());
+    // Sem lista (403 em /v1/crm/persons), o UUID manual segue disponível.
+    const uuidInput = await screen.findByLabelText(/ID da pessoa/);
+    fireEvent.change(uuidInput, { target: { value: PERSON_ID } });
+    fireEvent.change(screen.getByLabelText("Resumo"), { target: { value: "queda de sinal à noite" } });
+    fireEvent.click(screen.getByRole("button", { name: "Abrir ticket" }));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.body).toEqual({ personId: PERSON_ID, summary: "queda de sinal à noite", priority: "NORMAL" });
+  });
+
+  it("personId inválido bloqueia o POST com erro local", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    const { posts } = stubSupport(["support.ticket.write"], [ticketRow("t1", "ticket existente")]);
+    render(
+      <AuthProvider>
+        <SupportPage />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("ticket existente")).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText(/ID da pessoa/), { target: { value: "não-é-uuid" } });
+    fireEvent.change(screen.getByLabelText("Resumo"), { target: { value: "algum resumo" } });
+    fireEvent.click(screen.getByRole("button", { name: "Abrir ticket" }));
+
+    await waitFor(() => expect(screen.getByText("ID da pessoa deve ser um UUID válido.")).toBeTruthy());
+    expect(posts).toHaveLength(0);
+  });
+
+  it("sem support.ticket.write o formulário não aparece e a página segue igual", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    stubSupport([], [ticketRow("t1", "ticket existente")]);
+    render(
+      <AuthProvider>
+        <SupportPage />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("ticket existente")).toBeTruthy());
+    expect(screen.queryByText("Novo ticket")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Abrir ticket" })).toBeNull();
+  });
+
+  it("POST 403 exibe erro amigável de permissão sem vazar token", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    const { posts } = stubSupport(["support.ticket.write"], [ticketRow("t1", "ticket existente")], {
+      status: 403,
+      body: { code: "FORBIDDEN" },
+    });
+    render(
+      <AuthProvider>
+        <SupportPage />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("ticket existente")).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText(/ID da pessoa/), { target: { value: PERSON_ID } });
+    fireEvent.change(screen.getByLabelText("Resumo"), { target: { value: "queda de sinal à noite" } });
+    fireEvent.click(screen.getByRole("button", { name: "Abrir ticket" }));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // Mensagem amigável de permissão (messageForStatus 403), sem detalhe cru.
+    await waitFor(() => expect(screen.getByText(/Você não tem permissão|Acesso negado/)).toBeTruthy());
+    // O token de sessão nunca aparece no DOM/corpo exibido.
+    expect(document.body.textContent ?? "").not.toContain("tok-abc");
   });
 });
