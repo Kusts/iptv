@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- docs(pilot): provider live read-path p95 baseline da janela Contabo 2026-10-17 (`GET /api/sessions` p95 24,9 ms / `GET /api/sessions/ted` p95 21,1 ms, 180 amostras/endpoint, read-only sem envio) em `evidence/p3-waha/provider-live-read-window-20261017.md`, com fechamento condicionado do gap 3 do §4 de `docs/16-pilot-closure/P6-PERFORMANCE.md` (fulfillment p95 e challenge/drift seguem BLOCKED).
+
 - docs(operations): canonical LIVE activation path for the staging Infisical identity in `docs/10-operations/runbooks/staging-deploy.md` ("Infisical activation (staging, opt-in)"): cofre-operator-owned Universal Auth prerequisites, host-only fill of the four `INFISICAL_*` vars in the compose-consumed `deploy/staging/.env.staging` (root `.env.staging` NOT consumed; canonical `-p iptv-staging` invocations from `cd /home/deploy/iptv`), first real `infisical://` ref, api-only `--force-recreate`, real smoke (effective-env name inventory + in-container vault read via the repo smoke script over stdin, now with optional `SECRET_PATH` 4th arg so folder refs are proven at their own path instead of a root homonym; health/ready complementary only, adapter is lazy), noop fail-closed rollback, and neighbour-container (`infisical`/`synkroo-prod-*`/`traefik`) restrictions. Starting host state: commented `STAGING-INFISICAL-ACTIVATION 2026-10-17` placeholder block already present, api noop fail-closed.
 
 - feat(web): support ticket create form with person autofill

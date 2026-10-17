@@ -65,9 +65,14 @@ Leituras p95 (70/100 ms) cabem no target de 500 ms com folga neste host.
    logo `aclcheck_error` → 500 genérico. Fail-closed (corpo genérico, sem
    leak, `x-trace-id` presente), mas o ack nominal (202) e o 404 precisam de
    re-medição com staging em 052+. Nenhum SLO de webhook é alegado aqui.
-3. **Latência de provider**: sem provider live neste ambiente (P3,
-   operator-gated) — provider latency, fulfillment p95 e challenge/drift
-   seguem BLOCKED para medição real.
+3. **Latência provider (read-path)**: medição fechada na janela Contabo
+   2026-10-17 (180 amostras/endpoint, 100% ok, `GET /api/sessions` p95
+   24,9 ms / `GET /api/sessions/ted` p95 21,1 ms) — ver
+   [provider-live-read-window-20261017.md](../../evidence/p3-waha/provider-live-read-window-20261017.md).
+   Caveats: localhost→container no próprio Contabo (NÃO representa o caminho
+   público Traefik/Cloudflare); read-only, sem envio; PII descartada.
+   Fulfillment p95 e challenge/drift PERMANECEM BLOCKED (exigiriam envio —
+   não autorizado).
 4. **Worker throughput ponta a ponta**: o número acima é claim SQL; publish
    real (transporte) + loop do worker + scheduler em carga ficam para soak
    com staging re-migrado.
@@ -113,5 +118,7 @@ host-local, fora do repo); scripts em `scripts/load/`
 - **Estado final do staging**: `API_SCHEDULER_ENABLED=1` (F13 cumprido) e
   worker profile ativo e drenando.
 
-**Gap mantido**: provider live = **INCONCLUSIVE** (operator-gated, sem
-provider live neste ambiente — gap 3 do §4 segue aberto).
+**Gap parcialmente fechado**: provider live read-path = **MEDIDO** (baseline
+p95 24,9/21,1 ms na janela Contabo 2026-10-17 — gap 3 do §4 fechado para
+read-path). Fulfillment p95 + challenge/drift seguem **INCONCLUSIVE**
+(operator-gated, exigem janela com envio autorizado).
