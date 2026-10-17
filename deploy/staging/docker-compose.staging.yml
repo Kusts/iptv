@@ -143,6 +143,21 @@ services:
     mem_limit: 512m
     cpus: 0.5
 
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: iptv-staging-tunnel
+    restart: unless-stopped
+    # Host network: the tunnel's origins are the compose loopback services
+    # (127.0.0.1:3001 api / 127.0.0.1:3000 web). TLS terminates at the
+    # Cloudflare edge; this container only egresses.
+    network_mode: host
+    command: tunnel --no-autoupdate run
+    environment:
+      # Zero Trust short-lived-ish token (rotatable at the edge); the
+      # remote-managed ingress lives in the Cloudflare config, not here.
+      # Host-only secret: env_file interpolation, never in Git/PR/log/ticket.
+      - TUNNEL_TOKEN=${IPTV_STAGING_TUNNEL_TOKEN:-}
+
   # Operator smoke CLI, NOT a service: opt-in profile, run on demand, exits.
   #   docker compose -f deploy/staging/docker-compose.staging.yml \
   #     --profile worker run --rm browser-worker read-credit-balance

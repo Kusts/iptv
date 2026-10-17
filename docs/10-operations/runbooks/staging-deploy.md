@@ -395,6 +395,51 @@ state (boot ok, secret consumption refused with typed `CONFIG` errors).
 - Do not re-grant `iptv_app` to the outbox path: stranded-row triage stays
   forward-fix via the worker (see "Outbox worker activation" above).
 
+## Public entrypoint (staging tunnel, opt-in)
+
+Exposes the staging stack publicly WITHOUT touching the neighbour `traefik`
+lane: a lane-owned Cloudflare Zero Trust tunnel (`iptv-staging`,
+remote-managed `config_src=cloudflare`) with ingress
+`staging-api.synkroo.com.br -> http://127.0.0.1:3001` and
+`staging-web.synkroo.com.br -> http://127.0.0.1:3000`, plus proxied CNAMEs to
+`<tunnel-id>.cfargotunnel.com`. TLS terminates at the Cloudflare edge; origins
+stay loopback-bound no matter what binds there.
+
+### 1. Provision (operator/CF admin owns the edge state)
+
+Tunnel, ingress and DNS are first-class Cloudflare objects, created and
+updated from the Cloudflare API or dashboard — never hand-carried values. The
+only LOCAL artefact is `IPTV_STAGING_TUNNEL_TOKEN` in the compose env_file
+(host-only, gitignored file, never in Git/PR/log/ticket).
+
+### 2. Apply
+
+1. `cd /home/deploy/iptv && git pull` (compose service + example updated).
+2. Ensure `IPTV_STAGING_TUNNEL_TOKEN` is set in `deploy/staging/.env.staging`.
+3. Boot the tunnel only:
+   `docker compose -p iptv-staging --env-file deploy/staging/.env.staging -f
+   deploy/staging/docker-compose.staging.yml up -d tunnel`
+4. Re-bake the public origin into the web build and recreate both app
+   services (web var is BUILD-time; api vars are runtime):
+   `docker compose -p iptv-staging --env-file deploy/staging/.env.staging -f
+   deploy/staging/docker-compose.staging.yml build web`
+   `docker compose -p iptv-staging --env-file deploy/staging/.env.staging -f
+   deploy/staging/docker-compose.staging.yml up -d --force-recreate api web`
+5. Smoke: `curl -i https://staging-api.synkroo.com.br/v1/health` (expect 200),
+   `curl -i https://staging-web.synkroo.com.br/` (expect 200), and grep the
+   served web bundle for the api hostname (pattern of
+   `evidence/p7-rehearsal/report.md:29`). Expect the CONTROL CENTER login to
+   actually reach the API from a public browser session now (prior state was
+   the baked `staging.example.com` placeholder, i.e., total NETWORK_ERROR).
+
+### 3. Rollback
+
+Remove (or empty) the `IPTV_STAGING_TUNNEL_TOKEN` line and
+`docker compose -p iptv-staging ... rm -sf tunnel`, or flip the tunnel paused
+at the Cloudflare edge (Zero Trust -> Tunnels). Baked origins revert only by
+re-rebuilding web with the private assumptions; API-side vars revert by
+recreate with the restored env (see the generic Rollback section below).
+
 ## Rollback
 
 Decide forward-fix vs rollback BEFORE touching the environment:
