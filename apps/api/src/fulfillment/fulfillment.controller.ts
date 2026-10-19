@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpException, Inject, Param, Post, Req, UseGuards } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult, CommandActor } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -71,15 +71,18 @@ export class FulfillmentController {
   @RequirePermission("subscription.read")
   async status(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
-    const row = await db
-      .selectFrom("provider.provider_operations")
-      .select(["id", "action", "status", "effect_certainty", "requested_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("entity_type", "=", "subscription")
-      .where("entity_id", "=", id)
-      .orderBy("requested_at", "desc")
-      .executeTakeFirst();
+    // provider.provider_operations is RLS-enrolled: raw-pool reads fail
+    // closed under iptv_app, same as the subscription reads.
+    const row = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("provider.provider_operations")
+        .select(["id", "action", "status", "effect_certainty", "requested_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("entity_type", "=", "subscription")
+        .where("entity_id", "=", id)
+        .orderBy("requested_at", "desc")
+        .executeTakeFirst(),
+    );
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "no fulfillment operation for this subscription" }, 404);
     }

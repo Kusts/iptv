@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult, CommandActor } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -168,41 +168,50 @@ export class SubscriptionController {
   @RequirePermission("subscription.read")
   async get(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
-    const row = await db
-      .selectFrom("subscription.subscriptions")
-      .select([
-        "id",
-        "customer_id",
-        "plan_id",
-        "originating_order_id",
-        "status",
-        "started_at",
-        "current_period_start",
-        "current_period_end",
-        "cancel_at_period_end",
-        "cancelled_at",
-      ])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", id)
-      .executeTakeFirst();
-    if (row === undefined) {
+    // Tenant context is load-bearing: subscription.subscriptions is
+    // RLS-enrolled, so a raw-pool read without app.tenant_id fails closed
+    // (empty → 404) under the iptv_app role.
+    const found = await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const row = await trx
+        .selectFrom("subscription.subscriptions")
+        .select([
+          "id",
+          "customer_id",
+          "plan_id",
+          "originating_order_id",
+          "status",
+          "started_at",
+          "current_period_start",
+          "current_period_end",
+          "cancel_at_period_end",
+          "cancelled_at",
+        ])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", id)
+        .executeTakeFirst();
+      if (row === undefined) {
+        return undefined;
+      }
+      const cycles = await trx
+        .selectFrom("subscription.subscription_cycles")
+        .select(["id", "cycle_no", "starts_at", "ends_at", "status"])
+        .where("tenant_id", "=", tenant.id)
+        .where("subscription_id", "=", id)
+        .orderBy("cycle_no", "asc")
+        .execute();
+      const entitlements = await trx
+        .selectFrom("entitlement.entitlements")
+        .select(["id", "feature_key", "status", "starts_at", "ends_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("source_type", "=", "subscription")
+        .where("source_id", "=", id)
+        .execute();
+      return { row, cycles, entitlements };
+    });
+    if (found === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "subscription not found" }, 404);
     }
-    const cycles = await db
-      .selectFrom("subscription.subscription_cycles")
-      .select(["id", "cycle_no", "starts_at", "ends_at", "status"])
-      .where("tenant_id", "=", tenant.id)
-      .where("subscription_id", "=", id)
-      .orderBy("cycle_no", "asc")
-      .execute();
-    const entitlements = await db
-      .selectFrom("entitlement.entitlements")
-      .select(["id", "feature_key", "status", "starts_at", "ends_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("source_type", "=", "subscription")
-      .where("source_id", "=", id)
-      .execute();
+    const { row, cycles, entitlements } = found;
     return {
       id: row.id,
       customerId: row.customer_id,
@@ -237,18 +246,21 @@ export class SubscriptionController {
   @RequirePermission("subscription.read")
   async list(@Query() query: { status?: string; limit?: string }, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    let select = db
-      .selectFrom("subscription.subscriptions")
-      .select(["id", "customer_id", "plan_id", "status", "current_period_start", "current_period_end", "cancel_at_period_end"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "desc")
-      .limit(limit);
-    if (query.status !== undefined) {
-      select = select.where("status", "=", query.status);
-    }
-    const rows = await select.execute();
+    // Same RLS requirement as get(): raw-pool reads fail closed under iptv_app.
+    const status = query.status;
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) => {
+      let select = trx
+        .selectFrom("subscription.subscriptions")
+        .select(["id", "customer_id", "plan_id", "status", "current_period_start", "current_period_end", "cancel_at_period_end"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("created_at", "desc")
+        .limit(limit);
+      if (status !== undefined) {
+        select = select.where("status", "=", status);
+      }
+      return select.execute();
+    });
     return {
       subscriptions: rows.map((row) => ({
         id: row.id,
