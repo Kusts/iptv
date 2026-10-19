@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- docs(pilot): B1 nominal fechado em sandbox 2026-10-19 (`evidence/p3-asaas-sandbox/live-b1-nominal-20261019.md`, staging Contabo fresh 60/60): charge PIX R$ 5,00 `PAID` + payment `CONFIRMED` + order `SETTLED` + ledger balanceado, webhook `202` em entrega única com zero replay manual, reconcile `409` pós-PAID, customer descartável deletado; `pilot-evidence.yaml` G05 com `last_run` real; P3-INTEGRATIONS promovido para NOMINAL PASS (restam B2 + refund-live do operador)
+
 - docs(pilot): runbook da primeira venda via API em `docs/10-operations/runbooks/pilot-first-sale.md` + link no passo de operação do `P8-PILOT.md` (PR #75, review independente APPROVED, CI verde): quote→submit→provision→charges→webhook→from-order→fulfillment manual→resolve, cobrindo o gap MVP-05 (`/orders` web somente leitura); review exigiu 3 correções aplicadas (binding obrigatório em todos os modos, `POST /v1/subscriptions/from-order`, `POST /v1/provider/operations/:id/resolve`) — diagnóstico operacional: túnel `iptv-staging` DOWN no edge (530 ambas rotas, confirmado via API Cloudflare) e SSH do host Hostinger com banner-timeout a partir deste ambiente; subida do túnel pendente do operador
 
 

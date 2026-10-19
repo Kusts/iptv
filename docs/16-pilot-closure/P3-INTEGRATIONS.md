@@ -40,7 +40,7 @@
 
 ## Live-blocked summary (WAHA M1+M2 promoted 2026-10-14; remainder blocked)
 
-- Asaas PIX-live: BLOCKED → B1/B2 (→ M4/M5).
+- Asaas PIX-live: **NOMINAL PASS 2026-10-19** (`evidence/p3-asaas-sandbox/live-b1-nominal-20261019.md` — staging Contabo: charge `PAID` + payment `CONFIRMED` + order `SETTLED` + ledger balanceado, webhook `202` em entrega única, zero replay manual, reconcile `409` pós-PAID, customer descartável deletado). Resta B2 (re-run integral) + refund-live (decisão do operador) → M4/M5.
 - WAHA live text path (session/restart/outbound/inbound/auth/dedupe): PROMOTED live 2026-10-14 (`evidence/p3-waha/m1-adopt-20261014.md` — send 201+id, inbound `PROCESSED`, replay `deduped:true`, restore verified). **M2 PASS 2026-10-14** (drill manual — envio manual + ticket registrado, sem provocar 429; `evidence/p3-waha/m2-drill-20261014.md`). Still BLOCKED → implementation: media/audio outbound (N-A — unimplemented), multi-session, deep reconnect, restriction/timelock (never provoke), transcription (`PENDING_FOLLOW_UP`).
 - Hatchet durability: BLOCKED → adopt decision + 9-item gate (F12 BLOCKED).
 - CINEVISION writes: BLOCKED → Step 3 observation first; reads canary → Steps 6–9.
