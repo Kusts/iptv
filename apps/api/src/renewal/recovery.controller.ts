@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult, CommandActor } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -93,21 +93,25 @@ export class RecoveryController {
     @Req() req: FastifyRequest,
   ) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
+    // renewal.recovery_tasks is RLS-enrolled: raw-pool reads fail closed under iptv_app.
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    let select = db
-      .selectFrom("renewal.recovery_tasks")
-      .select(["id", "subscription_id", "cycle_id", "renewal_order_id", "reason", "status", "outcome", "created_at"])
-      .where("tenant_id", "=", tenant.id)
-      .orderBy("created_at", "desc")
-      .limit(limit);
-    if (query.subscriptionId !== undefined) {
-      select = select.where("subscription_id", "=", query.subscriptionId);
-    }
-    if (query.status !== undefined) {
-      select = select.where("status", "=", query.status);
-    }
-    const rows = await select.execute();
+    const subscriptionId = query.subscriptionId;
+    const status = query.status;
+    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) => {
+      let select = trx
+        .selectFrom("renewal.recovery_tasks")
+        .select(["id", "subscription_id", "cycle_id", "renewal_order_id", "reason", "status", "outcome", "created_at"])
+        .where("tenant_id", "=", tenant.id)
+        .orderBy("created_at", "desc")
+        .limit(limit);
+      if (subscriptionId !== undefined) {
+        select = select.where("subscription_id", "=", subscriptionId);
+      }
+      if (status !== undefined) {
+        select = select.where("status", "=", status);
+      }
+      return select.execute();
+    });
     return {
       tasks: rows.map((row) => ({
         id: row.id,
