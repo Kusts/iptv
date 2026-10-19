@@ -82,13 +82,15 @@ describe.skipIf(!hasDb)("Subscription reads under iptv_app (requires TEST_DATABA
     url: string;
     payload?: Record<string, unknown>;
     headers?: Record<string, string>;
+    token?: string;
+    revision?: string;
   }) {
     return app.getHttpAdapter().getInstance().inject({
       method: opts.method,
       url: opts.url,
       headers: {
-        authorization: `Bearer ${token}`,
-        "x-tenant-context-revision": "0",
+        authorization: `Bearer ${opts.token ?? token}`,
+        "x-tenant-context-revision": opts.revision ?? "0",
         ...(opts.headers ?? {}),
       },
       ...(opts.payload !== undefined ? { payload: opts.payload } : {}),
@@ -135,9 +137,22 @@ describe.skipIf(!hasDb)("Subscription reads under iptv_app (requires TEST_DATABA
   afterAll(async () => {
     delete process.env["APP_DATABASE_URL"];
     await app?.close().catch(() => undefined);
+    // The Nest "DB" pool outlives app.close(): destroy it explicitly or the
+    // scratch DROP below blocks on open connections.
+    try {
+      const appPool = app?.get("DB") as { destroy?: () => Promise<void> } | null;
+      if (appPool !== null && appPool !== undefined && typeof appPool.destroy === "function") {
+        await appPool.destroy();
+      }
+    } catch {
+      // Fall through: DROP will surface a real leak as a failure, not silence.
+    }
     await ownerDb?.destroy().catch(() => undefined);
     if (hasDb && databaseName !== "") {
-      await sql.raw(`DROP DATABASE IF EXISTS "${databaseName}"`).execute(adminDb).catch(() => undefined);
+      await sql.raw(`DROP DATABASE IF EXISTS "${databaseName}"`).execute(adminDb);
+      // Restore the cluster-shared role to its migration-created posture
+      // (LOGIN without password) instead of keeping our random secret.
+      await sql.raw(`ALTER ROLE iptv_app WITH LOGIN PASSWORD NULL`).execute(adminDb);
     }
     await adminDb?.destroy().catch(() => undefined);
   });
@@ -260,7 +275,15 @@ describe.skipIf(!hasDb)("Subscription reads under iptv_app (requires TEST_DATABA
     // The regression assertions: HTTP reads under iptv_app must see the row.
     const got = await injectRaw({ method: "GET", url: `/v1/subscriptions/${subscriptionId}` });
     expect(got.statusCode).toBe(200);
-    expect(got.json<{ id: string; status: string }>().id).toBe(subscriptionId);
+    const detail = got.json<{
+      id: string;
+      status: string;
+      cycles: { id: string; cycleNo: number }[];
+      entitlements: { id: string }[];
+    }>();
+    expect(detail.id).toBe(subscriptionId);
+    expect(detail.status).toBe("PENDING_ACTIVATION");
+    expect(detail.cycles.length).toBeGreaterThan(0);
 
     const listed = await injectRaw({ method: "GET", url: "/v1/subscriptions" });
     expect(listed.statusCode).toBe(200);
@@ -274,16 +297,50 @@ describe.skipIf(!hasDb)("Subscription reads under iptv_app (requires TEST_DATABA
       { subscriptionId, adapter: "manual" },
     );
     expect(requested.ok).toBe(true);
+    if (!requested.ok) throw new Error(JSON.stringify(requested));
+    const operationId = requested.data.operationId;
     const fstatus = await injectRaw({
       method: "GET",
       url: `/v1/fulfillment/subscriptions/${subscriptionId}`,
     });
     expect(fstatus.statusCode).toBe(200);
+    expect(fstatus.json<{ operationId: string }>().operationId).toBe(operationId);
 
     const renewals = await injectRaw({
       method: "GET",
       url: `/v1/renewals?subscriptionId=${subscriptionId}`,
     });
     expect(renewals.statusCode).toBe(200);
+
+    // Manual resolve closes the loop: ACTIVE + granted entitlements visible.
+    const resolved = await bus.execute(actor(), "provider.resolve_operation", {
+      operationId,
+      outcome: "SUCCEEDED",
+      note: "reads-test manual activation",
+    });
+    expect(resolved.ok).toBe(true);
+    const active = await injectRaw({ method: "GET", url: `/v1/subscriptions/${subscriptionId}` });
+    expect(active.statusCode).toBe(200);
+    const activeDetail = active.json<{ status: string; entitlements: { id: string }[] }>();
+    expect(activeDetail.status).toBe("ACTIVE");
+    expect(activeDetail.entitlements.length).toBeGreaterThan(0);
+
+    // Cross-tenant isolation: a second tenant sees neither list nor detail.
+    const registerB = await injectRaw({
+      method: "POST",
+      url: "/v1/auth/register",
+      payload: { email: email("reads-b"), password: "correct-horse-8", tenantName: "Reads Tenant B" },
+    });
+    expect(registerB.statusCode).toBe(201);
+    const bodyB = registerB.json<{ token: string }>();
+    const listedB = await injectRaw({ method: "GET", url: "/v1/subscriptions", token: bodyB.token });
+    expect(listedB.statusCode).toBe(200);
+    expect(listedB.json<{ subscriptions: { id: string }[] }>().subscriptions).toHaveLength(0);
+    const crossB = await injectRaw({
+      method: "GET",
+      url: `/v1/subscriptions/${subscriptionId}`,
+      token: bodyB.token,
+    });
+    expect(crossB.statusCode).toBe(404);
   });
 });
