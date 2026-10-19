@@ -65,6 +65,7 @@ describe.skipIf(!hasDb)("Subscription reads under iptv_app (requires TEST_DATABA
       tenantId,
       roleKeys: ["tenant_owner"],
       permissions: [
+        "crm.lead.write",
         "commerce.order.write",
         "billing.charge.write",
         "billing.read",
