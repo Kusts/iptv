@@ -19,7 +19,8 @@
 # (container efêmero postgres:17-alpine sem volume, DB vazio 0 tabelas pré-run);
 # 19/20 tasks turbo verdes; @iptv/api 84/85 arquivos (1073/1074 testes) —
 # único vermelho `commands-events-hitl` "parallel drains" (outbox-marker 3 vs
-# >=4), flake sob carga paralela do vitest, 6/6 verde em re-run isolado;
+# >=4), falha intermitente — hipótese temporal/ambiental não confirmada (vitest paralelo sob
+# carga), 6/6 verde em re-run isolado; risco residual: pode recorrer sob carga;
 # nenhum arquivo citado por qualquer ID G/F falhou. F12 segue sem re-run
 # (prova live com script temporário removido, não re-executável via pnpm test).
 

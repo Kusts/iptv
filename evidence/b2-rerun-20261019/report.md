@@ -28,15 +28,32 @@
   copilot-w14b 15/15 · provider-dispatch 19/19 · analytics-w14a 6/6 ·
   inventory-supplier-credit 5/5 (+ variantes `.unit` verdes).
 
-## Único vermelho: flake, não bug (evidência)
+## Único vermelho do run integral: falha intermitente, hipótese não confirmada (evidência)
 
 - `apps/api/test/commands-events-hitl.integration.test.ts` > `parallel drains process disjoint
   rows (SKIP LOCKED)`: `AssertionError: expected 3 to be >= 4`
-  (`ownOutboxRows(marker)` filtra `created_at >= marker`; vitest roda arquivos em workers
-  paralelos contra o mesmo DB — janela de marcador sob carga).
-- Arquivo **não é citado por nenhum ID G/F** (nenhum veredito da matriz depende dele).
+  (`ownOutboxRows(marker)` filtra `created_at >= marker`; hipótese — não confirmada — de janela
+  de marcador sob workers paralelos do vitest contra o mesmo DB).
+- Arquivo **não é citado por nenhum ID G/F** (nenhum veredito da matriz depende dele;
+  verificado por grep — sem vínculo G/F confirmado).
 - Re-run isolado contra o mesmo banco descartável: **6/6 PASS** (6.44s).
+- Risco residual explícito: pode recorrer sob carga; causa não isolada — registrado como falha
+  intermitente com hipótese não confirmada (nem benigno por decreto, nem bug confirmado).
 - Nenhum código de aplicação foi alterado nesta task (proibido pelo escopo).
+
+## Re-run de evidência (TASK B2-REVIEW-FIXES-20261019)
+
+- Container efêmero `iptv-b2fix-20261019` (`postgres:17-alpine`, sem volume, porta host `5433`);
+  DB `b2fix` recriado vazio (`count(*) ... where table_schema='public'` = **0** pré-run).
+  `TEST_DATABASE_URL` exportado só no shell do run; nunca commitado.
+- Comando: `pnpm --filter @iptv/api test --reporter=verbose` → **85/85 arquivos, 1074/1074
+  testes PASS** (exit 0, ~6min). `commands-events-hitl` (incl. `parallel drains`) verde neste run.
+- Log integral sanitizado: `api-rerun-full.log` (nomes por-arquivo + por-teste + contagens;
+  sem segredos — credenciais mascaradas, sem IDs reais).
+- Nota metodológica (honestidade primeiro): um run intermediário contra o mesmo DB já populado
+  (sem recriar) falhou em 3 arquivos por colisão de estado (`register` 409 + timeout do
+  scheduler) — artefato de harness (reuso de banco sujo), não bug de produto; descartado como
+  evidência. O run válido é o contra DB vazio verificado.
 
 ## Gates Python (todos verdes)
 
@@ -58,8 +75,8 @@
 
 ## Artefatos
 
-- `report.md` (este arquivo), `suites-summary.log` (per-file results + sumário turbo, sem segredos).
-- Log integral do run permanece fora do repo (TEMP do executor).
+- `report.md` (este arquivo), `suites-summary.log` (totais por pacote + sumário turbo, sem segredos),
+  `api-rerun-full.log` (saída integral do re-run `@iptv/api` em modo verbose, sanitizada).
 
 ## Cleanup
 
