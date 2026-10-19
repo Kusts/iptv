@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import { withTenantTransaction, type Database } from "@iptv/database";
+import type { Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -94,17 +94,14 @@ export class CrmController {
   async listPersons(@Req() req: FastifyRequest, @Query() query: { limit?: string; offset?: string }) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const { limit, offset } = pagination(query);
-    // identity.persons is RLS-enrolled: raw-pool reads fail closed under iptv_app.
-    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
-      trx
-        .selectFrom("identity.persons")
-        .select(["id", "status", "canonical_name", "locale", "timezone", "created_at"])
-        .where("tenant_id", "=", tenant.id)
-        .orderBy("created_at", "desc")
-        .limit(limit)
-        .offset(offset)
-        .execute(),
-    );
+    const rows = await this.requireDb()
+      .selectFrom("identity.persons")
+      .select(["id", "status", "canonical_name", "locale", "timezone", "created_at"])
+      .where("tenant_id", "=", tenant.id)
+      .orderBy("created_at", "desc")
+      .limit(limit)
+      .offset(offset)
+      .execute();
     return {
       persons: rows.map((r) => ({
         id: r.id,
@@ -122,29 +119,23 @@ export class CrmController {
   @RequirePermission("crm.person.read")
   async getPerson(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const found = await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
-      const row = await trx
-        .selectFrom("identity.persons")
-        .select(["id", "status", "canonical_name", "locale", "timezone", "created_at"])
-        .where("tenant_id", "=", tenant.id)
-        .where("id", "=", id)
-        .executeTakeFirst();
-      if (row === undefined) {
-        return undefined;
-      }
-      const identities = await trx
-        .selectFrom("identity.identities")
-        .select(["id", "identity_type", "normalized_value", "verification_status"])
-        .where("tenant_id", "=", tenant.id)
-        .where("person_id", "=", id)
-        .where("detached_at", "is", null)
-        .execute();
-      return { row, identities };
-    });
-    if (found === undefined) {
+    const db = this.requireDb();
+    const row = await db
+      .selectFrom("identity.persons")
+      .select(["id", "status", "canonical_name", "locale", "timezone", "created_at"])
+      .where("tenant_id", "=", tenant.id)
+      .where("id", "=", id)
+      .executeTakeFirst();
+    if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "person not found" }, 404);
     }
-    const { row, identities } = found;
+    const identities = await db
+      .selectFrom("identity.identities")
+      .select(["id", "identity_type", "normalized_value", "verification_status"])
+      .where("tenant_id", "=", tenant.id)
+      .where("person_id", "=", id)
+      .where("detached_at", "is", null)
+      .execute();
     return {
       id: row.id,
       status: row.status,
@@ -178,21 +169,17 @@ export class CrmController {
   async listLeads(@Req() req: FastifyRequest, @Query() query: { limit?: string; offset?: string; status?: string }) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const { limit, offset } = pagination(query);
-    // crm.leads is RLS-enrolled: raw-pool reads fail closed under iptv_app.
-    const status = query.status;
-    const rows = await withTenantTransaction(this.requireDb(), tenant.id, (trx) => {
-      let qb = trx
-        .selectFrom("crm.leads")
-        .select(["id", "person_id", "status", "stage", "created_at"])
-        .where("tenant_id", "=", tenant.id)
-        .orderBy("created_at", "desc")
-        .limit(limit)
-        .offset(offset);
-      if (status !== undefined) {
-        qb = qb.where("status", "=", status);
-      }
-      return qb.execute();
-    });
+    let qb = this.requireDb()
+      .selectFrom("crm.leads")
+      .select(["id", "person_id", "status", "stage", "created_at"])
+      .where("tenant_id", "=", tenant.id)
+      .orderBy("created_at", "desc")
+      .limit(limit)
+      .offset(offset);
+    if (query.status !== undefined) {
+      qb = qb.where("status", "=", query.status);
+    }
+    const rows = await qb.execute();
     return {
       leads: rows.map((r) => ({
         id: r.id,
@@ -209,14 +196,12 @@ export class CrmController {
   @RequirePermission("crm.person.read")
   async getLead(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const row = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
-      trx
-        .selectFrom("crm.leads")
-        .select(["id", "person_id", "status", "stage", "created_at", "qualified_at", "lost_at", "closed_reason"])
-        .where("tenant_id", "=", tenant.id)
-        .where("id", "=", id)
-        .executeTakeFirst(),
-    );
+    const row = await this.requireDb()
+      .selectFrom("crm.leads")
+      .select(["id", "person_id", "status", "stage", "created_at", "qualified_at", "lost_at", "closed_reason"])
+      .where("tenant_id", "=", tenant.id)
+      .where("id", "=", id)
+      .executeTakeFirst();
     if (row === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "lead not found" }, 404);
     }
