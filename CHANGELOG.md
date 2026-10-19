@@ -3,6 +3,7 @@
 ## Unreleased - Added
 
 - fix(api): leituras de subscription/fulfillment/renewals com contexto de tenant (`withTenantTransaction`) — GETs usavam o pool cru e falhavam fechado sob RLS com `iptv_app` (GET subscription → 404, list → vazio, mesmo com a linha existindo; pego ao vivo no staging Contabo com assinatura ACTIVE invisível); + teste de regressão `subscription-reads-tenant-context` com pool da app como `iptv_app`
+- fix(api): mesma classe P0 em crm (persons/leads, 404 ao vivo), inventory (app-trials/supplier-balance/findings) e recovery-tasks — prova ao vivo no staging (person 200, lista 2 linhas, subscription ACTIVE); regressão estendida com asserts CRM + isolamento cross-tenant
 
 - docs(pilot): B1 nominal fechado em sandbox 2026-10-19 (`evidence/p3-asaas-sandbox/live-b1-nominal-20261019.md`, staging Contabo fresh 60/60): charge PIX R$ 5,00 `PAID` + payment `CONFIRMED` + order `SETTLED` + ledger balanceado, webhook `202` em entrega única com zero replay manual, reconcile `409` pós-PAID, customer descartável deletado; `pilot-evidence.yaml` G05 com `last_run` real; P3-INTEGRATIONS promovido para NOMINAL PASS (restam B2 + refund-live do operador)
 
