@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult, CommandActor } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -98,12 +98,15 @@ export class InventoryController {
     @Req() req: FastifyRequest,
   ) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const items = await listAppTrials(this.requireDb(), tenant.id, {
-      personId,
-      supplierId,
-      status,
-      limit: 100,
-    });
+    // inventory.app_trials is RLS-enrolled; the store accepts a Transaction.
+    const items = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      listAppTrials(trx, tenant.id, {
+        personId,
+        supplierId,
+        status,
+        limit: 100,
+      }),
+    );
     return {
       items: items.map((row) => ({
         id: row.id,
@@ -150,15 +153,17 @@ export class InventoryController {
   @RequirePermission("provider.operation.read")
   async getSupplierBalance(@Query("supplierId") supplierId: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const db = this.requireDb();
-    const snapshot = await db
-      .selectFrom("inventory.supplier_balance_snapshots")
-      .select(["id", "supplier_id", "balance_minor", "currency", "observed_at", "evidence_ref"])
-      .where("tenant_id", "=", tenant.id)
-      .where("supplier_id", "=", supplierId)
-      .orderBy("observed_at", "desc")
-      .orderBy("created_at", "desc")
-      .executeTakeFirst();
+    // inventory.supplier_balance_snapshots is RLS-enrolled.
+    const snapshot = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      trx
+        .selectFrom("inventory.supplier_balance_snapshots")
+        .select(["id", "supplier_id", "balance_minor", "currency", "observed_at", "evidence_ref"])
+        .where("tenant_id", "=", tenant.id)
+        .where("supplier_id", "=", supplierId)
+        .orderBy("observed_at", "desc")
+        .orderBy("created_at", "desc")
+        .executeTakeFirst(),
+    );
     if (snapshot === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "no balance reading for this supplier" }, 404);
     }
@@ -282,7 +287,10 @@ export class InventoryController {
   @RequirePermission("provider.operation.read")
   async listFindings(@Query("status") status: string | undefined, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    const items = await listReconciliationFindings(this.requireDb(), tenant.id, { status, limit: 100 });
+    // inventory.reconciliation_findings is RLS-enrolled; the store accepts a Transaction.
+    const items = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
+      listReconciliationFindings(trx, tenant.id, { status, limit: 100 }),
+    );
     return {
       items: items.map((row) => ({
         id: row.id,

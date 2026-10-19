@@ -351,4 +351,31 @@ describe.skipIf(!hasDb)("Subscription reads under iptv_app (requires TEST_DATABA
     });
     expect(crossB.statusCode).toBe(404);
   });
+
+  it("crm person/lead reads see own rows under iptv_app", async () => {
+    const person = await bus.execute<{ id: string }>(actor(), "person.register", {
+      canonicalName: "Reads CRM Person",
+    });
+    expect(person.ok).toBe(true);
+    if (!person.ok) throw new Error(person.message);
+
+    const got = await injectRaw({ method: "GET", url: `/v1/crm/persons/${person.data.id}` });
+    expect(got.statusCode).toBe(200);
+    expect(got.json<{ id: string }>().id).toBe(person.data.id);
+
+    const listed = await injectRaw({ method: "GET", url: "/v1/crm/persons" });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json<{ persons: { id: string }[] }>().persons.map((p) => p.id)).toContain(person.data.id);
+
+    const lead = await bus.execute<{ id: string }>(actor(), "lead.capture", { personId: person.data.id });
+    expect(lead.ok).toBe(true);
+    if (!lead.ok) throw new Error(JSON.stringify(lead));
+
+    const gotLead = await injectRaw({ method: "GET", url: `/v1/crm/leads/${lead.data.id}` });
+    expect(gotLead.statusCode).toBe(200);
+
+    const listedLeads = await injectRaw({ method: "GET", url: "/v1/crm/leads" });
+    expect(listedLeads.statusCode).toBe(200);
+    expect(listedLeads.json<{ leads: { id: string }[] }>().leads.map((l) => l.id)).toContain(lead.data.id);
+  });
 });
