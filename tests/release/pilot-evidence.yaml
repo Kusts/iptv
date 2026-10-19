@@ -53,9 +53,9 @@
   test: 'apps/api/test/commerce-billing.integration.test.ts:"happy path: quote → submit → charge → webhook PAID → payment → balanced ledger → SETTLED → customer (idempotent)"'
   environment: integration (echo Asaas; webhook sintético)
   evidence: código + suíte existente; lifecycle live sandbox em evidence/p3-asaas-sandbox/report.md (software PASS / live BLOCKED-B1) + loop fiel fechado em evidence/p3-asaas-sandbox/live-b1-faithful-20261013.md
-  last_run: 2026-10-13 (B1 faithful loop PASS sandbox, lane piloto :3201)
+  last_run: '2026-10-19 (B1 nominal loop PASS sandbox, staging Contabo: charge PAID + payment CONFIRMED 500 + order SETTLED + ledger balanceado; webhook 202 entrega unica, zero replay manual; reconcile 409 correto pos-PAID; customer descartavel deletado)'
   owner: coder
-  limitations: 'PIX lifecycle live fechado em sandbox em 2026-10-13 (charge PAID + payment CONFIRMED 500 + order SETTLED + ledger balanceado; webhook 202 + replay deduped:true; reconcile 409 correto pós-webhook; entitlement zero linhas — ativação fora da lane). Residuais: hash de linha pilot órfão pós-rotação, túnel 530 na janela (só replay manual), reconcile feliz em PROCESSING só por testes, usuário/membership de teste + 9 UNKNOWN_CHARGE sintéticas no banco piloto, 2 payments RECEIVED irremovíveis no sandbox (400 invalid_action)'
+  limitations: 'PIX lifecycle live fechado em sandbox em 2026-10-19 no fluxo nominal (charge PAID + payment CONFIRMED 500 + order SETTLED + ledger balanceado; webhook 202 em entrega unica, zero replay manual; reconcile 409 correto; entitlement zero linhas — ativacao fora da lane; customer descartavel deletado). Loop anterior 2026-10-13 usou replay manual por tunel 530. Residuais: 2 tenants orfaos (Piloto, Piloto Operacao) + linhas de auditoria (FK append-only); payment RECEIVED irremovivel no sandbox; refund-live nao executado (decisao do operador); scheduler disabled e outbox-worker nao ativado no staging Contabo.'
 - id: G06
   status: PASS
   test: 'apps/api/test/subscription-fulfillment.integration.test.ts:"full loop: SETTLED → PENDING + cycle → MANUAL resolve SUCCEEDED → ACTIVE + grants + notification"'
