@@ -8,7 +8,8 @@
 Base: `https://staging-api.synkroo.com.br`. Autenticação: `POST /v1/auth/login`
 → sessão (`iptv_session` ou Bearer). Permissões necessárias:
 `commerce.order.write`, `billing.charge.write`, `billing.read`,
-`subscription.read/write`. Envie `Idempotency-Key` próprio em cada POST.
+`subscription.write` (from-order), `provider.operation.write` (resolve).
+Envie `Idempotency-Key` próprio em cada POST.
 
 ## 1. Cliente
 
@@ -25,7 +26,7 @@ POST /v1/orders/<orderId>/submit
 → { "id": "<orderId>", "status": "AWAITING_PAYMENT" }
 ```
 
-## 3. Cliente no provedor (somente modo Asaas real/sandbox)
+## 3. Cliente no provedor (obrigatório em todos os modos)
 
 ```http
 POST /v1/billing-customers/provision
@@ -33,8 +34,9 @@ POST /v1/billing-customers/provision
 → { "providerCustomerId": "cus_...", "provisioned": true }
 ```
 
-Sem binding, o provider recusa e a cobrança fica `PENDING` (`KNOWN_NOT_APPLIED`).
-Em modo echo este passo é no-op.
+Sem binding, `charge.create` falha fechado ANTES de criar qualquer cobrança
+(`precondition_failed`, sem linha `PENDING` para reconciliar). O provisionamento
+também persiste binding em modo echo — não é dispensável em nenhum modo.
 
 ## 4. Cobrança PIX
 
@@ -58,21 +60,34 @@ Replays duplicados são no-op (dedupe de inbox). Qualquer divergência cai em
 `GET /v1/billing-exceptions` — nunca confirme manualmente sem reconciliar
 (`POST /v1/charges/:id/reconcile`).
 
-## 5. Fulfillment manual supervisionado (Caminho B)
+## 5. Assinatura e fulfillment manual supervisionado (Caminho B)
+
+Com o pedido `SETTLED`, crie a assinatura (permissão `subscription.write`):
+
+```http
+POST /v1/subscriptions/from-order
+{ "orderId": "<orderId>" }
+→ { "id": "<subscriptionId>", ... }   (PENDING_ACTIVATION)
+```
 
 O pagamento confirmado NÃO ativa sozinho. O operador:
 
 1. Vê a pendência em `/fulfillment` ou `/provider-operations`.
-2. Ativa o serviço no painel autorizado do fornecedor.
-3. Registra a referência:
+2. Solicita o trabalho (`POST /v1/fulfillment/subscriptions/<subscriptionId>/request`
+   — no adapter manual retorna `HUMAN_REQUIRED`, mantendo pendente por desenho).
+3. Ativa o serviço no painel autorizado do fornecedor.
+4. Resolve a operação com o resultado verificado (permissão
+   `provider.operation.write`):
 
 ```http
-POST /v1/fulfillment/subscriptions/<subscriptionId>/request
+POST /v1/provider/operations/<operationId>/resolve
+{ "outcome": "SUCCEEDED", "note": "<referencia da ativacao no painel>" }
 ```
 
-4. Confere em `GET /v1/subscriptions/<id>` (ciclos + direitos) — só marque
-   entregue após verificação. Falhas/estados desconhecidos ficam visíveis em
-   `/provider-operations` para reconciliação (`reconcile`/`resolve`).
+(`outcome` também aceita `FAILED`/`UNKNOWN`; `note` é obrigatório na prática
+para auditoria.) Só considere entregue após este resolve. Falhas e estados
+desconhecidos ficam visíveis em `/provider-operations` para reconciliação
+(`reconcile`/`resolve`).
 
 ## 6. Reembolsos (política MANUAL)
 
@@ -85,6 +100,6 @@ dinheiro pelo dashboard/API do provedor; o sistema reconcilia depois.
 | Sintoma | Causa provável |
 |---|---|
 | `409 TENANT_CONTEXT_CONFLICT` | faltou o header `x-tenant-context-revision` da sessão |
-| charge `PENDING` sem `providerChargeId` | sem binding (passo 3) ou adapter echo |
+| charge rejeitado (`precondition_failed`, sem linha criada) | sem binding (passo 3) — rode `billing.customer_provision` antes |
 | `503 UNAVAILABLE` | banco fora / scheduler desligado |
 | webhook `401` | segredo de canal errado (`billing.tenant_channels`) |
