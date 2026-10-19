@@ -10,7 +10,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import type { Database } from "@iptv/database";
+import { withTenantTransaction, type Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult, CommandActor } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
@@ -137,32 +137,42 @@ export class RenewalController {
     if (query.subscriptionId === undefined) {
       throw new HttpException({ code: "VALIDATION_FAILED", message: "subscriptionId is required" }, 400);
     }
-    const db = this.requireDb();
-    const subscription = await db
-      .selectFrom("subscription.subscriptions")
-      .select(["id", "customer_id"])
-      .where("tenant_id", "=", tenant.id)
-      .where("id", "=", query.subscriptionId)
-      .executeTakeFirst();
-    if (subscription === undefined) {
+    const subscriptionId = query.subscriptionId;
+    // RLS-enrolled reads (subscription.subscriptions, commerce.orders,
+    // subscription.subscription_cycles): raw-pool reads fail closed under
+    // iptv_app, so the whole read runs inside tenant context.
+    const result = await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const subscription = await trx
+        .selectFrom("subscription.subscriptions")
+        .select(["id", "customer_id"])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", subscriptionId)
+        .executeTakeFirst();
+      if (subscription === undefined) {
+        return undefined;
+      }
+      const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
+      const orders = await trx
+        .selectFrom("commerce.orders")
+        .select(["id", "order_type", "status", "currency", "net_amount_minor", "created_at", "settled_at"])
+        .where("tenant_id", "=", tenant.id)
+        .where("customer_id", "=", subscription.customer_id)
+        .where("order_type", "=", "RENEWAL")
+        .orderBy("created_at", "desc")
+        .limit(limit)
+        .execute();
+      const cycles = await trx
+        .selectFrom("subscription.subscription_cycles")
+        .select(["id", "cycle_no", "renewal_order_id"])
+        .where("tenant_id", "=", tenant.id)
+        .where("subscription_id", "=", subscription.id)
+        .execute();
+      return { subscription, orders, cycles };
+    });
+    if (result === undefined) {
       throw new HttpException({ code: "NOT_FOUND", message: "subscription not found" }, 404);
     }
-    const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
-    const orders = await db
-      .selectFrom("commerce.orders")
-      .select(["id", "order_type", "status", "currency", "net_amount_minor", "created_at", "settled_at"])
-      .where("tenant_id", "=", tenant.id)
-      .where("customer_id", "=", subscription.customer_id)
-      .where("order_type", "=", "RENEWAL")
-      .orderBy("created_at", "desc")
-      .limit(limit)
-      .execute();
-    const cycles = await db
-      .selectFrom("subscription.subscription_cycles")
-      .select(["id", "cycle_no", "renewal_order_id"])
-      .where("tenant_id", "=", tenant.id)
-      .where("subscription_id", "=", subscription.id)
-      .execute();
+    const { orders, cycles } = result;
     const cycleByOrder = new Map<string, { id: string; cycleNo: number }>();
     for (const cycle of cycles) {
       if (cycle.renewal_order_id !== null) {
