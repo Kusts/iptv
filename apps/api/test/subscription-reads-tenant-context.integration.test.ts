@@ -148,13 +148,20 @@ describe.skipIf(!hasDb)("Subscription reads under iptv_app (requires TEST_DATABA
       // Fall through: DROP will surface a real leak as a failure, not silence.
     }
     await ownerDb?.destroy().catch(() => undefined);
-    if (hasDb && databaseName !== "") {
-      await sql.raw(`DROP DATABASE IF EXISTS "${databaseName}"`).execute(adminDb);
-      // Restore the cluster-shared role to its migration-created posture
-      // (LOGIN without password) instead of keeping our random secret.
-      await sql.raw(`ALTER ROLE iptv_app WITH LOGIN PASSWORD NULL`).execute(adminDb);
+    try {
+      if (hasDb && databaseName !== "") {
+        try {
+          await sql.raw(`DROP DATABASE IF EXISTS "${databaseName}"`).execute(adminDb);
+        } finally {
+          // Restore the cluster-shared role to its migration-created posture
+          // (LOGIN without password) even when DROP fails — and let the DROP
+          // error propagate instead of reporting a false-clean teardown.
+          await sql.raw(`ALTER ROLE iptv_app WITH LOGIN PASSWORD NULL`).execute(adminDb);
+        }
+      }
+    } finally {
+      await adminDb?.destroy().catch(() => undefined);
     }
-    await adminDb?.destroy().catch(() => undefined);
   });
 
   it("subscription get/list + fulfillment status + renewals list read own rows under iptv_app", async () => {
