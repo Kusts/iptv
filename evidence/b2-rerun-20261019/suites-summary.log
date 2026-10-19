@@ -1,0 +1,53 @@
+﻿@iptv/domain:test: [2m Test Files [22m [1m[32m6 passed[39m[22m[90m (6)[39m
+@iptv/domain:test: [2m      Tests [22m [1m[32m27 passed[39m[22m[90m (27)[39m
+@iptv/domain:test: [2m   Start at [22m 13:30:04
+@iptv/domain:test: [2m   Duration [22m 1.19s[2m (transform 1.48s, setup 0ms, import 2.32s, tests 64ms, environment 1ms)[22m
+@iptv/ai-runtime:test: [2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+@iptv/ai-runtime:test: [2m      Tests [22m [1m[32m35 passed[39m[22m[90m (35)[39m
+@iptv/ai-runtime:test: [2m   Start at [22m 13:30:10
+@iptv/ai-runtime:test: [2m   Duration [22m 687ms[2m (transform 480ms, setup 0ms, import 607ms, tests 134ms, environment 0ms)[22m
+@iptv/secrets:test: [2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+@iptv/secrets:test: [2m      Tests [22m [1m[32m17 passed[39m[22m[90m (17)[39m
+@iptv/secrets:test: [2m   Start at [22m 13:30:13
+@iptv/secrets:test: [2m   Duration [22m 474ms[2m (transform 79ms, setup 0ms, import 109ms, tests 60ms, environment 0ms)[22m
+@iptv/workflows:test: [2m Test Files [22m [1m[32m4 passed[39m[22m[90m (4)[39m
+@iptv/workflows:test: [2m      Tests [22m [1m[32m54 passed[39m[22m[90m (54)[39m
+@iptv/workflows:test: [2m   Start at [22m 13:30:14
+@iptv/workflows:test: [2m   Duration [22m 22.08s[2m (transform 869ms, setup 0ms, import 1.08s, tests 21.83s, environment 1ms)[22m
+@iptv/database:test: [2m Test Files [22m [1m[32m6 passed[39m[22m[90m (6)[39m
+@iptv/database:test: [2m      Tests [22m [1m[32m28 passed[39m[22m[90m (28)[39m
+@iptv/database:test: [2m   Start at [22m 13:30:38
+@iptv/database:test: [2m   Duration [22m 20.82s[2m (transform 233ms, setup 0ms, import 2.44s, tests 16.52s, environment 1ms)[22m
+@iptv/observability:test: [2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+@iptv/observability:test: [2m      Tests [22m [1m[32m13 passed[39m[22m[90m (13)[39m
+@iptv/observability:test: [2m   Start at [22m 13:31:00
+@iptv/observability:test: [2m   Duration [22m 9.05s[2m (transform 548ms, setup 0ms, import 1.43s, tests 8.10s, environment 0ms)[22m
+@iptv/config:test: [2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+@iptv/config:test: [2m      Tests [22m [1m[32m58 passed[39m[22m[90m (58)[39m
+@iptv/config:test: [2m   Start at [22m 13:31:10
+@iptv/config:test: [2m   Duration [22m 562ms[2m (transform 144ms, setup 0ms, import 201ms, tests 114ms, environment 0ms)[22m
+@iptv/web:test: [2m Test Files [22m [1m[32m8 passed[39m[22m[90m (8)[39m
+@iptv/web:test: [2m      Tests [22m [1m[32m137 passed[39m[22m[90m (137)[39m
+@iptv/web:test: [2m   Start at [22m 13:31:12
+@iptv/web:test: [2m   Duration [22m 29.00s[2m (transform 6.29s, setup 8.73s, import 6.59s, tests 6.19s, environment 179.32s)[22m
+@iptv/browser-worker:test: [2m Test Files [22m [1m[32m13 passed[39m[22m[90m (13)[39m
+@iptv/browser-worker:test: [2m      Tests [22m [1m[32m256 passed[39m[22m[90m (256)[39m
+@iptv/browser-worker:test: [2m   Start at [22m 13:31:43
+@iptv/browser-worker:test: [2m   Duration [22m 7.08s[2m (transform 2.61s, setup 0ms, import 8.05s, tests 11.18s, environment 2ms)[22m
+@iptv/outbox-worker:test: [2m Test Files [22m [1m[32m9 passed[39m[22m[90m (9)[39m
+@iptv/outbox-worker:test: [2m      Tests [22m [1m[32m60 passed[39m[22m[90m (60)[39m
+@iptv/outbox-worker:test: [2m   Start at [22m 13:31:51
+@iptv/outbox-worker:test: [2m   Duration [22m 8.98s[2m (transform 2.59s, setup 0ms, import 4.06s, tests 8.14s, environment 2ms)[22m
+@iptv/auth:test: [2m Test Files [22m [1m[32m3 passed[39m[22m[90m (3)[39m
+@iptv/auth:test: [2m      Tests [22m [1m[32m21 passed[39m[22m[90m (21)[39m
+@iptv/auth:test: [2m   Start at [22m 13:32:01
+@iptv/auth:test: [2m   Duration [22m 484ms[2m (transform 124ms, setup 0ms, import 196ms, tests 251ms, environment 0ms)[22m
+@iptv/api:test: [31mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»[39m[1m[41m Failed Tests 1 [49m[22m[31mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»[39m
+@iptv/api:test: [2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m84 passed[39m[22m[90m (85)[39m
+@iptv/api:test: [2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m1073 passed[39m[22m[90m (1074)[39m
+@iptv/api:test: [2m   Start at [22m 13:32:02
+@iptv/api:test: [2m   Duration [22m 388.00s[2m (transform 4.58s, setup 0ms, import 68.56s, tests 300.05s, environment 9ms)[22m
+ Tasks:    19 successful, 20 total
+Cached:    7 cached, 20 total
+Failed:    @iptv/api#test
+ ERROR  run failed: command  exited (1)
