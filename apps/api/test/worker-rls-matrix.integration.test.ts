@@ -40,9 +40,11 @@ import { FakeTrialReadback } from "./fakes/trial-readback-fake.js";
  *
  * Não toca dispatcher prod, migrations, RLS policies ou pool prod.
  * Porta externa: só FakeBrowserPort em memória (zero live provider).
- * A senha temporária do role cluster-global `iptv_app` é hex aleatória por
- * run (reset para NULL no teardown), sem segredo commitado — mesmo padrão
- * dos rehearsals RLS irmãos (`*-rls-rehearsal.integration.test.ts`).
+ * A senha temporária do role cluster-global `iptv_app` é por run com reset
+ * para NULL no teardown (mesmo padrão dos rehearsals RLS irmãos): sem pooled,
+ * hex aleatória gerada no teste; com pooled, a senha P embutida em
+ * `TEST_POOLED_DATABASE_URL` (mesmo segredo do userlist.txt do pooler) —
+ * sem segredo commitado.
  */
 const here = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(here, "..", "..", "..", "db", "migrations");
@@ -99,8 +101,43 @@ function dumped(value: unknown): string {
 function withAppIdentity(base: string, password: string): string {
   const url = new URL(base);
   url.username = "iptv_app";
-  url.password = password;
+  // FIX-POOLER-PW-20261020 (1): o setter `URL.password` do WHATWG preserva
+  // `%` literal (sem re-encode), mas o driver `pg` decodifica uma vez ao
+  // parsear. Atribuir a senha decodificada direto quebra a perna direta
+  // quando ela contém `%` (ex.: P=`a%252Fb` → decodificada `a%2Fb` →
+  // preservada `a%2Fb` → driver lê `a/b` ≠ `a%2Fb`, SCRAM falha).
+  // Pré-codificar garante round-trip para `%` literal e sequências %HH.
+  url.password = encodeURIComponent(password);
   return url.toString();
+}
+
+// Paridade pooled (FIX-POOLER-PW-20261020): quando TEST_POOLED_DATABASE_URL
+// está presente, a senha P dela é HONRADA como senha do role `iptv_app`
+// (pooler→servidor faz SCRAM com o mesmo segredo da conexão direta).
+// Gerar uma senha aleatória R aqui e ignorar P quebra o login pooler→servidor
+// antes da matriz. Sem pooled, mantém o comportamento atual (R aleatório).
+// Percent-encoding malformado em P REJEITA com erro genérico (sem URL/senha
+// na mensagem) — nunca retorna `raw`: senha errada mutaria o role no setup e
+// só falharia depois, no login do pooler. O getter `URL.password` devolve a
+// forma codificada; decodificar uma vez recupera o segredo real.
+function pooledAppPassword(): string | null {
+  if (!hasPooled) return null;
+  let raw: string;
+  try {
+    raw = new URL(pooledConnectionString as string).password;
+  } catch {
+    throw new Error("TEST_POOLED_DATABASE_URL inválida: password ilegível");
+  }
+  if (!raw) return null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    throw new Error("TEST_POOLED_DATABASE_URL com percent-encoding inválido no password");
+  }
+}
+
+function escapeRolePassword(value: string): string {
+  return value.replace(/'/g, "''");
 }
 
 function businessKey(trialId: string): string {
@@ -110,6 +147,7 @@ function businessKey(trialId: string): string {
 describe.skipIf(!hasDb)("EXEC-WORKER-RLS-MATRIX crash/timeout + A/B + readback (requires TEST_DATABASE_URL)", () => {
   const db = createDb({ connectionString: connectionString as string });
   let appDb: Kysely<Database>;
+  let appRolePasswordSet = false;
   const commandDb = new KyselyCommandDb(db);
   const bus = new CommandBus(commandDb);
   const browser = new FakeBrowserPort();
@@ -185,6 +223,13 @@ describe.skipIf(!hasDb)("EXEC-WORKER-RLS-MATRIX crash/timeout + A/B + readback (
   }
 
   beforeAll(async () => {
+    // FIX-POOLER-PW-20261020 (2): valida P ANTES de qualquer mutação do setup
+    // (migrations, fixtures, ALTER ROLE). Percent-encoding malformado rejeita
+    // aqui com erro genérico — sem URL/senha na mensagem.
+    const honoredPooledPassword = pooledAppPassword();
+    if (hasPooled && !honoredPooledPassword) {
+      throw new Error("TEST_POOLED_DATABASE_URL sem password: parity exige senha P embutida");
+    }
     await applyMigrations(connectionString as string, { migrationsDir: MIGRATIONS_DIR });
     await db
       .updateTable("platform.capabilities")
@@ -277,14 +322,24 @@ describe.skipIf(!hasDb)("EXEC-WORKER-RLS-MATRIX crash/timeout + A/B + readback (
       .executeTakeFirstOrThrow();
     accountId = account.id;
     process.env["PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID"] = accountId;
-    // Conexão efetiva `iptv_app` (M2/parity): senha temporária hex por run,
+    // Conexão efetiva `iptv_app` (M2/parity): senha temporária por run,
     // reset para NULL no teardown — padrão dos rehearsals RLS irmãos.
+    // Com pooled configurado, HONRA a senha P de TEST_POOLED_DATABASE_URL
+    // (mesmo segredo no userlist.txt do pooler e no role); sem pooled,
+    // gera R aleatório como antes. Ausência de password em P falha cedo.
     // Sem SET ROLE: o pool autentica como `iptv_app` de verdade.
-    const appPassword = `${randomUUID().replace(/-/g, "")}${randomUUID().replace(/-/g, "")}`;
-    if (!/^[0-9a-f]{32,}$/.test(appPassword)) {
+    const generatedPassword = `${randomUUID().replace(/-/g, "")}${randomUUID().replace(/-/g, "")}`;
+    if (!/^[0-9a-f]{32,}$/.test(generatedPassword)) {
       throw new Error("unsafe generated app password");
     }
-    await sql.raw(`ALTER ROLE iptv_app WITH LOGIN PASSWORD '${appPassword}'`).execute(db);
+    let appPassword = generatedPassword;
+    if (honoredPooledPassword !== null) {
+      appPassword = honoredPooledPassword;
+    }
+    await sql.raw(`ALTER ROLE iptv_app WITH LOGIN PASSWORD '${escapeRolePassword(appPassword)}'`).execute(db);
+    // REREVIEW-POOLER-PERCENT (MEDIUM): reset do teardown só ocorre se este
+    // ALTER ROLE concluiu — rejeição precoce de P malformado não toca o role.
+    appRolePasswordSet = true;
     appDb = createDb({ connectionString: withAppIdentity(connectionString as string, appPassword) });
   }, 120_000);
 
@@ -292,7 +347,9 @@ describe.skipIf(!hasDb)("EXEC-WORKER-RLS-MATRIX crash/timeout + A/B + readback (
     delete process.env["PROVIDER_DISPATCH_MODE"];
     delete process.env["PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID"];
     await appDb?.destroy().catch(() => undefined);
-    await sql.raw("ALTER ROLE iptv_app WITH PASSWORD NULL").execute(db).catch(() => undefined);
+    if (appRolePasswordSet) {
+      await sql.raw("ALTER ROLE iptv_app WITH PASSWORD NULL").execute(db).catch(() => undefined);
+    }
     await db.destroy().catch(() => undefined);
   });
 

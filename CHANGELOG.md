@@ -2,6 +2,7 @@
 
 ## Unreleased - Added
 
+- test(api): paridade pooled via pgBouncer com senha honrada da env e guards de teardown (EXEC-POOLER-PARITY, #74 #7)
 - feat(web): style inline migrado para classes em tokens.css, zero style= restante (EXEC-STYLE-SRC, #44)
 - feat(web): nonce por request com strict-dynamic em report-only e plumbing no layout (EXEC-CSP-NONCE, #44)
 - feat(web): csp report-only com rota de report endurecida e sem bloqueio (EXEC-CSP-REPORTONLY, #44)
