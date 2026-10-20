@@ -2,6 +2,7 @@
 
 ## Unreleased - Added
 
+- fix(api): headers hsts nosniff referrer-policy sem csp geral (SEC44-HEADERS, #44)
 - test(api): parallel drains resiliente a db compartilhado — captura por tenant uuid fresco, sem predicado temporal, disjunção + convergência orçamentada (FIX-DRAINS-20261020, B2 residual)
 - docs(operations): entrypoint staging de volta em 2026-10-19 ~16:30 UTC — `staging-api` `/health` e `/ready` (`database:ok`) + `staging-web` 200 via edge (túnel `iptv-staging`); SSH direto ao host segue fechado a partir deste ambiente (ato do operador se precisar de host)
 - fix(api): leituras de subscription/fulfillment/renewals com contexto de tenant (`withTenantTransaction`) — GETs usavam o pool cru e falhavam fechado sob RLS com `iptv_app` (GET subscription → 404, list → vazio, mesmo com a linha existindo; pego ao vivo no staging Contabo com assinatura ACTIVE invisível); + teste de regressão `subscription-reads-tenant-context` com pool da app como `iptv_app`

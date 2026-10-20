@@ -5,6 +5,7 @@ import { loadConfig } from "@iptv/config";
 import { initObservability } from "@iptv/observability";
 import { AppModule } from "./app.module.js";
 import { createFastifyAdapter, registerRequestIdHook } from "./request-id.js";
+import { registerApiSecurityHeaders } from "./security-headers.js";
 import { registerApiCors } from "./api-cors.js";
 import { registerObservabilityHook } from "./observability-hook.js";
 import { SchedulerService } from "./scheduler/scheduler.service.js";
@@ -26,6 +27,8 @@ async function bootstrap(): Promise<void> {
   );
   registerRequestIdHook(app);
   registerObservabilityHook(app);
+  // SEC44 api-only: HSTS + nosniff + Referrer-Policy (sem CSP geral/helmet).
+  registerApiSecurityHeaders(app);
   // Explicit browser CORS allowlist (no wildcard, no credentials) before listen.
   registerApiCors(app, config.CORS_ALLOWED_ORIGINS);
   app.enableShutdownHooks();
