@@ -111,6 +111,21 @@ export interface ControlAuthSessionsTable {
   last_seen_at: Date;
 }
 
+/** Mirrors `platform.outbound_attachments` (migration 061, immutable blob store). */
+export interface PlatformOutboundAttachmentsTable {
+  id: string;
+  tenant_id: string;
+  ref: string;
+  kind: string;
+  mime_type: string;
+  file_name: string | null;
+  /** Raw stored bytes (node-pg bytea arrives as Buffer, a Uint8Array). */
+  content: Uint8Array;
+  size_bytes: number;
+  sha256: string;
+  created_at: Date;
+}
+
 export interface PlatformAuditLogTable {
   id: string;
   tenant_id: string;
@@ -1972,6 +1987,7 @@ export interface Database {
   "control.auth_credentials": ControlAuthCredentialsTable;
   "control.auth_sessions": ControlAuthSessionsTable;
   "platform.audit_log": PlatformAuditLogTable;
+  "platform.outbound_attachments": PlatformOutboundAttachmentsTable;
   "platform.domain_events": PlatformDomainEventsTable;
   "platform.idempotency_keys": PlatformIdempotencyKeysTable;
   "platform.inbox_messages": PlatformInboxMessagesTable;

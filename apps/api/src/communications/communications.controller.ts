@@ -18,6 +18,8 @@ import type { CommandResult } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
 import { AuthGuard } from "../auth/auth.guard.js";
 import { RequirePermission, PermissionsGuard } from "../auth/permissions.guard.js";
+import { AuthRateLimit } from "../auth/rate-limit.js";
+import { RateLimitGuard } from "../auth/rate-limit.guard.js";
 import { CommandBus, commandActorFromRequestParts } from "../commands/command-bus.js";
 import type { CommandActor } from "@iptv/domain";
 
@@ -254,6 +256,53 @@ export class CommunicationsController {
       correlationId: req.id,
       idempotencyKey: idempotencyKeyOf(req),
     });
+    return send(result);
+  }
+
+  @Post("attachments")
+  @AuthRateLimit("communications-attachments-upload")
+  @UseGuards(AuthGuard, PermissionsGuard, RateLimitGuard)
+  @RequirePermission("conversation.reply")
+  async uploadAttachment(
+    @Body()
+    body: {
+      kind?: unknown;
+      mimeType?: unknown;
+      fileName?: unknown;
+      contentBase64?: unknown;
+      durationSeconds?: unknown;
+      customerAuthorized?: unknown;
+    },
+    @Req() req: FastifyRequest,
+  ): Promise<{
+    attachmentRef: string;
+    kind: string;
+    mimeType: string;
+    fileName: string | null;
+    sizeBytes: number;
+  }> {
+    const result = await this.bus.execute<{
+      attachmentRef: string;
+      kind: string;
+      mimeType: string;
+      fileName: string | null;
+      sizeBytes: number;
+    }>(
+      actorFromRequest(req),
+      "attachment.upload",
+      {
+        kind: body.kind,
+        mimeType: body.mimeType,
+        fileName: body.fileName,
+        contentBase64: body.contentBase64,
+        durationSeconds: body.durationSeconds,
+        customerAuthorized: body.customerAuthorized,
+      },
+      {
+        correlationId: req.id,
+        idempotencyKey: idempotencyKeyOf(req),
+      },
+    );
     return send(result);
   }
 

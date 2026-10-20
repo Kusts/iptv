@@ -118,6 +118,38 @@ export class RateLimitService {
   }
 
   /**
+   * Read-only twin of {@link acquire}: same policy, same client-origin
+   * derivation (incl. trusted-proxy hops), same origin-only rule — but it
+   * only PEEKS at the buckets via `store.peek` and never charges. Used by
+   * the pre-parse upload gate (`upload-preadmit.ts`) so a rate-blocked
+   * origin is rejected BEFORE Fastify buffers/parses the body, while the
+   * single budget charge still happens exactly once, post-parse, in
+   * `RateLimitGuard.acquire`. Throw-transparent like `acquire`: the caller
+   * owns the fail-open decision.
+   */
+  peek(kind: AuthRateLimitKind, req: FastifyRequest, rawEmail: unknown): RateLimitAcquireResult {
+    const policy = AUTH_RATE_LIMIT_POLICIES[kind];
+    const origin = deriveClientOrigin(req, this.trustedProxyHops);
+    const normalizedEmail = isOriginOnlyKind(kind) ? null : normalizeIdentityEmail(rawEmail);
+
+    let retryAfterSeconds = 0;
+    if (normalizedEmail !== null) {
+      const identity = this.store.peek(identityBucketKey(kind, normalizedEmail), policy.identityLimit);
+      if (!identity.allowed) {
+        retryAfterSeconds = Math.max(retryAfterSeconds, identity.retryAfterSeconds);
+      }
+    }
+    const originDecision = this.store.peek(originBucketKey(kind, origin.keySegment), policy.originLimit);
+    if (!originDecision.allowed) {
+      retryAfterSeconds = Math.max(retryAfterSeconds, originDecision.retryAfterSeconds);
+    }
+    if (retryAfterSeconds > 0) {
+      return { allowed: false, retryAfterSeconds };
+    }
+    return ALLOWED;
+  }
+
+  /**
    * Reset an identity's failure budget — called after a SUCCESSFUL login so a
    * legitimate user who mistyped a few times is not carried toward a lock-out,
    * and so different keys are used for success vs failure. No-op without a

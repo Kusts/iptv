@@ -2,19 +2,22 @@ import { SetMetadata } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import type { FastifyRequest } from "fastify";
 
-/** Public auth routes that carry an independent, explicit rate-limit budget. */
-export type AuthRateLimitKind = "login" | "register" | "admin-outbox-drain" | "admin-provider-dispatch";
+/** Routes that carry an independent, explicit rate-limit budget (public auth routes and expensive authenticated POSTs). */
+export type AuthRateLimitKind = "login" | "register" | "admin-outbox-drain" | "admin-provider-dispatch" | "communications-attachments-upload";
 
 export const RATE_LIMIT_POLICY_KEY = "authRateLimitPolicy";
 
 /**
- * Admin drain kinds are origin-only: any submitted `email` is ignored and
- * only the per-origin budget is charged, so there is deliberately NO global
+ * Origin-only kinds: any submitted `email` is ignored and only the
+ * per-origin budget is charged, so there is deliberately NO global
  * per-identity lock-out on these routes (one origin exhausting its budget
  * never blocks another origin, and no identity bucket is ever created).
+ * Admin drains plus the communications attachment upload (large binary
+ * POSTs carry no email identity — the body is binary metadata, not a login
+ * form — so per-identity budgeting would be meaningless there).
  */
 export function isOriginOnlyKind(kind: AuthRateLimitKind): boolean {
-  return kind === "admin-outbox-drain" || kind === "admin-provider-dispatch";
+  return kind === "admin-outbox-drain" || kind === "admin-provider-dispatch" || kind === "communications-attachments-upload";
 }
 
 /** Declare the rate-limit policy for a public auth route (method-level). */
@@ -81,6 +84,18 @@ export const AUTH_RATE_LIMIT_POLICIES: Readonly<Record<AuthRateLimitKind, AuthRa
     originWindowMs: 5 * 60_000,
   },
   "admin-provider-dispatch": {
+    identityLimit: 30,
+    identityWindowMs: 5 * 60_000,
+    originLimit: 30,
+    originWindowMs: 5 * 60_000,
+  },
+  // Authenticated tenant attachment uploads (`POST
+  // /v1/communications/attachments`): origin-only by design (the body carries
+  // binary metadata, never an email identity). Same generous operator
+  // backstop as the admin drains — a human uploading media never reaches it
+  // while a flooding source is denied with 429 + Retry-After. The identity
+  // budget is present but unreachable (no identity is ever derived).
+  "communications-attachments-upload": {
     identityLimit: 30,
     identityWindowMs: 5 * 60_000,
     originLimit: 30,

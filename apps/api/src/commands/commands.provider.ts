@@ -1,5 +1,7 @@
 import type { Kysely } from "kysely";
 import type { Database } from "@iptv/database";
+import { currentOutboundAttachmentStore, setOutboundAttachmentStore } from "../communications/waha-outbound-attachments.js";
+import { PgOutboundAttachmentStore } from "../communications/pg-outbound-attachment-store.js";
 import { CommandBus, type DbPort } from "./command-bus.js";
 import { KyselyCommandDb } from "./kysely-command-db.js";
 import { registerHumanReviewCommands } from "../human-review/human-review.commands.js";
@@ -131,6 +133,25 @@ export const CommandDbProvider = {
       return null;
     }
     return new KyselyCommandDb(db);
+  },
+  inject: ["DB"],
+};
+
+/**
+ * Outbound attachment backing (EXEC-WAHA-BACKING-20261020): when a database
+ * pool exists, the persistent Pg store (`platform.outbound_attachments`,
+ * migration 061) becomes the default lane for BOTH the command resolver and
+ * the gateway adapter (both read `currentOutboundAttachmentStore()` at call
+ * time). Without a pool the fail-closed empty registry stays active and
+ * every resolution refuses. Test doubles keep overriding per-test.
+ */
+export const OutboundAttachmentStoreProvider = {
+  provide: "OUTBOUND_ATTACHMENT_STORE",
+  useFactory: (db: Kysely<Database> | null) => {
+    if (db !== null) {
+      setOutboundAttachmentStore(new PgOutboundAttachmentStore(db));
+    }
+    return currentOutboundAttachmentStore();
   },
   inject: ["DB"],
 };

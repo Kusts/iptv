@@ -21,7 +21,15 @@ import {
   MEDIA_MAX_BYTES,
   MEDIA_MIME_ALLOWLIST,
 } from "./waha-media.js";
-import { resolveOutboundAttachment } from "./waha-outbound-attachments.js";
+import {
+  currentOutboundAttachmentStore,
+  generateOutboundRef,
+  MemoryOutboundAttachmentStore,
+  resolveOutboundAttachment,
+  validateOutboundUploadBytes,
+} from "./waha-outbound-attachments.js";
+import { insertOutboundAttachmentRow } from "./pg-outbound-attachment-store.js";
+import { ATTACHMENT_UPLOAD_BODY_LIMIT_BYTES } from "./attachment-upload-parser.js";
 import { normalizeSender } from "./waha-normalizer.js";
 import { getRiskState, riskBlockReason, setRiskState } from "./waha-risk-state.js";
 import { expectedSessionFor, validateSessionForTenant } from "./waha-sessions.js";
@@ -127,6 +135,53 @@ export const sendMediaManualInput = z.object({
   }
 });
 export type SendMediaManualInput = z.infer<typeof sendMediaManualInput>;
+
+/**
+ * Outbound attachment upload (EXEC-WAHA-BACKING-20261020): registers the
+ * REAL bytes behind a fresh opaque tenant-scoped `ref` and returns it for a
+ * later `message.send_media_manual` send. Declared-level guards mirror
+ * `sendMediaManualInput` (kind caps are enforced on the decoded bytes in the
+ * handler); the same AUDIO duration/authorization rules apply here so an
+ * unconsented voice note is refused before anything is persisted.
+ */
+export const uploadAttachmentInput = z.object({
+  kind: z.enum(["IMAGE", "DOCUMENT", "AUDIO", "VIDEO"]),
+  mimeType: z.string().trim().min(1).max(127),
+  fileName: z.string().trim().min(1).max(255).nullable().optional(),
+  contentBase64: z.string().min(1).max(ATTACHMENT_UPLOAD_BODY_LIMIT_BYTES),
+  durationSeconds: z.number().nonnegative().nullable().optional(),
+  customerAuthorized: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  const mime = value.mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!(MEDIA_MIME_ALLOWLIST[value.kind] as readonly string[]).includes(mime)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `mismatched MIME for ${value.kind}: ${value.mimeType}`,
+      path: ["mimeType"],
+    });
+  }
+  if (value.kind === "AUDIO") {
+    if (
+      value.durationSeconds !== null &&
+      value.durationSeconds !== undefined &&
+      value.durationSeconds > MEDIA_MAX_AUDIO_SECONDS
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `audio duration ${value.durationSeconds}s exceeds ${MEDIA_MAX_AUDIO_SECONDS}s`,
+        path: ["durationSeconds"],
+      });
+    }
+    if (value.customerAuthorized !== true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "audio uploads require explicit customer authorization (customerAuthorized: true)",
+        path: ["customerAuthorized"],
+      });
+    }
+  }
+});
+export type UploadAttachmentInput = z.infer<typeof uploadAttachmentInput>;
 
 export const ingestMessageInput = z.object({
   channel: z.string().trim().min(1).max(64),
@@ -687,6 +742,95 @@ async function handleSendManual(
     });
   }
   return { ok: true, data: { messageId, deliveryStatus, providerMessageId } };
+}
+
+/**
+ * Strict base64 decode: canonical alphabet only (no whitespace/wrapping),
+ * correct padding, and a re-encode round-trip so lenient prefixes never
+ * smuggle bytes past the gate. Returns null on any deviation.
+ */
+function decodeBase64Strict(raw: string): Uint8Array | null {
+  if (raw.length === 0 || raw.length % 4 !== 0) {
+    return null;
+  }
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(raw)) {
+    return null;
+  }
+  try {
+    const buf = Buffer.from(raw, "base64");
+    if (buf.toString("base64") !== raw) {
+      return null;
+    }
+    return new Uint8Array(buf);
+  } catch {
+    return null;
+  }
+}
+
+export interface UploadAttachmentOutput {
+  attachmentRef: string;
+  kind: SendMediaKind;
+  mimeType: string;
+  fileName: string | null;
+  sizeBytes: number;
+}
+
+async function handleUploadAttachment(
+  ctx: CommandHandlerContext,
+  input: UploadAttachmentInput,
+): Promise<CommandResult<UploadAttachmentOutput>> {
+  const bytes = decodeBase64Strict(input.contentBase64);
+  if (bytes === null) {
+    return { ok: false, code: "validation_failed", message: "contentBase64 is not valid canonical base64" };
+  }
+  const fileName = input.fileName ?? null;
+  const trx = kyselyTrxOf(ctx);
+  if (trx !== null) {
+    const created = await insertOutboundAttachmentRow(trx, ctx.tenantId, {
+      kind: input.kind,
+      mimeType: input.mimeType,
+      fileName,
+      bytes,
+      durationSeconds: input.durationSeconds ?? null,
+      customerAuthorized: input.customerAuthorized,
+    });
+    if (!created.ok) {
+      return { ok: false, code: created.code, message: created.message };
+    }
+    return {
+      ok: true,
+      data: {
+        attachmentRef: created.ref,
+        kind: created.kind,
+        mimeType: created.mimeType,
+        fileName: created.fileName,
+        sizeBytes: created.sizeBytes,
+      },
+    };
+  }
+  // Memory lane (unit tests without Postgres): validate the real bytes, then
+  // register into the active memory backing. Refuses when no memory backing
+  // is installed — never a silent no-op.
+  const check = validateOutboundUploadBytes({
+    kind: input.kind,
+    mimeType: input.mimeType,
+    bytes,
+    durationSeconds: input.durationSeconds ?? null,
+    customerAuthorized: input.customerAuthorized,
+  });
+  if (!check.ok) {
+    return { ok: false, code: check.code, message: check.message };
+  }
+  const store = currentOutboundAttachmentStore();
+  if (!(store instanceof MemoryOutboundAttachmentStore)) {
+    return { ok: false, code: "validation_failed", message: "attachment upload backing is not configured for this lane" };
+  }
+  const ref = generateOutboundRef();
+  store.register({ tenantId: ctx.tenantId, ref, kind: input.kind, mimeType: check.normalizedMime, fileName, bytes });
+  return {
+    ok: true,
+    data: { attachmentRef: ref, kind: input.kind, mimeType: check.normalizedMime, fileName, sizeBytes: bytes.length },
+  };
 }
 
 async function handleSendMediaManual(
@@ -1408,6 +1552,14 @@ export function registerCommunicationCommands(bus: CommandBus): void {
     auditResource: "message",
     input: sendManualInput,
     handler: handleSendManual,
+  });
+  bus.register<UploadAttachmentInput, UploadAttachmentOutput>({
+    name: "attachment.upload",
+    permission: "conversation.reply",
+    auditAction: "attachment.upload",
+    auditResource: "attachment",
+    input: uploadAttachmentInput,
+    handler: handleUploadAttachment,
   });
   bus.register<SendMediaManualInput, { messageId: string; deliveryStatus: string; providerMessageId: string | null }>({
     name: "message.send_media_manual",

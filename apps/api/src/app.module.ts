@@ -17,7 +17,7 @@ import { RateLimitService } from "./auth/rate-limit.service.js";
 import { trustedProxyHopsFromEnv } from "./auth/rate-limit.js";
 import { AuditService } from "./audit/audit.service.js";
 import { TenantsController } from "./tenants/tenants.controller.js";
-import { CommandDbProvider, CommandsProvider } from "./commands/commands.provider.js";
+import { CommandDbProvider, CommandsProvider, OutboundAttachmentStoreProvider } from "./commands/commands.provider.js";
 import { LocalTransport } from "./outbox/transport.js";
 import { OutboxDrainer } from "./outbox/outbox-drainer.js";
 import { OutboxController } from "./outbox/outbox.controller.js";
@@ -31,6 +31,7 @@ import { ProviderController } from "./provider/provider.controller.js";
 import { ProviderDispatchController } from "./provider/provider-dispatch.controller.js";
 import { ProviderDispatcherService } from "./provider/provider-dispatcher.service.js";
 import { CommunicationsController } from "./communications/communications.controller.js";
+import { UploadPreadmitBinder } from "./communications/upload-preadmit.js";
 import { WahaWebhookController } from "./communications/waha-webhook.controller.js";
 import { WahaWebhookService } from "./communications/waha-webhook.service.js";
 import { CommerceController } from "./commerce/commerce.controller.js";
@@ -195,14 +196,15 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     AuditService,
     AuthGuard,
     PermissionsGuard,
-    PlatformAdminGuard,
-    // Public-auth rate limiter: single-process, bounded, TTL store. Trusted
+    PlatformAdminGuard,    // Public-auth rate limiter: single-process, bounded, TTL store. Trusted
     // proxy hops are read from env here so the limiter's X-Forwarded-For
     // handling stays explicit and never toggles Fastify's global trustProxy.
     { provide: RateLimitService, useFactory: () => new RateLimitService({ trustedProxyHops: trustedProxyHopsFromEnv(process.env) }) },
     RateLimitGuard,
+    UploadPreadmitBinder,
     CommandDbProvider,
     CommandsProvider,
+    OutboundAttachmentStoreProvider,
     { provide: "POLICY_REPOSITORY", useFactory: (db: Kysely<Database> | null) => new KyselyPolicyRepository(db), inject: ["DB"] },
     PolicyResolver,
     { provide: "CAPABILITY_STORE", useFactory: (db: Kysely<Database> | null) => new KyselyCapabilityStore(db), inject: ["DB"] },

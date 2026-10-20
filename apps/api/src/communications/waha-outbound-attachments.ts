@@ -23,14 +23,18 @@
  *   per-hop revalidation, redirect cap, bounded read) — this module refuses
  *   them until such a wired path exists.
  *
- * Storage note: no tenant-scoped attachment/blob table exists in this
- * codebase, so the default store is an empty fail-closed registry (every
- * resolution refused, nothing sent). Tests and future storage ports plug a
- * backing via `setOutboundAttachmentStoreForTests`/DI without changing the
- * command or gateway contract. No migration is introduced by this fix.
+ * Storage note: the persistent tenant-scoped backing is
+ * `platform.outbound_attachments` (migration 061) behind
+ * `PgOutboundAttachmentStore` (`pg-outbound-attachment-store.ts`), wired as
+ * the default at boot (see `AppModule`). The empty fail-closed registry
+ * below remains the default only until that wiring runs (and in unit tests
+ * that never boot the app); `MemoryOutboundAttachmentStore` is a
+ * test-controlled backing. No migration is introduced by THIS fix file —
+ * the table lives in its own append-only migration.
  */
 
-import { MEDIA_MAX_BYTES, MEDIA_MIME_ALLOWLIST, type WahaMediaContentType } from "./waha-media.js";
+import { createHash, randomBytes } from "node:crypto";
+import { MEDIA_MAX_AUDIO_SECONDS, MEDIA_MAX_BYTES, MEDIA_MIME_ALLOWLIST, type WahaMediaContentType } from "./waha-media.js";
 import type { SendMediaKind } from "./messaging-gateway.js";
 
 export type OutboundAttachmentKind = SendMediaKind;
@@ -137,6 +141,15 @@ let activeStore: OutboundAttachmentStore = new EmptyOutboundAttachmentStore();
 
 export function currentOutboundAttachmentStore(): OutboundAttachmentStore {
   return activeStore;
+}
+
+/**
+ * Production wiring: the boot provider installs the Pg-backed store as the
+ * default lane (command + gateway resolve through it). Unit tests keep
+ * overriding it per-test with the memory backing below.
+ */
+export function setOutboundAttachmentStore(store: OutboundAttachmentStore): void {
+  activeStore = store;
 }
 
 export function setOutboundAttachmentStoreForTests(store: OutboundAttachmentStore): void {
@@ -336,4 +349,73 @@ export async function resolveOutboundAttachment(input: {
   declaredFileSizeBytes: number | null | undefined;
 }): Promise<OutboundAttachmentResolution> {
   return resolveOutboundAttachmentWithStore(currentOutboundAttachmentStore(), input);
+}
+
+/** Opaque ref mint: `att-` + 32 hex chars (matches `OUTBOUND_REF_PATTERN`). */
+export function generateOutboundRef(): string {
+  return `att-${randomBytes(16).toString("hex")}`;
+}
+
+/** Hex sha256 over the real bytes (recorded at upload for cheap rechecks). */
+export function sha256HexBytes(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+export type OutboundUploadValidation =
+  | { ok: true; normalizedMime: string }
+  | { ok: false; code: "validation_failed"; message: string };
+
+function refuseUpload(message: string): OutboundUploadValidation {
+  return { ok: false, code: "validation_failed", message };
+}
+
+/**
+ * Upload-time gate over the REAL bytes (shared by the Pg store and the
+ * command handler, so both lanes refuse before persisting). Mirrors the
+ * resolve-time verdicts: declared caps/MIME are never trusted — the stored
+ * bytes and the record MIME carry the decision. AUDIO additionally requires
+ * `customerAuthorized: true` and honors the 600 s duration cap when a
+ * duration is reported.
+ */
+export function validateOutboundUploadBytes(input: {
+  kind: OutboundAttachmentKind;
+  mimeType: string;
+  bytes: Uint8Array;
+  durationSeconds?: number | null;
+  customerAuthorized?: boolean;
+}): OutboundUploadValidation {
+  const cap = MEDIA_MAX_BYTES[input.kind as WahaMediaContentType];
+  if (cap === undefined) {
+    return refuseUpload(`unknown attachment kind: ${input.kind}`);
+  }
+  if (input.bytes.length === 0) {
+    return refuseUpload("attachment has no bytes");
+  }
+  if (input.bytes.length > cap) {
+    return refuseUpload(`oversized ${input.kind}: real size ${input.bytes.length} > ${cap}`);
+  }
+  const recordMime = normalizeMime(input.mimeType);
+  if (!(MEDIA_MIME_ALLOWLIST[input.kind as WahaMediaContentType] as readonly string[]).includes(recordMime)) {
+    return refuseUpload(`mismatched MIME for ${input.kind}: ${input.mimeType}`);
+  }
+  const sniffed = sniffOutboundMime(input.bytes);
+  if (sniffed === null) {
+    return refuseUpload("unrecognized attachment content signature (only known signatures pass)");
+  }
+  if (canonicalOutboundMime(sniffed) !== canonicalOutboundMime(recordMime)) {
+    return refuseUpload(`mismatched content for ${input.kind}: sniffed ${sniffed} != declared ${input.mimeType}`);
+  }
+  if (input.kind === "AUDIO") {
+    if (
+      input.durationSeconds !== null &&
+      input.durationSeconds !== undefined &&
+      input.durationSeconds > MEDIA_MAX_AUDIO_SECONDS
+    ) {
+      return refuseUpload(`audio duration ${input.durationSeconds}s exceeds ${MEDIA_MAX_AUDIO_SECONDS}s`);
+    }
+    if (input.customerAuthorized !== true) {
+      return refuseUpload("audio uploads require explicit customer authorization (customerAuthorized: true)");
+    }
+  }
+  return { ok: true, normalizedMime: recordMime };
 }

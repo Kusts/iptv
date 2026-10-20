@@ -2,6 +2,7 @@ import { FastifyAdapter } from "@nestjs/platform-fastify";
 import type { NestFastifyApplication } from "@nestjs/platform-fastify";
 import type { IncomingMessage } from "node:http";
 import { newId } from "@iptv/domain";
+import { registerAttachmentUploadParser } from "./communications/attachment-upload-parser.js";
 
 /**
  * Single request id established at the HTTP boundary: reuse an inbound
@@ -28,10 +29,15 @@ export function genRequestId(req: Pick<IncomingMessage, "headers">): string {
 
 /** Shared Fastify adapter so `main.ts` and tests use the same id policy. */
 export function createFastifyAdapter(loggerLevel?: string): FastifyAdapter {
-  return new FastifyAdapter({
+  const adapter = new FastifyAdapter({
     logger: loggerLevel ? { level: loggerLevel } : false,
     genReqId: genRequestId,
   });
+  // Vendor upload media type (scoped 48 MiB body limit; the global JSON
+  // limit stays at the Fastify default). Registered here so every app
+  // instance — production and tests — parses uploads identically.
+  registerAttachmentUploadParser(adapter.getInstance());
+  return adapter;
 }
 
 /** Mirror `request.id` on every response as `x-request-id`. */
