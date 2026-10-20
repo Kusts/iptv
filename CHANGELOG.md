@@ -2,6 +2,7 @@
 
 ## Unreleased - Added
 
+- test(agent): gate de plano tipado single-step rejeita ação inventada e write sem dispatch em fixture offline (EXEC-RESEARCH-PLAN, #1)
 - test(api): matriz worker rls crash timeout e fake readback com guards iptv_app e parity pooler opt-in skipped (EXEC-WORKER-RLS-MATRIX, #74 #7)
 - fix(api): headers hsts nosniff referrer-policy sem csp geral (SEC44-HEADERS, #44)
 - test(api): parallel drains resiliente a db compartilhado — captura por tenant uuid fresco, sem predicado temporal, disjunção + convergência orçamentada (FIX-DRAINS-20261020, B2 residual)
