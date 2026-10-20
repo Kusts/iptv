@@ -100,16 +100,17 @@ describe.skipIf(!hasDb)("commands → events → outbox → inbox → audit + HI
     };
   }
 
-  async function ownOutboxRows(since: Date): Promise<Array<{ id: string; state: string }>> {
-    // Scope-safe: only rows THIS tenant created after the marker. Residue
-    // from earlier files shares the table but lives in other tenants (every
-    // file registers its own tenant) and predates the marker — so global
-    // PENDING==0 assertions are never made here.
+  async function ownOutboxRows(): Promise<Array<{ id: string; state: string }>> {
+    // Scope-safe: only rows for THIS tenant. The tenant is freshly
+    // registered per run (random UUID), so no residue from earlier files,
+    // parallel workers, or prior runs can share it. No time marker is
+    // used on purpose: Node `new Date()` vs PG `now()` skew could make a
+    // `created_at >= marker` predicate miss our own rows (flaky
+    // `own.length === 3`), while tenant scoping alone is exact.
     return db
       .selectFrom("platform.outbox_messages")
       .select(["id", "state"])
       .where("tenant_id", "=", tenantId)
-      .where("created_at", ">=", since)
       .execute();
   }
 
@@ -214,12 +215,11 @@ describe.skipIf(!hasDb)("commands → events → outbox → inbox → audit + HI
   });
 
   it("parallel drains process disjoint rows (SKIP LOCKED)", async () => {
-    const marker = new Date();
     for (let i = 0; i < 4; i += 1) {
       const r = await bus.execute(actor(), "human_review.request", reviewInput(`parallel ${i}`));
       expect(r.ok).toBe(true);
     }
-    const own = await ownOutboxRows(marker);
+    const own = await ownOutboxRows();
     expect(own.length).toBeGreaterThanOrEqual(4);
     const ownIds = new Set(own.map((r) => r.id));
     const [a, b] = await Promise.all([drainer.drain(10), drainer.drain(10)]);
@@ -228,20 +228,58 @@ describe.skipIf(!hasDb)("commands → events → outbox → inbox → audit + HI
     // the SKIP LOCKED disjointness property, regardless of residue.
     expect(new Set(ids).size).toBe(ids.length);
     expect(a.published + b.published).toBe(ids.length);
-    expect(a.published + b.published).toBeGreaterThanOrEqual(4);
-    // The two bounded drains claim oldest-first, so residue from earlier
-    // files may starve our rows. Keep draining until OUR captured rows land.
-    for (let i = 0; i < 20; i += 1) {
-      const rows = await ownOutboxRows(marker);
+    // No floor on a+b: the global oldest-first claim may spend this bounded
+    // budget on foreign residue from parallel workers sharing the same DB.
+    // Keep draining until OUR captured rows land. The sleep yields to peer
+    // workers that may hold our rows in PUBLISHING mid-publish (their drain
+    // flips to PUBLISHED outside our claim transaction).
+    for (let i = 0; i < 30; i += 1) {
+      const rows = await ownOutboxRows();
       if (rows.length > 0 && rows.every((r) => r.state === "PUBLISHED")) {
         break;
       }
       await drainer.drain(100);
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 50);
+      });
     }
-    const landed = await ownOutboxRows(marker);
+    const landed = await ownOutboxRows();
     expect(landed.length).toBe(own.length);
     expect(landed.every((r) => ownIds.has(r.id))).toBe(true);
     expect(landed.every((r) => r.state === "PUBLISHED")).toBe(true);
+
+    // Foreign-backlog regression: >20 rows in a sibling tenant must not
+    // starve our tenant forever. Seed via the prod command path (global
+    // oldest-first claim still spends budget on them first), then mint
+    // fresh own rows and verify convergence with bounded drains.
+    const stranger = await inject({
+      method: "POST",
+      url: "/v1/auth/register",
+      payload: { email: email("w1-drain-foreign"), password: "correct-horse-8", tenantName: "Drain Foreign" },
+    });
+    expect(stranger.statusCode).toBe(201);
+    const strangerBody = stranger.json<{ activeTenantId: string; user: { id: string } }>();
+    const foreignActor = (): CommandActor => ({ ...actor(), tenantId: strangerBody.activeTenantId });
+    for (let i = 0; i < 25; i += 1) {
+      const r = await bus.execute(foreignActor(), "human_review.request", reviewInput(`foreign backlog ${i}`));
+      expect(r.ok).toBe(true);
+    }
+    for (let i = 0; i < 2; i += 1) {
+      const r = await bus.execute(actor(), "human_review.request", reviewInput(`parallel post-backlog ${i}`));
+      expect(r.ok).toBe(true);
+    }
+    for (let i = 0; i < 60; i += 1) {
+      const rows = await ownOutboxRows();
+      if (rows.length > 0 && rows.every((r) => r.state === "PUBLISHED")) {
+        break;
+      }
+      await drainer.drain(100);
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 50);
+      });
+    }
+    const reconverged = await ownOutboxRows();
+    expect(reconverged.every((r) => r.state === "PUBLISHED")).toBe(true);
   });
 
   it("inbox accepts once: second accept is a dedupe no-op", async () => {
@@ -262,15 +300,42 @@ describe.skipIf(!hasDb)("commands → events → outbox → inbox → audit + HI
       .where("tenant_id", "=", tenantId)
       .where("aggregate_id", "=", aggregateId)
       .executeTakeFirstOrThrow();
-    for (let i = 0; i < 20; i += 1) {
+    for (let i = 0; i < 30; i += 1) {
       if (transport.published.some((e) => e.event_id === domainRow.event_id)) {
         break;
       }
+      const publishedRow = await db
+        .selectFrom("platform.outbox_messages")
+        .select(["state"])
+        .where("tenant_id", "=", tenantId)
+        .where("domain_event_id", "=", domainRow.event_id)
+        .executeTakeFirst();
+      if (publishedRow?.state === "PUBLISHED") {
+        break;
+      }
       await drainer.drain(100);
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 50);
+      });
     }
-    const envelope = transport.published.find(
+    // Shared-DB fallback: a parallel worker may have claimed OUR row first
+    // (global oldest-first claim) and published it into ITS OWN
+    // LocalTransport memory. The DB state still converges to PUBLISHED, so
+    // reconstruct the envelope from our own outbox payload in that case.
+    let envelope = transport.published.find(
       (e) => e.tenant_id === tenantId && e.event_id === domainRow.event_id,
     );
+    if (envelope === undefined) {
+      const outboxRow = await db
+        .selectFrom("platform.outbox_messages")
+        .select(["payload_json", "state"])
+        .where("tenant_id", "=", tenantId)
+        .where("domain_event_id", "=", domainRow.event_id)
+        .executeTakeFirst();
+      if (outboxRow?.state === "PUBLISHED") {
+        envelope = outboxRow.payload_json as (typeof transport.published)[number];
+      }
+    }
     expect(envelope).toBeDefined();
     const target = envelope as (typeof transport.published)[number];
     let calls = 0;
