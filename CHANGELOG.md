@@ -2,6 +2,7 @@
 
 ## Unreleased - Added
 
+- test(api): drains positivos sob iptv_app com transições assertadas e espelho pooled opt-in (EXEC-DRAINS-POSITIVE-APP, #74 #7)
 - test(agent): gate de plano tipado single-step rejeita ação inventada e write sem dispatch em fixture offline (EXEC-RESEARCH-PLAN, #1)
 - test(api): matriz worker rls crash timeout e fake readback com guards iptv_app e parity pooler opt-in skipped (EXEC-WORKER-RLS-MATRIX, #74 #7)
 - fix(api): headers hsts nosniff referrer-policy sem csp geral (SEC44-HEADERS, #44)

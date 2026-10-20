@@ -512,6 +512,83 @@ describe.skipIf(!hasDb)("EXEC-WORKER-RLS-MATRIX crash/timeout + A/B + readback (
     expect(schedulerTick.r.released).toBe(0);
     // Admin drains individuais usam os mesmos métodos (paridade de caminho).
     expect((await dispatcher.drainOnce(5, overrides())).claimed).toBe(0);
+
+    // 056-positivo sob `iptv_app` direto: fila elegível processa com
+    // transições + efeitos (prova positiva — não só igualdade de vazios).
+    {
+      const satisfied = new FakeTrialReadback("satisfied");
+      // A: drain direto reclama e termina SUCCEEDED com 1 send + binding.
+      {
+        const before = browser.calls.length;
+        const { opId, trialId } = await requestDurable("m2-app-drain");
+        const expected = businessKey(trialId);
+        const drained = await appDispatcher.drainOnce(10, overrides({ trialReadbackPort: satisfied }));
+        expect(drained.operationIds).toContain(opId);
+        expect(drained.succeeded).toBe(1);
+        expect(browser.calls.length).toBe(before + 1);
+        expect(browser.calls[before]?.entityId).toBe(trialId);
+        expect(browser.calls[before]?.idempotencyKey).toBe(expected);
+        expect((await getOp(opId)).status).toBe("SUCCEEDED");
+        const bindings = await db
+          .selectFrom("provider.provider_bindings")
+          .select(["id"])
+          .where("tenant_id", "=", tenantId)
+          .where("entity_type", "=", "trial")
+          .where("entity_id", "=", trialId)
+          .execute();
+        expect(bindings).toHaveLength(1);
+      }
+      // B: recover pré-send libera + drain executa com 1 send.
+      {
+        const { opId, trialId } = await requestDurable("m2-app-recover");
+        const expected = businessKey(trialId);
+        await plant(opId, {
+          status: "QUEUED",
+          claimed_by: "crashed-worker",
+          claimed_at: new Date(),
+          lease_expires_at: sql`now() - make_interval(secs => 60)`,
+          dispatch_started_at: null,
+        });
+        const recovered = await appDispatcher.recoverOnce(10);
+        expect(recovered.operationIds).toContain(opId);
+        expect((await getOp(opId)).status).toBe("REQUESTED");
+        const before = browser.calls.length;
+        const drained = await appDispatcher.drainOnce(10, overrides({ trialReadbackPort: satisfied }));
+        expect(drained.operationIds).toContain(opId);
+        expect((await getOp(opId)).status).toBe("SUCCEEDED");
+        expect(browser.calls.length).toBe(before + 1);
+        expect(browser.calls[before]?.idempotencyKey).toBe(expected);
+      }
+      // C: timeout do port sob app → VERIFYING com 1 send; reconcile
+      // conclusivo converge SUCCEEDED sem re-send.
+      {
+        browser.mode = "hang";
+        const before = browser.calls.length;
+        try {
+          const { opId, trialId } = await requestDurable("m2-app-verify");
+          const expected = businessKey(trialId);
+          const drained = await appDispatcher.drainOnce(10, {
+            ...overrides({ trialReadbackPort: satisfied }),
+            timeoutMs: 20,
+          });
+          expect(drained.operationIds).toContain(opId);
+          expect(drained.verifying).toBe(1);
+          expect((await getOp(opId)).status).toBe("VERIFYING");
+          const sent = browser.calls.slice(before);
+          expect(sent).toHaveLength(1);
+          expect(sent[0]?.idempotencyKey).toBe(expected);
+          const reconciled = await appDispatcher.reconcileOnce(
+            100,
+            overrides({ trialReadbackPort: satisfied, readbackPort: new ConclusiveGenericReadback(true) }),
+          );
+          expect(reconciled.operationIds).toContain(opId);
+          expect((await getOp(opId)).status).toBe("SUCCEEDED");
+          expect(browser.calls.length).toBe(before + 1);
+        } finally {
+          browser.mode = "success";
+        }
+      }
+    }
   });
 
   // Paridade PgBouncer (finding HIGH falso-verde): opt-in explícito via
@@ -576,6 +653,81 @@ describe.skipIf(!hasDb)("EXEC-WORKER-RLS-MATRIX crash/timeout + A/B + readback (
       expect(directDrains.released).toBe(0);
       const pooledDrains = await drainShapes(pooledDb);
       expect(pooledDrains).toEqual(directDrains);
+
+      // 056-positivo via pooler como `iptv_app`: transições + efeitos,
+      // não só zeros iguais — mesma exigência da via direta.
+      {
+        const pooledDisp = new ProviderDispatcherService(
+          pooledDb,
+          new KyselyCommandDb(pooledDb),
+          undefined,
+          TEST_TRIAL_CAPABILITY_KEY,
+        );
+        const satisfied = new FakeTrialReadback("satisfied");
+        // A: drain via pooler reclama e termina SUCCEEDED com 1 send.
+        {
+          const before = browser.calls.length;
+          const { opId, trialId } = await requestDurable("m2-pooled-drain");
+          const expected = businessKey(trialId);
+          const drained = await pooledDisp.drainOnce(10, overrides({ trialReadbackPort: satisfied }));
+          expect(drained.operationIds).toContain(opId);
+          expect(drained.succeeded).toBe(1);
+          expect(browser.calls.length).toBe(before + 1);
+          expect(browser.calls[before]?.entityId).toBe(trialId);
+          expect(browser.calls[before]?.idempotencyKey).toBe(expected);
+          expect((await getOp(opId)).status).toBe("SUCCEEDED");
+        }
+        // B: recover pré-send via pooler libera + drain executa.
+        {
+          const { opId, trialId } = await requestDurable("m2-pooled-recover");
+          const expected = businessKey(trialId);
+          await plant(opId, {
+            status: "QUEUED",
+            claimed_by: "crashed-worker",
+            claimed_at: new Date(),
+            lease_expires_at: sql`now() - make_interval(secs => 60)`,
+            dispatch_started_at: null,
+          });
+          const recovered = await pooledDisp.recoverOnce(10);
+          expect(recovered.operationIds).toContain(opId);
+          expect((await getOp(opId)).status).toBe("REQUESTED");
+          const before = browser.calls.length;
+          const drained = await pooledDisp.drainOnce(10, overrides({ trialReadbackPort: satisfied }));
+          expect(drained.operationIds).toContain(opId);
+          expect((await getOp(opId)).status).toBe("SUCCEEDED");
+          expect(browser.calls.length).toBe(before + 1);
+          expect(browser.calls[before]?.idempotencyKey).toBe(expected);
+        }
+        // C: timeout via pooler → VERIFYING com 1 send; reconcile
+        // conclusivo converge SUCCEEDED sem re-send.
+        {
+          browser.mode = "hang";
+          const before = browser.calls.length;
+          try {
+            const { opId, trialId } = await requestDurable("m2-pooled-verify");
+            const expected = businessKey(trialId);
+            const drained = await pooledDisp.drainOnce(10, {
+              ...overrides({ trialReadbackPort: satisfied }),
+              timeoutMs: 20,
+            });
+            expect(drained.operationIds).toContain(opId);
+            expect(drained.verifying).toBe(1);
+            expect((await getOp(opId)).status).toBe("VERIFYING");
+            const sent = browser.calls.slice(before);
+            expect(sent).toHaveLength(1);
+            expect(sent[0]?.idempotencyKey).toBe(expected);
+            const reconciled = await pooledDisp.reconcileOnce(
+              100,
+              overrides({ trialReadbackPort: satisfied, readbackPort: new ConclusiveGenericReadback(true) }),
+            );
+            expect(reconciled.operationIds).toContain(opId);
+            expect((await getOp(opId)).status).toBe("SUCCEEDED");
+            expect(browser.calls.length).toBe(before + 1);
+          } finally {
+            browser.mode = "success";
+          }
+        }
+      }
     } finally {
       await pooledDb.destroy().catch(() => undefined);
     }
