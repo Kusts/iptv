@@ -1,4 +1,32 @@
 /** @type {import('next').NextConfig} */
+
+// Passo 1 do SCOPE-CSP-TTL (Report-Only, sem bloqueio): observa
+// connect/img/font/object/base sem tocar em style-src/script-src
+// (style= pervasivo) e sem nonce/middleware (passo 2, fora).
+// O report vai para o endpoint local `/api/csp-report` (204, só loga).
+function apiOriginForCsp() {
+  const raw =
+    process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return "http://localhost:3001";
+  }
+}
+
+const apiOrigin = apiOriginForCsp();
+
+// Report-Only: nunca bloqueia nada — só reporta. Sem style-src/script-src
+// (fora desta fatia), sem 'unsafe-*', sem nonce.
+const cspReportOnlyValue = [
+  `connect-src 'self' ${apiOrigin}`,
+  "img-src 'self' data:",
+  "font-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "report-uri /api/csp-report",
+].join("; ");
+
 const nextConfig = {
   // Container image boundary: `standalone` emits a self-contained server
   // bundle under `.next/standalone` (server.js + only the traced node_modules),
@@ -11,11 +39,13 @@ const nextConfig = {
   // pelo próprio servidor. `headers` é incondicional (sem `has`/`missing`).
   //
   // Escopo desta fatia (Golden Workflow 3, ETAPA 2): os dois headers de
-  // framing + Referrer-Policy + X-Content-Type-Options. NÃO é uma CSP geral
-  // (sem default-src/script-src/nonce) — CSP ampla exigiria inventariar os
-  // recursos inline do App Router e poderia quebrar a UI; fica como
-  // follow-up. Rate limiting, security headers da API e exposição pública
-  // seguem pendentes, registrados em docs/16-pilot-closure/P6-SECURITY.md §8.
+  // framing + Referrer-Policy + X-Content-Type-Options, mais a CSP
+  // Report-Only do passo 1 do SCOPE-CSP-TTL (observa sem bloquear).
+  // NÃO é uma CSP geral bloqueante (sem default-src/script-src/style-src/
+  // nonce) — CSP ampla exigiria inventariar os recursos inline do App
+  // Router e poderia quebrar a UI; fica como follow-up. Rate limiting,
+  // security headers da API e exposição pública seguem pendentes,
+  // registrados em docs/16-pilot-closure/P6-SECURITY.md §8.
   //
   // Contrato coberto pelo teste de regressão `test/frame-policy.test.ts`
   // (chama `headers()` e verifica matcher + valores).
@@ -44,6 +74,14 @@ const nextConfig = {
             // Impede MIME-sniffing: o browser respeita o Content-Type declarado.
             key: "X-Content-Type-Options",
             value: "nosniff",
+          },
+          {
+            // Passo 1 do SCOPE-CSP-TTL: CSP em modo Report-Only — o browser
+            // NÃO bloqueia nada, só envia violações para report-uri local.
+            // Framing bloqueante continua só no `Content-Security-Policy`
+            // acima (frame-ancestors 'none').
+            key: "Content-Security-Policy-Report-Only",
+            value: cspReportOnlyValue,
           },
         ],
       },
