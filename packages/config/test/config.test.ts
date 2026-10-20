@@ -1121,3 +1121,35 @@ it("keeps ordinary connection settings legal in a production APP URL", () => {
     }
   });
 });
+
+/**
+ * SESSION_TTL_HOURS: session lifetime in hours (default 168 = 7 days).
+ * Positive integers only — zero/negative/fractional/non-numeric fail closed;
+ * blank stays absent (repo rule) so the default applies.
+ */
+describe("loadConfig SESSION_TTL_HOURS", () => {
+  it("defaults to 168 hours when unset", () => {
+    expect(loadConfig({}).SESSION_TTL_HOURS).toBe(168);
+    expect(loadConfig({ NODE_ENV: "test" }).SESSION_TTL_HOURS).toBe(168);
+  });
+
+  it("treats a blank value as absent (default applies)", () => {
+    for (const blank of ["", "   ", "\t"]) {
+      expect(loadConfig({ SESSION_TTL_HOURS: blank }).SESSION_TTL_HOURS, JSON.stringify(blank)).toBe(168);
+    }
+  });
+
+  it("accepts positive integer overrides", () => {
+    expect(loadConfig({ SESSION_TTL_HOURS: "1" }).SESSION_TTL_HOURS).toBe(1);
+    expect(loadConfig({ SESSION_TTL_HOURS: "24" }).SESSION_TTL_HOURS).toBe(24);
+    expect(loadConfig({ SESSION_TTL_HOURS: "720" }).SESSION_TTL_HOURS).toBe(720);
+  });
+
+  it("rejects zero, negative, fractional and non-numeric values", () => {
+    for (const bad of ["0", "-1", "-24", "1.5", "abc", "12h", "NaN", "Infinity"]) {
+      expect(() => loadConfig({ SESSION_TTL_HOURS: bad }), bad).toThrow(
+        /invalid environment configuration/,
+      );
+    }
+  });
+});

@@ -2,6 +2,7 @@
 
 ## Unreleased - Added
 
+- feat(config): sessão com ttl configurável via SESSION_TTL_HOURS, default 168 intacto (EXEC-TTL-CONFIG, #44)
 - test(api): scheduler tick e drains admin via http sob iptv_app com fail-closed 42501 e convergência total (EXEC-SCHEDULER-E2E, P8)
 - test(agent): projeção read-model cacheada com paridade tool-correta e economia ~51% em fixture offline (EXEC-RESEARCH-CACHE, #27)
 - test(agent): paridade hit-vs-full em suppression injection off-scope na fixture de cache (EXEC-CACHE-LABELS, #27)

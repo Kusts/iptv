@@ -122,6 +122,28 @@ function dbFactory(): Kysely<Database> | null {
   return createDb({ connectionString });
 }
 
+/**
+ * Session lifetime in hours (`SESSION_TTL_HOURS`, default 168 = 7 days).
+ *
+ * Mirrors the `@iptv/config` schema rule (blank means absent, positive
+ * integers only); canonical validation happens in `loadConfig` at boot
+ * (`main.ts`), this only forwards the value to `createAuth` without changing
+ * the default. No sliding window, no rotation.
+ */
+function sessionTtlHoursFromEnv(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = env["SESSION_TTL_HOURS"];
+  if (raw === undefined || raw.trim() === "") {
+    return undefined;
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(
+      "invalid environment configuration: SESSION_TTL_HOURS must be a positive integer of hours (default 168)",
+    );
+  }
+  return parsed;
+}
+
 function authFactory(db: Kysely<Database> | null): AuthInstance | null {
   if (db === null) {
     return null;
@@ -129,6 +151,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
   return createAuth(db, {
     secret: process.env["BETTER_AUTH_SECRET"] ?? DEV_AUTH_SECRET,
     baseUrl: process.env["BETTER_AUTH_URL"],
+    sessionTtlHours: sessionTtlHoursFromEnv(),
   });
 }
 

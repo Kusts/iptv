@@ -17,6 +17,9 @@ const envSchema = z.object({
     .min(16)
     .default("dev-only-better-auth-secret-0123456789"),
   BETTER_AUTH_URL: z.string().min(1).optional(),
+  // Session lifetime in hours (default 168 = 7 days). Positive integers
+  // only: zero/negative/fractional/non-numeric values fail validation.
+  SESSION_TTL_HOURS: z.coerce.number().int().min(1).default(168),
   // W1-08 worker infrastructure: in-process scheduler is opt-in
   // (`API_SCHEDULER_ENABLED=1`); default off so boot never starts
   // background work unless the operator asks for it.
@@ -656,6 +659,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     LOG_LEVEL: env.LOG_LEVEL,
     BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET,
     BETTER_AUTH_URL: env.BETTER_AUTH_URL,
+    SESSION_TTL_HOURS: emptyToUndefined(env.SESSION_TTL_HOURS),
     API_SCHEDULER_ENABLED: env.API_SCHEDULER_ENABLED,
     API_SCHEDULER_TICK_SECONDS: env.API_SCHEDULER_TICK_SECONDS,
     HATCHET_API_TOKEN: emptyToUndefined(env.HATCHET_API_TOKEN),
