@@ -14,8 +14,9 @@ import {
 // Regressão do passo 2 do SCOPE-CSP-TTL: nonce por request em modo
 // Report-Only (nada bloqueante). Trava o contrato: nonce único por
 // request, propagado via `x-nonce`, `script-src` com nonce +
-// `strict-dynamic` só no Report-Only, framing bloqueante intacto e
-// sem `style-src`/`unsafe-*`/hash (fora desta fatia).
+// `strict-dynamic` só no Report-Only, `style-src 'self'` observado
+// (style= migrado para classes), framing bloqueante intacto e
+// sem `unsafe-*`/hash (fora desta fatia).
 
 function callMiddleware(path = "/"): NextResponse {
   const request = new NextRequest(`http://localhost${path}`);
@@ -67,16 +68,17 @@ describe("csp nonce middleware (passo 2 do SCOPE-CSP-TTL)", () => {
     expect(policy).toContain(
       "script-src 'self' 'nonce-nonce-de-teste' 'strict-dynamic'",
     );
-    // Base observada do passo 1, intacta.
+    // Base observada do passo 1, intacta (+ style-src do EXEC-STYLE-SRC).
     expect(policy).toContain("connect-src 'self'");
     expect(policy).toContain("img-src 'self' data:");
     expect(policy).toContain("font-src 'self'");
+    expect(policy).toContain("style-src 'self'");
     expect(policy).toContain("object-src 'none'");
     expect(policy).toContain("base-uri 'self'");
     expect(policy).toContain("report-uri /api/csp-report");
   });
 
-  it("nunca emite CSP bloqueante, style-src, unsafe-* ou framing no Report-Only", () => {
+  it("nunca emite CSP bloqueante, unsafe-* ou framing no Report-Only (style-src só observado)", () => {
     const response = callMiddleware();
     // Nada bloqueante: o middleware só observa.
     expect(response.headers.get("Content-Security-Policy")).toBeNull();
@@ -84,7 +86,8 @@ describe("csp nonce middleware (passo 2 do SCOPE-CSP-TTL)", () => {
     const policy = (
       response.headers.get(CSP_REPORT_ONLY_HEADER) ?? ""
     ).toLowerCase();
-    expect(policy).not.toContain("style-src");
+    // `style-src 'self'` presente SÓ no Report-Only, sem inline.
+    expect(policy).toContain("style-src 'self'");
     expect(policy).not.toContain("unsafe-");
     expect(policy).not.toContain("frame-ancestors");
     expect(policy).not.toContain("default-src");

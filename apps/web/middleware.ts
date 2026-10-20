@@ -8,8 +8,8 @@ import { NextResponse, type NextRequest } from "next/server";
 // `Content-Security-Policy-Report-Only` — nada bloqueante.
 //
 // Fora desta fatia de propósito (migração futura):
-// - sem `style-src` (style= pervasivo quebraria com allowlist);
-// - sem `unsafe-eval` / `unsafe-inline`;
+// - sem `unsafe-eval` / `unsafe-inline` (`style-src 'self'` já observa
+//   estilos externos; inline segue fora até decisão de nonce/hash);
 // - sem hash de script (muda a cada build);
 // - sem CSP bloqueante (`Content-Security-Policy` continua só com
 //   `frame-ancestors 'none'` vindo do `next.config.mjs`).
@@ -47,9 +47,10 @@ export function generateNonce(): string {
 
 /**
  * Política Report-Only completa do passo 2: diretivas observadas do
- * passo 1 + `script-src` com nonce por-request e `strict-dynamic`
+ * passo 1 (inclui `style-src 'self'` — style= migrado para classes em
+ * EXEC-STYLE-SRC) + `script-src` com nonce por-request e `strict-dynamic`
  * (fallback `'self'` para browsers sem suporte a nonce). Nunca inclui
- * `style-src`, `unsafe-*` ou diretiva de framing (framing bloqueante
+ * `unsafe-*` ou diretiva de framing (framing bloqueante
  * continua no `Content-Security-Policy` estático do `next.config.mjs`).
  */
 export function buildCspReportOnly(nonce: string): string {
@@ -59,6 +60,7 @@ export function buildCspReportOnly(nonce: string): string {
     `connect-src 'self' ${apiOrigin}`,
     "img-src 'self' data:",
     "font-src 'self'",
+    "style-src 'self'",
     "object-src 'none'",
     "base-uri 'self'",
     "report-uri /api/csp-report",

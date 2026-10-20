@@ -1,9 +1,9 @@
 /** @type {import('next').NextConfig} */
 
 // Passo 1 do SCOPE-CSP-TTL (Report-Only, sem bloqueio): observa
-// connect/img/font/object/base sem tocar em style-src/script-src
-// (style= pervasivo). O `script-src` com nonce por-request vive no passo 2
-// (`middleware.ts`, também Report-Only) — este valor estático segue como
+// connect/img/font/object/base/style sem tocar em script-src
+// (style= migrado para classes em EXEC-STYLE-SRC). O `script-src` com nonce
+// por-request vive no passo 2 (`middleware.ts`, também Report-Only) — este valor estático segue como
 // base observada; o middleware acrescenta a política dinâmica com nonce.
 // O report vai para o endpoint local `/api/csp-report` (204, só loga).
 function apiOriginForCsp() {
@@ -18,14 +18,15 @@ function apiOriginForCsp() {
 
 const apiOrigin = apiOriginForCsp();
 
-// Report-Only: nunca bloqueia nada — só reporta. Sem style-src/script-src
-// (fora desta fatia), sem 'unsafe-*', sem nonce. O `script-src` com nonce
-// + `strict-dynamic` é emitido por-request pelo `middleware.ts` (passo 2,
+// Report-Only: nunca bloqueia nada — só reporta. Com `style-src 'self'`
+// (style= migrado para classes em EXEC-STYLE-SRC), sem 'unsafe-*', sem
+// nonce. O `script-src` com nonce + `strict-dynamic` é emitido por-request pelo `middleware.ts` (passo 2,
 // também Report-Only) — este valor estático não duplica o nonce.
 const cspReportOnlyValue = [
   `connect-src 'self' ${apiOrigin}`,
   "img-src 'self' data:",
   "font-src 'self'",
+  "style-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",
   "report-uri /api/csp-report",
@@ -47,8 +48,9 @@ const nextConfig = {
   // Report-Only base do passo 1 do SCOPE-CSP-TTL (observa sem bloquear;
   // o passo 2 em `middleware.ts` acrescenta por-request o `script-src`
   // com nonce + `strict-dynamic`, também Report-Only).
-  // NÃO é uma CSP geral bloqueante (sem default-src/script-src/style-src/
-  // nonce) — CSP ampla exigiria inventariar os recursos inline do App
+  // NÃO é uma CSP geral bloqueante (sem default-src/script-src/nonce no
+  // header bloqueante; `style-src 'self'` vive só no Report-Only) — CSP
+  // bloqueante ampla exigiria inventariar os recursos inline do App
   // Router e poderia quebrar a UI; fica como follow-up. Rate limiting,
   // security headers da API e exposição pública seguem pendentes,
   // registrados em docs/16-pilot-closure/P6-SECURITY.md §8.

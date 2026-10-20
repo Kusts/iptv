@@ -102,14 +102,21 @@ describe("web frame policy (issue #44)", () => {
     );
 
     // Guarda de escopo: esta fatia NÃO introduz CSP bloqueante geral, nonce,
-    // HSTS — cada um tem sua própria fatia/gate.
+    // HSTS — cada um tem sua própria fatia/gate. `style-src 'self'` vive
+    // SÓ no Report-Only (style= migrado para classes); o bloqueante
+    // continua só com frame-ancestors.
     expect(byKey.has("strict-transport-security")).toBe(false);
+    expect(byKey.get("content-security-policy")).toBe(
+      "frame-ancestors 'none'",
+    );
     expect(
-      (rule?.headers ?? []).some((header) =>
-        /default-src|script-src|style-src|nonce|strict-dynamic/i.test(
-          header.value,
+      (rule?.headers ?? [])
+        .filter((header) => header.key !== "Content-Security-Policy-Report-Only")
+        .some((header) =>
+          /default-src|script-src|style-src|nonce|strict-dynamic/i.test(
+            header.value,
+          ),
         ),
-      ),
     ).toBe(false);
   });
 
@@ -138,10 +145,12 @@ describe("web frame policy (issue #44)", () => {
     const reportOnly =
       byKey.get("content-security-policy-report-only") ?? "";
 
-    // Passo 1 do SCOPE-CSP-TTL: as cinco diretivas observadas + report local.
+    // Passo 1 do SCOPE-CSP-TTL (+ style-src do EXEC-STYLE-SRC): as seis
+    // diretivas observadas + report local.
     expect(reportOnly).toContain("connect-src 'self'");
     expect(reportOnly).toContain("img-src 'self' data:");
     expect(reportOnly).toContain("font-src 'self'");
+    expect(reportOnly).toContain("style-src 'self'");
     expect(reportOnly).toContain("object-src 'none'");
     expect(reportOnly).toContain("base-uri 'self'");
     expect(reportOnly).toContain("report-uri /api/csp-report");
@@ -169,10 +178,13 @@ describe("web frame policy (issue #44)", () => {
     const reportOnly =
       byKey.get("content-security-policy-report-only") ?? "";
 
-    // Sem diretivas bloqueantes fora da fatia: nada de style/script,
+    // Sem diretivas bloqueantes fora da fatia: nada de script,
     // frame-ancestors (fica no CSP bloqueante), unsafe-* ou nonce.
+    // `style-src 'self'` é a exceção observada (só Report-Only, sem inline).
+    expect(reportOnly).toContain("style-src 'self'");
+    expect(reportOnly).not.toContain("unsafe-");
     expect(reportOnly).not.toMatch(
-      /style-src|script-src|default-src|frame-ancestors|unsafe-|nonce/i,
+      /script-src|default-src|frame-ancestors|nonce/i,
     );
     // O framing bloqueante continua intacto e separado do Report-Only.
     expect(byKey.get("content-security-policy")).toBe(
