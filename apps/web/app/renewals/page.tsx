@@ -54,7 +54,7 @@ export default function RenewalsPage(): React.JSX.Element {
     <Shell>
       <h1>Renovações</h1>
       <PermissionGate permission={READ_PERMISSION} label="as renovações">
-        <div className="cc-form" style={{ marginBottom: "1rem" }}>
+        <div className="cc-form cc-u-mb-4">
           <Field label="ID da assinatura">
             <Input value={subscriptionId} onChange={(e) => setSubscriptionId(e.target.value)} placeholder="UUID da assinatura" />
           </Field>
@@ -92,7 +92,7 @@ function RenewalOrdersPanel({ subscriptionId }: { subscriptionId: string }): Rea
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -133,7 +133,7 @@ function RenewalOrdersPanel({ subscriptionId }: { subscriptionId: string }): Rea
       ) : null}
       {canWrite ? (
         <Card title="Ações de renovação">
-          <div className="cc-row" style={{ marginTop: "0.5rem" }}>
+          <div className="cc-row cc-u-mt-2">
             <Button variant="secondary" disabled={busy} onClick={() => command("/v1/renewals/quote", "Cotar renovação", "Cotar", { subscriptionId })}>
               Cotar
             </Button>
@@ -185,13 +185,13 @@ function RecoveryTasksPanel({
   const tasks = data?.tasks ?? [];
 
   return (
-    <div style={{ marginTop: "1rem" }}>
+    <div className="cc-u-mt-4">
       <h3>Winback (tarefas de recuperação)</h3>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <label className="cc-muted" htmlFor="recovery-status">
           Status:
         </label>
-        <Select id="recovery-status" value={status} onChange={(e) => onStatusChange(e.target.value)} style={{ maxWidth: "240px" }}>
+        <Select id="recovery-status" value={status} onChange={(e) => onStatusChange(e.target.value)} className="cc-u-maxw-240">
           <option value="">Todos</option>
           <option value="OPEN">OPEN</option>
           <option value="RESOLVED">RESOLVED</option>

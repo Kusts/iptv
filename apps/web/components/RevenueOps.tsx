@@ -81,7 +81,7 @@ export function ConfirmAction({
   return (
     <Dialog title={title} open={open} onClose={onClose}>
       {children}
-      <Button style={{ marginTop: "0.75rem" }} disabled={busy} onClick={onConfirm}>
+      <Button className="cc-u-mt-3" disabled={busy} onClick={onConfirm}>
         {busy ? "Enviando…" : confirmLabel}
       </Button>
     </Dialog>

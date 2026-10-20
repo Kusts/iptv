@@ -72,7 +72,7 @@ export function ProviderOperations(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <label className="cc-muted" htmlFor="provider-operation-status">
           Status:
         </label>
@@ -80,7 +80,7 @@ export function ProviderOperations(): React.JSX.Element {
           id="provider-operation-status"
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          style={{ maxWidth: "240px" }}
+          className="cc-u-maxw-240"
         >
           <option value="">Todos</option>
           {PROVIDER_OPERATION_STATUSES.map((s) => (
@@ -239,7 +239,7 @@ function ProviderOperationDetailPanel({
       )}
       <p className="cc-muted">Evidência disponível via reconciliação.</p>
       {canWrite ? (
-        <div className="cc-row" style={{ marginTop: "0.75rem" }}>
+        <div className="cc-row cc-u-mt-3">
           <Button variant="secondary" disabled={busy} onClick={() => void reconcile()}>
             Solicitar reconciliação
           </Button>
@@ -278,7 +278,7 @@ function ProviderOperationDetailPanel({
           <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} />
         </Field>
         <Button
-          style={{ marginTop: "0.75rem" }}
+          className="cc-u-mt-3"
           disabled={busy}
           onClick={() => {
             void resolve();

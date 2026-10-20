@@ -25,7 +25,7 @@ export default function FinancePage(): React.JSX.Element {
       <h1>Finanças</h1>
       <PermissionGate permission={READ_PERMISSION} label="as finanças">
         <RecomputeBar />
-        <div className="cc-row" style={{ marginBottom: "1rem" }}>
+        <div className="cc-row cc-u-mb-4">
           <Button variant={tab === "contribution" ? "primary" : "secondary"} onClick={() => setTab("contribution")}>
             Contribuição
           </Button>
@@ -59,7 +59,7 @@ function RecomputeBar(): React.JSX.Element {
   }
 
   return (
-    <div className="cc-row" style={{ marginBottom: "1rem" }}>
+    <div className="cc-row cc-u-mb-4">
       <Button variant="secondary" disabled={busy} onClick={() => setOpen(true)}>
         Recalcular projeções
       </Button>
@@ -78,13 +78,13 @@ function ContributionSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Field label="ID do cliente (UUID)">
           <Input
             placeholder="UUID do cliente"
             value={customerId}
             onChange={(e) => setCustomerId(e.target.value)}
-            style={{ maxWidth: "320px" }}
+            className="cc-u-maxw-320"
           />
         </Field>
         <Button onClick={() => setActiveId(customerId.trim().length > 0 ? customerId.trim() : null)}>
@@ -106,7 +106,7 @@ function CacSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -126,7 +126,7 @@ function CohortsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -155,7 +155,7 @@ function OverviewSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>

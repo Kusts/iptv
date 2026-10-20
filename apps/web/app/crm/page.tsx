@@ -61,7 +61,7 @@ export default function CrmPage(): React.JSX.Element {
     <Shell>
       <h1>CRM</h1>
       <PermissionGate permission={READ_PERMISSION} label="o CRM">
-        <div className="cc-row" style={{ marginBottom: "1rem" }}>
+        <div className="cc-row cc-u-mb-4">
           <Button variant={tab === "persons" ? "primary" : "secondary"} onClick={() => setTab("persons")}>
             Pessoas
           </Button>
@@ -84,7 +84,7 @@ function PersonsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button onClick={reload} variant="secondary">
           Recarregar
         </Button>
@@ -207,11 +207,11 @@ function LeadsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <label className="cc-muted" htmlFor="crm-lead-status">
           Status:
         </label>
-        <Select id="crm-lead-status" value={status} onChange={(e) => { setStatus(e.target.value); setSelectedId(null); }} style={{ maxWidth: "240px" }}>
+        <Select id="crm-lead-status" value={status} onChange={(e) => { setStatus(e.target.value); setSelectedId(null); }} className="cc-u-maxw-240">
           <option value="">Todos</option>
           {LEAD_STATUSES.map((s) => (
             <option key={s} value={s}>
@@ -295,7 +295,7 @@ function LeadDetailPanel({ id, onChanged }: { id: string; onChanged: () => void 
         Qualificado em {formatDateTime(data.qualifiedAt)} · Perdido em {formatDateTime(data.lostAt)}
       </p>
       {canWrite ? (
-        <div className="cc-row" style={{ marginTop: "0.75rem" }}>
+        <div className="cc-row cc-u-mt-3">
           <Button disabled={busy} onClick={() => setDialogOpen(true)}>
             Transição de status
           </Button>

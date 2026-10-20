@@ -44,7 +44,7 @@ export default function AnalyticsPage(): React.JSX.Element {
       <h1>Analytics</h1>
       <PermissionGate permission={READ_PERMISSION} label="o analytics">
         <RecomputeBar />
-        <div className="cc-row" style={{ marginBottom: "1rem" }}>
+        <div className="cc-row cc-u-mb-4">
           <Button variant={tab === "metrics" ? "primary" : "secondary"} onClick={() => setTab("metrics")}>
             Métricas
           </Button>
@@ -74,7 +74,7 @@ function RecomputeBar(): React.JSX.Element {
   }
 
   return (
-    <div className="cc-row" style={{ marginBottom: "1rem" }}>
+    <div className="cc-row cc-u-mb-4">
       <Button variant="secondary" disabled={busy} onClick={() => setOpen(true)}>
         Recalcular métricas
       </Button>
@@ -97,7 +97,7 @@ function MetricsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -157,7 +157,7 @@ function DefinitionsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -199,12 +199,12 @@ function ControlCenterSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
         <Field label="Filtrar seção">
-          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="ex.: business" style={{ maxWidth: "240px" }} />
+          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="ex.: business" className="cc-u-maxw-240" />
         </Field>
       </div>
       {loading ? <LoadingSkeleton lines={6} /> : null}

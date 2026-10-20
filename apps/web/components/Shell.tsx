@@ -91,7 +91,7 @@ export function Shell({ children }: { children: React.ReactNode }): React.JSX.El
             value={activeTenantId ?? ""}
             disabled={switching}
             onChange={(e) => void onSwitch(e.target.value)}
-            style={{ maxWidth: "280px" }}
+            className="cc-u-maxw-280"
           >
             {tenants.map((t) => (
               <option key={t.tenantId} value={t.tenantId}>
@@ -100,7 +100,7 @@ export function Shell({ children }: { children: React.ReactNode }): React.JSX.El
             ))}
           </Select>
           {switchError ? <span className="cc-field-error">{switchError}</span> : null}
-          <span style={{ flex: 1 }} />
+          <span className="cc-u-flex-1" />
           <span className="cc-muted">{user?.email}</span>
           <Button variant="secondary" onClick={() => void onLogout()}>
             Sair

@@ -29,7 +29,7 @@ export function Dialog({
       <div className="cc-dialog" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
         <h3>{title}</h3>
         {children}
-        <div className="cc-row" style={{ marginTop: "1rem" }}>
+        <div className="cc-row cc-u-mt-4">
           <Button variant="secondary" onClick={onClose}>
             Fechar
           </Button>

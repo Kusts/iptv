@@ -57,7 +57,7 @@ export default function GrowthPage(): React.JSX.Element {
     <Shell>
       <h1>Crescimento</h1>
       <PermissionGate permission={READ_PERMISSION} label="o crescimento">
-        <div className="cc-row" style={{ marginBottom: "1rem" }}>
+        <div className="cc-row cc-u-mb-4">
           <Button variant={tab === "campaigns" ? "primary" : "secondary"} onClick={() => setTab("campaigns")}>
             Campanhas
           </Button>
@@ -101,7 +101,7 @@ function CampaignsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -137,7 +137,7 @@ function CampaignsSection(): React.JSX.Element {
       {canWrite && selectedId ? (
         <Card title="Transições da campanha">
           <p className="cc-mono">{selectedId}</p>
-          <div className="cc-row" style={{ marginTop: "0.5rem" }}>
+          <div className="cc-row cc-u-mt-2">
             <Button
               variant="secondary"
               disabled={busy}
@@ -226,7 +226,7 @@ function AudiencesSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -283,7 +283,7 @@ function AttributionSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -338,7 +338,7 @@ function ExperimentsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>

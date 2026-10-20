@@ -47,7 +47,7 @@ export default function ReferralsPage(): React.JSX.Element {
     <Shell>
       <h1>Indicações</h1>
       <PermissionGate permission={READ_PERMISSION} label="as indicações">
-        <div className="cc-row" style={{ marginBottom: "1rem" }}>
+        <div className="cc-row cc-u-mb-4">
           <Button variant={tab === "referrals" ? "primary" : "secondary"} onClick={() => setTab("referrals")}>
             Indicações
           </Button>
@@ -93,13 +93,13 @@ function ReferralsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Field label="ID do cliente (UUID)">
           <Input
             placeholder="UUID do cliente"
             value={customerId}
             onChange={(e) => setCustomerId(e.target.value)}
-            style={{ maxWidth: "320px" }}
+            className="cc-u-maxw-320"
           />
         </Field>
         <Button onClick={() => setActiveId(customerId.trim().length > 0 ? customerId.trim() : null)}>
@@ -167,13 +167,13 @@ function RewardsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Field label="ID do cliente (UUID)">
           <Input
             placeholder="UUID do cliente"
             value={customerId}
             onChange={(e) => setCustomerId(e.target.value)}
-            style={{ maxWidth: "320px" }}
+            className="cc-u-maxw-320"
           />
         </Field>
         <Button onClick={() => setActiveId(customerId.trim().length > 0 ? customerId.trim() : null)}>
@@ -240,7 +240,7 @@ function GiftPassSection(): React.JSX.Element {
     <Card title="Resgatar gift-pass">
       <p className="cc-muted">Resgate manual de código de gift-pass; o servidor valida elegibilidade e idempotência.</p>
       {canWrite ? (
-        <div className="cc-row" style={{ marginTop: "0.5rem" }}>
+        <div className="cc-row cc-u-mt-2">
           <Button disabled={busy} onClick={() => setOpen(true)}>
             Resgatar código
           </Button>

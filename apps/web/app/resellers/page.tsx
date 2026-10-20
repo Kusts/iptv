@@ -54,7 +54,7 @@ export default function ResellersPage(): React.JSX.Element {
     <Shell>
       <h1>Revendedores</h1>
       <PermissionGate permission={READ_PERMISSION} label="os revendedores">
-        <div className="cc-row" style={{ marginBottom: "1rem" }}>
+        <div className="cc-row cc-u-mb-4">
           <Button variant={tab === "partners" ? "primary" : "secondary"} onClick={() => setTab("partners")}>
             Parceiros
           </Button>
@@ -93,7 +93,7 @@ function PartnersSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -128,7 +128,7 @@ function PartnersSection(): React.JSX.Element {
       {canWrite && selectedId ? (
         <Card title="Ações do parceiro">
           <p className="cc-mono">{selectedId}</p>
-          <div className="cc-row" style={{ marginTop: "0.5rem" }}>
+          <div className="cc-row cc-u-mt-2">
             <Button
               variant="secondary"
               disabled={busy}
@@ -216,13 +216,13 @@ function NetworkSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Field label="ID do parceiro (UUID)">
           <Input
             placeholder="UUID do parceiro"
             value={partnerId}
             onChange={(e) => setPartnerId(e.target.value)}
-            style={{ maxWidth: "320px" }}
+            className="cc-u-maxw-320"
           />
         </Field>
         <Button onClick={() => setActiveId(partnerId.trim().length > 0 ? partnerId.trim() : null)}>
@@ -290,13 +290,13 @@ function OrdersSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Field label="ID do pedido (UUID)">
           <Input
             placeholder="UUID do pedido"
             value={orderId}
             onChange={(e) => setOrderId(e.target.value)}
-            style={{ maxWidth: "320px" }}
+            className="cc-u-maxw-320"
           />
         </Field>
         <Button onClick={() => setActiveId(orderId.trim().length > 0 ? orderId.trim() : null)}>

@@ -29,7 +29,7 @@ export function LoadingSkeleton({ lines = 4 }: { lines?: number }): React.JSX.El
   return (
     <div aria-label="Carregando" aria-busy="true">
       {Array.from({ length: lines }, (_, i) => (
-        <div key={i} className="cc-skeleton" style={{ marginBottom: "0.5rem", height: "1.25rem" }} />
+        <div key={i} className="cc-skeleton cc-skeleton--line" />
       ))}
     </div>
   );

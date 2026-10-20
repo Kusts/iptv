@@ -92,7 +92,7 @@ function DraftsCard(): React.JSX.Element {
       ) : null}
       {actionError ? <p className="cc-field-error">{actionError}</p> : null}
       {drafts.map((draft) => (
-        <div key={draft.id} className="cc-card" style={{ marginBottom: "0.5rem" }}>
+        <div key={draft.id} className="cc-card cc-u-mb-2">
           <p>
             <strong>{draft.label}</strong>
           </p>
@@ -130,7 +130,7 @@ function PendingReviewsCard(): React.JSX.Element {
   return (
     <Card title={`Aprovações pendentes (${data.items.length})`}>
       {data.items.map((item) => (
-        <div key={item.id} className="cc-card" style={{ marginBottom: "0.5rem" }}>
+        <div key={item.id} className="cc-card cc-u-mb-2">
           <div className="cc-row">
             <Badge tone="info">{item.kind}</Badge>
             <span className="cc-muted">{item.id.slice(0, 8)}…</span>
@@ -171,13 +171,13 @@ function AgentRunsCard(): React.JSX.Element {
 
   return (
     <Card title="Runs do agente (por conversa)">
-      <div className="cc-row" style={{ marginBottom: "0.5rem" }}>
+      <div className="cc-row cc-u-mb-2">
         <input
           aria-label="ID da conversa"
           placeholder="UUID da conversa"
           value={conversationId}
           onChange={(e) => setConversationId(e.target.value)}
-          style={{ maxWidth: "320px" }}
+          className="cc-u-maxw-320"
         />
         <Button variant="secondary" onClick={() => setActiveId(conversationId.trim().length > 0 ? conversationId.trim() : null)}>
           Consultar runs
@@ -231,7 +231,7 @@ function AgentEvalsCard(): React.JSX.Element {
   return (
     <Card title="Evals do agente">
       <p className="cc-muted">Execução manual da suíte de avaliação; resultados ficam no pipeline do servidor.</p>
-      <div className="cc-row" style={{ marginTop: "0.5rem" }}>
+      <div className="cc-row cc-u-mt-2">
         <Button disabled={busy} onClick={() => setOpen(true)}>
           Executar eval
         </Button>

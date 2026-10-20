@@ -138,13 +138,13 @@ export function HitlCenter(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <label className="cc-muted" htmlFor="hitl-source">Origem:</label>
         <Select
           id="hitl-source"
           value={activeSource}
           onChange={(e) => setSource(e.target.value)}
-          style={{ maxWidth: "260px" }}
+          className="cc-u-maxw-260"
         >
           <option value="">Todas</option>
           {sources.map((s) => (
@@ -157,7 +157,7 @@ export function HitlCenter(): React.JSX.Element {
       {loading ? <LoadingSkeleton lines={6} /> : null}
       {error !== null ? <ErrorState message={error} onRetry={reload} /> : null}
       {data !== null && refreshError !== null ? (
-        <div role="alert" className="cc-row" style={{ marginBottom: "1rem" }}>
+        <div role="alert" className="cc-row cc-u-mb-4">
           <span className="cc-muted">Dados possivelmente desatualizados: {refreshError}</span>
           <button type="button" onClick={() => refresh()}>
             Tentar atualizar
@@ -175,7 +175,7 @@ export function HitlCenter(): React.JSX.Element {
             return (
               <Card key={s} title={`${SOURCE_LABELS[s]} (${group.length})`}>
                 {group.map((item) => (
-                  <div key={rowKey(item)} className="cc-card" style={{ marginBottom: "0.5rem" }}>
+                  <div key={rowKey(item)} className="cc-card cc-u-mb-2">
                     <div className="cc-row">
                       <Badge tone={slaTone(item.sla)}>
                         {slaText(item.sla)}

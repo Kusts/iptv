@@ -70,7 +70,7 @@ export default function BillingPage(): React.JSX.Element {
     <Shell>
       <h1>Cobrança</h1>
       <PermissionGate permission={READ_PERMISSION} label="a cobrança">
-        <div className="cc-row" style={{ marginBottom: "1rem" }}>
+        <div className="cc-row cc-u-mb-4">
           <Button variant={tab === "charges" ? "primary" : "secondary"} onClick={() => setTab("charges")}>
             Cobranças
           </Button>
@@ -105,7 +105,7 @@ function ChargesSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -152,7 +152,7 @@ function ChargesSection(): React.JSX.Element {
       {canWrite && selectedId ? (
         <Card title="Ações da cobrança">
           <p className="cc-mono">{selectedId}</p>
-          <div className="cc-row" style={{ marginTop: "0.5rem" }}>
+          <div className="cc-row cc-u-mt-2">
             <Button
               variant="secondary"
               disabled={busy}
@@ -195,7 +195,7 @@ function PaymentsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -240,7 +240,7 @@ function RefundsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -316,11 +316,11 @@ function ExceptionsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <label className="cc-muted" htmlFor="billing-exception-status">
           Status:
         </label>
-        <Select id="billing-exception-status" value={status} onChange={(e) => setStatus(e.target.value)} style={{ maxWidth: "240px" }}>
+        <Select id="billing-exception-status" value={status} onChange={(e) => setStatus(e.target.value)} className="cc-u-maxw-240">
           <option value="">Todos</option>
           <option value="OPEN">OPEN</option>
           <option value="RESOLVED">RESOLVED</option>

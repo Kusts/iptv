@@ -200,7 +200,7 @@ export function CopilotWidget(): React.JSX.Element {
                     </p>
                   ) : null}
                   {entry.answer?.suggestions.map((suggestion, idx) => (
-                    <div key={idx} className="cc-card" style={{ marginBottom: "0.5rem" }}>
+                    <div key={idx} className="cc-card cc-u-mb-2">
                       <p>
                         <strong>{suggestion.kind}</strong> — {suggestion.label}
                       </p>
@@ -251,7 +251,7 @@ export function CopilotWidget(): React.JSX.Element {
               onKeyDown={(e) => {
                 if (e.key === "Enter") void send();
               }}
-              style={{ flex: 1 }}
+              className="cc-u-flex-1"
             />
             <Button disabled={asking || question.trim().length === 0} onClick={() => void send()}>
               Enviar

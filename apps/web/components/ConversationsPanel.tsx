@@ -121,7 +121,7 @@ function ConversationDetail({ conversation, onChanged }: { conversation: Convers
           Devolver
         </Button>
       </div>
-      <div className="cc-form" style={{ marginTop: "0.75rem" }}>
+      <div className="cc-form cc-u-mt-3">
         <Textarea
           aria-label="Resposta manual"
           placeholder="Escreva a resposta manual…"

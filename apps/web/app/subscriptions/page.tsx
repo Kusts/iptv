@@ -108,7 +108,7 @@ function SubscriptionDetailPanel({ id }: { id: string }): React.JSX.Element {
           ))}
         </ul>
       )}
-      <div className="cc-row" style={{ marginTop: "0.75rem" }}>
+      <div className="cc-row cc-u-mt-3">
         <Button variant="secondary" disabled={busy} onClick={() => void command(`/v1/subscriptions/${id}/resume`, "Assinatura retomada.")}>
           Retomar
         </Button>

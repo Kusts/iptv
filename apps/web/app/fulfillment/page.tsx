@@ -31,7 +31,7 @@ export default function FulfillmentPage(): React.JSX.Element {
     <Shell>
       <h1>Ativação (fulfillment)</h1>
       <PermissionGate permission={READ_PERMISSION} label="o fulfillment">
-        <div className="cc-form" style={{ marginBottom: "1rem" }}>
+        <div className="cc-form cc-u-mb-4">
           <Field label="ID da assinatura">
             <Input value={subscriptionId} onChange={(e) => setSubscriptionId(e.target.value)} placeholder="UUID da assinatura" />
           </Field>
@@ -72,7 +72,7 @@ function FulfillmentPanel({ id }: { id: string }): React.JSX.Element {
           {canWrite ? (
             <Card title="Sem operação de fulfillment">
               <p className="cc-muted">Nenhuma operação de provedor para esta assinatura. Solicite o provisionamento.</p>
-              <div className="cc-row" style={{ marginTop: "0.75rem" }}>
+              <div className="cc-row cc-u-mt-3">
                 <Button disabled={busy} onClick={() => setDialogOpen(true)}>
                   Solicitar provisionamento
                 </Button>
@@ -94,7 +94,7 @@ function FulfillmentPanel({ id }: { id: string }): React.JSX.Element {
             Resolução e reconciliação da operação resultante ficam na superfície de Operações de Provider.
           </p>
           {canWrite ? (
-            <div className="cc-row" style={{ marginTop: "0.75rem" }}>
+            <div className="cc-row cc-u-mt-3">
               <Button variant="secondary" disabled={busy} onClick={() => setDialogOpen(true)}>
                 Solicitar novamente (fallback manual)
               </Button>

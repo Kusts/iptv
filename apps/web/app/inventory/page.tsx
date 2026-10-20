@@ -59,7 +59,7 @@ export default function InventoryPage(): React.JSX.Element {
     <Shell>
       <h1>Inventário (apps/MK)</h1>
       <PermissionGate permission={READ_PERMISSION} label="o inventário">
-        <div className="cc-row" style={{ marginBottom: "1rem" }}>
+        <div className="cc-row cc-u-mb-4">
           <Button variant={tab === "trials" ? "primary" : "secondary"} onClick={() => setTab("trials")}>
             App trials
           </Button>
@@ -87,7 +87,7 @@ function AppTrialsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -162,7 +162,7 @@ function FindingsSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row" style={{ marginBottom: "1rem" }}>
+      <div className="cc-row cc-u-mb-4">
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
@@ -264,7 +264,7 @@ function ProcurementPanel(): React.JSX.Element {
         </div>
       ) : null}
       {gate(PROCUREMENT_WRITE) ? (
-        <div className="cc-form" style={{ marginTop: "0.75rem" }}>
+        <div className="cc-form cc-u-mt-3">
           <Field label="ID da reserva de crédito">
             <Input value={reservationId} onChange={(e) => setReservationId(e.target.value)} placeholder="UUID da reserva" />
           </Field>

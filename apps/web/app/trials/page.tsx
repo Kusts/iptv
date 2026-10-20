@@ -68,7 +68,7 @@ export default function TrialsPage(): React.JSX.Element {
     <Shell>
       <h1>Trials</h1>
       <PermissionGate permission={READ_PERMISSION} label="os trials">
-        <div className="cc-row" style={{ marginBottom: "1rem" }}>
+        <div className="cc-row cc-u-mb-4">
           <label className="cc-muted" htmlFor="trial-status">
             Status:
           </label>
@@ -76,7 +76,7 @@ export default function TrialsPage(): React.JSX.Element {
             id="trial-status"
             value={status}
             onChange={(e) => { setStatus(e.target.value); setSelectedId(null); }}
-            style={{ maxWidth: "240px" }}
+            className="cc-u-maxw-240"
           >
             <option value="">Todos</option>
             <option value="REQUESTED">REQUESTED</option>
@@ -198,7 +198,7 @@ function TrialDetailPanel({ id, onChanged }: { id: string; onChanged: () => void
       )}
       <CompatibilityLookup />
       {canWrite ? (
-        <div className="cc-row" style={{ marginTop: "0.75rem" }}>
+        <div className="cc-row cc-u-mt-3">
           {actions.map((a) => (
             <Button key={a.path} variant="secondary" disabled={busy} onClick={() => setDialog(a)}>
               {a.label}
@@ -232,7 +232,7 @@ function CompatibilityLookup(): React.JSX.Element {
   );
 
   return (
-    <div className="cc-form" style={{ marginTop: "0.5rem" }}>
+    <div className="cc-form cc-u-mt-2">
       <Field label="Consultar compatibilidade por pessoa (UUID)">
         <Input value={personId} onChange={(e) => setPersonId(e.target.value)} />
       </Field>

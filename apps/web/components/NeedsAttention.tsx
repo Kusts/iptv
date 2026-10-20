@@ -119,7 +119,7 @@ export function NeedsAttention(): React.JSX.Element {
     return (
       <Card title="Precisa de você">
         {refreshError !== null ? (
-          <div role="alert" className="cc-row" style={{ marginBottom: "0.75rem" }}>
+          <div role="alert" className="cc-row cc-u-mb-3">
             <span className="cc-muted">Dados possivelmente desatualizados: {refreshError}</span>
             <button type="button" onClick={() => refresh()}>
               Tentar atualizar
@@ -140,23 +140,23 @@ export function NeedsAttention(): React.JSX.Element {
   return (
     <Card title={`Precisa de você (${visibleItems.length})`}>
       {refreshError !== null ? (
-        <div role="alert" className="cc-row" style={{ marginBottom: "0.75rem" }}>
+        <div role="alert" className="cc-row cc-u-mb-3">
           <span className="cc-muted">Dados possivelmente desatualizados: {refreshError}</span>
           <button type="button" onClick={() => refresh()}>
             Tentar atualizar
           </button>
         </div>
       ) : null}
-      <ul style={{ listStyle: "none", padding: 0, margin: "0 0 0.75rem" }}>
+      <ul className="cc-u-attention-list">
         {preview.map((item) => (
-          <li key={rowKey(item)} style={{ marginBottom: "0.75rem" }}>
+          <li key={rowKey(item)} className="cc-u-attention-item">
             <div className="cc-row">
               <Badge tone={slaTone(item.sla)}>{slaText(item.sla)}</Badge>
               <span className="cc-muted">{sourceLabel(item.source)}</span>
               <span className="cc-mono">{item.kind}</span>
             </div>
-            <p style={{ margin: "0.25rem 0" }}>{item.summary}</p>
-            <p className="cc-muted" style={{ margin: 0 }}>
+            <p className="cc-u-my-1">{item.summary}</p>
+            <p className="cc-muted cc-u-m-0">
               {formatDateTime(item.createdAt)} · há {Math.round(item.ageMinutes)} min
             </p>
           </li>
@@ -171,7 +171,7 @@ export function NeedsAttention(): React.JSX.Element {
           .
         </p>
       ) : null}
-      <p style={{ marginBottom: 0 }}>
+      <p className="cc-u-mb-0">
         <Link href="/hitl">Abrir fila do Centro HITL</Link>
       </p>
     </Card>
