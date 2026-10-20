@@ -15,6 +15,13 @@ import {
   GatewayUnknownError,
   currentGateway,
 } from "./messaging-gateway.js";
+import type { SendMediaKind } from "./messaging-gateway.js";
+import {
+  MEDIA_MAX_AUDIO_SECONDS,
+  MEDIA_MAX_BYTES,
+  MEDIA_MIME_ALLOWLIST,
+} from "./waha-media.js";
+import { resolveOutboundAttachment } from "./waha-outbound-attachments.js";
 import { normalizeSender } from "./waha-normalizer.js";
 import { getRiskState, riskBlockReason, setRiskState } from "./waha-risk-state.js";
 import { expectedSessionFor, validateSessionForTenant } from "./waha-sessions.js";
@@ -54,6 +61,72 @@ export const sendManualInput = z.object({
   text: z.string().trim().min(1).max(4000),
 });
 export type SendManualInput = z.infer<typeof sendManualInput>;
+
+/**
+ * Manual media reply (test-only doubles, zero live network). Caps mirror the
+ * inbound ingest contract (`waha-media.ts`): IMAGE 8 MiB, AUDIO/DOCUMENT 16
+ * MiB, VIDEO 32 MiB, AUDIO duration ≤ 600 s. MIME allowlists are shared with
+ * inbound. AUDIO additionally requires explicit customer authorization
+ * (`customerAuthorized: true`) — an unconsented voice note is refused before
+ * anything is persisted or sent.
+ *
+ * Outbound hardening (FIX-WAHA-OUTBOUND): `attachmentRef` must be an opaque
+ * reference registered for the tenant (`waha-outbound-attachments.ts`) —
+ * free URLs refuse before persist/send (delegated-SSRF guard, rechecked
+ * inside the gateway adapter); caps/MIME are validated against the real
+ * stored bytes with declared fields cross-checked, and a gateway
+ * `UNKNOWN_EFFECT` *result* parks QUEUED + PAUSED exactly like a thrown
+ * `GatewayUnknownError`.
+ */
+export const sendMediaManualInput = z.object({
+  conversationId: z.string().uuid(),
+  kind: z.enum(["IMAGE", "DOCUMENT", "AUDIO", "VIDEO"]),
+  attachmentRef: z.string().trim().min(1).max(2000),
+  mimeType: z.string().trim().min(1).max(127),
+  fileName: z.string().trim().min(1).max(255).nullable().optional(),
+  caption: z.string().trim().max(1024).nullable().optional(),
+  fileSizeBytes: z.number().int().nonnegative().nullable().optional(),
+  durationSeconds: z.number().nonnegative().nullable().optional(),
+  customerAuthorized: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  const cap = MEDIA_MAX_BYTES[value.kind];
+  if (value.fileSizeBytes !== null && value.fileSizeBytes !== undefined && value.fileSizeBytes > cap) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `media exceeds ${value.kind} cap: ${value.fileSizeBytes} > ${cap}`,
+      path: ["fileSizeBytes"],
+    });
+  }
+  const mime = value.mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!(MEDIA_MIME_ALLOWLIST[value.kind] as readonly string[]).includes(mime)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `mismatched MIME for ${value.kind}: ${value.mimeType}`,
+      path: ["mimeType"],
+    });
+  }
+  if (value.kind === "AUDIO") {
+    if (
+      value.durationSeconds !== null &&
+      value.durationSeconds !== undefined &&
+      value.durationSeconds > MEDIA_MAX_AUDIO_SECONDS
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `audio duration ${value.durationSeconds}s exceeds ${MEDIA_MAX_AUDIO_SECONDS}s`,
+        path: ["durationSeconds"],
+      });
+    }
+    if (value.customerAuthorized !== true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "audio sends require explicit customer authorization (customerAuthorized: true)",
+        path: ["customerAuthorized"],
+      });
+    }
+  }
+});
+export type SendMediaManualInput = z.infer<typeof sendMediaManualInput>;
 
 export const ingestMessageInput = z.object({
   channel: z.string().trim().min(1).max(64),
@@ -527,6 +600,224 @@ async function handleSendManual(
     });
     if (result.ok) {
       providerMessageId = result.providerMessageId;
+    } else {
+      deliveryStatus = "FAILED";
+      errorCode = result.code;
+      if (result.code === "CAPPED") {
+        setRiskState(ctx.tenantId, conv.channel, "CAPPED", result.message);
+      }
+    }
+  } catch (err) {
+    if (err instanceof GatewayUnknownError) {
+      // Uncertain effect: record UNKNOWN, park the conversation for
+      // reconciliation, NEVER blind-retry.
+      deliveryStatus = "QUEUED";
+      errorCode = "UNKNOWN_EFFECT";
+    } else {
+      throw err;
+    }
+  }
+
+  if (trx !== null) {
+    await trx
+      .insertInto("communication.message_deliveries")
+      .values({
+        id: newId(),
+        tenant_id: ctx.tenantId,
+        message_id: messageId,
+        provider: currentGateway().name,
+        status: deliveryStatus,
+        attempt_no: 1,
+        external_delivery_id: providerMessageId,
+        error_code: errorCode,
+        error_detail_json: {},
+        occurred_at: now(),
+      })
+      .execute();
+    await trx
+      .updateTable("communication.conversations")
+      .set({ last_message_at: occurred, updated_at: now() })
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("id", "=", conv.id)
+      .execute();
+  } else {
+    const mem = memoryStateOf(ctx);
+    if (mem === null) {
+      throw new Error("no Wave 2 store available");
+    }
+    mem.deliveries.push({
+      id: newId(),
+      tenantId: ctx.tenantId,
+      messageId,
+      provider: currentGateway().name,
+      status: deliveryStatus,
+      attemptNo: 1,
+      externalDeliveryId: providerMessageId,
+      errorCode,
+    });
+    const c = mem.conversations.get(conv.id);
+    if (c !== undefined) {
+      c.lastMessageAt = occurred;
+    }
+  }
+
+  if (deliveryStatus === "SENT") {
+    await emitAndEnqueue(ctx, {
+      eventType: "message.sent.v1",
+      aggregateType: "message",
+      aggregateId: messageId,
+      data: {
+        message_id: messageId,
+        conversation_id: conv.id,
+        provider_message_id: providerMessageId,
+      },
+    });
+  } else if (deliveryStatus === "QUEUED") {
+    await appendControlEvent(ctx, {
+      conversationId: conv.id,
+      fromMode: conv.controlMode,
+      toMode: "PAUSED",
+      reason: "RECONCILE_REQUIRED",
+    });
+    await emitAndEnqueue(ctx, {
+      eventType: "conversation.paused.v1",
+      aggregateType: "conversation",
+      aggregateId: conv.id,
+      data: { conversation_id: conv.id, reason: "RECONCILE_REQUIRED" },
+    });
+  }
+  return { ok: true, data: { messageId, deliveryStatus, providerMessageId } };
+}
+
+async function handleSendMediaManual(
+  ctx: CommandHandlerContext,
+  input: SendMediaManualInput,
+): Promise<CommandResult<{ messageId: string; deliveryStatus: string; providerMessageId: string | null }>> {
+  const loaded = await loadConversation(ctx, input.conversationId);
+  if (loaded === null) {
+    return { ok: false, code: "not_found", message: "conversation not found in this tenant" };
+  }
+  const conv = loaded.conv;
+  if (CLOSED_STATUSES.includes(conv.status)) {
+    return { ok: false, code: "precondition_failed", message: `conversation is ${conv.status}` };
+  }
+  if (conv.controlMode === "PAUSED") {
+    // Same fail-closed rule as text: an UNKNOWN media effect may already be
+    // applied provider-side, so refuse until a human reconciles.
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: "reconcile_required: conversation is PAUSED after an UNKNOWN gateway effect; reconcile before resending",
+    };
+  }
+  const block = await suppressionBlock(ctx, conv.personId, conv.channel);
+  if (block.blocked) {
+    return { ok: false, code: "forbidden", message: block.reason };
+  }
+  const session = expectedSessionFor(ctx.tenantId);
+  const risk = getRiskState(ctx.tenantId, conv.channel);
+  if (risk === "CAPPED" && !(await conversationHasHistory(ctx, conv.id))) {
+    return { ok: false, code: "precondition_failed", message: riskBlockReason(risk) };
+  }
+  const gateway = currentGateway();
+  if (typeof gateway.sendMedia !== "function") {
+    return { ok: false, code: "validation_failed", message: "media sends unavailable on the active gateway" };
+  }
+  // Server-side tenant-scoped attachment resolution (delegated-SSRF +
+  // declared-caps/MIME fix): free-URL refs refuse here before anything is
+  // persisted or sent; real stored bytes (not caller-declared fields) back
+  // the caps/MIME verdict, and the resolved values — never the declared
+  // ones — flow into the message row and the gateway send.
+  const resolved = await resolveOutboundAttachment({
+    tenantId: ctx.tenantId,
+    attachmentRef: input.attachmentRef,
+    kind: input.kind,
+    declaredMimeType: input.mimeType,
+    declaredFileSizeBytes: input.fileSizeBytes,
+  });
+  if (!resolved.ok) {
+    return { ok: false, code: resolved.code, message: resolved.message };
+  }
+  const to = await resolveDestination(ctx, conv.personId, conv.externalThreadId);
+  const messageId = newId();
+  const occurred = now();
+  const bodyText = input.caption ?? null;
+  const metadata = {
+    sent_by: ctx.actor.userId,
+    mimeType: resolved.resolved.mimeType,
+    fileName: resolved.resolved.fileName,
+    fileSizeBytes: resolved.resolved.sizeBytes,
+    durationSeconds: input.durationSeconds ?? null,
+    customerAuthorized: input.customerAuthorized ?? false,
+  };
+  const trx = kyselyTrxOf(ctx);
+  if (trx !== null) {
+    await trx
+      .insertInto("communication.messages")
+      .values({
+        id: messageId,
+        tenant_id: ctx.tenantId,
+        conversation_id: conv.id,
+        person_id: conv.personId,
+        direction: "OUTBOUND",
+        channel: conv.channel,
+        sender_type: "HUMAN",
+        external_message_id: null,
+        idempotency_key: null,
+        content_type: input.kind as SendMediaKind,
+        body_text: bodyText,
+        attachment_ref: input.attachmentRef,
+        metadata_json: metadata,
+        occurred_at: occurred,
+        received_at: null,
+        created_at: now(),
+      })
+      .execute();
+  } else {
+    const mem = memoryStateOf(ctx);
+    if (mem === null) {
+      throw new Error("no Wave 2 store available");
+    }
+    mem.messages.set(messageId, {
+      id: messageId,
+      tenantId: ctx.tenantId,
+      conversationId: conv.id,
+      personId: conv.personId,
+      direction: "OUTBOUND",
+      channel: conv.channel,
+      senderType: "HUMAN",
+      externalMessageId: null,
+      bodyText,
+      occurredAt: occurred,
+      contentType: input.kind,
+      attachmentRef: input.attachmentRef,
+    });
+  }
+
+  let deliveryStatus = "SENT";
+  let providerMessageId: string | null = null;
+  let errorCode: string | null = null;
+  try {
+    const result = await gateway.sendMedia({
+      tenantId: ctx.tenantId,
+      conversationId: conv.id,
+      to,
+      kind: input.kind,
+      attachmentRef: input.attachmentRef,
+      mimeType: resolved.resolved.mimeType,
+      fileName: resolved.resolved.fileName,
+      caption: bodyText,
+      durationSeconds: input.durationSeconds ?? null,
+      session,
+    });
+    if (result.ok) {
+      providerMessageId = result.providerMessageId;
+    } else if (result.code === "UNKNOWN_EFFECT") {
+      // Same fail-closed verdict as the GatewayUnknownError throw below: the
+      // effect is uncertain, so park QUEUED + PAUSED for reconciliation
+      // (recording FAILED here would invite a blind double-send retry).
+      deliveryStatus = "QUEUED";
+      errorCode = "UNKNOWN_EFFECT";
     } else {
       deliveryStatus = "FAILED";
       errorCode = result.code;
@@ -1117,6 +1408,14 @@ export function registerCommunicationCommands(bus: CommandBus): void {
     auditResource: "message",
     input: sendManualInput,
     handler: handleSendManual,
+  });
+  bus.register<SendMediaManualInput, { messageId: string; deliveryStatus: string; providerMessageId: string | null }>({
+    name: "message.send_media_manual",
+    permission: "conversation.reply",
+    auditAction: "message.send_media_manual",
+    auditResource: "message",
+    input: sendMediaManualInput,
+    handler: handleSendMediaManual,
   });
   bus.register<
     IngestMessageInput,

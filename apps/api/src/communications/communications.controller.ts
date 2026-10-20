@@ -257,6 +257,50 @@ export class CommunicationsController {
     return send(result);
   }
 
+  @Post("conversations/:id/send-media")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("conversation.reply")
+  async sendMedia(
+    @Param("id") id: string,
+    @Body()
+    body: {
+      kind?: unknown;
+      attachmentRef?: unknown;
+      mimeType?: unknown;
+      fileName?: unknown;
+      caption?: unknown;
+      fileSizeBytes?: unknown;
+      durationSeconds?: unknown;
+      customerAuthorized?: unknown;
+    },
+    @Req() req: FastifyRequest,
+  ): Promise<{ messageId: string; deliveryStatus: string; providerMessageId: string | null }> {
+    const result = await this.bus.execute<{
+      messageId: string;
+      deliveryStatus: string;
+      providerMessageId: string | null;
+    }>(
+      actorFromRequest(req),
+      "message.send_media_manual",
+      {
+        conversationId: id,
+        kind: body.kind,
+        attachmentRef: body.attachmentRef,
+        mimeType: body.mimeType,
+        fileName: body.fileName,
+        caption: body.caption,
+        fileSizeBytes: body.fileSizeBytes,
+        durationSeconds: body.durationSeconds,
+        customerAuthorized: body.customerAuthorized,
+      },
+      {
+        correlationId: req.id,
+        idempotencyKey: idempotencyKeyOf(req),
+      },
+    );
+    return send(result);
+  }
+
   @Post("conversations/:id/assign")
   @UseGuards(AuthGuard, PermissionsGuard)
   @RequirePermission("conversation.reply")

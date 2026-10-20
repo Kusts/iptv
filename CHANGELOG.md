@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- fix(api): outbound WAHA media endurecido (FIX-WAHA-OUTBOUND + finais, 1 HIGH + 2 MEDIUM + lacunas, sem tocar sendText/G01, sem live): `src/communications/waha-outbound-attachments.ts` novo — `attachmentRef` só resolve via registro server-side tenant-scoped (URLs livres/cross-tenant/desconhecidas recusadas antes de persistir/enviar, assinatura desconhecida recusada, igualdade sniffed-vs-registered exigida; default fail-closed vazio, sem migration); caps/MIME validados nos bytes reais; `WahaGatewayAdapter.sendMedia` revalida via store injetado antes do POST (zero fetch em ref inválida); `UNKNOWN_EFFECT` resultado = QUEUED + PAUSED como exceção. Testes: 3 units (media 11 + fix 13 + final 6 = 30/30) + chain integração 3/3 + waha-media 9/9 em DB descartável; full unit verde.
+
 - docs(pilot): ciclo B-refund fresco PIX R$ 5,00 sandbox com governança completa e cleanup total (BREFUND-P1..P4, KNOWN_NOT_APPLIED, operador)
 - test(api): paridade pooled via pgBouncer com senha honrada da env e guards de teardown (EXEC-POOLER-PARITY, #74 #7)
 - feat(web): style-src self em report-only após migração para classes (EXEC-STYLE-SRC-RO, #44)
