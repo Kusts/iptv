@@ -2,6 +2,7 @@
 
 ## Unreleased - Added
 
+- test(api): matriz worker rls crash timeout e fake readback com guards iptv_app e parity pooler opt-in skipped (EXEC-WORKER-RLS-MATRIX, #74 #7)
 - fix(api): headers hsts nosniff referrer-policy sem csp geral (SEC44-HEADERS, #44)
 - test(api): parallel drains resiliente a db compartilhado — captura por tenant uuid fresco, sem predicado temporal, disjunção + convergência orçamentada (FIX-DRAINS-20261020, B2 residual)
 - docs(operations): entrypoint staging de volta em 2026-10-19 ~16:30 UTC — `staging-api` `/health` e `/ready` (`database:ok`) + `staging-web` 200 via edge (túnel `iptv-staging`); SSH direto ao host segue fechado a partir deste ambiente (ato do operador se precisar de host)
