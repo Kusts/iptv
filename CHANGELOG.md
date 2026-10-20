@@ -3,6 +3,7 @@
 ## Unreleased - Added
 
 - test(agent): projeção read-model cacheada com paridade tool-correta e economia ~51% em fixture offline (EXEC-RESEARCH-CACHE, #27)
+- test(agent): paridade hit-vs-full em suppression injection off-scope na fixture de cache (EXEC-CACHE-LABELS, #27)
 - test(api): drains positivos sob iptv_app com transições assertadas e espelho pooled opt-in (EXEC-DRAINS-POSITIVE-APP, #74 #7)
 - test(agent): gate de plano tipado single-step rejeita ação inventada e write sem dispatch em fixture offline (EXEC-RESEARCH-PLAN, #1)
 - test(api): matriz worker rls crash timeout e fake readback com guards iptv_app e parity pooler opt-in skipped (EXEC-WORKER-RLS-MATRIX, #74 #7)
