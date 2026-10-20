@@ -2,6 +2,7 @@
 
 ## Unreleased - Added
 
+- docs(pilot): ciclo B-refund fresco PIX R$ 5,00 sandbox com governança completa e cleanup total (BREFUND-P1..P4, KNOWN_NOT_APPLIED, operador)
 - test(api): paridade pooled via pgBouncer com senha honrada da env e guards de teardown (EXEC-POOLER-PARITY, #74 #7)
 - feat(web): style-src self em report-only após migração para classes (EXEC-STYLE-SRC-RO, #44)
 - feat(web): style inline migrado para classes em tokens.css, zero style= restante (EXEC-STYLE-SRC, #44)
