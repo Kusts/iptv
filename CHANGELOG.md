@@ -2,6 +2,7 @@
 
 ## Unreleased - Added
 
+- feat(web): nonce por request com strict-dynamic em report-only e plumbing no layout (EXEC-CSP-NONCE, #44)
 - feat(web): csp report-only com rota de report endurecida e sem bloqueio (EXEC-CSP-REPORTONLY, #44)
 - feat(config): sessão com ttl configurável via SESSION_TTL_HOURS, default 168 intacto (EXEC-TTL-CONFIG, #44)
 - test(api): scheduler tick e drains admin via http sob iptv_app com fail-closed 42501 e convergência total (EXEC-SCHEDULER-E2E, P8)

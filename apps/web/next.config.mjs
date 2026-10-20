@@ -2,7 +2,9 @@
 
 // Passo 1 do SCOPE-CSP-TTL (Report-Only, sem bloqueio): observa
 // connect/img/font/object/base sem tocar em style-src/script-src
-// (style= pervasivo) e sem nonce/middleware (passo 2, fora).
+// (style= pervasivo). O `script-src` com nonce por-request vive no passo 2
+// (`middleware.ts`, também Report-Only) — este valor estático segue como
+// base observada; o middleware acrescenta a política dinâmica com nonce.
 // O report vai para o endpoint local `/api/csp-report` (204, só loga).
 function apiOriginForCsp() {
   const raw =
@@ -17,7 +19,9 @@ function apiOriginForCsp() {
 const apiOrigin = apiOriginForCsp();
 
 // Report-Only: nunca bloqueia nada — só reporta. Sem style-src/script-src
-// (fora desta fatia), sem 'unsafe-*', sem nonce.
+// (fora desta fatia), sem 'unsafe-*', sem nonce. O `script-src` com nonce
+// + `strict-dynamic` é emitido por-request pelo `middleware.ts` (passo 2,
+// também Report-Only) — este valor estático não duplica o nonce.
 const cspReportOnlyValue = [
   `connect-src 'self' ${apiOrigin}`,
   "img-src 'self' data:",
@@ -40,7 +44,9 @@ const nextConfig = {
   //
   // Escopo desta fatia (Golden Workflow 3, ETAPA 2): os dois headers de
   // framing + Referrer-Policy + X-Content-Type-Options, mais a CSP
-  // Report-Only do passo 1 do SCOPE-CSP-TTL (observa sem bloquear).
+  // Report-Only base do passo 1 do SCOPE-CSP-TTL (observa sem bloquear;
+  // o passo 2 em `middleware.ts` acrescenta por-request o `script-src`
+  // com nonce + `strict-dynamic`, também Report-Only).
   // NÃO é uma CSP geral bloqueante (sem default-src/script-src/style-src/
   // nonce) — CSP ampla exigiria inventariar os recursos inline do App
   // Router e poderia quebrar a UI; fica como follow-up. Rate limiting,

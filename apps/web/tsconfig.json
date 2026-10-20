@@ -33,6 +33,7 @@
     "test/**/*.tsx",
     "next-env.d.ts",
     "next.config.mjs",
+    "middleware.ts",
     ".next/types/**/*.ts"
   ],
   "exclude": [
