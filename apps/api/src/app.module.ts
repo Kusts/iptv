@@ -11,6 +11,7 @@ import { HealthController } from "./health.controller.js";
 import { AuthController } from "./auth/auth.controller.js";
 import { AuthGuard } from "./auth/auth.guard.js";
 import { PermissionsGuard } from "./auth/permissions.guard.js";
+import { PlatformAdminGuard } from "./auth/platform-admin.guard.js";
 import { RateLimitGuard } from "./auth/rate-limit.guard.js";
 import { RateLimitService } from "./auth/rate-limit.service.js";
 import { trustedProxyHopsFromEnv } from "./auth/rate-limit.js";
@@ -171,6 +172,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     AuditService,
     AuthGuard,
     PermissionsGuard,
+    PlatformAdminGuard,
     // Public-auth rate limiter: single-process, bounded, TTL store. Trusted
     // proxy hops are read from env here so the limiter's X-Forwarded-For
     // handling stays explicit and never toggles Fastify's global trustProxy.

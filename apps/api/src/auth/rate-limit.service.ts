@@ -4,6 +4,7 @@ import {
   AUTH_RATE_LIMIT_POLICIES,
   deriveClientOrigin,
   identityBucketKey,
+  isOriginOnlyKind,
   normalizeIdentityEmail,
   originBucketKey,
   RATE_LIMIT_MAX_ENTRIES,
@@ -89,7 +90,9 @@ export class RateLimitService {
   acquire(kind: AuthRateLimitKind, req: FastifyRequest, rawEmail: unknown): RateLimitAcquireResult {
     const policy = AUTH_RATE_LIMIT_POLICIES[kind];
     const origin = deriveClientOrigin(req, this.trustedProxyHops);
-    const normalizedEmail = normalizeIdentityEmail(rawEmail);
+    // Admin drain kinds are origin-only: any submitted email is ignored so no
+    // per-identity bucket is ever created or charged for these kinds.
+    const normalizedEmail = isOriginOnlyKind(kind) ? null : normalizeIdentityEmail(rawEmail);
 
     const entries: RateLimitAcquireEntry[] = [];
     if (normalizedEmail !== null) {

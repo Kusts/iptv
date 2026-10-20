@@ -1,6 +1,8 @@
-import { Body, Controller, Get, HttpCode, HttpException, Inject, Post, Req, UseGuards } from "@nestjs/common";
-import type { FastifyRequest } from "fastify";
+import { Body, Controller, Get, HttpCode, HttpException, Inject, Post, UseGuards } from "@nestjs/common";
 import { AuthGuard } from "../auth/auth.guard.js";
+import { AuthRateLimit } from "../auth/rate-limit.js";
+import { PlatformAdminGuard } from "../auth/platform-admin.guard.js";
+import { RateLimitGuard } from "../auth/rate-limit.guard.js";
 import { LegacyOutboxDrainDisabledError, OutboxDrainer, type DrainResult, type LegacyDrainState } from "./outbox-drainer.js";
 
 /**
@@ -13,26 +15,16 @@ export class OutboxController {
   constructor(@Inject(OutboxDrainer) private readonly drainer: OutboxDrainer) {}
 
   @Get("drain-state")
-  @UseGuards(AuthGuard)
-  async drainState(@Req() req: FastifyRequest): Promise<LegacyDrainState> {
-    const auth = req.auth as NonNullable<FastifyRequest["auth"]>;
-    if (!auth.isPlatformAdmin) {
-      throw new HttpException({ code: "FORBIDDEN", message: "platform admin only" }, 403);
-    }
+  @UseGuards(AuthGuard, PlatformAdminGuard)
+  async drainState(): Promise<LegacyDrainState> {
     return this.drainer.getDrainState();
   }
 
   @Post("drain")
   @HttpCode(200)
-  @UseGuards(AuthGuard)
-  async drain(
-    @Body() body: { limit?: unknown },
-    @Req() req: FastifyRequest,
-  ): Promise<DrainResult> {
-    const auth = req.auth as NonNullable<FastifyRequest["auth"]>;
-    if (!auth.isPlatformAdmin) {
-      throw new HttpException({ code: "FORBIDDEN", message: "platform admin only" }, 403);
-    }
+  @AuthRateLimit("admin-outbox-drain")
+  @UseGuards(AuthGuard, PlatformAdminGuard, RateLimitGuard)
+  async drain(@Body() body: { limit?: unknown }): Promise<DrainResult> {
     const limit = typeof body.limit === "number" ? body.limit : 50;
     try {
       return await this.drainer.drain(limit);

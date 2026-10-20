@@ -3,6 +3,7 @@ import { Reflector } from "@nestjs/core";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   RATE_LIMIT_POLICY_KEY,
+  isOriginOnlyKind,
   type AuthRateLimitKind,
 } from "./rate-limit.js";
 import { RateLimitService } from "./rate-limit.service.js";
@@ -58,7 +59,11 @@ export class RateLimitGuard implements CanActivate {
       retryAfterSeconds: 0,
     };
     try {
-      decision = this.rateLimit.acquire(kind, req, readBodyEmail(req));
+      // Origin-only kinds (admin drains) never carry an email identity: pass
+      // nothing so no identity bucket is derived even if the body contains
+      // an `email` field. The service enforces the same rule authoritatively.
+      const rawEmail = isOriginOnlyKind(kind) ? undefined : readBodyEmail(req);
+      decision = this.rateLimit.acquire(kind, req, rawEmail);
     } catch (err) {
       // Fail-open, but loud: an in-memory limiter bug must not become an auth
       // outage (which would let a non-security bug be weaponized into a global

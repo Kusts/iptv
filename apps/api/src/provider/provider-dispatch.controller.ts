@@ -1,6 +1,8 @@
-import { Body, Controller, HttpCode, HttpException, Inject, Post, Req, UseGuards } from "@nestjs/common";
-import type { FastifyRequest } from "fastify";
+import { Body, Controller, HttpCode, Inject, Post, UseGuards } from "@nestjs/common";
 import { AuthGuard } from "../auth/auth.guard.js";
+import { AuthRateLimit } from "../auth/rate-limit.js";
+import { PlatformAdminGuard } from "../auth/platform-admin.guard.js";
+import { RateLimitGuard } from "../auth/rate-limit.guard.js";
 import {
   ProviderDispatcherService,
   type DispatchDrainSummary,
@@ -25,45 +27,29 @@ import {
 export class ProviderDispatchController {
   constructor(@Inject(ProviderDispatcherService) private readonly dispatcher: ProviderDispatcherService) {}
 
-  private requirePlatformAdmin(req: FastifyRequest): void {
-    const auth = req.auth as NonNullable<FastifyRequest["auth"]>;
-    if (!auth.isPlatformAdmin) {
-      throw new HttpException({ code: "FORBIDDEN", message: "platform admin only" }, 403);
-    }
-  }
-
   @Post("drain")
   @HttpCode(200)
-  @UseGuards(AuthGuard)
-  async drain(
-    @Body() body: { limit?: unknown },
-    @Req() req: FastifyRequest,
-  ): Promise<DispatchDrainSummary> {
-    this.requirePlatformAdmin(req);
+  @AuthRateLimit("admin-provider-dispatch")
+  @UseGuards(AuthGuard, PlatformAdminGuard, RateLimitGuard)
+  async drain(@Body() body: { limit?: unknown }): Promise<DispatchDrainSummary> {
     const limit = typeof body.limit === "number" ? body.limit : 25;
     return this.dispatcher.drainOnce(limit);
   }
 
   @Post("recover")
   @HttpCode(200)
-  @UseGuards(AuthGuard)
-  async recover(
-    @Body() body: { limit?: unknown },
-    @Req() req: FastifyRequest,
-  ): Promise<DispatchRecoverSummary> {
-    this.requirePlatformAdmin(req);
+  @AuthRateLimit("admin-provider-dispatch")
+  @UseGuards(AuthGuard, PlatformAdminGuard, RateLimitGuard)
+  async recover(@Body() body: { limit?: unknown }): Promise<DispatchRecoverSummary> {
     const limit = typeof body.limit === "number" ? body.limit : 100;
     return this.dispatcher.recoverOnce(limit);
   }
 
   @Post("reconcile")
   @HttpCode(200)
-  @UseGuards(AuthGuard)
-  async reconcile(
-    @Body() body: { limit?: unknown },
-    @Req() req: FastifyRequest,
-  ): Promise<DispatchReconcileSummary> {
-    this.requirePlatformAdmin(req);
+  @AuthRateLimit("admin-provider-dispatch")
+  @UseGuards(AuthGuard, PlatformAdminGuard, RateLimitGuard)
+  async reconcile(@Body() body: { limit?: unknown }): Promise<DispatchReconcileSummary> {
     const limit = typeof body.limit === "number" ? body.limit : 100;
     return this.dispatcher.reconcileOnce(limit);
   }

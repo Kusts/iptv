@@ -3,9 +3,19 @@ import { createHash } from "node:crypto";
 import type { FastifyRequest } from "fastify";
 
 /** Public auth routes that carry an independent, explicit rate-limit budget. */
-export type AuthRateLimitKind = "login" | "register";
+export type AuthRateLimitKind = "login" | "register" | "admin-outbox-drain" | "admin-provider-dispatch";
 
 export const RATE_LIMIT_POLICY_KEY = "authRateLimitPolicy";
+
+/**
+ * Admin drain kinds are origin-only: any submitted `email` is ignored and
+ * only the per-origin budget is charged, so there is deliberately NO global
+ * per-identity lock-out on these routes (one origin exhausting its budget
+ * never blocks another origin, and no identity bucket is ever created).
+ */
+export function isOriginOnlyKind(kind: AuthRateLimitKind): boolean {
+  return kind === "admin-outbox-drain" || kind === "admin-provider-dispatch";
+}
 
 /** Declare the rate-limit policy for a public auth route (method-level). */
 export const AuthRateLimit =
@@ -37,6 +47,17 @@ export interface AuthRateLimitPolicy {
  * IPs are not falsely blocked while a flooding source still is.
  *
  * register limits new-account creation / signup spam.
+ *
+ * admin-outbox-drain / admin-provider-dispatch gate authenticated platform-admin
+ * POST drains (expensive claim-and-execute work: outbox delivery, provider
+ * dispatch drain/recover/reconcile). These routes carry NO email identity —
+ * the guard charges ONLY the per-origin bucket — so there is deliberately NO
+ * global per-identity lock-out: one origin exhausting its budget never blocks
+ * another origin. The per-origin budget (30 attempts / 5 min per source) is a
+ * generous operator backstop — a human clicking "drain" never reaches it —
+ * while a flooding source is denied with 429 + Retry-After. Both budgets share
+ * the same bounded store/saturation semantics as login/register (fail-closed
+ * for new keys at cap; see RateLimitStore).
  */
 export const AUTH_RATE_LIMIT_POLICIES: Readonly<Record<AuthRateLimitKind, AuthRateLimitPolicy>> = {
   login: {
@@ -50,6 +71,20 @@ export const AUTH_RATE_LIMIT_POLICIES: Readonly<Record<AuthRateLimitKind, AuthRa
     identityWindowMs: 60 * 60_000,
     originLimit: 20,
     originWindowMs: 60 * 60_000,
+  },
+  // Authenticated platform-admin drains: origin-only in practice (no email in
+  // body), generous operator backstop, no global identity lock-out by design.
+  "admin-outbox-drain": {
+    identityLimit: 30,
+    identityWindowMs: 5 * 60_000,
+    originLimit: 30,
+    originWindowMs: 5 * 60_000,
+  },
+  "admin-provider-dispatch": {
+    identityLimit: 30,
+    identityWindowMs: 5 * 60_000,
+    originLimit: 30,
+    originWindowMs: 5 * 60_000,
   },
 };
 
