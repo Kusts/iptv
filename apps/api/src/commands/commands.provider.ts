@@ -2,6 +2,8 @@ import type { Kysely } from "kysely";
 import type { Database } from "@iptv/database";
 import { currentOutboundAttachmentStore, setOutboundAttachmentStore } from "../communications/waha-outbound-attachments.js";
 import { PgOutboundAttachmentStore } from "../communications/pg-outbound-attachment-store.js";
+import { currentInboundAttachmentStore, setInboundAttachmentStore } from "../communications/waha-inbound-attachments.js";
+import { PgInboundAttachmentStore } from "../communications/pg-inbound-attachment-store.js";
 import { CommandBus, type DbPort } from "./command-bus.js";
 import { KyselyCommandDb } from "./kysely-command-db.js";
 import { registerHumanReviewCommands } from "../human-review/human-review.commands.js";
@@ -152,6 +154,26 @@ export const OutboundAttachmentStoreProvider = {
       setOutboundAttachmentStore(new PgOutboundAttachmentStore(db));
     }
     return currentOutboundAttachmentStore();
+  },
+  inject: ["DB"],
+};
+
+/**
+ * Inbound attachment backing (EXEC-WAHA-MEDIA-FETCH-20261020): when a database
+ * pool exists, the persistent Pg store (`platform.inbound_attachments`,
+ * migration 062) becomes the default lane for the webhook persist path (it
+ * reads `currentInboundAttachmentStore()` at call time). Without a pool the
+ * fail-closed empty registry stays active and verified downloads are queued
+ * as ingest-pending exceptions instead of message rows. Test doubles keep
+ * overriding it per-test.
+ */
+export const InboundAttachmentStoreProvider = {
+  provide: "INBOUND_ATTACHMENT_STORE",
+  useFactory: (db: Kysely<Database> | null) => {
+    if (db !== null) {
+      setInboundAttachmentStore(new PgInboundAttachmentStore(db));
+    }
+    return currentInboundAttachmentStore();
   },
   inject: ["DB"],
 };

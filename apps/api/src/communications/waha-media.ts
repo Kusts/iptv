@@ -246,8 +246,24 @@ export interface HttpWahaMediaOptions {
    * refuses everything. Comparison is exact `URL.origin`
    * (scheme+host+port): an `https` entry never authorizes the `http`
    * downgrade or a port swap.
+   *
+   * Loopback origins (`localhost`, `127.0.0.0/8`, `::1`) are NEVER
+   * admitted, even when listed here: entries that normalize to a loopback
+   * origin are dropped from the allowlist at construction, so a
+   * misconfigured caller cannot authorize a fetch back into loopback.
    */
   allowedHosts?: string[];
+  /**
+   * Public WAHA origin used ONLY to rewrite a loopback `media.url`
+   * (`http://localhost:3000/api/files/<nome>`, the loopback the WAHA
+   * server reports for its own files and which is never allowlistable).
+   * When a `media.url` host is loopback, ONLY its origin is replaced by
+   * this base — path/query/fragment travel byte-for-byte and the
+   * `X-Api-Key` flow applies to the rewritten public origin exactly as to
+   * a natively public URL. Null/invalid/loopback (fail-closed default)
+   * keeps the current refusal: loopback URLs are refused, never fetched.
+   */
+  publicBaseOrigin?: string | null;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
   /**
@@ -284,6 +300,85 @@ function normalizeAllowedOrigin(entry: string): string | null {
 }
 
 /**
+ * Loopback-host detection for the media-URL rewrite gate (EXEC-WAHA-MEDIA-FETCH).
+ *
+ * WAHA reports its own hosted files as `http://localhost:3000/api/files/<nome>`
+ * — loopback of the WAHA server itself, unreachable from the API and never
+ * allowlistable. Matches `localhost` (incl. `*.localhost`), the full
+ * `127.0.0.0/8` range, `::1`, and the mapped `::ffff:127.0.0.0/8` form.
+ * Comparison is on the lowercased `URL.hostname` (IPv6 without brackets).
+ */
+export function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase();
+  // `URL.hostname` keeps IPv6 brackets (`[::1]`); strip them for comparison.
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (bare === "localhost" || bare.endsWith(".localhost")) {
+    return true;
+  }
+  if (bare === "::1") {
+    return true;
+  }
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(bare)) {
+    return true;
+  }
+  if (/^::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(bare)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Normalize a public-base origin for the loopback rewrite. Returns the exact
+ * `URL.origin` when the base parses to `http(s):` with a NON-loopback host,
+ * else null (absent/invalid/loopback base ⇒ fail closed, exactly like an
+ * empty allowlist — loopback is never accepted as a fetch destination).
+ */
+export function normalizePublicBaseOrigin(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return null;
+  }
+  try {
+    const base = new URL(raw.trim());
+    if (base.protocol !== "https:" && base.protocol !== "http:") {
+      return null;
+    }
+    if (isLoopbackHostname(base.hostname)) {
+      return null;
+    }
+    return base.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the fetch target for a `media.url`. Non-loopback URLs pass through
+ * verbatim (the exact-origin allowlist below stays authoritative). Loopback
+ * URLs are rewritten to `publicBaseOrigin` — origin ONLY, path/query/hash
+ * byte-for-byte — and return null when no usable public base exists (fail
+ * closed, same refusal as today) or when the media URL itself is malformed.
+ */
+export function resolveMediaTargetUrl(
+  mediaUrl: string,
+  publicBaseOrigin: string | null,
+): URL | null {
+  let current: URL;
+  try {
+    current = new URL(mediaUrl);
+  } catch {
+    return null;
+  }
+  if (!isLoopbackHostname(current.hostname)) {
+    return current;
+  }
+  const base = normalizePublicBaseOrigin(publicBaseOrigin);
+  if (base === null) {
+    return null;
+  }
+  return new URL(`${base}${current.pathname}${current.search}${current.hash}`);
+}
+
+/**
  * HTTP downloader with an exact-origin allowlist (SSRF guard), manual
  * redirect handling (every hop revalidated, max {@link MEDIA_MAX_REDIRECT_HOPS}
  * followed), timeout, bounded stream read with a `Content-Length` pre-check,
@@ -296,6 +391,7 @@ function normalizeAllowedOrigin(entry: string): string | null {
 export class HttpWahaMediaPort implements WahaMediaPort {
   readonly name = "waha-media-http";
   private readonly allowedOrigins: Set<string>;
+  private readonly publicBaseOrigin: string | null;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly apiKey: string | null;
@@ -304,8 +400,18 @@ export class HttpWahaMediaPort implements WahaMediaPort {
     this.allowedOrigins = new Set(
       (options.allowedHosts ?? [])
         .map((entry) => normalizeAllowedOrigin(entry))
-        .filter((origin): origin is string => origin !== null),
+        .filter((origin): origin is string => origin !== null)
+        // Loopback is never allowlistable: a configured localhost entry is
+        // dropped here, so no fetch is ever issued back into loopback.
+        .filter((origin) => {
+          try {
+            return !isLoopbackHostname(new URL(origin).hostname);
+          } catch {
+            return false;
+          }
+        }),
     );
+    this.publicBaseOrigin = normalizePublicBaseOrigin(options.publicBaseOrigin ?? null);
     this.timeoutMs = options.timeoutMs ?? MEDIA_DOWNLOAD_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
     // Empty/whitespace-only keys are treated as absent (repo convention:
@@ -339,6 +445,17 @@ export class HttpWahaMediaPort implements WahaMediaPort {
       current = new URL(descriptor.mediaUrl as string);
     } catch {
       return { ok: false, code: "media_invalid", reason: "malformed media url" };
+    }
+    if (isLoopbackHostname(current.hostname)) {
+      // WAHA-reported loopback (`http://localhost:3000/...`): rewrite ONLY
+      // the origin to the configured public base, path/query/hash
+      // byte-for-byte. No usable base (absent/invalid/loopback) ⇒ fail
+      // closed exactly like a non-allowlisted origin, zero fetch.
+      const rewritten = resolveMediaTargetUrl(descriptor.mediaUrl as string, this.publicBaseOrigin);
+      if (rewritten === null) {
+        return { ok: false, code: "media_unavailable", reason: `media host not allowlisted: ${current.origin}` };
+      }
+      current = rewritten;
     }
     const initial = this.checkAllowedUrl(current, "media");
     if (!initial.ok) {
@@ -439,14 +556,17 @@ export function defaultWahaMediaPort(): WahaMediaPort {
  * Env wiring for the webhook media path (`WAHA_MEDIA_PORT` provider).
  *
  * Reads `WAHA_BASE_URL` + `WAHA_API_KEY` following the repo rule (empty means
- * absent). When both carry a non-blank value and the base URL parses, the
- * port allowlists exactly that WAHA origin (`URL.origin`, so scheme+host+port
- * must match) and sends the key as an `X-Api-Key` header — never as a URL
- * query, never logged (only presence is observable from the outside).
+ * absent). When both carry a non-blank value and the base URL parses to a
+ * NON-loopback `http(s):` origin, the port allowlists exactly that WAHA
+ * origin (`URL.origin`, so scheme+host+port must match), sends the key as an
+ * `X-Api-Key` header — never as a URL query, never logged (only presence is
+ * observable from the outside) — and rewrites WAHA-reported loopback
+ * `media.url`s to that same origin (path/query/hash byte-for-byte).
  *
- * Any missing/blank/unparsable value keeps the current fail-closed behavior:
- * an empty allowlist that refuses every download, identical to
- * `defaultWahaMediaPort()`.
+ * Any missing/blank/unparsable value — or a base URL that itself points at
+ * loopback (localhost is never a fetch destination) — keeps the current
+ * fail-closed behavior: an empty allowlist that refuses every download,
+ * identical to `defaultWahaMediaPort()`.
  */
 export function wahaMediaPortFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -466,7 +586,11 @@ export function wahaMediaPortFromEnv(
   } catch {
     return defaultWahaMediaPort();
   }
-  return new HttpWahaMediaPort({ apiKey, allowedHosts: [origin], fetchImpl });
+  if (normalizePublicBaseOrigin(origin) === null) {
+    // Non-http(s) or loopback base: never allowlist localhost, fail closed.
+    return defaultWahaMediaPort();
+  }
+  return new HttpWahaMediaPort({ apiKey, allowedHosts: [origin], publicBaseOrigin: origin, fetchImpl });
 }
 
 /**

@@ -17,7 +17,7 @@ import { RateLimitService } from "./auth/rate-limit.service.js";
 import { trustedProxyHopsFromEnv } from "./auth/rate-limit.js";
 import { AuditService } from "./audit/audit.service.js";
 import { TenantsController } from "./tenants/tenants.controller.js";
-import { CommandDbProvider, CommandsProvider, OutboundAttachmentStoreProvider } from "./commands/commands.provider.js";
+import { CommandDbProvider, CommandsProvider, InboundAttachmentStoreProvider, OutboundAttachmentStoreProvider } from "./commands/commands.provider.js";
 import { LocalTransport } from "./outbox/transport.js";
 import { OutboxDrainer } from "./outbox/outbox-drainer.js";
 import { OutboxController } from "./outbox/outbox.controller.js";
@@ -206,6 +206,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     CommandDbProvider,
     CommandsProvider,
     OutboundAttachmentStoreProvider,
+    InboundAttachmentStoreProvider,
     { provide: "POLICY_REPOSITORY", useFactory: (db: Kysely<Database> | null) => new KyselyPolicyRepository(db), inject: ["DB"] },
     PolicyResolver,
     { provide: "CAPABILITY_STORE", useFactory: (db: Kysely<Database> | null) => new KyselyCapabilityStore(db), inject: ["DB"] },

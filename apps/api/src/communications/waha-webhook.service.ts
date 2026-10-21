@@ -11,9 +11,14 @@ import type { InboxStore } from "../inbox/inbox-processor.js";
 import { normalizeWahaPayload, normalizeWahaStatus, riskForSessionStatus } from "./waha-normalizer.js";
 import {
   defaultWahaMediaPort,
+  mediaMetadataFor,
   type WahaMediaDescriptor,
   type WahaMediaPort,
 } from "./waha-media.js";
+import {
+  currentInboundAttachmentStore,
+  validateInboundUploadBytes,
+} from "./waha-inbound-attachments.js";
 import { validateSessionForTenant } from "./waha-sessions.js";
 import { setRiskState } from "./waha-risk-state.js";
 import { AgentPipeline } from "../agent/pipeline.js";
@@ -282,24 +287,22 @@ export class WahaWebhookService {
       return;
     }
     // G01/WAHA closure: media inbound diverts to the authorized
-    // download/ingest path. Failures are recorded on the manual-resolution
-    // exception queue (kind UNMATCHED_INBOUND, `media_*` reason) and the
-    // inbox row is acked — a bad file never becomes a message row and never
-    // blocks the fast ack.
+    // download → validate → persist → ingest path. Download failures are
+    // recorded on the manual-resolution exception queue (kind
+    // UNMATCHED_INBOUND, `media_*` reason) and the inbox row is acked — a
+    // bad file never becomes a message row and never blocks the fast ack.
     //
-    // No tenant-scoped attachment/blob storage exists in this codebase
-    // (verified 2026-10-12: `attachment_ref` is an opaque pointer consumed
-    // by `message.ingest`, with no blob port or table behind it), and no new
-    // subsystem may be created here — so verified bytes cannot be durably
-    // persisted. Emitting a fabricated `waha:<id>:<kind>` ref would claim an
-    // available attachment with zero stored bytes. A verified download is
-    // therefore recorded on the manual-resolution exception queue with an
-    // explicit ingest-pending marker instead of a message row: `attachmentRef`
-    // stays null and nothing claims the file is available. A future storage
-    // port can claim these rows by their `ingestPending` marker.
-    const contentType = "TEXT";
-    const attachmentRef: string | null = null;
-    const mediaMetadata: Record<string, unknown> | null = null;
+    // A verified download is validated against its REAL bytes (caps/MIME/
+    // magic-byte sniff via `validateInboundUploadBytes`, no consent gate:
+    // consent governs sending, not receiving) and persisted tenant-scoped
+    // (`platform.inbound_attachments`, migration 062) under an opaque ref.
+    // `message.ingest` then carries the real content type + ref with
+    // `mediaMetadataFor` metadata (AUDIO keeps the explicit
+    // `transcription: PENDING_FOLLOW_UP` follow-up marker — no
+    // transcription pipeline exists yet).
+    let contentType: "TEXT" | "IMAGE" | "AUDIO" | "DOCUMENT" | "VIDEO" = "TEXT";
+    let attachmentRef: string | null = null;
+    let mediaMetadata: Record<string, unknown> | null = null;
     if (normalized.media !== null) {
       const descriptor: WahaMediaDescriptor = normalized.media;
       let download: Awaited<ReturnType<WahaMediaPort["download"]>>;
@@ -321,22 +324,75 @@ export class WahaWebhookService {
         await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
         return;
       }
-      await this.recordMediaException(
-        tenantId,
-        normalized.externalId,
-        normalized.from,
-        "media_unavailable",
-        `attachment bytes verified (${download.fetched.mimeType}, ${download.fetched.sizeBytes}B) but no tenant-scoped attachment storage is wired; ingest pending`,
-        descriptor,
-        {
-          ingestPending: true,
-          ingestReason: "no tenant-scoped attachment storage; bytes verified but not persisted",
-          fetchedMimeType: download.fetched.mimeType,
-          fetchedSizeBytes: download.fetched.sizeBytes,
-        },
-      );
-      await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
-      return;
+      const byteCheck = validateInboundUploadBytes({
+        kind: descriptor.contentType,
+        mimeType: download.fetched.mimeType,
+        bytes: download.fetched.bytes,
+        durationSeconds: descriptor.durationSeconds,
+      });
+      if (!byteCheck.ok) {
+        await this.recordMediaException(
+          tenantId,
+          normalized.externalId,
+          normalized.from,
+          "media_invalid",
+          byteCheck.message,
+          descriptor,
+          { fetchedMimeType: download.fetched.mimeType, fetchedSizeBytes: download.fetched.sizeBytes },
+        );
+        await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
+        return;
+      }
+      let storedRef: string;
+      try {
+        const stored = await currentInboundAttachmentStore().create(tenantId, {
+          kind: descriptor.contentType,
+          mimeType: download.fetched.mimeType,
+          fileName: descriptor.fileName,
+          bytes: download.fetched.bytes,
+          durationSeconds: descriptor.durationSeconds,
+        });
+        if (!stored.ok) {
+          await this.recordMediaException(
+            tenantId,
+            normalized.externalId,
+            normalized.from,
+            stored.code === "storage_unavailable" ? "media_unavailable" : "media_invalid",
+            stored.code === "storage_unavailable"
+              ? `attachment bytes verified (${download.fetched.mimeType}, ${download.fetched.sizeBytes}B) but no tenant-scoped attachment storage is wired; ingest pending`
+              : stored.message,
+            descriptor,
+            {
+              ingestPending: stored.code === "storage_unavailable",
+              ingestReason:
+                stored.code === "storage_unavailable"
+                  ? "no tenant-scoped attachment storage; bytes verified but not persisted"
+                  : stored.message,
+              fetchedMimeType: download.fetched.mimeType,
+              fetchedSizeBytes: download.fetched.sizeBytes,
+            },
+          );
+          await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
+          return;
+        }
+        storedRef = stored.ref;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await this.recordMediaException(
+          tenantId,
+          normalized.externalId,
+          normalized.from,
+          "media_download_failed",
+          `inbound attachment persist failed: ${message}`,
+          descriptor,
+          { fetchedMimeType: download.fetched.mimeType, fetchedSizeBytes: download.fetched.sizeBytes },
+        );
+        await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
+        return;
+      }
+      contentType = descriptor.contentType;
+      attachmentRef = storedRef;
+      mediaMetadata = mediaMetadataFor(descriptor, download.fetched);
     }
     const result = await this.bus.execute<{
       messageId: string | null;
