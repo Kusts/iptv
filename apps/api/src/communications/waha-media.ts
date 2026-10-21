@@ -250,6 +250,14 @@ export interface HttpWahaMediaOptions {
   allowedHosts?: string[];
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
+  /**
+   * Optional WAHA API key for authorized `media.url` downloads (official
+   * `X-Api-Key` header flow). Sent as an `X-Api-Key` header on every fetched
+   * hop whose exact origin is allowlisted — never as a `?x-api-key=` URL
+   * query (server-side query auth is forbidden: it leaks into logs). Empty
+   * or absent means "no credential": no header is sent and the origin gate
+   * is unchanged (optional, fail-closed clear).
+   */
   apiKey?: string;
 }
 
@@ -300,7 +308,11 @@ export class HttpWahaMediaPort implements WahaMediaPort {
     );
     this.timeoutMs = options.timeoutMs ?? MEDIA_DOWNLOAD_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.apiKey = options.apiKey ?? null;
+    // Empty/whitespace-only keys are treated as absent (repo convention:
+    // empty env values mean "not configured") so no empty `X-Api-Key`
+    // header is ever emitted; the credential itself is used verbatim.
+    const candidateKey = options.apiKey ?? null;
+    this.apiKey = candidateKey !== null && candidateKey.trim().length > 0 ? candidateKey : null;
   }
 
   private checkAllowedUrl(
@@ -421,6 +433,40 @@ export class HttpWahaMediaPort implements WahaMediaPort {
 /** Fail-closed default: no allowlist, so every download is refused. */
 export function defaultWahaMediaPort(): WahaMediaPort {
   return new HttpWahaMediaPort();
+}
+
+/**
+ * Env wiring for the webhook media path (`WAHA_MEDIA_PORT` provider).
+ *
+ * Reads `WAHA_BASE_URL` + `WAHA_API_KEY` following the repo rule (empty means
+ * absent). When both carry a non-blank value and the base URL parses, the
+ * port allowlists exactly that WAHA origin (`URL.origin`, so scheme+host+port
+ * must match) and sends the key as an `X-Api-Key` header — never as a URL
+ * query, never logged (only presence is observable from the outside).
+ *
+ * Any missing/blank/unparsable value keeps the current fail-closed behavior:
+ * an empty allowlist that refuses every download, identical to
+ * `defaultWahaMediaPort()`.
+ */
+export function wahaMediaPortFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  fetchImpl: typeof fetch = fetch,
+): WahaMediaPort {
+  const baseUrl = env["WAHA_BASE_URL"];
+  const apiKey = env["WAHA_API_KEY"];
+  if (typeof baseUrl !== "string" || baseUrl.trim() === "") {
+    return defaultWahaMediaPort();
+  }
+  if (typeof apiKey !== "string" || apiKey.trim() === "") {
+    return defaultWahaMediaPort();
+  }
+  let origin: string;
+  try {
+    origin = new URL(baseUrl).origin;
+  } catch {
+    return defaultWahaMediaPort();
+  }
+  return new HttpWahaMediaPort({ apiKey, allowedHosts: [origin], fetchImpl });
 }
 
 /**

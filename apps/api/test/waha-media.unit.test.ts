@@ -531,6 +531,76 @@ describe("HttpWahaMediaPort with a controlled fetch double (no network)", () => 
     }
   });
 
+  it("sends X-Api-Key on the integral media.url and maps 401 to download failure", async () => {
+    const calls: CapturedCall[] = [];
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      apiKey: "secret-key",
+      fetchImpl: stubFetch(() => ({ status: 401, mime: "application/json", bytes: new Uint8Array([]) }), calls),
+    });
+    const result = await port.download(imageDescriptor());
+    expect(result).toMatchObject({ ok: false, code: "media_download_failed" });
+    if (result.ok) {
+      throw new Error("expected refusal");
+    }
+    expect(result.reason).toMatch(/HTTP 401/);
+    // Single integral URL fetch: verbatim descriptor URL, no binary-only
+    // endpoint, no `?download=true`, no key material in the query string.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("https://waha.test/api/files/img-0001.jpg");
+    expect(calls[0]?.url).not.toContain("x-api-key");
+    expect(calls[0]?.url).not.toContain("download=true");
+    expect(calls[0]?.headers["X-Api-Key"]).toBe("secret-key");
+  });
+
+  it("never sends the api key as a URL query on success (header only)", async () => {
+    const calls: CapturedCall[] = [];
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      apiKey: "secret-key",
+      fetchImpl: stubFetch(
+        () => ({ status: 200, mime: "image/jpeg", bytes: new Uint8Array([1, 2, 3]) }),
+        calls,
+      ),
+    });
+    const result = await port.download(imageDescriptor());
+    expect(result.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("https://waha.test/api/files/img-0001.jpg");
+    expect(new URL(calls[0]?.url ?? "").search).toBe("");
+    expect(calls[0]?.headers["X-Api-Key"]).toBe("secret-key");
+  });
+
+  it("omits X-Api-Key when no apiKey is configured (optional, fail-closed clear)", async () => {
+    const calls: CapturedCall[] = [];
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      fetchImpl: stubFetch(
+        () => ({ status: 200, mime: "image/jpeg", bytes: new Uint8Array([1, 2, 3]) }),
+        calls,
+      ),
+    });
+    const result = await port.download(imageDescriptor());
+    expect(result.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect("X-Api-Key" in (calls[0]?.headers ?? {})).toBe(false);
+  });
+
+  it("treats an empty apiKey as absent (no empty header emitted)", async () => {
+    const calls: CapturedCall[] = [];
+    const port = new HttpWahaMediaPort({
+      allowedHosts: ["waha.test"],
+      apiKey: "",
+      fetchImpl: stubFetch(
+        () => ({ status: 200, mime: "image/jpeg", bytes: new Uint8Array([1, 2, 3]) }),
+        calls,
+      ),
+    });
+    const result = await port.download(imageDescriptor());
+    expect(result.ok).toBe(true);
+    expect("X-Api-Key" in (calls[0]?.headers ?? {})).toBe(false);
+  });
+
   it("refuses a redirect chain past the hop budget", async () => {
     const calls: CapturedCall[] = [];
     const port = new HttpWahaMediaPort({

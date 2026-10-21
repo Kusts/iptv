@@ -34,6 +34,7 @@ import { CommunicationsController } from "./communications/communications.contro
 import { UploadPreadmitBinder } from "./communications/upload-preadmit.js";
 import { WahaWebhookController } from "./communications/waha-webhook.controller.js";
 import { WahaWebhookService } from "./communications/waha-webhook.service.js";
+import { WahaMediaPortProvider } from "./communications/waha-media.provider.js";
 import { CommerceController } from "./commerce/commerce.controller.js";
 import { SubscriptionController } from "./subscription/subscription.controller.js";
 import { RenewalController } from "./renewal/renewal.controller.js";
@@ -219,6 +220,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     InboxStoreProvider,
     InboxProcessor,
     WahaWebhookService,
+    WahaMediaPortProvider,
     AsaasWebhookService,
     // W1-08 workflow substrate: local in-process default (non-durable);
     // Hatchet only when HATCHET_API_TOKEN is set (Wave-0-gated).
