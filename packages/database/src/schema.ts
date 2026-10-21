@@ -126,6 +126,20 @@ export interface PlatformOutboundAttachmentsTable {
   created_at: Date;
 }
 
+/** Mirrors `platform.message_transcripts` (migration 063, append-only transcription event log). */
+export interface PlatformMessageTranscriptsTable {
+  id: string;
+  tenant_id: string;
+  message_id: string;
+  status: string;
+  attempt: number;
+  engine: string | null;
+  model: string | null;
+  transcript: string | null;
+  error: string | null;
+  created_at: Date;
+}
+
 /** Mirrors `platform.inbound_attachments` (migration 062, immutable blob store). */
 export interface PlatformInboundAttachmentsTable {
   id: string;
@@ -2004,6 +2018,7 @@ export interface Database {
   "platform.audit_log": PlatformAuditLogTable;
   "platform.outbound_attachments": PlatformOutboundAttachmentsTable;
   "platform.inbound_attachments": PlatformInboundAttachmentsTable;
+  "platform.message_transcripts": PlatformMessageTranscriptsTable;
   "platform.domain_events": PlatformDomainEventsTable;
   "platform.idempotency_keys": PlatformIdempotencyKeysTable;
   "platform.inbox_messages": PlatformInboxMessagesTable;

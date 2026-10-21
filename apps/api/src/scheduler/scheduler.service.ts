@@ -6,6 +6,7 @@ import { recordCommandExecuted, withSpan } from "@iptv/observability";
 import { CommandBus } from "../commands/command-bus.js";
 import { OutboxDrainer, isLegacyOutboxDrainEnabled } from "../outbox/outbox-drainer.js";
 import { WahaWebhookService } from "../communications/waha-webhook.service.js";
+import { TranscriptionService } from "../communications/groq-transcription.service.js";
 import { AsaasWebhookService } from "../billing/asaas-webhook.service.js";
 import { ProviderDispatcherService } from "../provider/provider-dispatcher.service.js";
 import { providerDispatchModeFromEnv } from "../provider/provider-port.js";
@@ -72,6 +73,7 @@ export interface SchedulerTickResult {
     waha: { processed: number; failed: number };
     asaas: { processed: number; failed: number };
   };
+  transcription: { processed: number; failed: number };
   errors: string[];
 }
 
@@ -111,6 +113,7 @@ export class SchedulerService implements OnModuleDestroy {
     @Inject(WahaWebhookService) private readonly waha: WahaWebhookService,
     @Inject(AsaasWebhookService) private readonly asaas: AsaasWebhookService,
     @Optional() @Inject(ProviderDispatcherService) private readonly providerDispatcher?: ProviderDispatcherService | null,
+    @Optional() @Inject(TranscriptionService) private readonly transcription?: TranscriptionService | null,
   ) {}
 
   isEnabled(): boolean {
@@ -177,6 +180,7 @@ export class SchedulerService implements OnModuleDestroy {
         waha: { processed: 0, failed: 0 },
         asaas: { processed: 0, failed: 0 },
       },
+      transcription: { processed: 0, failed: 0 },
       errors: [],
     };
     if (this.db === null) {
@@ -220,6 +224,16 @@ export class SchedulerService implements OnModuleDestroy {
     });
     await this.runTask(result, "webhook.asaas.drainPending", async () => {
       result.webhooks.asaas = await this.asaas.drainPending(25);
+    });
+    // Groq STT transcription drain (TRANSCRICAO-GROQ-20261021): claims
+    // PENDING_FOLLOW_UP audio and merges transcripts back into
+    // `metadata_json.transcription`. Runs before the outbox drain so the
+    // best-effort post-transcription evaluation converges in the same tick.
+    await this.runTask(result, "transcription.drainPending", async () => {
+      if (this.transcription == null) {
+        return;
+      }
+      result.transcription = await this.transcription.drainPending(10);
     });
     // CV-DSP-01 durable provider dispatch (platform-level, opt-in): runs
     // only in `durable` dispatch mode — inline (default) never claims. The
