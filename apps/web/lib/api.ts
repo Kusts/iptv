@@ -170,6 +170,8 @@ export interface ApiOptions {
    * reconciliação do provider via handler global).
    */
   notifyContextConflict?: boolean;
+  idempotencyKey?: string;
+  headers?: Record<string, string>;
 }
 
 export async function apiFetch<T>(path: string, opts: ApiOptions = {}): Promise<T> {
@@ -183,6 +185,8 @@ export async function apiFetch<T>(path: string, opts: ApiOptions = {}): Promise<
   const headers: Record<string, string> = {
     "content-type": "application/json",
     ...(token ? { authorization: `Bearer ${token}` } : {}),
+    ...(opts.idempotencyKey ? { "idempotency-key": opts.idempotencyKey } : {}),
+    ...(opts.headers ?? {}),
   };
   // Toda chamada autenticada protegida leva o precondicionante, exceto o
   // bootstrap de sessão e o logout (que existem para descobrir/encerrar).
@@ -447,6 +451,16 @@ export interface OrderRow {
   settledAmountMinor?: string | number;
   created_at?: string;
   createdAt?: string;
+}
+
+export interface CatalogPlan {
+  id: string;
+  planKey: string;
+  name: string;
+  billingIntervalUnit: string;
+  billingIntervalCount: number;
+  priceMinor: string;
+  currency: string;
 }
 
 export interface OrderDetail {

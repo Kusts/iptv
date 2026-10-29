@@ -14,8 +14,9 @@ import { useToast } from "../../components/ui/Toast";
 import { useApi } from "../../lib/useApi";
 import { useOptionalHasPermission } from "../../lib/auth";
 import { formatDateTime, formatMinor } from "../../lib/money";
+import { CopySnippet } from "../../components/ui/CopySnippet";
 import { api, userMessage } from "../../lib/api";
-import type { OrderDetail, OrderRow } from "../../lib/api";
+import type { CatalogPlan, OrderDetail, OrderRow } from "../../lib/api";
 
 const WRITE_PERMISSION = "commerce.order.write";
 const CHARGE_WRITE_PERMISSION = "billing.charge.write";
@@ -154,6 +155,7 @@ function OrderDetailPanel({
     id: string;
     status: string;
     providerChargeId?: string | null;
+    qrCode?: string | null;
   } | null>(null);
   const [createdSubscription, setCreatedSubscription] = useState<{
     id: string;
@@ -204,15 +206,17 @@ function OrderDetailPanel({
       if (personId) {
         await api.post("/v1/billing-customers/provision", { personId });
       }
+      const idempotencyKey = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `idemp-${Date.now()}`;
       const charge = await api.post<{
         id: string;
         status: string;
         providerChargeId?: string | null;
+        qrCode?: string | null;
       }>("/v1/charges", {
         orderId: o.id,
         paymentMethod: "PIX",
         billingType: "PIX",
-      });
+      }, { idempotencyKey });
       setCreatedCharge(charge);
       push("Cobrança PIX gerada com sucesso!");
       refresh();
@@ -303,14 +307,28 @@ function OrderDetailPanel({
           </div>
           {actionError ? <p className="cc-field-error cc-u-mt-2">{actionError}</p> : null}
           {createdCharge ? (
-            <div className="cc-card cc-u-mt-3" style={{ padding: "0.75rem" }}>
+            <div className="cc-card cc-u-mt-3" style={{ padding: "0.85rem", background: "var(--cc-bg-surface-elevated, #fbfbfb)" }}>
               <p><strong>Cobrança PIX gerada:</strong></p>
               <p className="cc-mono">ID: {createdCharge.id}</p>
               {createdCharge.providerChargeId ? (
                 <p className="cc-mono">Provedor: {createdCharge.providerChargeId}</p>
               ) : null}
               <p>Status: <StatusPill status={createdCharge.status} /></p>
-              <p><Link href="/billing">Ver cobranças em /billing</Link></p>
+              {createdCharge.qrCode ? (
+                <div className="cc-u-mt-3 cc-u-mb-2">
+                  <p><strong>Instrução de Pagamento PIX (Copia e Cola):</strong></p>
+                  <CopySnippet text={createdCharge.qrCode} label="código PIX Copia e Cola" className="cc-u-mb-2" />
+                  <p className="cc-muted" style={{ fontSize: "0.85rem" }}>
+                    Instruções: Abra o app bancário do pagador, selecione &quot;Pagar com PIX Copia e Cola&quot; e cole o código acima. A liquidação é confirmada via webhook.
+                  </p>
+                </div>
+              ) : null}
+              <div className="cc-row cc-u-mt-2" style={{ alignItems: "center", gap: "0.5rem" }}>
+                <Button variant="secondary" onClick={() => { refresh(); onOrderMutated(); }}>
+                  Atualizar status do pedido
+                </Button>
+                <Link href="/billing" className="cc-u-ml-2">Ver cobranças em /billing</Link>
+              </div>
             </div>
           ) : null}
           {createdSubscription ? (
@@ -346,9 +364,22 @@ function CreateOrderDialog({
   const personsAvailable = canListPersons && persons !== null && personsQuery.error === null;
   const personList: PersonOption[] | null = personsAvailable ? persons : null;
 
+  const plansQuery = useApi<{ plans: CatalogPlan[] }>("/v1/catalog/plans");
+  const catalogPlans = plansQuery.data?.plans ?? null;
+  const plansAvailable = catalogPlans !== null && catalogPlans.length > 0;
+
   const [personId, setPersonId] = useState("");
   const [sellableType, setSellableType] = useState<"PLAN" | "PRODUCT" | "ADDON">("PLAN");
   const [sellableId, setSellableId] = useState(DEFAULT_PILOT_PLAN_ID);
+
+  useEffect(() => {
+    if (plansAvailable && catalogPlans.length > 0) {
+      if (!catalogPlans.some((p) => p.id === sellableId)) {
+        const first = catalogPlans[0];
+        if (first) setSellableId(first.id);
+      }
+    }
+  }, [plansAvailable, catalogPlans, sellableId]);
   const [quantity, setQuantity] = useState("1");
   const [orderType, setOrderType] = useState<string>("NEW_SUBSCRIPTION");
   const [currency, setCurrency] = useState("BRL");
@@ -418,14 +449,20 @@ function CreateOrderDialog({
         ...(curr.length === 3 ? { currency: curr } : {}),
       };
 
-      const quoted = await api.post<{ id: string; status: string }>("/v1/orders/quote", quoteBody);
+      const quoteIdempotency = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `quote-${Date.now()}`;
+      const quoted = await api.post<{ id: string; status: string }>(
+        "/v1/orders/quote",
+        quoteBody,
+        { idempotencyKey: quoteIdempotency },
+      );
       const createdId = quoted.id;
 
       if (autoSubmit) {
-        await api.post(`/v1/orders/${createdId}/submit`, {});
-                push("Pedido cotado e submetido (AWAITING_PAYMENT).");
+        const submitIdempotency = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `subm-${Date.now()}`;
+        await api.post(`/v1/orders/${createdId}/submit`, {}, { idempotencyKey: submitIdempotency });
+        push("Pedido cotado e submetido (AWAITING_PAYMENT).");
       } else {
-                push("Pedido cotado em rascunho (DRAFT).");
+        push("Pedido cotado em rascunho (DRAFT).");
       }
 
       onClose();
@@ -489,14 +526,30 @@ function CreateOrderDialog({
           </Select>
         </Field>
 
-        <Field label="ID do item vendável (UUID)">
-          <Input
-            value={sellableId}
-            onChange={(e) => setSellableId(e.target.value)}
-            disabled={busy}
-            placeholder="00000000-0000-4000-8000-000000000311"
-          />
-        </Field>
+        {sellableType === "PLAN" && plansAvailable ? (
+          <Field label="Plano do catálogo">
+            <Select
+              value={sellableId}
+              onChange={(e) => setSellableId(e.target.value)}
+              disabled={busy}
+            >
+              {catalogPlans.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} — {formatMinor(p.priceMinor, p.currency)} ({p.billingIntervalCount} {p.billingIntervalUnit})
+                </option>
+              ))}
+            </Select>
+          </Field>
+        ) : (
+          <Field label="ID do item vendável (UUID)">
+            <Input
+              value={sellableId}
+              onChange={(e) => setSellableId(e.target.value)}
+              disabled={busy}
+              placeholder="00000000-0000-4000-8000-000000000311"
+            />
+          </Field>
+        )}
 
         <Field label="Quantidade">
           <Input

@@ -240,7 +240,7 @@ function handleChargeCreateFactory(deps: BillingCommandDeps) {
     ctx: CommandHandlerContext,
     input: ChargeCreateInput,
   ): Promise<
-    CommandResult<{ id: string; status: string; providerChargeId: string | null; effectUncertain: boolean }>
+    CommandResult<{ id: string; status: string; providerChargeId: string | null; qrCode?: string | null; effectUncertain: boolean }>
   > => {
     const trx = requireTrx(ctx);
     const order = await trx
@@ -353,7 +353,7 @@ function handleChargeCreateFactory(deps: BillingCommandDeps) {
         .execute();
       // Provider never accepted: the charge stays PENDING for an explicit
       // operator retry with a new idempotency key — NEVER an auto-retry.
-      return { ok: true, data: { id: chargeId, status: "PENDING", providerChargeId: null, effectUncertain: false } };
+      return { ok: true, data: { id: chargeId, status: "PENDING", providerChargeId: null, qrCode: null, effectUncertain: false } };
     }
     if (created.effect === "KNOWN_NOT_APPLIED") {
       await trx
@@ -364,7 +364,7 @@ function handleChargeCreateFactory(deps: BillingCommandDeps) {
         .where("attempt_no", "=", 1)
         .execute();
       // Provider provably did NOT accept: stays PENDING, no retry here.
-      return { ok: true, data: { id: chargeId, status: "PENDING", providerChargeId: created.providerChargeId, effectUncertain: false } };
+      return { ok: true, data: { id: chargeId, status: "PENDING", providerChargeId: created.providerChargeId, qrCode: null, effectUncertain: false } };
     }
     await trx
       .insertInto("billing.charge_provider_bindings")
@@ -419,9 +419,9 @@ function handleChargeCreateFactory(deps: BillingCommandDeps) {
         reason: `Asaas create effect unknown for charge ${chargeId}; reconcile before any retry`,
         payload: { provider_charge_id: created.providerChargeId, detail: created.detail },
       });
-      return { ok: true, data: { id: chargeId, status: "PROCESSING", providerChargeId: created.providerChargeId, effectUncertain: true } };
+      return { ok: true, data: { id: chargeId, status: "PROCESSING", providerChargeId: created.providerChargeId, qrCode: created.qrCode, effectUncertain: true } };
     }
-    return { ok: true, data: { id: chargeId, status: "PROCESSING", providerChargeId: created.providerChargeId, effectUncertain: false } };
+    return { ok: true, data: { id: chargeId, status: "PROCESSING", providerChargeId: created.providerChargeId, qrCode: created.qrCode, effectUncertain: false } };
   };
 }
 
@@ -1608,7 +1608,7 @@ async function handleExceptionResolve(
 }
 
 export function registerBillingCommands(bus: CommandBus, deps: BillingCommandDeps = {}): void {
-  bus.register<ChargeCreateInput, { id: string; status: string; providerChargeId: string | null; effectUncertain: boolean }>({
+  bus.register<ChargeCreateInput, { id: string; status: string; providerChargeId: string | null; qrCode?: string | null; effectUncertain: boolean }>({
     name: "charge.create",
     permission: "billing.charge.write",
     auditAction: "charge.create",

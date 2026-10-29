@@ -28,7 +28,7 @@ beforeEach(() => {
 function sessionMocks(
   permissions: string[],
   routes: Record<string, unknown>,
-  seen: { posts: { url: string; body?: unknown }[] },
+  seen: { posts: { url: string; body?: unknown; headers?: Record<string, string> }[] },
 ): void {
   window.localStorage.setItem("iptv.session_token", "tok-ops");
   vi.stubGlobal(
@@ -52,7 +52,8 @@ function sessionMocks(
       }
       if ((init?.method ?? "GET") === "POST") {
         const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-        seen.posts.push({ url, body });
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        seen.posts.push({ url, body, headers });
         if (url.includes("/v1/orders/quote")) {
           return jsonResponse(200, {
             id: "ord-new-123",
@@ -74,6 +75,7 @@ function sessionMocks(
             id: "chg-123",
             status: "PROCESSING",
             providerChargeId: "pay_mock_456",
+            qrCode: "00020126580014br.gov.bcb.pix0136test-pix-copia-e-cola",
             effectUncertain: false,
           });
         }
@@ -266,7 +268,7 @@ describe("OrdersPage", () => {
   });
 
   it("com billing.charge.write e pedido AWAITING_PAYMENT, exibe botão e gera cobrança PIX", async () => {
-    const seen = { posts: [] as { url: string; body?: unknown }[] };
+    const seen = { posts: [] as { url: string; body?: unknown; headers?: Record<string, string> }[] };
     const awaitingOrder = {
       ...sampleOrder,
       id: "00000000-0000-4000-8000-000000000102",
@@ -315,7 +317,10 @@ describe("OrdersPage", () => {
     await waitFor(() => expect(screen.getByText("Cobrança PIX gerada:")).toBeTruthy());
     expect(screen.getByText("ID: chg-123")).toBeTruthy();
     expect(screen.getByText("Provedor: pay_mock_456")).toBeTruthy();
+    expect(screen.getByText("Instrução de Pagamento PIX (Copia e Cola):")).toBeTruthy();
+    expect(screen.getByText("00020126580014br.gov.bcb.pix0136test-pix-copia-e-cola")).toBeTruthy();
     expect(screen.getByText("Ver cobranças em /billing")).toBeTruthy();
+    expect(chargeCall?.headers?.["idempotency-key"]).toBeTruthy();
   });
 
   it("com subscription.write e pedido SETTLED, exibe botão e cria assinatura a partir do pedido", async () => {
@@ -359,5 +364,43 @@ describe("OrdersPage", () => {
     expect(screen.getByText("ID: sub-from-ord-789")).toBeTruthy();
     expect(screen.getByText("Ver assinaturas em /subscriptions")).toBeTruthy();
     expect(screen.getByText("Ir para /fulfillment")).toBeTruthy();
+  });
+
+  it("carrega planos do catálogo e exibe select dinâmico em vez de input manual de UUID", async () => {
+    const seen = { posts: [] as { url: string; body?: unknown; headers?: Record<string, string> }[] };
+    const person = { id: "00000000-0000-4000-8000-000000000201", canonicalName: "Cliente Teste" };
+    const catalogPlan = {
+      id: "11111111-2222-3333-4444-555555555555",
+      planKey: "super_anual",
+      name: "Plano Anual Premium",
+      billingIntervalUnit: "YEAR",
+      billingIntervalCount: 1,
+      priceMinor: "24000",
+      currency: "BRL",
+    };
+
+    sessionMocks(
+      ["billing.read", "commerce.order.write", "crm.person.read"],
+      {
+        "/v1/crm/persons": { persons: [person] },
+        "/v1/catalog/plans": { plans: [catalogPlan] },
+        "/v1/orders": { orders: [] },
+      },
+      seen,
+    );
+
+    renderPage(<OrdersPage />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Novo pedido" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Novo pedido" }));
+
+    await waitFor(() => expect(screen.getByText("Plano do catálogo")).toBeTruthy());
+    expect(screen.getByText(/Plano Anual Premium/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cotar e submeter" }));
+    await waitFor(() => expect(seen.posts.some((p) => p.url.includes("/v1/orders/quote"))).toBe(true));
+
+    const quoteCall = seen.posts.find((p) => p.url.includes("/v1/orders/quote"));
+    expect((quoteCall?.body as any)?.items?.[0]?.sellableId).toBe(catalogPlan.id);
+    expect(quoteCall?.headers?.["idempotency-key"]).toBeTruthy();
   });
 });
