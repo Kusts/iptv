@@ -22,7 +22,9 @@ export const CSP_REPORT_ONLY_HEADER = "Content-Security-Policy-Report-Only";
 
 function apiOriginForCsp(): string {
   const raw =
-    process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+    process.env.NEXT_PUBLIC_API_BASE_URL && process.env.NEXT_PUBLIC_API_BASE_URL.trim().length > 0
+      ? process.env.NEXT_PUBLIC_API_BASE_URL
+      : "http://localhost:3001";
   try {
     return new URL(raw).origin;
   } catch {

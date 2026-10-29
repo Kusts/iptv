@@ -8,7 +8,9 @@
 // O report vai para o endpoint local `/api/csp-report` (204, só loga).
 function apiOriginForCsp() {
   const raw =
-    process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+    process.env.NEXT_PUBLIC_API_BASE_URL && process.env.NEXT_PUBLIC_API_BASE_URL.trim().length > 0
+      ? process.env.NEXT_PUBLIC_API_BASE_URL
+      : "http://localhost:3001";
   try {
     return new URL(raw).origin;
   } catch {
@@ -92,6 +94,17 @@ const nextConfig = {
             value: cspReportOnlyValue,
           },
         ],
+      },
+    ];
+  },
+  async rewrites() {
+    const apiTarget =
+      process.env.INTERNAL_API_URL ||
+      (process.env.NODE_ENV === "production" ? "http://api:3001" : "http://127.0.0.1:3001");
+    return [
+      {
+        source: "/v1/:path*",
+        destination: `${apiTarget}/v1/:path*`,
       },
     ];
   },
