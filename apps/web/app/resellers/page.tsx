@@ -8,7 +8,7 @@ import { Card } from "../../components/ui/Card";
 import { StatusPill } from "../../components/ui/Badge";
 import { Table } from "../../components/ui/Table";
 import { EmptyState, ErrorState, LoadingSkeleton } from "../../components/ui/States";
-import { Field, Input } from "../../components/ui/Input";
+import { Field, Input, Select } from "../../components/ui/Input";
 import { useApi } from "../../lib/useApi";
 import { formatDateTime, formatMinor } from "../../lib/money";
 import { useOptionalHasPermission } from "../../lib/auth";
@@ -76,6 +76,7 @@ export default function ResellersPage(): React.JSX.Element {
 function PartnersSection(): React.JSX.Element {
   const { data, error, loading, reload } = useApi<{ items: PartnerRow[] }>("/v1/partners");
   const { busy, run } = useRevenueCommand();
+  const [createOpen, setCreateOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ path: string; title: string; label: string } | null>(null);
   const hasPermission = useOptionalHasPermission();
@@ -97,6 +98,11 @@ function PartnersSection(): React.JSX.Element {
         <Button variant="secondary" onClick={reload}>
           Recarregar
         </Button>
+        {canWrite ? (
+          <Button variant="primary" onClick={() => setCreateOpen(true)}>
+            Novo parceiro
+          </Button>
+        ) : null}
       </div>
       {loading ? <LoadingSkeleton lines={6} /> : null}
       {error !== null ? <ErrorState message={error} onRetry={reload} /> : null}
@@ -147,8 +153,18 @@ function PartnersSection(): React.JSX.Element {
         </Card>
       ) : null}
       {!canWrite ? (
-        <p className="cc-muted">Você não tem a permissão crm.lead.write; ativação e conversão ficam indisponíveis.</p>
+        <p className="cc-muted cc-u-mt-3">Você não tem a permissão crm.lead.write; ativação e conversão ficam indisponíveis.</p>
       ) : null}
+
+      <CreatePartnerDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onDone={() => {
+          setCreateOpen(false);
+          reload();
+        }}
+      />
+
       <ConfirmAction
         title={dialog?.title ?? ""}
         open={dialog !== null}
@@ -160,6 +176,77 @@ function PartnersSection(): React.JSX.Element {
         <p className="cc-muted">O servidor valida elegibilidade antes de aplicar. Confirme para enviar.</p>
       </ConfirmAction>
     </div>
+  );
+}
+
+function CreatePartnerDialog({
+  open,
+  onClose,
+  onDone,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onDone: () => void;
+}): React.JSX.Element {
+  const { busy, run } = useRevenueCommand();
+  const [displayName, setDisplayName] = useState("");
+  const [initialStatus, setInitialStatus] = useState<"ONBOARDING" | "PROSPECT">("ONBOARDING");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const confirm = (): void => {
+    setFormError(null);
+    const trimmed = displayName.trim();
+    if (trimmed.length === 0) {
+      setFormError("Informe o nome do parceiro.");
+      return;
+    }
+
+    void run(
+      "/v1/partners",
+      { displayName: trimmed, initialStatus },
+      "Parceiro cadastrado com sucesso.",
+      () => {
+        setDisplayName("");
+        setInitialStatus("ONBOARDING");
+        setFormError(null);
+        onClose();
+        onDone();
+      },
+    );
+  };
+
+  return (
+    <ConfirmAction
+      title="Novo parceiro"
+      open={open}
+      confirmLabel="Cadastrar parceiro"
+      busy={busy}
+      onClose={() => {
+        setFormError(null);
+        onClose();
+      }}
+      onConfirm={confirm}
+    >
+      <Field label="Nome de exibição do parceiro">
+        <Input
+          value={displayName}
+          onChange={(e) => setDisplayName(e.target.value)}
+          disabled={busy}
+          placeholder="Ex.: Distribuidora Parceira Sul"
+        />
+      </Field>
+      <Field label="Status inicial">
+        <Select
+          value={initialStatus}
+          onChange={(e) => setInitialStatus(e.target.value as "ONBOARDING" | "PROSPECT")}
+          disabled={busy}
+        >
+          <option value="ONBOARDING">ONBOARDING</option>
+          <option value="PROSPECT">PROSPECT</option>
+        </Select>
+      </Field>
+      {formError ? <p className="cc-field-error">{formError}</p> : null}
+    </ConfirmAction>
   );
 }
 
@@ -184,6 +271,9 @@ function PartnerDetailPanel({ id }: { id: string }): React.JSX.Element {
 }
 
 function NetworkSection(): React.JSX.Element {
+  const { data: partnersData } = useApi<{ items: PartnerRow[] }>("/v1/partners");
+  const partnerList = partnersData?.items ?? [];
+
   const [partnerId, setPartnerId] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
   const networkQs = activeId ? `/v1/partners/${activeId}/network` : null;
@@ -199,6 +289,13 @@ function NetworkSection(): React.JSX.Element {
 
   const children = network.data?.directChildren ?? network.data?.items ?? [];
   const balances = credits.data?.balances ?? [];
+
+  const handleSelectPartner = (id: string): void => {
+    setPartnerId(id);
+    if (id.trim().length > 0) {
+      setActiveId(id.trim());
+    }
+  };
 
   const confirmTopup = (): void => {
     if (!activeId) return;
@@ -216,7 +313,25 @@ function NetworkSection(): React.JSX.Element {
 
   return (
     <div>
-      <div className="cc-row cc-u-mb-4">
+      <div className="cc-row cc-u-mb-4" style={{ alignItems: "flex-end", flexWrap: "wrap", gap: "1rem" }}>
+        {partnerList.length > 0 ? (
+          <div style={{ minWidth: "260px" }}>
+            <Field label="Parceiro cadastrado">
+              <Select
+                value={partnerId}
+                onChange={(e) => handleSelectPartner(e.target.value)}
+                aria-label="Selecionar parceiro cadastrado"
+              >
+                <option value="">Selecione um parceiro…</option>
+                {partnerList.map((p) => (
+                  <option key={String(p.id)} value={String(p.id)}>
+                    {String(p.displayName ?? p.id).slice(0, 32)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
+        ) : null}
         <Field label="ID do parceiro (UUID)">
           <Input
             placeholder="UUID do parceiro"
@@ -225,13 +340,17 @@ function NetworkSection(): React.JSX.Element {
             className="cc-u-maxw-320"
           />
         </Field>
-        <Button onClick={() => setActiveId(partnerId.trim().length > 0 ? partnerId.trim() : null)}>
-          Consultar rede
-        </Button>
-        {canOrder && activeId ? (
-          <Button variant="secondary" disabled={busy} onClick={() => setTopupOpen(true)}>
-            Recarregar crédito
+        <div style={{ marginBottom: "0.25rem" }}>
+          <Button onClick={() => setActiveId(partnerId.trim().length > 0 ? partnerId.trim() : null)}>
+            Consultar rede
           </Button>
+        </div>
+        {canOrder && activeId ? (
+          <div style={{ marginBottom: "0.25rem" }}>
+            <Button variant="secondary" disabled={busy} onClick={() => setTopupOpen(true)}>
+              Recarregar crédito
+            </Button>
+          </div>
         ) : null}
       </div>
       {activeId === null ? (
@@ -268,7 +387,7 @@ function NetworkSection(): React.JSX.Element {
         </Card>
       ) : null}
       {!canOrder ? (
-        <p className="cc-muted">Você não tem a permissão commerce.order.write; recarga de crédito fica indisponível.</p>
+        <p className="cc-muted cc-u-mt-3">Você não tem a permissão commerce.order.write; recarga de crédito fica indisponível.</p>
       ) : null}
       <ConfirmAction title="Recarregar crédito" open={topupOpen} confirmLabel="Confirmar recarga" busy={busy} onClose={() => setTopupOpen(false)} onConfirm={confirmTopup}>
         <Field label="Valor (minor units, ex.: 10000 = R$ 100,00)">

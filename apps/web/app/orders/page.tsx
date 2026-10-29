@@ -368,7 +368,7 @@ function CreateOrderDialog({
   const autoPerson: PersonOption | null = showAutoPerson ? (personList?.[0] ?? null) : null;
 
   const handleQuoteAndMaybeSubmit = async (autoSubmit: boolean): Promise<void> => {
-    const pid = personId.trim();
+    const pid = (personId || (autoPerson ? autoPerson.id : "")).trim();
     const sid = sellableId.trim();
     const qty = parseInt(quantity, 10);
     const curr = currency.trim().toUpperCase();
