@@ -2,6 +2,14 @@
 
 ## Unreleased - Added
 
+- fix(security): resolução das 8 vulnerabilidades high/critical e estabilização de gates de CI (A01): atualização via overrides de dependências de `next@^15.5.28`, `undici@^8.12.3`, `vite@7.3.7`, `vitest>vite@7.3.7`, `launch-editor@^2.14.2` e `zod@^4.6.6`; adaptação de schemas e generics do Zod 4 em `packages/domain`, `packages/ai-runtime` e `apps/api/src/commands/command-bus.ts`; gate `python scripts/ci-audit-gate.py` com zero vulnerabilidades (0 high/critical, 0 recognized in baseline) e 27/27 testes de segurança passando em `test_ci_security_gates.py`.
+
+- fix(web): proxy same-origin /v1 na UI web para acesso remoto seguro (A05): atualização em `apps/web/lib/api.ts` para resolver chamadas no browser relativo à mesma origem (`""`) quando `NEXT_PUBLIC_API_BASE_URL` não for fornecida, eliminando fallback indevido para `http://localhost:3001` no navegador remoto e aproveitando os rewrites internos do Next.js; 17/17 testes de regressão passando em `apps/web/test/api.test.ts`.
+
+- feat(web): catálogo dinâmico de planos e entrega de PIX Copia e Cola em /orders (A04): novo controller `GET /v1/catalog/plans` com RLS do tenant e preços ativos; retorno de payload `qrCode` no comando `charge.create`; integração no formulário de pedidos com `<Select>` populado dinamicamente do catálogo; exibição do payload PIX com botão `CopySnippet`, instruções operacionais e propagação de cabeçalho `Idempotency-Key` no fluxo comercial; 7/7 testes passando em `apps/web/test/orders.test.tsx` e 200/200 testes verdes no `@iptv/web`.
+
+- docs(pilot): reconciliação canônica de workflow engine com ADR-0028 no P8-PILOT (A03): formalização explícita no `P8-PILOT.md` de que o MVP opera em modo local honesto (`LocalWorkflowAdapter`) sem dependência obrigatória de infraestrutura Hatchet para o piloto local, com F12 formalmente mantido como bloqueio externo de operador (`BLOCKED`, owner: operator).
+
 - fix(web): proxy de rotas /v1 via rewrites do Next.js e fallback de API_BASE: adicionado rewrites() no next.config.mjs direcionando /v1/:path* para a API e reforçado o fallback de NEXT_PUBLIC_API_BASE_URL vazio para evitar 404 em chamadas relativas /v1/auth/login e /v1/orders; 20/20 arquivos de teste (198 testes) e build standalone Next.js 15 verdes.
 
 - docs(pilot): checklist de gates de operador e observabilidade formalizados no P8-PILOT (P8-ENTRY-CHECKLIST-20261029): promoção do checklist de entrada do piloto com o registro factual dos gates comprovados (B1/B2 Asaas com nominal e refund live, M1/M2 WAHA text/drill/mídia/Groq STT, G07 MK Ativador formalmente diferido pós-MVP via ADR-0027, Steps 3/6-9 CINEVISION sob conformidade de fulfillment manual/supervisionado pós-challenge Cloudflare, e F12 com prova live W0-04 e stack Hatchet adotada no .env com tokens canônicos) e observabilidade ativa (P6) com export OTLP e alertas verificados; 100% dos 4 gates Python e contratos verdes.
