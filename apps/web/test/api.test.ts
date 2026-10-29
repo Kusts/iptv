@@ -27,8 +27,18 @@ describe("apiFetch", () => {
     const fetchMock = vi.fn(async () => jsonResponse(200, { ok: true }));
     vi.stubGlobal("fetch", fetchMock);
     await apiFetch("/v1/health");
-    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/v1/health");
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer tok-123");
+  });
+
+  it("resolve caminho same-origin relativo no browser para proxy reverso do Next.js sem vazar localhost", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(200, { ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    await apiFetch("/v1/catalog/plans");
+    const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/v1/catalog/plans");
+    expect(url).not.toContain("localhost:3001");
   });
 
   it("401 limpa o token e chama onUnauthorized com mensagem pt-BR", async () => {
