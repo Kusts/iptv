@@ -720,3 +720,168 @@ body.cc-body {
 .cc-u-attention-list { list-style: none; padding: 0; margin: 0 0 0.75rem; }
 .cc-u-attention-item { margin-bottom: var(--cc-space-3); }
 .cc-skeleton--line { margin-bottom: var(--cc-space-2); height: 1.25rem; }
+
+/* --- Dashboard / Torre de Controle (Fase 3) --- */
+.cc-dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+.cc-dashboard-title {
+  margin: 0;
+  font-size: 1.65rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: var(--cc-text);
+}
+.cc-dashboard-subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--cc-text-muted);
+  font-size: 0.88rem;
+}
+.cc-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+.cc-kpi-card {
+  background: var(--cc-surface);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  padding: 1.15rem 1.25rem;
+  box-shadow: var(--cc-shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  text-decoration: none;
+  color: inherit;
+}
+.cc-kpi-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--cc-shadow-md);
+  border-color: var(--cc-primary);
+}
+.cc-kpi-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.cc-kpi-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-surface-muted);
+  color: var(--cc-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cc-kpi-card-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--cc-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cc-kpi-value {
+  font-size: 1.55rem;
+  font-weight: 800;
+  color: var(--cc-text);
+  line-height: 1.2;
+}
+.cc-kpi-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: var(--cc-text-muted);
+}
+.cc-kpi-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--cc-primary);
+  font-weight: 600;
+}
+.cc-telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+}
+.cc-telemetry-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--cc-success);
+}
+.cc-telemetry-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--cc-radius-pill);
+  background: var(--cc-success);
+  box-shadow: 0 0 8px var(--cc-success);
+}
+.cc-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+.cc-quick-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--cc-surface);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  text-decoration: none;
+  color: var(--cc-text);
+  transition: all 0.15s ease;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.cc-quick-item:hover {
+  background: var(--cc-surface-muted);
+  border-color: var(--cc-primary);
+  color: var(--cc-primary);
+  transform: translateX(2px);
+}
+.cc-quick-item-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--cc-radius-xs);
+  background: var(--cc-surface-muted);
+  color: var(--cc-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.cc-quick-item-title {
+  font-weight: 600;
+  color: var(--cc-text);
+  line-height: 1.25;
+}
+.cc-quick-item-desc {
+  font-size: 0.74rem;
+  color: var(--cc-text-muted);
+  margin-top: 0.15rem;
+}
+.cc-attention-card-item {
+  background: var(--cc-surface-muted);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.65rem;
+  transition: border-color 0.15s ease;
+}
+.cc-attention-card-item:hover {
+  border-color: var(--cc-primary);
+}

@@ -149,7 +149,7 @@ export function NeedsAttention(): React.JSX.Element {
       ) : null}
       <ul className="cc-u-attention-list">
         {preview.map((item) => (
-          <li key={rowKey(item)} className="cc-u-attention-item">
+          <li key={rowKey(item)} className="cc-u-attention-item cc-attention-card-item">
             <div className="cc-row">
               <Badge tone={slaTone(item.sla)}>{slaText(item.sla)}</Badge>
               <span className="cc-muted">{sourceLabel(item.source)}</span>
