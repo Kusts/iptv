@@ -61,6 +61,29 @@ function sessionMocks(
             currency: "BRL",
           });
         }
+        if (url.includes("/v1/billing-customers/provision")) {
+          return jsonResponse(200, {
+            id: "prov-1",
+            personId: body?.personId,
+            providerCustomerId: "cus_mock_123",
+            provisioned: true,
+          });
+        }
+        if (url.includes("/v1/charges")) {
+          return jsonResponse(200, {
+            id: "chg-123",
+            status: "PROCESSING",
+            providerChargeId: "pay_mock_456",
+            effectUncertain: false,
+          });
+        }
+        if (url.includes("/v1/subscriptions/from-order")) {
+          return jsonResponse(200, {
+            id: "sub-from-ord-789",
+            status: "PENDING_ACTIVATION",
+            already: false,
+          });
+        }
         return jsonResponse(200, { id: "ord-1", status: "AWAITING_PAYMENT" });
       }
       const ordered = Object.entries(routes).sort((a, b) => b[0].length - a[0].length);
@@ -240,5 +263,101 @@ describe("OrdersPage", () => {
       orderType: "NEW_SUBSCRIPTION",
       currency: "BRL",
     });
+  });
+
+  it("com billing.charge.write e pedido AWAITING_PAYMENT, exibe botão e gera cobrança PIX", async () => {
+    const seen = { posts: [] as { url: string; body?: unknown }[] };
+    const awaitingOrder = {
+      ...sampleOrder,
+      id: "00000000-0000-4000-8000-000000000102",
+      person_id: "00000000-0000-4000-8000-000000000201",
+      status: "AWAITING_PAYMENT",
+    };
+
+    sessionMocks(
+      ["billing.read", "billing.charge.write"],
+      {
+        "/v1/orders/00000000-0000-4000-8000-000000000102": {
+          order: awaitingOrder,
+          items: sampleItems,
+        },
+        "/v1/orders": {
+          orders: [awaitingOrder],
+        },
+      },
+      seen,
+    );
+
+    renderPage(<OrdersPage />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Detalhe" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Detalhe" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Gerar cobrança PIX" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Gerar cobrança PIX" }));
+
+    await waitFor(() =>
+      expect(seen.posts.some((p) => p.url.includes("/v1/billing-customers/provision"))).toBe(true),
+    );
+    await waitFor(() =>
+      expect(seen.posts.some((p) => p.url.includes("/v1/charges"))).toBe(true),
+    );
+
+    const provCall = seen.posts.find((p) => p.url.includes("/v1/billing-customers/provision"));
+    expect(provCall?.body).toEqual({ personId: "00000000-0000-4000-8000-000000000201" });
+
+    const chargeCall = seen.posts.find((p) => p.url.includes("/v1/charges"));
+    expect(chargeCall?.body).toEqual({
+      orderId: "00000000-0000-4000-8000-000000000102",
+      paymentMethod: "PIX",
+      billingType: "PIX",
+    });
+
+    await waitFor(() => expect(screen.getByText("Cobrança PIX gerada:")).toBeTruthy());
+    expect(screen.getByText("ID: chg-123")).toBeTruthy();
+    expect(screen.getByText("Provedor: pay_mock_456")).toBeTruthy();
+    expect(screen.getByText("Ver cobranças em /billing")).toBeTruthy();
+  });
+
+  it("com subscription.write e pedido SETTLED, exibe botão e cria assinatura a partir do pedido", async () => {
+    const seen = { posts: [] as { url: string; body?: unknown }[] };
+    const settledOrder = {
+      ...sampleOrder,
+      id: "00000000-0000-4000-8000-000000000103",
+      status: "SETTLED",
+      settled_amount_minor: 3000,
+    };
+
+    sessionMocks(
+      ["billing.read", "subscription.write"],
+      {
+        "/v1/orders/00000000-0000-4000-8000-000000000103": {
+          order: settledOrder,
+          items: sampleItems,
+        },
+        "/v1/orders": {
+          orders: [settledOrder],
+        },
+      },
+      seen,
+    );
+
+    renderPage(<OrdersPage />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Detalhe" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Detalhe" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Criar assinatura" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Criar assinatura" }));
+
+    await waitFor(() =>
+      expect(seen.posts.some((p) => p.url.includes("/v1/subscriptions/from-order"))).toBe(true),
+    );
+
+    const subCall = seen.posts.find((p) => p.url.includes("/v1/subscriptions/from-order"));
+    expect(subCall?.body).toEqual({ orderId: "00000000-0000-4000-8000-000000000103" });
+
+    await waitFor(() => expect(screen.getByText("Assinatura gerada:")).toBeTruthy());
+    expect(screen.getByText("ID: sub-from-ord-789")).toBeTruthy();
+    expect(screen.getByText("Ver assinaturas em /subscriptions")).toBeTruthy();
+    expect(screen.getByText("Ir para /fulfillment")).toBeTruthy();
   });
 });

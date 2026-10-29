@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Shell } from "../../components/Shell";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
@@ -10,13 +11,15 @@ import { EmptyState, ErrorState, LoadingSkeleton } from "../../components/ui/Sta
 import { Dialog } from "../../components/ui/Dialog";
 import { Field, Input, Select } from "../../components/ui/Input";
 import { useToast } from "../../components/ui/Toast";
-import { useApi, clearApiCache } from "../../lib/useApi";
+import { useApi } from "../../lib/useApi";
 import { useOptionalHasPermission } from "../../lib/auth";
 import { formatDateTime, formatMinor } from "../../lib/money";
 import { api, userMessage } from "../../lib/api";
 import type { OrderDetail, OrderRow } from "../../lib/api";
 
 const WRITE_PERMISSION = "commerce.order.write";
+const CHARGE_WRITE_PERMISSION = "billing.charge.write";
+const SUBSCRIPTION_WRITE_PERMISSION = "subscription.write";
 const CRM_PERSON_READ_PERMISSION = "crm.person.read";
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -55,7 +58,7 @@ function rowCreated(r: OrderRow): string | null {
 }
 
 export default function OrdersPage(): React.JSX.Element {
-  const { data, error, loading, reload } = useApi<{ orders: OrderRow[] }>("/v1/orders");
+  const { data, error, loading, reload, refresh } = useApi<{ orders: OrderRow[] }>("/v1/orders");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const hasPermission = useOptionalHasPermission();
@@ -109,7 +112,7 @@ export default function OrdersPage(): React.JSX.Element {
               key={selectedId}
               id={selectedId}
               canWrite={canWrite}
-              onOrderMutated={reload}
+              onOrderMutated={refresh}
             />
           ) : (
             <EmptyState title="Selecione um pedido" />
@@ -136,10 +139,25 @@ function OrderDetailPanel({
   canWrite: boolean;
   onOrderMutated: () => void;
 }): React.JSX.Element {
-  const { data, error, loading, reload } = useApi<OrderDetail>(`/v1/orders/${id}`);
+  const { data, error, loading, reload, refresh } = useApi<OrderDetail>(`/v1/orders/${id}`);
   const { push } = useToast();
+  const hasPermission = useOptionalHasPermission();
+  const canWriteOrder = canWrite || hasPermission(WRITE_PERMISSION);
+  const canWriteCharge = hasPermission(CHARGE_WRITE_PERMISSION);
+  const canWriteSubscription = hasPermission(SUBSCRIPTION_WRITE_PERMISSION);
+
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [createdCharge, setCreatedCharge] = useState<{
+    id: string;
+    status: string;
+    providerChargeId?: string | null;
+  } | null>(null);
+  const [createdSubscription, setCreatedSubscription] = useState<{
+    id: string;
+    status: string;
+    already: boolean;
+  } | null>(null);
 
   if (loading) return <LoadingSkeleton lines={4} />;
   if (error !== null) return <ErrorState message={error} onRetry={reload} />;
@@ -151,9 +169,8 @@ function OrderDetailPanel({
     setActionError(null);
     try {
       await api.post(`/v1/orders/${id}/submit`, {});
-      clearApiCache();
       push("Pedido submetido (AWAITING_PAYMENT).");
-      reload();
+      refresh();
       onOrderMutated();
     } catch (err) {
       setActionError(userMessage(err));
@@ -167,9 +184,8 @@ function OrderDetailPanel({
     setActionError(null);
     try {
       await api.post(`/v1/orders/${id}/cancel`, {});
-      clearApiCache();
       push("Pedido cancelado.");
-      reload();
+      refresh();
       onOrderMutated();
     } catch (err) {
       setActionError(userMessage(err));
@@ -177,6 +193,61 @@ function OrderDetailPanel({
       setBusy(false);
     }
   };
+
+  const generatePixCharge = async (): Promise<void> => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      const personId = o.person_id ?? o.personId;
+      if (personId) {
+        await api.post("/v1/billing-customers/provision", { personId });
+      }
+      const charge = await api.post<{
+        id: string;
+        status: string;
+        providerChargeId?: string | null;
+      }>("/v1/charges", {
+        orderId: o.id,
+        paymentMethod: "PIX",
+        billingType: "PIX",
+      });
+      setCreatedCharge(charge);
+      push("Cobrança PIX gerada com sucesso!");
+      refresh();
+      onOrderMutated();
+    } catch (err) {
+      setActionError(userMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createSubscription = async (): Promise<void> => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      const sub = await api.post<{
+        id: string;
+        status: string;
+        already: boolean;
+      }>("/v1/subscriptions/from-order", {
+        orderId: o.id,
+      });
+      setCreatedSubscription(sub);
+      push(sub.already ? "Assinatura já existia para este pedido." : "Assinatura criada com sucesso!");
+      refresh();
+      onOrderMutated();
+    } catch (err) {
+      setActionError(userMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hasAnyAction =
+    (canWriteOrder && (o.status === "DRAFT" || o.status === "AWAITING_PAYMENT")) ||
+    (canWriteCharge && o.status === "AWAITING_PAYMENT") ||
+    (canWriteSubscription && o.status === "SETTLED");
 
   return (
     <Card title="Detalhe do pedido">
@@ -203,22 +274,53 @@ function OrderDetailPanel({
           ))}
         </ul>
       )}
-      {canWrite ? (
+      {hasAnyAction || createdCharge || createdSubscription ? (
         <div className="cc-u-mt-4">
           <h4>Ações do pedido</h4>
           <div className="cc-row">
-            {o.status === "DRAFT" ? (
+            {canWriteOrder && o.status === "DRAFT" ? (
               <Button disabled={busy} onClick={() => void submitOrder()}>
                 {busy ? "Submetendo…" : "Submeter pedido"}
               </Button>
             ) : null}
-            {o.status === "DRAFT" || o.status === "AWAITING_PAYMENT" ? (
+            {canWriteOrder && (o.status === "DRAFT" || o.status === "AWAITING_PAYMENT") ? (
               <Button variant="secondary" disabled={busy} onClick={() => void cancelOrder()}>
                 {busy ? "Cancelando…" : "Cancelar pedido"}
               </Button>
             ) : null}
+            {canWriteCharge && o.status === "AWAITING_PAYMENT" ? (
+              <Button disabled={busy} onClick={() => void generatePixCharge()}>
+                {busy ? "Gerando cobrança…" : "Gerar cobrança PIX"}
+              </Button>
+            ) : null}
+            {canWriteSubscription && o.status === "SETTLED" ? (
+              <Button disabled={busy} onClick={() => void createSubscription()}>
+                {busy ? "Criando assinatura…" : "Criar assinatura"}
+              </Button>
+            ) : null}
           </div>
           {actionError ? <p className="cc-field-error cc-u-mt-2">{actionError}</p> : null}
+          {createdCharge ? (
+            <div className="cc-card cc-u-mt-3" style={{ padding: "0.75rem" }}>
+              <p><strong>Cobrança PIX gerada:</strong></p>
+              <p className="cc-mono">ID: {createdCharge.id}</p>
+              {createdCharge.providerChargeId ? (
+                <p className="cc-mono">Provedor: {createdCharge.providerChargeId}</p>
+              ) : null}
+              <p>Status: <StatusPill status={createdCharge.status} /></p>
+              <p><Link href="/billing">Ver cobranças em /billing</Link></p>
+            </div>
+          ) : null}
+          {createdSubscription ? (
+            <div className="cc-card cc-u-mt-3" style={{ padding: "0.75rem" }}>
+              <p><strong>Assinatura gerada:</strong></p>
+              <p className="cc-mono">ID: {createdSubscription.id}</p>
+              <p>Status: <StatusPill status={createdSubscription.status} /></p>
+              <p>
+                <Link href="/subscriptions">Ver assinaturas em /subscriptions</Link> · <Link href="/fulfillment">Ir para /fulfillment</Link>
+              </p>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </Card>
@@ -319,11 +421,9 @@ function CreateOrderDialog({
 
       if (autoSubmit) {
         await api.post(`/v1/orders/${createdId}/submit`, {});
-        clearApiCache();
-        push("Pedido cotado e submetido (AWAITING_PAYMENT).");
+                push("Pedido cotado e submetido (AWAITING_PAYMENT).");
       } else {
-        clearApiCache();
-        push("Pedido cotado em rascunho (DRAFT).");
+                push("Pedido cotado em rascunho (DRAFT).");
       }
 
       onClose();

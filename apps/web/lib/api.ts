@@ -448,6 +448,12 @@ export interface OrderRow {
 export interface OrderDetail {
   order: {
     id: string;
+    person_id?: string;
+    personId?: string;
+    customer_id?: string | null;
+    customerId?: string | null;
+    order_type?: string;
+    orderType?: string;
     status: string;
     currency: string;
     gross_amount_minor: string | number;
