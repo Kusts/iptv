@@ -7,6 +7,7 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { StatusPill } from "../../components/ui/Badge";
 import { Table } from "../../components/ui/Table";
+import { CopySnippet } from "../../components/ui/CopySnippet";
 import { EmptyState, ErrorState, LoadingSkeleton } from "../../components/ui/States";
 import { Field, Input } from "../../components/ui/Input";
 import { useApi } from "../../lib/useApi";
@@ -58,14 +59,16 @@ export default function FulfillmentPage(): React.JSX.Element {
           ) : null}
           {pendingSubscriptions.length > 0 ? (
             <Table
+              searchable
+              searchPlaceholder="Filtrar fila de ativações…"
               columns={[
                 {
                   header: "Assinatura",
-                  render: (s) => <span className="cc-mono">{s.id.slice(0, 8)}…</span>,
+                  render: (s) => <CopySnippet text={s.id} slice={8} label="ID da assinatura" />,
                 },
                 {
                   header: "Plano",
-                  render: (s) => <span className="cc-mono">{s.planId.slice(0, 8)}…</span>,
+                  render: (s) => <CopySnippet text={s.planId} slice={8} label="ID do plano" />,
                 },
                 {
                   header: "Status",

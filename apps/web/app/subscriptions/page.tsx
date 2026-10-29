@@ -8,6 +8,7 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { StatusPill } from "../../components/ui/Badge";
 import { Table } from "../../components/ui/Table";
+import { CopySnippet } from "../../components/ui/CopySnippet";
 import { EmptyState, ErrorState, LoadingSkeleton } from "../../components/ui/States";
 import { useToast } from "../../components/ui/Toast";
 import { useApi } from "../../lib/useApi";
@@ -25,7 +26,7 @@ export default function SubscriptionsPage(): React.JSX.Element {
 
   return (
     <Shell>
-      <div className="cc-row cc-u-mb-4" style={{ justifyContent: "space-between", alignItems: "center" }}>
+      <div className="cc-row-between cc-u-mb-4">
         <h1>Assinaturas</h1>
         <Button variant="secondary" onClick={reload}>
           Recarregar
@@ -40,6 +41,8 @@ export default function SubscriptionsPage(): React.JSX.Element {
         {data && data.subscriptions.length > 0 ? (
           <div className="cc-grid-2">
             <Table
+              searchable
+              searchPlaceholder="Filtrar assinaturas…"
               columns={[
                 { header: "Plano", render: (s) => <span className="cc-mono">{s.planId.slice(0, 8)}</span> },
                 { header: "Status", render: (s) => <StatusPill status={s.status} /> },
@@ -98,14 +101,17 @@ function SubscriptionDetailPanel({ id, onMutated }: { id: string; onMutated?: ()
   if (data === null) return <EmptyState title="Assinatura não encontrada" />;
   return (
     <Card title="Detalhe da assinatura">
-      <p className="cc-mono">{data.id}</p>
+      <div className="cc-row cc-u-mb-2">
+        <p className="cc-mono">{data.id}</p>
+        <CopySnippet text={data.id} slice={8} label="ID da assinatura" />
+      </div>
       <div className="cc-row">
         <StatusPill status={data.status} />
         <StatusPill status={data.projectedState} />
         {data.cancelAtPeriodEnd ? <span className="cc-muted">Cancela no fim do período</span> : null}
       </div>
       {data.status === "PENDING_ACTIVATION" ? (
-        <div className="cc-card cc-u-mt-3" style={{ padding: "0.75rem" }}>
+        <div className="cc-card cc-u-mt-3 cc-u-p-3">
           <p>
             <strong>Aguardando ativação:</strong> Esta assinatura ainda não foi provisionada no provedor.
           </p>

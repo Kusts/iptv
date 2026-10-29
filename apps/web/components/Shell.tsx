@@ -34,6 +34,7 @@ import { ApiError } from "../lib/api";
 import { useTheme } from "../lib/theme";
 import { Select } from "./ui/Input";
 import { Button } from "./ui/Button";
+import { CopilotWidget } from "./CopilotWidget";
 
 interface NavItem {
   href: string;
@@ -142,7 +143,7 @@ export function Shell({ children }: { children: React.ReactNode }): React.JSX.El
       <nav className="cc-sidebar" aria-label="Navegação principal">
         <div className="cc-sidebar-brand">
           <div className="cc-brand-title">
-            <Radio className="cc-nav-icon" style={{ opacity: 1, color: "var(--cc-primary)" }} />
+            <Radio className="cc-nav-icon cc-brand-icon" />
             <span>Control Center</span>
           </div>
           <span className="cc-brand-badge">Piloto</span>
@@ -218,6 +219,7 @@ export function Shell({ children }: { children: React.ReactNode }): React.JSX.El
         </header>
 
         <main className="cc-content">{children}</main>
+        <CopilotWidget />
       </div>
     </div>
   );

@@ -92,6 +92,8 @@ export default function OrdersPage(): React.JSX.Element {
       {data && data.orders.length > 0 ? (
         <div className="cc-grid-2">
           <Table
+            searchable
+            searchPlaceholder="Filtrar pedidos…"
             columns={[
               { header: "Status", render: (o) => <StatusPill status={o.status} /> },
               { header: "Total", render: (o) => formatMinor(rowAmount(o), o.currency) },

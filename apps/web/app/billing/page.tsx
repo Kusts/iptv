@@ -127,6 +127,8 @@ function ChargesSection(): React.JSX.Element {
       ) : null}
       {charges.length > 0 ? (
         <Table
+          searchable
+          searchPlaceholder="Filtrar cobranças…"
           columns={[
             { header: "Status", render: (c) => <StatusPill status={c.status} /> },
             { header: "Valor", render: (c) => formatMinor(c.amount_minor, c.currency) },

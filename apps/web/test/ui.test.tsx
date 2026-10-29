@@ -5,6 +5,7 @@ import { Button } from "../components/ui/Button";
 import { Field, Input, Select, Textarea } from "../components/ui/Input";
 import { Card } from "../components/ui/Card";
 import { Table } from "../components/ui/Table";
+import { CopySnippet } from "../components/ui/CopySnippet";
 import { Badge, StatusPill } from "../components/ui/Badge";
 import { EmptyState, ErrorState, LoadingSkeleton } from "../components/ui/States";
 import { Dialog } from "../components/ui/Dialog";
@@ -76,6 +77,40 @@ describe("Card/Table/Badge", () => {
     );
     expect(screen.getByText("Nome")).toBeTruthy();
     expect(screen.getByText("Ana")).toBeTruthy();
+  });
+
+  it("table com busca filtra os registros e permite limpar", () => {
+    render(
+      <Table
+        columns={[{ header: "Nome", render: (r) => r.name }]}
+        rows={[
+          { id: "1", name: "Ana" },
+          { id: "2", name: "Bruno" },
+        ]}
+        searchable
+        searchPlaceholder="Buscar clientes"
+      />,
+    );
+    expect(screen.getByText("Ana")).toBeTruthy();
+    expect(screen.getByText("Bruno")).toBeTruthy();
+
+    const input = screen.getByPlaceholderText("Buscar clientes");
+    fireEvent.change(input, { target: { value: "Bru" } });
+    expect(screen.queryByText("Ana")).toBeNull();
+    expect(screen.getByText("Bruno")).toBeTruthy();
+
+    const clearBtn = screen.getByRole("button", { name: "Limpar filtro" });
+    fireEvent.click(clearBtn);
+    expect(screen.getByText("Ana")).toBeTruthy();
+    expect(screen.getByText("Bruno")).toBeTruthy();
+  });
+
+  it("CopySnippet exibe texto truncado e reage ao clique", async () => {
+    render(<CopySnippet text="12345678-abcd-ef01-2345-6789abcdef01" slice={8} label="Token" />);
+    expect(screen.getByText("12345678…")).toBeTruthy();
+    const btn = screen.getByRole("button", { name: "Copiar Token" });
+    fireEvent.click(btn);
+    expect(screen.getByText("Copiado!")).toBeTruthy();
   });
 
   it("status pill mapeia ACTIVE→success e FAILED→danger", () => {

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
+import { Sparkles } from "lucide-react";
 import { api, userMessage, type CopilotAskResponse, type CopilotScreenInput, type CopilotSuggestion } from "../lib/api";
 import { useOptionalApiScope } from "../lib/auth";
 import { Badge } from "./ui/Badge";
@@ -106,8 +107,8 @@ export function CopilotWidget(): React.JSX.Element {
 
   const screen: CopilotScreenInput = { route: pathname ?? "/" };
 
-  const send = async (): Promise<void> => {
-    const text = question.trim();
+  const send = async (customPrompt?: string): Promise<void> => {
+    const text = (customPrompt ?? question).trim();
     if (text.length === 0 || asking) return;
     // Finding W14b-3: capture the identity scope at send time. If the scope
     // changes while the ask is in flight (logout / tenant switch), the late
@@ -174,23 +175,54 @@ export function CopilotWidget(): React.JSX.Element {
 
   return (
     <div className="cc-copilot" aria-label="Tenant Copilot">
-      <Button variant="secondary" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        {open ? "Fechar Copilot" : "Copilot"}
+      <Button
+        variant="secondary"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="cc-copilot-trigger"
+      >
+        <Sparkles size={14} className="cc-copilot-trigger-icon" aria-hidden="true" />
+        <span>{open ? "Fechar Copilot" : "Copilot"}</span>
       </Button>
       {open ? (
-        <Card title={`Copilot · ${screen.route}`}>
+        <Card title={`Copilot · ${screen.route}`} className="cc-copilot-window">
           {entries.length === 0 ? (
-            <EmptyState
-              title="Pergunte sobre esta tela"
-              hint="O Copilot explica a visão atual com os dados que você pode ler e prepara ações pelo pipeline autorizado."
-            />
+            <div className="cc-copilot-empty-wrap">
+              <EmptyState
+                title="Pergunte sobre esta tela"
+                hint="O Copilot explica a visão atual com os dados que você pode ler e prepara ações pelo pipeline autorizado."
+              />
+              <div className="cc-copilot-chips">
+                <button
+                  type="button"
+                  className="cc-copilot-chip"
+                  onClick={() => setQuestion("Explique o que esta tela faz")}
+                >
+                  O que esta tela faz?
+                </button>
+                <button
+                  type="button"
+                  className="cc-copilot-chip"
+                  onClick={() => setQuestion("Quais ações recomendadas nesta tela?")}
+                >
+                  Ações recomendadas
+                </button>
+                <button
+                  type="button"
+                  className="cc-copilot-chip"
+                  onClick={() => setQuestion("Verificar pendências desta rota")}
+                >
+                  Verificar pendências
+                </button>
+              </div>
+            </div>
           ) : null}
           <div className="cc-copilot-log">
             {entries.map((entry) =>
               entry.role === "user" ? (
-                <p key={entry.id} className="cc-copilot-user">
-                  {entry.text}
-                </p>
+                <div key={entry.id} className="cc-copilot-user-bubble">
+                  <p className="cc-copilot-user">{entry.text}</p>
+                </div>
               ) : (
                 <div key={entry.id} className="cc-copilot-answer">
                   <p>{entry.text}</p>
@@ -242,7 +274,7 @@ export function CopilotWidget(): React.JSX.Element {
           </div>
           {asking ? <LoadingSkeleton lines={2} /> : null}
           {askError !== null ? <ErrorState message={askError} onRetry={() => void send()} /> : null}
-          <div className="cc-row">
+          <div className="cc-row cc-copilot-input-row">
             <input
               aria-label="Pergunta ao Copilot"
               placeholder="Ex.: explique esta tela"

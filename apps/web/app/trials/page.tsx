@@ -131,6 +131,8 @@ export default function TrialsPage(): React.JSX.Element {
         {list && list.trials.length > 0 ? (
           <div className="cc-grid-2">
             <Table
+              searchable
+              searchPlaceholder="Filtrar trials…"
               columns={[
                 { header: "Tipo", render: (t) => <span className="cc-mono">{t.trialKind}</span> },
                 { header: "Ciclo de vida", render: (t) => <StatusPill status={t.lifecycleStatus} /> },
