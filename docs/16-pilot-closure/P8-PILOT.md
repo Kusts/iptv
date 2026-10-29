@@ -19,7 +19,7 @@
 1. Ativar outbox worker pelo procedimento 051 (runbook) OU declarar legado
    como modo do piloto (decisão explícita; sem coexistência).
 2. Primeira venda pelo runbook [`pilot-first-sale.md`](../10-operations/runbooks/pilot-first-sale.md)
-   (pedido via API — `/orders` web ainda é somente leitura).
+   (pedido via UI web `/orders` ou via API).
 2. WhatsApp inbound → agent/manual → trial → offer → payment sandbox/canary →
    fulfillment → subscription → renewal → support → refund → recovery
    (rehearsal P7 como roteiro, agora com tráfego real autorizado).

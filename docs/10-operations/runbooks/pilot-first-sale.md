@@ -1,9 +1,6 @@
 # Runbook — Primeira venda do piloto (via API)
 
-> A UI web ainda não cria pedidos (`/orders` é somente leitura). Até a UI
-> existir, a venda do piloto é feita por estes endpoints, todos reais e
-> cobertos por suítes de integração. Pré-requisito: staging no ar
-> (`/v1/health` e `/v1/health/ready` → 200) e `API_SCHEDULER_ENABLED=1`.
+> A criação de pedidos pode ser feita diretamente na UI web (`/orders`) com formulário ("Novo pedido") ou via API. Abaixo constam os endpoints caso a operação seja executada via API/curl, todos reais e cobertos por suítes de integração. Pré-requisito: staging no ar (`/v1/health` e `/v1/health/ready` → 200) e `API_SCHEDULER_ENABLED=1`.
 
 Base: `https://staging-api.synkroo.com.br`. Autenticação: `POST /v1/auth/login`
 → sessão (`iptv_session` ou Bearer). Permissões necessárias:
