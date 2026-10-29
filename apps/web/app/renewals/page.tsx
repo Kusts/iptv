@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Shell } from "../../components/Shell";
 import { ConfirmAction, PermissionGate, useRevenueCommand } from "../../components/RevenueOps";
 import { Button } from "../../components/ui/Button";
@@ -12,6 +12,7 @@ import { Field, Input, Select } from "../../components/ui/Input";
 import { useApi } from "../../lib/useApi";
 import { formatDateTime, formatMinor } from "../../lib/money";
 import { useOptionalHasPermission } from "../../lib/auth";
+import type { SubscriptionRow } from "../../lib/api";
 
 /**
  * DECISÃO P4a: `/renewals` é página standalone (não aba de `/subscriptions`).
@@ -46,21 +47,73 @@ interface RecoveryTask {
 }
 
 export default function RenewalsPage(): React.JSX.Element {
+  const hasPermission = useOptionalHasPermission();
+  const canRead = hasPermission(READ_PERMISSION);
+
   const [subscriptionId, setSubscriptionId] = useState("");
   const [query, setQuery] = useState<string | null>(null);
   const [taskStatus, setTaskStatus] = useState("");
+
+  const subsQuery = useApi<{ subscriptions: SubscriptionRow[] }>(canRead ? "/v1/subscriptions" : null);
+  const subscriptions = subsQuery.data?.subscriptions ?? [];
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const fromQuery = new URLSearchParams(window.location.search).get("subscriptionId");
+      if (fromQuery && fromQuery.trim().length > 0) {
+        const trimmed = fromQuery.trim();
+        setSubscriptionId(trimmed);
+        setQuery(trimmed);
+      }
+    }
+  }, []);
+
+  const handleSelectChange = (id: string): void => {
+    setSubscriptionId(id);
+    if (id.trim().length > 0) {
+      setQuery(id.trim());
+    }
+  };
+
+  const handleConsult = (): void => {
+    const trimmed = subscriptionId.trim();
+    setQuery(trimmed.length > 0 ? trimmed : null);
+  };
 
   return (
     <Shell>
       <h1>Renovações</h1>
       <PermissionGate permission={READ_PERMISSION} label="as renovações">
         <div className="cc-form cc-u-mb-4">
+          {subscriptions.length > 0 ? (
+            <Field label="Assinatura cadastrada">
+              <Select
+                value={subscriptionId}
+                onChange={(e) => handleSelectChange(e.target.value)}
+                aria-label="Selecionar assinatura"
+              >
+                <option value="">Selecione uma assinatura…</option>
+                {subscriptions.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.id.slice(0, 8)}… ({s.status}) - plano {s.planId.slice(0, 8)}…
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          ) : null}
           <Field label="ID da assinatura">
-            <Input value={subscriptionId} onChange={(e) => setSubscriptionId(e.target.value)} placeholder="UUID da assinatura" />
+            <Input
+              value={subscriptionId}
+              onChange={(e) => setSubscriptionId(e.target.value)}
+              placeholder="UUID da assinatura"
+            />
           </Field>
-          <Button variant="secondary" onClick={() => setQuery(subscriptionId.trim().length > 0 ? subscriptionId.trim() : null)}>
-            Consultar renovações
-          </Button>
+          <div className="cc-row cc-u-mt-2">
+            <Button variant="secondary" onClick={handleConsult}>
+              Consultar renovações
+            </Button>
+            {subsQuery.loading ? <span className="cc-muted">Carregando assinaturas…</span> : null}
+          </div>
         </div>
         {query === null ? (
           <EmptyState title="Informe uma assinatura" hint="Pedidos de renovação, lembretes e winback aparecem aqui." />

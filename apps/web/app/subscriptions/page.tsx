@@ -119,6 +119,9 @@ function SubscriptionDetailPanel({ id, onMutated }: { id: string; onMutated?: ()
           Pedido de origem: <Link href="/orders"><span className="cc-mono">{data.originatingOrderId.slice(0, 8)}…</span></Link>
         </p>
       ) : null}
+      <p className="cc-muted cc-u-mt-1">
+        Renovações e winback: <Link href={`/renewals?subscriptionId=${data.id}`}>Ver renovações</Link>
+      </p>
       <h4>Ciclos</h4>
       {data.cycles.length === 0 ? (
         <p className="cc-muted">Sem ciclos.</p>
