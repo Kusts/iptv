@@ -91,6 +91,6 @@ export function parseEnvelope(value: unknown): EventEnvelope {
 }
 
 /** Narrow `safeParse` for handlers that map failures to CommandResult. */
-export function safeParseEnvelope(value: unknown): z.SafeParseReturnType<unknown, EventEnvelope> {
+export function safeParseEnvelope(value: unknown): ReturnType<typeof eventEnvelopeSchema.safeParse> {
   return eventEnvelopeSchema.safeParse(value);
 }

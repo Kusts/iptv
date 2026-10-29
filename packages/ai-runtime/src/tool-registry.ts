@@ -63,7 +63,7 @@ export interface ToolDescriptor {
   /** Tenant scope declaration: tools are tenant-scoped reads/writes. */
   tenantScope: "tenant";
   riskClass: ToolRiskClass;
-  inputSchema: z.ZodType<unknown, z.ZodTypeDef, unknown>;
+  inputSchema: z.ZodTypeAny;
   /** Execute via the injected dispatcher — never direct DB/provider access. */
   execute: (ctx: ToolContext, input: unknown, dispatch: ToolDispatcher) => Promise<ToolExecResult>;
 }

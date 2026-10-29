@@ -189,7 +189,7 @@ export interface CommandDefinition<TInput = unknown, TOutput = unknown> {
   auditAction: string;
   /** Audit `resource_type` (e.g. `human_review_request`). */
   auditResource: string;
-  input: z.ZodType<TInput, z.ZodTypeDef, unknown>;
+  input: z.ZodType<TInput>;
   handler: (ctx: CommandHandlerContext, input: TInput) => Promise<CommandResult<TOutput>>;
 }
 
@@ -281,7 +281,7 @@ export class CommandBus {
         return { ok: false, code: "forbidden", message: `missing permission: ${def.permission}` };
       }
     }
-    const parsed = (def.input as z.ZodType<unknown, z.ZodTypeDef, unknown>).safeParse(rawInput);
+    const parsed = (def.input as z.ZodTypeAny).safeParse(rawInput);
     if (!parsed.success) {
       recordCommandExecuted(name, "validation_failed");
       return {

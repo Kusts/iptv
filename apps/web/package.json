@@ -13,7 +13,7 @@
   "dependencies": {
     "clsx": "^2.1.1",
     "lucide-react": "^1.64.0",
-    "next": "^15.5.4",
+    "next": "^15.5.28",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tailwind-merge": "^3.7.0"
@@ -29,4 +29,4 @@
     "typescript": "~5.9.3",
     "vitest": "^4.1.11"
   }
-}
+}
