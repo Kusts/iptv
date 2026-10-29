@@ -1,2 +1,4 @@
 # Executable shell scripts must keep Unix line endings on Windows checkouts.
 *.sh text eol=lf
+# SQL migrations must keep canonical Unix line endings (LF) for checksum verification.
+*.sql text eol=lf

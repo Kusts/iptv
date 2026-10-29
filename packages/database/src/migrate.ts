@@ -47,7 +47,8 @@ export function sha256Hex(content: string): string {
 }
 
 export function readMigration(migrationsDir: string, filename: string): MigrationRecord & { sql: string } {
-  const sql = readFileSync(join(migrationsDir, filename), "utf8");
+  const raw = readFileSync(join(migrationsDir, filename), "utf8");
+  const sql = raw.replace(/\r\n/g, "\n");
   return { filename, sha256: sha256Hex(sql), sql };
 }
 
@@ -225,7 +226,8 @@ async function runMigrations(client: MigrationClient, migrationsDir: string): Pr
     const { sha256, sql } = readMigration(migrationsDir, filename);
     const known = applied.get(filename);
     if (known !== undefined) {
-      if (known !== sha256) {
+      const sha256Crlf = sha256Hex(sql.replace(/\n/g, "\r\n"));
+      if (known !== sha256 && known !== sha256Crlf) {
         throw new Error(
           `migration content mismatch for already-applied file ${filename}: ` +
             `expected sha256 ${known}, found ${sha256}`,
