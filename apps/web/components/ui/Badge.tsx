@@ -3,7 +3,12 @@
 import { toneFor, type StatusTone } from "../../lib/status";
 
 export function Badge({ tone, children }: { tone: StatusTone; children: React.ReactNode }): React.JSX.Element {
-  return <span className={`cc-badge cc-badge-${tone}`}>{children}</span>;
+  return (
+    <span className={`cc-badge cc-badge-${tone}`}>
+      <span className="cc-badge-dot" aria-hidden="true" />
+      {children}
+    </span>
+  );
 }
 
 /** Pílula de status com o mapeamento canônico (apenas apresentação). */
