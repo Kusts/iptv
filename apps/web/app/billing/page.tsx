@@ -8,13 +8,14 @@ import { Card } from "../../components/ui/Card";
 import { StatusPill } from "../../components/ui/Badge";
 import { Table } from "../../components/ui/Table";
 import { EmptyState, ErrorState, LoadingSkeleton } from "../../components/ui/States";
-import { Field, Select, Textarea } from "../../components/ui/Input";
+import { Field, Input, Select, Textarea } from "../../components/ui/Input";
 import { useApi } from "../../lib/useApi";
 import { formatDateTime, formatMinor } from "../../lib/money";
 import { useOptionalHasPermission } from "../../lib/auth";
 
 const READ_PERMISSION = "billing.read";
 const CHARGE_WRITE = "billing.charge.write";
+const REFUND_REQUEST = "billing.refund.request";
 const REFUND_EXECUTE = "billing.refund.execute";
 const EXCEPTION_RESOLVE = "billing.exception.resolve";
 
@@ -191,7 +192,57 @@ function ChargesSection(): React.JSX.Element {
 
 function PaymentsSection(): React.JSX.Element {
   const { data, error, loading, reload } = useApi<{ payments: PaymentRow[] }>("/v1/payments");
+  const { busy, run } = useRevenueCommand();
+  const [selectedPayment, setSelectedPayment] = useState<PaymentRow | null>(null);
+  const [refundReason, setRefundReason] = useState("");
+  const [refundAmount, setRefundAmount] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const hasPermission = useOptionalHasPermission();
+  const canRequestRefund = hasPermission(REFUND_REQUEST);
+
   const payments = data?.payments ?? [];
+
+  const handleOpenRefund = (p: PaymentRow): void => {
+    setSelectedPayment(p);
+    setRefundReason("");
+    setRefundAmount(String(p.amount_minor));
+    setFormError(null);
+  };
+
+  const handleConfirmRefund = (): void => {
+    if (!selectedPayment) return;
+    setFormError(null);
+    const reasonTrimmed = refundReason.trim();
+    if (reasonTrimmed.length === 0) {
+      setFormError("Informe o motivo do reembolso.");
+      return;
+    }
+    const amountTrimmed = refundAmount.trim() || String(selectedPayment.amount_minor);
+    if (!/^\d+$/.test(amountTrimmed) || BigInt(amountTrimmed) <= 0n) {
+      setFormError("Informe um valor inteiro válido em centavos (maior que zero).");
+      return;
+    }
+
+    const key = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `ref-${Date.now()}`;
+    void run(
+      "/v1/refund-requests",
+      {
+        paymentId: selectedPayment.id,
+        amountMinor: amountTrimmed,
+        currency: selectedPayment.currency,
+        reason: reasonTrimmed,
+        idempotencyKey: key,
+      },
+      "Solicitação de reembolso registrada para revisão.",
+      () => {
+        setSelectedPayment(null);
+        setRefundReason("");
+        setRefundAmount("");
+        reload();
+      },
+    );
+  };
 
   return (
     <div>
@@ -211,10 +262,62 @@ function PaymentsSection(): React.JSX.Element {
             { header: "Status", render: (p) => <StatusPill status={p.status} /> },
             { header: "Valor", render: (p) => formatMinor(p.amount_minor, p.currency) },
             { header: "Confirmado em", render: (p) => formatDateTime(p.confirmed_at) },
+            {
+              header: "Ações",
+              render: (p) =>
+                canRequestRefund && (p.status === "CONFIRMED" || p.status === "PARTIALLY_REFUNDED") ? (
+                  <Button variant="secondary" onClick={() => handleOpenRefund(p)}>
+                    Solicitar reembolso
+                  </Button>
+                ) : (
+                  <span className="cc-muted">—</span>
+                ),
+            },
           ]}
           rows={payments}
         />
       ) : null}
+      {!canRequestRefund ? (
+        <p className="cc-muted cc-u-mt-3">Você não tem a permissão billing.refund.request; solicitação de reembolso indisponível.</p>
+      ) : null}
+      <ConfirmAction
+        title="Solicitar reembolso de pagamento"
+        open={canRequestRefund && selectedPayment !== null}
+        confirmLabel="Enviar solicitação"
+        busy={busy}
+        onClose={() => {
+          setSelectedPayment(null);
+          setRefundReason("");
+          setFormError(null);
+        }}
+        onConfirm={handleConfirmRefund}
+      >
+        <p className="cc-muted">
+          Pagamento: <span className="cc-mono">{selectedPayment?.id.slice(0, 8)}…</span> (
+          {selectedPayment ? formatMinor(selectedPayment.amount_minor, selectedPayment.currency) : ""})
+        </p>
+        <Field label="Valor do reembolso (em centavos/minor units)">
+          <Input
+            value={refundAmount}
+            onChange={(e) => setRefundAmount(e.target.value)}
+            disabled={busy}
+            placeholder="Ex.: 4990"
+          />
+        </Field>
+        <Field label="Motivo do reembolso (obrigatório)">
+          <Textarea
+            value={refundReason}
+            onChange={(e) => setRefundReason(e.target.value)}
+            rows={3}
+            disabled={busy}
+            placeholder="Informe a justificativa para a revisão humana..."
+          />
+        </Field>
+        {formError ? <p className="cc-field-error">{formError}</p> : null}
+        <p className="cc-muted cc-u-mt-2">
+          A solicitação passará por revisão humana (HITL) antes de qualquer execução financeira.
+        </p>
+      </ConfirmAction>
     </div>
   );
 }
@@ -258,14 +361,24 @@ function RefundsSection(): React.JSX.Element {
             { header: "Solicitado em", render: (r) => formatDateTime(r.requested_at) },
             {
               header: "Ações",
-              render: (r) =>
-                canExecute ? (
-                  <Button variant="secondary" disabled={busy} onClick={() => setDialog({ id: r.id, kind: "execute" })}>
-                    Executar
-                  </Button>
-                ) : (
-                  <span className="cc-muted">—</span>
-                ),
+              render: (r) => {
+                if (!canExecute) return <span className="cc-muted">—</span>;
+                if (r.status === "APPROVED" || r.status === "REQUESTED") {
+                  return (
+                    <Button variant="secondary" disabled={busy} onClick={() => setDialog({ id: r.id, kind: "execute" })}>
+                      Executar
+                    </Button>
+                  );
+                }
+                if (r.status === "EXECUTED") {
+                  return (
+                    <Button variant="secondary" disabled={busy} onClick={() => setDialog({ id: r.id, kind: "reconcile" })}>
+                      Conciliar
+                    </Button>
+                  );
+                }
+                return <span className="cc-muted">—</span>;
+              },
             },
           ]}
           rows={rows}
