@@ -330,7 +330,7 @@ function CreateTrialDialog({
     setFormError(null);
     setApiError(null);
 
-    const trimmedPerson = personId.trim();
+    const trimmedPerson = (personId || (singleAuto ? singleAuto.id : "")).trim();
     if (!UUID_RE.test(trimmedPerson)) {
       setFormError("Informe um UUID válido para a pessoa.");
       return;

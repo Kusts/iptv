@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Shell } from "../../components/Shell";
 import { ConfirmAction, PermissionGate, useRevenueCommand } from "../../components/RevenueOps";
 import { Button } from "../../components/ui/Button";
@@ -128,8 +128,11 @@ function PersonsSection(): React.JSX.Element {
   );
 }
 
-function PersonDetailPanel({ id }: { id: string }): React.JSX.Element {
+function PersonDetailPanel({ id, onLeadCaptured }: { id: string; onLeadCaptured?: () => void }): React.JSX.Element {
   const { data, error, loading, reload } = useApi<PersonDetail>(`/v1/crm/persons/${id}`);
+  const [captureOpen, setCaptureOpen] = useState(false);
+  const hasPermission = useOptionalHasPermission();
+  const canWrite = hasPermission(WRITE_PERMISSION);
 
   if (loading) return <LoadingSkeleton lines={4} />;
   if (error !== null) return <ErrorState message={error} onRetry={reload} />;
@@ -155,6 +158,23 @@ function PersonDetailPanel({ id }: { id: string }): React.JSX.Element {
           ))}
         </ul>
       )}
+      {canWrite ? (
+        <div className="cc-row cc-u-mt-3">
+          <Button variant="secondary" onClick={() => setCaptureOpen(true)}>
+            Capturar lead para esta pessoa
+          </Button>
+        </div>
+      ) : null}
+      {canWrite ? (
+        <CaptureLeadDialog
+          open={captureOpen}
+          initialPersonId={data.id}
+          onClose={() => setCaptureOpen(false)}
+          onDone={() => {
+            onLeadCaptured?.();
+          }}
+        />
+      ) : null}
     </Card>
   );
 }
@@ -321,18 +341,51 @@ function LeadDetailPanel({ id, onChanged }: { id: string; onChanged: () => void 
   );
 }
 
-function CaptureLeadDialog({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: () => void }): React.JSX.Element {
+function CaptureLeadDialog({
+  open,
+  initialPersonId,
+  onClose,
+  onDone,
+}: {
+  open: boolean;
+  initialPersonId?: string;
+  onClose: () => void;
+  onDone: () => void;
+}): React.JSX.Element {
   const { busy, run } = useRevenueCommand();
-  const [personId, setPersonId] = useState("");
+  const hasPermission = useOptionalHasPermission();
+  const canListPersons = hasPermission(READ_PERMISSION);
+  const personsQuery = useApi<{ persons: PersonRow[] }>(canListPersons ? "/v1/crm/persons" : null);
+  const persons = personsQuery.data?.persons ?? null;
+  const personsAvailable = canListPersons && persons !== null && personsQuery.error === null;
+  const personList: PersonRow[] | null = personsAvailable ? persons : null;
+
+  const [personId, setPersonId] = useState(initialPersonId ?? "");
   const [stage, setStage] = useState("");
 
+  const initialPersonObj = initialPersonId && personList ? personList.find((p) => p.id === initialPersonId) : null;
+  const showInitialNotice = Boolean(initialPersonId);
+  const showPersonSelect = !initialPersonId && personList !== null && personList.length > 1;
+  const singleAuto = !initialPersonId && personList !== null && personList.length === 1 ? personList[0] : null;
+  const showManualPerson =
+    !initialPersonId && (!personsAvailable || personList === null || personList.length === 0);
+
+  useEffect(() => {
+    if (initialPersonId) {
+      setPersonId(initialPersonId);
+    } else if (singleAuto) {
+      setPersonId(singleAuto.id);
+    }
+  }, [initialPersonId, singleAuto]);
+
   const confirm = (): void => {
+    const targetPersonId = (personId || (singleAuto ? singleAuto.id : "") || (initialPersonId ?? "")).trim();
     void run(
       "/v1/crm/leads",
-      { personId: personId.trim(), ...(stage.trim().length > 0 ? { stage: stage.trim() } : {}) },
+      { personId: targetPersonId, ...(stage.trim().length > 0 ? { stage: stage.trim() } : {}) },
       "Lead capturado.",
       () => {
-        setPersonId("");
+        setPersonId(initialPersonId ?? "");
         setStage("");
         onClose();
         onDone();
@@ -341,10 +394,47 @@ function CaptureLeadDialog({ open, onClose, onDone }: { open: boolean; onClose: 
   };
 
   return (
-    <ConfirmAction title="Capturar lead" open={open} confirmLabel="Confirmar captura" busy={busy} onClose={onClose} onConfirm={confirm}>
-      <Field label="ID da pessoa (UUID)">
-        <Input value={personId} onChange={(e) => setPersonId(e.target.value)} disabled={busy} />
-      </Field>
+    <ConfirmAction
+      title="Capturar lead"
+      open={open}
+      confirmLabel="Confirmar captura"
+      busy={busy}
+      onClose={onClose}
+      onConfirm={confirm}
+    >
+      {showInitialNotice ? (
+        <p className="cc-muted">
+          Lead para {initialPersonObj?.canonicalName ?? initialPersonId}.
+        </p>
+      ) : null}
+      {singleAuto ? (
+        <p className="cc-muted">
+          Lead para {singleAuto.canonicalName ?? singleAuto.id.slice(0, 8)} (seleção automática).
+        </p>
+      ) : null}
+      {showPersonSelect ? (
+        <Field label="Pessoa">
+          <Select
+            value={personId}
+            onChange={(e) => setPersonId(e.target.value)}
+            disabled={busy}
+          >
+            <option value="">Selecione…</option>
+            {personList?.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.canonicalName && p.canonicalName.trim().length > 0
+                  ? p.canonicalName
+                  : p.id.slice(0, 8)}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      ) : null}
+      {showManualPerson ? (
+        <Field label="ID da pessoa (UUID)">
+          <Input value={personId} onChange={(e) => setPersonId(e.target.value)} disabled={busy} />
+        </Field>
+      ) : null}
       <Field label="Estágio (opcional)">
         <Input value={stage} onChange={(e) => setStage(e.target.value)} disabled={busy} />
       </Field>
