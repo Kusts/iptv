@@ -240,6 +240,7 @@ One line per real directory under `src/`.
 | `growth/` | Campaigns, message intents, quiet hours, budget caps and attribution under `v1`. |
 | `human-review/` | `v1/human-reviews` HITL lifecycle, claim, decisions and the aggregated center. |
 | `inbox/` | Durable inbox: insert-once dedupe + envelope normalization for inbound events. |
+| `integrations/` | `v1/integrations` read-only sanitized status per provider (`integration.read`; capability derived from the registry, never persisted; no secrets). |
 | `inventory/` | Supplier app catalog, app trials, license assets and supplier credit/balance operations. |
 | `knowledge/` | `v1/knowledge` items, versions, solutions, corrections, gaps, freshness and search. |
 | `outbox/` | `v1/admin/outbox` legacy drain of domain events plus the local transport (LEGACY — quiescence-gated, see below). |

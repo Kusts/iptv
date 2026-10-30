@@ -29,6 +29,9 @@ export const PERMISSIONS = [
   "trial.write",
   "provider.operation.read",
   "provider.operation.write",
+  "integration.read",
+  "integration.manage",
+  "integration.test",
   "commerce.order.write",
   "billing.charge.write",
   "billing.refund.request",
@@ -47,7 +50,7 @@ export const TENANT_OWNER_ROLE = "tenant_owner";
 export const TENANT_ADMIN_ROLE = "tenant_admin";
 export const TENANT_OPERATOR_ROLE = "tenant_operator";
 
-/** Role -> permissions mapping; must stay in sync with migration 012 + 021 seeds (plus 039 for experiments.*). */
+/** Role -> permissions mapping; must stay in sync with migration 012 + 021 seeds (plus 039 for experiments.*, 066 for integration.*). */
 export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
   [PLATFORM_ADMIN_ROLE]: [...PERMISSIONS],
   [TENANT_OWNER_ROLE]: [...PERMISSIONS],
@@ -70,6 +73,9 @@ export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
     "trial.write",
     "provider.operation.read",
     "provider.operation.write",
+    "integration.read",
+    "integration.manage",
+    "integration.test",
     "commerce.order.write",
     "billing.charge.write",
     "billing.refund.request",
@@ -90,6 +96,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
     "agent.review.request",
     "trial.read",
     "trial.write",
+    "integration.read",
     "commerce.order.write",
     "billing.charge.write",
     "billing.refund.request",
