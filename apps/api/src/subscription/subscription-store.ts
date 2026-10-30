@@ -611,6 +611,10 @@ export async function ensureFulfillmentProviderAccount(ctx: CommandHandlerContex
       name: "CINEVISION Fulfillment Placeholder",
       status: "ACTIVE",
       secret_ref: "wave4://no-real-credential",
+      // Fail-closed: synthetic placeholder must never read as production/connected — explicit, never implicit DEFAULT.
+      environment: "SANDBOX",
+      connection_status: "NOT_CONFIGURED",
+      version: 1,
       settings_json: { synthetic: true },
       last_recharge_at: null,
       created_at: now(),
