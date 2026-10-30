@@ -240,7 +240,7 @@ One line per real directory under `src/`.
 | `growth/` | Campaigns, message intents, quiet hours, budget caps and attribution under `v1`. |
 | `human-review/` | `v1/human-reviews` HITL lifecycle, claim, decisions and the aggregated center. |
 | `inbox/` | Durable inbox: insert-once dedupe + envelope normalization for inbound events. |
-| `integrations/` | `v1/integrations` read-only sanitized status per provider (`integration.read`; capability derived from the registry, never persisted; no secrets). |
+| `integrations/` | `v1/integrations` sanitized status per provider (`integration.read`; capability derived from the registry, never persisted; no secrets) plus the S1C2 write surface `POST /v1/integrations/:provider/configure|test|disable` (`integration.manage` for configure/disable, `integration.test` for test; server-side vault writes, `Idempotency-Key` idempotency, automatic audit; whatsapp 501 uncertified). |
 | `inventory/` | Supplier app catalog, app trials, license assets and supplier credit/balance operations. |
 | `knowledge/` | `v1/knowledge` items, versions, solutions, corrections, gaps, freshness and search. |
 | `outbox/` | `v1/admin/outbox` legacy drain of domain events plus the local transport (LEGACY — quiescence-gated, see below). |
@@ -327,6 +327,43 @@ factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
   as WAHA: durable inbox insert-once dedupe, `202` fast ack, then async
   normalize (`?defer=1` leaves rows `RECEIVED` for
   `AsaasWebhookService.drainPending()`).
+
+### Integrations self-service (S1: read + configure/test/disable)
+
+- **Status** (`S1C1`, `GET /v1/integrations[/:provider]` sob
+  `integration.read`): projeção sanitizada por construção
+  (`provider`, `environment`, `connection_status`, `capability_status`
+  derivado do registry + certificação em runtime, `last_checked_at`,
+  `last_error_code`, `configured`) — `secret_ref`/`settings_json` nunca
+  selecionados; conta inexistente → `NOT_CONFIGURED`; provider desconhecido
+  → 404 `NOT_FOUND`.
+- **Write** (`S1C2`, `POST /v1/integrations/:provider/configure|test|disable`
+  sob `integration.manage` (configure/disable) / `integration.test`
+  (test), comandos `integration.configure|test|disable` via `CommandBus`
+  com `action_key` de auditoria, `Idempotency-Key` (escopo = nome do comando)
+  e `expectedVersion` contra o binding vivo (mismatch → 409). Respostas só
+  com metadados do binding — nunca segredo, `secret_ref` ou valor.
+- **Segredos server-side**: o corpo carrega o VALOR uma vez; o writer
+  persiste no Infisical sob o namespace backend-owned
+  `infisical://<env>/integrations/<tenantId>/<provider>/<KEY>` (derivado de
+  contexto validado, nunca do cliente; chaves allowlisted: `ASAAS_API_KEY`,
+  `CINEVISION_USER`/`CINEVISION_PASS`) e a linha guarda só `secret_ref`.
+  Ordem: `put` no vault PRIMEIRO, SÓ então insert/update (DRAFT, `version`+1
+  em update). Falha do vault → 503 fail-closed, linha intocada; falha do DB
+  após o put → compensação (`deleteSecret`) + 503. Rotação = configure com
+  novo segredo + `expectedVersion` atual (sem endpoint `rotate` em S1).
+- **Asaas test**: probe read-only SOMENTE contra a allowlist fixa por
+  environment (`https://api-sandbox.asaas.com/v3`,
+  `https://api.asaas.com/v3` — nunca URL do cliente; `baseUrl` no corpo é
+  400), `GET /v3/webhooks?limit=1` com header `access_token` e fallback
+  `GET /v3/customers?limit=1`, timeout bounded 8000ms. Sucesso →
+  `CONNECTED_READ_ONLY`; falha → `TESTING` + `last_error_code` sanitizado
+  (`INVALID_CREDENTIALS` / `PROVIDER_UNAVAILABLE` / `TIMEOUT`).
+- **CINEVISION test**: sem browser (S4 faz live) — só resolução do vault
+  (presença, nunca o valor) + coerência do binding → mantém `TESTING`;
+  `CONNECTED_READ_ONLY` cinevision SÓ com certificação live (S4).
+  **WhatsApp**: 501 `CAPABILITY_UNCERTIFIED` ("disponível em S3") antes do
+  bus — sem linha, sem vault (S3 certifica).
 
 ### Support, HITL and knowledge
 
