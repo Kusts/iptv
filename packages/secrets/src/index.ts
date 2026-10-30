@@ -10,6 +10,11 @@
  *   secret read against the self-hosted instance; constructed ONLY when
  *   `INFISICAL_SITE_URL` + `INFISICAL_PROJECT_ID` + `INFISICAL_CLIENT_ID` +
  * `INFISICAL_CLIENT_SECRET` are all present (see `resolveSecretsPort`).
+ *   The same adapter also serves the S1 self-service writer facet
+ *   (`SecretsWriterPort`: `putSecret`/`deleteSecret` under the
+ *   backend-owned `integrations/<tenantId>/<provider>` namespace, plus the
+ *   orchestrated `rotateSecret` domain flow — stage, read-only probe,
+ *   cutover, stage cleanup; fail-closed on any step).
  *
  * `INFISICAL_SITE_URL` must be `https://` (plain `http://` is accepted only
  * for `localhost` / `127.0.0.1` local dev); anything else throws CONFIG.
@@ -41,6 +46,7 @@ export type SecretsErrorCode =
   | "UNAUTHORIZED"
   | "TRANSPORT"
   | "CONFIG"
+  | "ROTATE_FAILED"
   | "SERVER";
 
 /** Typed secrets failure. `detail` never contains a secret value or token. */
@@ -123,10 +129,26 @@ export interface SecretsPort {
 }
 
 /** Default: records nothing, fails loudly (never a fake secret). */
-export class NoopSecretsPort implements SecretsPort {
+export class NoopSecretsPort implements SecretsWriterPort {
   readonly name = "noop";
 
   async getSecret(ref: string): Promise<string> {
+    void ref;
+    throw new SecretsError(
+      "CONFIG",
+      "secrets are not configured (set INFISICAL_SITE_URL, INFISICAL_PROJECT_ID, INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET)",
+    );
+  }
+
+  async putSecret(input: PutSecretInput): Promise<PutSecretResult> {
+    void input;
+    throw new SecretsError(
+      "CONFIG",
+      "secrets are not configured (set INFISICAL_SITE_URL, INFISICAL_PROJECT_ID, INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET)",
+    );
+  }
+
+  async deleteSecret(ref: string): Promise<void> {
     void ref;
     throw new SecretsError(
       "CONFIG",
@@ -200,7 +222,7 @@ function assertSecureSiteUrl(siteUrl: string): void {
  * incomplete so boot never crashes; a PRESENT-but-insecure `INFISICAL_SITE_URL`
  * throws a typed CONFIG error instead of sending credentials over plain HTTP).
  */
-export class InfisicalSecretsAdapter implements SecretsPort {
+export class InfisicalSecretsAdapter implements SecretsWriterPort {
   readonly name = "infisical";
 
   private readonly siteUrl: string;
@@ -253,6 +275,96 @@ export class InfisicalSecretsAdapter implements SecretsPort {
     throw first.error;
   }
 
+  /**
+   * Store (upsert) a secret under the backend-owned integration namespace.
+   * The ref is derived from the validated target — never from client input
+   * — so callers cannot write outside
+   * `infisical://<env>/integrations/<tenantId>/<provider>/<KEY>`.
+   * Infisical secrets are name-keyed, so put is idempotent by construction;
+   * a stable `requestId` is forwarded as `X-Request-Id` for tracing.
+   * Exactly one re-login + retry on 401 (same policy as reads); no blind
+   * retries. Values are sent in the write body (required) but never logged.
+   */
+  async putSecret(input: PutSecretInput): Promise<PutSecretResult> {
+    if (typeof input.value !== "string" || input.value.length === 0) {
+      throw new SecretsError("MALFORMED_REF", "secret value must be a non-empty string");
+    }
+    if (
+      input.requestId !== undefined &&
+      (typeof input.requestId !== "string" || input.requestId.length === 0)
+    ) {
+      throw new SecretsError("MALFORMED_REF", "request id must be a non-empty string when provided");
+    }
+    // Throws MALFORMED_REF before any network call for out-of-namespace
+    // targets (unknown provider/key, bad tenant id or environment).
+    const ref = buildIntegrationSecretRef(input);
+    const parsed = parseSecretRef(ref);
+
+    const create = (token: string): Promise<WriteOutcome> =>
+      this.writeSecret(parsed, input.value, input.requestId, token, "create");
+    const update = (token: string): Promise<WriteOutcome> =>
+      this.writeSecret(parsed, input.value, input.requestId, token, "update");
+
+    const first = await this.runWrite(create);
+    if (first.status === "ok") {
+      this.debug?.(
+        `infisical: secret stored (refHash=${hashSecretRef(ref)}, valueLen=${input.value.length}, created=true)`,
+      );
+      return { ref, created: true };
+    }
+    if (first.status === "unauthorized") throw writeDenied(parsed.environment);
+    if (first.status === "error") throw first.error;
+    // Name-keyed conflict: the secret already exists — update it in place
+    // (still one logical secret, never a duplicate).
+    const second = await this.runWrite(update);
+    if (second.status === "ok") {
+      this.debug?.(
+        `infisical: secret stored (refHash=${hashSecretRef(ref)}, valueLen=${input.value.length}, created=false)`,
+      );
+      return { ref, created: false };
+    }
+    if (second.status === "unauthorized") throw writeDenied(parsed.environment);
+    if (second.status === "missing") {
+      // Vanished between the conflict and the update: create once more.
+      const third = await this.runWrite(create);
+      if (third.status === "ok") {
+        this.debug?.(
+          `infisical: secret stored (refHash=${hashSecretRef(ref)}, valueLen=${input.value.length}, created=true)`,
+        );
+        return { ref, created: true };
+      }
+      if (third.status === "unauthorized") throw writeDenied(parsed.environment);
+      if (third.status === "error") throw third.error;
+      throw new SecretsError("SERVER", "infisical write did not converge (create, update, create)");
+    }
+    if (second.status === "error") throw second.error;
+    throw new SecretsError("SERVER", "infisical update reported a conflict");
+  }
+
+  /**
+   * Delete a secret by ref. Only refs inside the integration namespace are
+   * accepted (`parseIntegrationSecretRef` throws MALFORMED_REF otherwise,
+   * before any network call). A repeated delete of an absent secret
+   * surfaces NOT_FOUND so callers can distinguish "already gone".
+   */
+  async deleteSecret(ref: string): Promise<void> {
+    // Throws MALFORMED_REF before any network call for out-of-namespace refs.
+    const binding = parseIntegrationSecretRef(ref);
+    // Exactly one re-login + retry on 401/403 (same policy as reads).
+    const first = await this.deleteCall(binding, await this.accessToken(false));
+    if (first.status !== "unauthorized") {
+      if (first.status === "error") throw first.error;
+      // Length/presence metadata only — NEVER the ref, key, value or token.
+      this.debug?.(`infisical: secret deleted (refHash=${hashSecretRef(ref)})`);
+      return;
+    }
+    const second = await this.deleteCall(binding, await this.accessToken(true));
+    if (second.status === "unauthorized") throw writeDenied(binding.environment);
+    if (second.status === "error") throw second.error;
+    // Length/presence metadata only — NEVER the ref, key, value or token.
+    this.debug?.(`infisical: secret deleted (refHash=${hashSecretRef(ref)})`);
+  }
+
   /** Cached Universal Auth token (refresh on expiry or when forced). */
   private async accessToken(force: boolean): Promise<string> {
     if (!force && this.cached !== null && Date.now() < this.cached.expiresAtMs) {
@@ -298,6 +410,120 @@ export class InfisicalSecretsAdapter implements SecretsPort {
     // Length/presence metadata only — NEVER the token itself.
     this.debug?.(`infisical: login ok (tokenLen=${accessToken.length}, ttl=${ttlSeconds}s)`);
     return accessToken;
+  }
+
+  /**
+   * Run a write with exactly one re-login + retry on 401/403 (same policy
+   * as reads). Any other outcome is returned as-is: no blind retries on
+   * 5xx or transport failures.
+   */
+  private async runWrite<T extends { status: string }>(
+    op: (token: string) => Promise<T>,
+  ): Promise<T> {
+    const token = await this.accessToken(false);
+    const first = await op(token);
+    if (first.status !== "unauthorized") {
+      return first;
+    }
+    return op(await this.accessToken(true));
+  }
+
+  private async writeSecret(
+    parsed: ParsedSecretRef,
+    value: string,
+    requestId: string | undefined,
+    token: string,
+    mode: "create" | "update",
+  ): Promise<WriteOutcome> {
+    const url = `${this.siteUrl}/api/v3/secrets/raw/${encodeURIComponent(parsed.key)}`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    };
+    if (requestId !== undefined) {
+      headers["X-Request-Id"] = requestId;
+    }
+    let res: Response;
+    try {
+      res = await this.fetchFn(url, {
+        method: mode === "create" ? "POST" : "PATCH",
+        headers,
+        body: JSON.stringify({
+          workspaceId: this.projectId,
+          environment: parsed.environment,
+          secretPath: parsed.secretPath,
+          secretValue: value,
+        }),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      return {
+        status: "error",
+        error: new SecretsError(
+          "TRANSPORT",
+          isTimeout(err) ? "infisical write timed out" : "infisical write transport error",
+        ),
+      };
+    }
+    if (res.status === 401 || res.status === 403) {
+      return { status: "unauthorized" };
+    }
+    if (mode === "create" && res.status === 409) {
+      return { status: "exists" };
+    }
+    if (mode === "update" && res.status === 404) {
+      return { status: "missing" };
+    }
+    if (!res.ok) {
+      return {
+        status: "error",
+        error: new SecretsError("SERVER", `infisical write failed with status ${res.status}`),
+      };
+    }
+    return { status: "ok" };
+  }
+
+  private async deleteCall(binding: ParsedSecretRef, token: string): Promise<DeleteOutcome> {
+    const url =
+      `${this.siteUrl}/api/v3/secrets/raw/${encodeURIComponent(binding.key)}` +
+      `?workspaceId=${encodeURIComponent(this.projectId)}` +
+      `&environment=${encodeURIComponent(binding.environment)}` +
+      `&secretPath=${encodeURIComponent(binding.secretPath)}`;
+    let res: Response;
+    try {
+      res = await this.fetchFn(url, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      return {
+        status: "error",
+        error: new SecretsError(
+          "TRANSPORT",
+          isTimeout(err) ? "infisical delete timed out" : "infisical delete transport error",
+        ),
+      };
+    }
+    if (res.status === 401 || res.status === 403) {
+      return { status: "unauthorized" };
+    }
+    if (res.status === 404) {
+      return {
+        status: "error",
+        error: new SecretsError(
+          "NOT_FOUND",
+          `secret ${JSON.stringify(binding.key)} not found in environment ${JSON.stringify(binding.environment)}`,
+        ),
+      };
+    }
+    if (!res.ok) {
+      return {
+        status: "error",
+        error: new SecretsError("SERVER", `infisical delete failed with status ${res.status}`),
+      };
+    }
+    return { status: "ok" };
   }
 
   private async readSecret(
@@ -397,4 +623,296 @@ export function resolveSecretsPort(env: NodeJS.ProcessEnv = process.env): Secret
     clientSecret,
     defaultEnvironment: emptyToUndefined(env["INFISICAL_ENVIRONMENT"]) ?? "development",
   });
+}
+
+/* ------------------------------------------------------------------ *
+ * Writer facet (S1 self-service): server-side secret provisioning.
+ *
+ * Reads stay on `SecretsPort`. Writes live on `SecretsWriterPort`
+ * (a separate interface extending the read port so existing read-only
+ * fakes keep compiling): `putSecret`/`deleteSecret` under a controlled
+ * namespace, plus `rotateSecret` as an orchestrated domain function —
+ * not an opaque port operation — composed from put + a read-only probe
+ * + cutover + staged-key cleanup.
+ *
+ * SECURITY: refs are produced ONLY by the backend from validated
+ * targets (`buildIntegrationSecretRef`); the browser never sends a path
+ * or a raw ref to these operations. Values are transmitted in write
+ * bodies (required) but NEVER appear in errors, logs or telemetry —
+ * debug output carries only the FNV-1a hash of the ref plus
+ * presence/length metadata.
+ * ------------------------------------------------------------------ */
+
+/** Root path segment of the controlled namespace. */
+export const SECRET_NAMESPACE_ROOT = "integrations";
+
+/**
+ * Suffix for rotation staging keys (`<KEY>__next`). The ONLY
+ * client-unreachable-by-convention key shape besides the per-provider
+ * allowlist; `rotateSecret` stages the candidate under it, probes
+ * read-only, then cuts over. Never constructed in the browser.
+ */
+export const SECRET_STAGED_SUFFIX = "__next";
+
+/** Providers allowed to hold tenant secrets in the vault. */
+export type IntegrationProvider = "asaas" | "cinevision" | "whatsapp";
+
+/** Exact secret keys each provider may store (no free-form keys). */
+const INTEGRATION_SECRET_KEYS: Record<IntegrationProvider, readonly string[]> = {
+  asaas: ["ASAAS_API_KEY", "ASAAS_WEBHOOK_TOKEN"],
+  cinevision: ["CINEVISION_USER", "CINEVISION_PASS"],
+  whatsapp: ["WAHA_WEBHOOK_SECRET"],
+};
+
+/** Backend-owned write target: tenant + provider + environment + key. */
+export interface IntegrationSecretTarget {
+  tenantId: string;
+  provider: IntegrationProvider;
+  environment: string;
+  key: string;
+}
+
+const TENANT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+type WriteOutcome =
+  | { status: "ok" }
+  | { status: "exists" }
+  | { status: "missing" }
+  | { status: "unauthorized" }
+  | { status: "error"; error: SecretsError };
+
+type DeleteOutcome =
+  | { status: "ok" }
+  | { status: "unauthorized" }
+  | { status: "error"; error: SecretsError };
+
+/** FNV-1a (32-bit) hash for masked ref logging — never the ref itself. */
+function hashSecretRef(ref: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < ref.length; index += 1) {
+    hash ^= ref.charCodeAt(index) as number;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/** Fixed write-denied message: names the environment only, never key/path. */
+function writeDenied(environment: string): SecretsError {
+  return new SecretsError(
+    "UNAUTHORIZED",
+    `infisical write denied in environment ${JSON.stringify(environment)} (check write identity scopes)`,
+  );
+}
+
+function validateIntegrationTarget(target: IntegrationSecretTarget): { secretPath: string } {
+  if (
+    typeof target.provider !== "string" ||
+    !Object.hasOwn(INTEGRATION_SECRET_KEYS, target.provider)
+  ) {
+    throw new SecretsError(
+      "MALFORMED_REF",
+      "unknown integration provider (expected one of: asaas, cinevision, whatsapp)",
+    );
+  }
+  if (typeof target.environment !== "string" || !ENV_SEGMENT_RE.test(target.environment)) {
+    throw new SecretsError(
+      "MALFORMED_REF",
+      `malformed integration environment ${JSON.stringify(target.environment)} (expected slug like "sandbox")`,
+    );
+  }
+  if (typeof target.tenantId !== "string" || !TENANT_ID_RE.test(target.tenantId)) {
+    throw new SecretsError(
+      "MALFORMED_REF",
+      "malformed tenant id (expected 1-64 chars: letters, digits, '-' or '_')",
+    );
+  }
+  const provider = target.provider as IntegrationProvider;
+  const allowed = INTEGRATION_SECRET_KEYS[provider];
+  const staged = target.key.endsWith(SECRET_STAGED_SUFFIX);
+  const base = staged ? target.key.slice(0, -SECRET_STAGED_SUFFIX.length) : target.key;
+  if (!allowed.includes(base)) {
+    throw new SecretsError(
+      "MALFORMED_REF",
+      `secret key ${JSON.stringify(target.key)} is not allowed for provider ${JSON.stringify(provider)}`,
+    );
+  }
+  return { secretPath: `/${SECRET_NAMESPACE_ROOT}/${target.tenantId}/${provider}` };
+}
+
+/**
+ * Build the backend-owned ref for an integration secret:
+ * `infisical://<environment>/integrations/<tenantId>/<provider>/<KEY>`.
+ * The Infisical environment slug doubles as the integration `env`
+ * (sandbox/production); the secret path carries the tenant/provider
+ * scope. Throws `SecretsError(MALFORMED_REF)` for anything outside the
+ * controlled namespace — before any network call.
+ */
+export function buildIntegrationSecretRef(target: IntegrationSecretTarget): string {
+  const { secretPath } = validateIntegrationTarget(target);
+  return `${SECRETS_REF_SCHEME}${target.environment}${secretPath}/${target.key}`;
+}
+
+/** A parsed ref proven to live inside the integration namespace. */
+export interface IntegrationSecretBinding extends ParsedSecretRef {
+  tenantId: string;
+  provider: IntegrationProvider;
+  /** True for rotation staging keys (`<KEY>__next`). */
+  staged: boolean;
+}
+
+/**
+ * Parse a ref and prove it lives inside the integration namespace:
+ * exactly `/integrations/<tenantId>/<provider>` with a valid tenant id,
+ * a known provider and an allowlisted (or staged) key. Anything else
+ * throws `SecretsError(MALFORMED_REF)` — before any network call.
+ */
+export function parseIntegrationSecretRef(ref: string): IntegrationSecretBinding {
+  const parsed = parseSecretRef(ref);
+  const segments = parsed.secretPath === "/" ? [] : parsed.secretPath.slice(1).split("/");
+  if (
+    segments.length !== 3 ||
+    segments[0] !== SECRET_NAMESPACE_ROOT ||
+    typeof segments[1] !== "string" ||
+    typeof segments[2] !== "string"
+  ) {
+    throw new SecretsError(
+      "MALFORMED_REF",
+      "secret ref is outside the integrations namespace (expected infisical://<env>/integrations/<tenantId>/<provider>/<KEY>)",
+    );
+  }
+  const candidate: IntegrationSecretTarget = {
+    tenantId: segments[1],
+    provider: segments[2] as IntegrationProvider,
+    environment: parsed.environment,
+    key: parsed.key,
+  };
+  // Reuses the allowlist (including the `__next` staging convention).
+  validateIntegrationTarget(candidate);
+  return {
+    ...parsed,
+    tenantId: segments[1],
+    provider: segments[2] as IntegrationProvider,
+    staged: parsed.key.endsWith(SECRET_STAGED_SUFFIX),
+  };
+}
+
+/** Input for `putSecret`: backend-owned target + value + optional idempotency key. */
+export interface PutSecretInput extends IntegrationSecretTarget {
+  /** Secret value. Transmitted in the write body; never logged or thrown. */
+  value: string;
+  /**
+   * Stable idempotency key. Secrets are name-keyed so put is idempotent by
+   * construction (same target overwrites, never duplicates); the key is
+   * forwarded as `X-Request-Id` for vault-side tracing.
+   */
+  requestId?: string;
+}
+
+/** Result of `putSecret`: the backend-owned ref plus whether it was created. */
+export interface PutSecretResult {
+  ref: string;
+  created: boolean;
+}
+
+/**
+ * Writer facet of the secrets port. Extends (rather than widens)
+ * `SecretsPort` so existing read-only implementations keep compiling;
+ * use `asSecretsWriter` to narrow.
+ */
+export interface SecretsWriterPort extends SecretsPort {
+  /** Store (upsert) a secret under the controlled namespace. */
+  putSecret(input: PutSecretInput): Promise<PutSecretResult>;
+  /** Delete a secret by namespaced ref. */
+  deleteSecret(ref: string): Promise<void>;
+}
+
+/**
+ * Narrow a `SecretsPort` to its writer facet. Returns `null` for
+ * read-only implementations (no `putSecret`/`deleteSecret`), so callers
+ * fail closed instead of assuming write capability.
+ */
+export function asSecretsWriter(port: SecretsPort): SecretsWriterPort | null {
+  const candidate = port as Partial<SecretsWriterPort>;
+  if (typeof candidate.putSecret === "function" && typeof candidate.deleteSecret === "function") {
+    return candidate as SecretsWriterPort;
+  }
+  return null;
+}
+
+/**
+ * Env-gated writer selection: mirrors `resolveSecretsPort` but typed as
+ * `SecretsWriterPort`. The Noop writer throws typed CONFIG on use
+ * (fail-closed); it never reports a vault-backed connection.
+ */
+export function resolveSecretsWriterPort(env: NodeJS.ProcessEnv = process.env): SecretsWriterPort {
+  const writer = asSecretsWriter(resolveSecretsPort(env));
+  if (writer === null) {
+    throw new SecretsError("CONFIG", "secrets writer is not available (unexpected port shape)");
+  }
+  return writer;
+}
+
+/** Input for `rotateSecret`: live target + candidate value + read-only probe. */
+export interface RotateSecretInput extends PutSecretInput {
+  /**
+   * Read-only canary validation against the STAGED ref (e.g. a provider
+   * read-only probe resolving the staged secret). Must not mutate
+   * anything; a rejection aborts the rotation with the live ref preserved.
+   */
+  probe: (stagedRef: string) => Promise<void>;
+}
+
+/** Result of `rotateSecret`: live ref (cut over) plus the staged ref used. */
+export interface RotateSecretResult {
+  ref: string;
+  stagedRef: string;
+}
+
+/**
+ * Orchestrated secret rotation (domain function, not an opaque port op):
+ *
+ * 1. `put` the candidate under `<KEY>__next` (same path/environment);
+ * 2. run the read-only `probe` against the staged ref;
+ * 3. `put` (cutover) the live key with the candidate value;
+ * 4. best-effort `delete` of the staged key.
+ *
+ * Failure at any step is fail-closed: a probe rejection cleans the stage
+ * and throws `SecretsError(ROTATE_FAILED)` with the live ref untouched
+ * (never mark the integration connected); put/delete failures propagate
+ * their typed errors. The post-cutover stage cleanup is best-effort so a
+ * successful cutover is never reported as failed.
+ */
+export async function rotateSecret(
+  port: SecretsWriterPort,
+  input: RotateSecretInput,
+): Promise<RotateSecretResult> {
+  const { probe, ...target } = input;
+  if (typeof probe !== "function") {
+    throw new SecretsError("MALFORMED_REF", "rotation requires a read-only probe callback");
+  }
+  if (typeof target.value !== "string" || target.value.length === 0) {
+    throw new SecretsError("MALFORMED_REF", "secret value must be a non-empty string");
+  }
+  // Both throw MALFORMED_REF before any network call when out of namespace.
+  const ref = buildIntegrationSecretRef(target);
+  const stagedKey = `${target.key}${SECRET_STAGED_SUFFIX}`;
+  const stagedRef = buildIntegrationSecretRef({ ...target, key: stagedKey });
+  // 1. Stage the candidate.
+  await port.putSecret({ ...target, key: stagedKey, value: target.value });
+  // 2. Read-only canary. A rejection aborts: clean the stage (best-effort,
+  // never masking the probe failure) and fail closed.
+  try {
+    await probe(stagedRef);
+  } catch {
+    await port.deleteSecret(stagedRef).catch(() => undefined);
+    throw new SecretsError(
+      "ROTATE_FAILED",
+      `rotation probe rejected the candidate in environment ${JSON.stringify(target.environment)} (live ref preserved)`,
+    );
+  }
+  // 3. Cutover. Typed put errors propagate; the live ref is only touched here.
+  await port.putSecret({ ...target, value: target.value });
+  // 4. Best-effort stage cleanup after a successful cutover.
+  await port.deleteSecret(stagedRef).catch(() => undefined);
+  return { ref, stagedRef };
 }
