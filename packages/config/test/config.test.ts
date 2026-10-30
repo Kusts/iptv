@@ -1153,3 +1153,46 @@ describe("loadConfig SESSION_TTL_HOURS", () => {
     }
   });
 });
+
+/**
+ * INTEGRATIONS_PUBLIC_BASE_URL: canonical public origin for webhook
+ * callbacks (S2A). Absent stays `undefined` (each command fails closed per
+ * call); an explicit malformed value fails fast at boot.
+ */
+describe("loadConfig INTEGRATIONS_PUBLIC_BASE_URL", () => {
+  it("stays undefined when unset or blank", () => {
+    expect(loadConfig({}).INTEGRATIONS_PUBLIC_BASE_URL).toBeUndefined();
+    expect(loadConfig({ INTEGRATIONS_PUBLIC_BASE_URL: "" }).INTEGRATIONS_PUBLIC_BASE_URL).toBeUndefined();
+    expect(loadConfig({ INTEGRATIONS_PUBLIC_BASE_URL: "   " }).INTEGRATIONS_PUBLIC_BASE_URL).toBeUndefined();
+  });
+
+  it("canonicalizes a valid origin (trailing root slash stripped)", () => {
+    expect(
+      loadConfig({ INTEGRATIONS_PUBLIC_BASE_URL: "https://app.exemplo.com" })
+        .INTEGRATIONS_PUBLIC_BASE_URL,
+    ).toBe("https://app.exemplo.com");
+    expect(
+      loadConfig({ INTEGRATIONS_PUBLIC_BASE_URL: "https://app.exemplo.com/" })
+        .INTEGRATIONS_PUBLIC_BASE_URL,
+    ).toBe("https://app.exemplo.com");
+    expect(
+      loadConfig({ INTEGRATIONS_PUBLIC_BASE_URL: "http://localhost:3001" })
+        .INTEGRATIONS_PUBLIC_BASE_URL,
+    ).toBe("http://localhost:3001");
+  });
+
+  it("rejects origins with path, query, credentials, non-http schemes or plain http outside loopback", () => {
+    for (const bad of [
+      "https://app.exemplo.com/v1/hook",
+      "https://app.exemplo.com?x=1",
+      "https://user:pass@app.exemplo.com",
+      "ftp://app.exemplo.com",
+      "http://app.exemplo.com",
+      "not-a-url",
+    ]) {
+      expect(() => loadConfig({ INTEGRATIONS_PUBLIC_BASE_URL: bad }), bad).toThrow(
+        /INTEGRATIONS_PUBLIC_BASE_URL/,
+      );
+    }
+  });
+});

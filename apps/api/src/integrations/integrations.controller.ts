@@ -84,6 +84,12 @@ function actorFromRequest(req: FastifyRequest): CommandActor {
   });
 }
 
+function sessionEmailOf(req: FastifyRequest): string | undefined {
+  const auth = req.auth as NonNullable<FastifyRequest["auth"]>;
+  const email = auth.email;
+  return typeof email === "string" && email.trim().length > 0 ? email : undefined;
+}
+
 function send<T>(result: CommandResult<T>): T {
   if (result.ok) {
     return result.data;
@@ -281,6 +287,36 @@ export class IntegrationsController {
       { ...requestBodyOf(body), provider: normalized },
       { correlationId: req.id, idempotencyKey: idempotencyKeyOf(req) },
     );
+    return send(result);
+  }
+
+  /**
+   * S2A provisionamento do webhook Asaas (SPEC S2A §etapa 3):
+   * `POST /v1/integrations/asaas/webhook` sob `integration.manage`, comando
+   * `integration.webhook_ensure` via `CommandBus` com `Idempotency-Key`. O
+   * email operacional de notificação é resolvido da sessão server-side
+   * (override explícito no corpo é permitido e validado — notification
+   * routing only). Resposta sanitizada por construção (`webhookUrl`,
+   * `providerWebhookId`, `hasAuthToken`, `status`) — nunca o authToken.
+   */
+  @Post(":provider/webhook")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("integration.manage")
+  async webhook(
+    @Param("provider") provider: string,
+    @Body() body: unknown,
+    @Req() req: FastifyRequest,
+  ) {
+    const normalized = this.resolveWritableProvider(provider);
+    const payload: Record<string, unknown> = { ...requestBodyOf(body), provider: normalized };
+    const sessionEmail = sessionEmailOf(req);
+    if (payload["email"] === undefined && sessionEmail !== undefined) {
+      payload["email"] = sessionEmail;
+    }
+    const result = await this.bus.execute(actorFromRequest(req), "integration.webhook_ensure", payload, {
+      correlationId: req.id,
+      idempotencyKey: idempotencyKeyOf(req),
+    });
     return send(result);
   }
 }
