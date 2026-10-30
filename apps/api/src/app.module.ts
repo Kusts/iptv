@@ -24,6 +24,7 @@ import { OutboxController } from "./outbox/outbox.controller.js";
 import { InboxProcessor } from "./inbox/inbox-processor.js";
 import { InboxStoreProvider } from "./inbox/inbox.provider.js";
 import { HumanReviewController } from "./human-review/human-review.controller.js";
+import { IntegrationsController } from "./integrations/integrations.controller.js";
 import { CrmController } from "./crm/crm.controller.js";
 import { TrialController } from "./trial/trial.controller.js";
 import { CompatibilityController } from "./trial/compatibility.controller.js";
@@ -166,6 +167,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     AuthController,
     TenantsController,
     HumanReviewController,
+    IntegrationsController,
     CrmController,
     TrialController,
     CompatibilityController,

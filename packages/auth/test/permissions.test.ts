@@ -37,6 +37,7 @@ describe("permissionsForRoles", () => {
       "crm.person.read",
       "experiments.read",
       "experiments.write",
+      "integration.read",
       "knowledge.read",
       "subscription.read",
       "support.ticket.read",
