@@ -668,7 +668,7 @@ export interface ProviderProvidersTable {
   created_at: Date;
 }
 
-/** Mirrors `provider.provider_accounts` (migration 007). */
+/** Mirrors `provider.provider_accounts` (migrations 007 + 065). */
 export interface ProviderAccountsTable {
   id: string;
   tenant_id: string;
@@ -680,6 +680,16 @@ export interface ProviderAccountsTable {
   last_recharge_at: Date | null;
   created_at: Date;
   updated_at: Date;
+  /** S1 (065): SANDBOX | PRODUCTION, default SANDBOX fail-closed. */
+  environment: string;
+  /** S1 (065): NOT_CONFIGURED | DRAFT | TESTING | CONNECTED_READ_ONLY | REAUTH_REQUIRED | DEGRADED | DISABLED. */
+  connection_status: string;
+  /** S1 (065): last read-only health probe, NULL when never checked. */
+  last_checked_at: Date | null;
+  /** S1 (065): sanitized machine code only, never secret material. */
+  last_error_code: string | null;
+  /** S1 (065): optimistic locking token for configure/test/rotate writes. */
+  version: number;
 }
 
 /** Mirrors `provider.provider_bindings` (migration 007). */
