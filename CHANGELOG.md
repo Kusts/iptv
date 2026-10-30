@@ -2,6 +2,11 @@
 
 ## Unreleased - Added
 
+- fix(ci): estabilização do gate de CI para fixtures sintéticas adversariais (G0, #84, PR #91, merge `1b746a3`): quoting do step name com colon em `ci.yml` (`924579a`), allowlist do fixture F09 de chave sintética no gate gitleaks (`5210f37`) e forma exata do segredo com trailing dot (`8ee650b`); 4 checks verdes.
+- fix(billing): nunca usar `encodedImage` como payload PIX copia-e-cola (G01A, #90 item 4.1, PR #92, merge `37dc00a`, commit `8e270de`): `qrCode` passa a carregar somente o payload copia-e-cola; cobertura dedicada `pix-qr-payload.unit.test.ts` RED→GREEN mais suíte de regressão 76/76 verde.
+- fix(web): chave de idempotência PIX estável com recovery de reload (G01B, #90 item 4.2, PR #93, merge `8a11299`, commit `6ee78de`): idempotência estável em `localStorage` com recovery via replay, `effectUncertain` sem segundo botão, EXPIRED gera nova cobrança e PAID nunca reemite; suíte `orders-idempotency.test.tsx` (5+7 testes) e pacote `@iptv/web` 206/206 verde.
+- feat(secrets): `SecretsWriterPort` server-side com rotação orquestrada (S1B, #85 parcial, PR #94, merge `2f52bf4`, commit `16a5d19`): `put`/`delete` idempotentes, `rotate` orquestrado fail-closed, namespace `integrations/<tenant>/<provider>/<KEY>`; pacote `@iptv/secrets` 33/33 verde mais regressão `api`/`browser-worker` sem quebra.
+
 - test(release): B3 full-matrix verification 2026-10-30 (base `43f7e9c`, branch `main`): `pnpm test --concurrency=1` exit 0 — Turbo 20/20, `@iptv/api` 103 arquivos com 1267 passed / 1 skipped / 0 failed em PostgreSQL 17 descartável (0 tabelas pré-run); único skip intencional é a paridade pooled opt-in (`TEST_POOLED_DATABASE_URL` em `worker-rls-matrix`); G07 segue `DEFERRED_POST_MVP`, F12 segue `BLOCKED` (gates de operador, sem re-run live); `last_run` por ID atualizado em `tests/release/pilot-evidence.yaml`.
 
 - fix(api): recuperar PIX via endpoint dedicado GET /v1/charges/:id/pix (Asaas getPixQrCode), reutilizar chave de idempotência e filtrar catálogo sem preço vendável; fix(web): CopySnippet confirma cópia apenas com sucesso e orders reutiliza idempotência ao gerar cobrança PIX.
