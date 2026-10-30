@@ -233,24 +233,37 @@ describe.skipIf(!hasDb)("Scheduler + admin drains E2E sob iptv_app (requires TES
       throw new Error(`trial.request failed: ${JSON.stringify(requested)}`);
     }
     const trialId = requested.data.id;
-    const accountId = newId();
-    await db
-      .insertInto("provider.provider_accounts")
-      .values({
-        id: accountId,
-        tenant_id: tenantId,
-        provider_id: providerId,
-        name: `Scheduler E2E account ${suffix}`,
-        status: "ACTIVE",
-        secret_ref: `infisical://scheduler-e2e/${suffix}`,
-        environment: "SANDBOX",
-        connection_status: "NOT_CONFIGURED",
-        version: 1,
-        settings_json: { synthetic: true },
-        created_at: new Date(),
-        updated_at: new Date(),
-      })
-      .execute();
+    // Reuso respeita a invariante "um binding vivo por (tenant, provider, env)":
+    // `trial.request` já plantou o placeholder SANDBOX via ensureTrialProviderAccount.
+    const live = await db
+      .selectFrom("provider.provider_accounts")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("provider_id", "=", providerId)
+      .where("environment", "=", "SANDBOX")
+      .where("connection_status", "<>", "DISABLED")
+      .orderBy("created_at", "asc")
+      .executeTakeFirst();
+    const accountId = live?.id ?? newId();
+    if (live === undefined) {
+      await db
+        .insertInto("provider.provider_accounts")
+        .values({
+          id: accountId,
+          tenant_id: tenantId,
+          provider_id: providerId,
+          name: `Scheduler E2E account ${suffix}`,
+          status: "ACTIVE",
+          secret_ref: `infisical://scheduler-e2e/${suffix}`,
+          environment: "SANDBOX",
+          connection_status: "NOT_CONFIGURED",
+          version: 1,
+          settings_json: { synthetic: true },
+          created_at: new Date(),
+          updated_at: new Date(),
+        })
+        .execute();
+    }
     const opId = newId();
     await db
       .insertInto("provider.provider_operations")
