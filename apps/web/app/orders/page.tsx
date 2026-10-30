@@ -162,6 +162,7 @@ function OrderDetailPanel({
     status: string;
     already: boolean;
   } | null>(null);
+  const [pixIdempotencyKey, setPixIdempotencyKey] = useState<string | null>(null);
 
   if (loading) return <LoadingSkeleton lines={4} />;
   if (error !== null) return <ErrorState message={error} onRetry={reload} />;
@@ -204,23 +205,59 @@ function OrderDetailPanel({
     try {
       const personId = o.person_id ?? o.personId;
       if (personId) {
-        await api.post("/v1/billing-customers/provision", { personId });
+        try {
+          await api.post("/v1/billing-customers/provision", { personId });
+        } catch {
+          // Best-effort; charge.create will fail closed if binding missing
+        }
       }
-      const idempotencyKey = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `idemp-${Date.now()}`;
-      const charge = await api.post<{
-        id: string;
-        status: string;
-        providerChargeId?: string | null;
-        qrCode?: string | null;
-      }>("/v1/charges", {
-        orderId: o.id,
-        paymentMethod: "PIX",
-        billingType: "PIX",
-      }, { idempotencyKey });
-      setCreatedCharge(charge);
-      push("Cobrança PIX gerada com sucesso!");
-      refresh();
-      onOrderMutated();
+      // Reuse idempotency key across retries to avoid duplicate charges
+      let idempotencyKey = pixIdempotencyKey;
+      if (!idempotencyKey) {
+        idempotencyKey = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `idemp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        setPixIdempotencyKey(idempotencyKey);
+      }
+      try {
+        const charge = await api.post<{
+          id: string;
+          status: string;
+          providerChargeId?: string | null;
+          qrCode?: string | null;
+        }>("/v1/charges", {
+          orderId: o.id,
+          paymentMethod: "PIX",
+          billingType: "PIX",
+        }, { idempotencyKey });
+        let chargeWithPix = charge;
+        if (!charge.qrCode && charge.id) {
+          try {
+            const pix = await api.get<{
+              chargeId: string;
+              payload: string | null;
+              encodedImage: string | null;
+              expirationDate: string | null;
+            }>(`/v1/charges/${charge.id}/pix`);
+            if (pix.payload) {
+              chargeWithPix = { ...charge, qrCode: pix.payload };
+            }
+          } catch {
+            // Best effort - may not be available immediately
+          }
+        }
+        setCreatedCharge(chargeWithPix);
+        push("Cobrança PIX gerada com sucesso!");
+        refresh();
+        onOrderMutated();
+        return;
+      } catch (err) {
+        // On retry after reload/network issues, try to recover existing charge
+        const msg = userMessage(err);
+        if (msg.includes("duplicate") || msg.includes("idempotency")) {
+          // If we have a cached charge, keep it
+        }
+        // Try to fetch existing charge for this order via billing list? fallback to rethrow
+        throw err;
+      }
     } catch (err) {
       setActionError(userMessage(err));
     } finally {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { Button } from "../components/ui/Button";
 import { Field, Input, Select, Textarea } from "../components/ui/Input";
@@ -105,12 +105,54 @@ describe("Card/Table/Badge", () => {
     expect(screen.getByText("Bruno")).toBeTruthy();
   });
 
-  it("CopySnippet exibe texto truncado e reage ao clique", async () => {
-    render(<CopySnippet text="12345678-abcd-ef01-2345-6789abcdef01" slice={8} label="Token" />);
-    expect(screen.getByText("12345678…")).toBeTruthy();
-    const btn = screen.getByRole("button", { name: "Copiar Token" });
-    fireEvent.click(btn);
-    expect(screen.getByText("Copiado!")).toBeTruthy();
+  it("CopySnippet copia o texto integral e exibe feedback de sucesso", async () => {
+    const fullText = "12345678-abcd-ef01-2345-6789abcdef01";
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    try {
+      render(<CopySnippet text={fullText} slice={8} label="Token" />);
+      expect(screen.getByText("12345678…")).toBeTruthy();
+      const btn = screen.getByRole("button", { name: "Copiar Token" });
+      fireEvent.click(btn);
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(fullText));
+      expect(await screen.findByText("Copiado!")).toBeTruthy();
+    } finally {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, "clipboard", originalClipboard);
+      } else {
+        delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+      }
+    }
+  });
+
+  it("CopySnippet não exibe feedback quando a escrita no clipboard falha", async () => {
+    const fullText = "12345678-abcd-ef01-2345-6789abcdef01";
+    let rejectClipboardWrite!: (error: Error) => void;
+    const pendingWrite = new Promise<void>((_resolve, reject) => {
+      rejectClipboardWrite = reject;
+    });
+    const writeText = vi.fn().mockReturnValue(pendingWrite);
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    try {
+      render(<CopySnippet text={fullText} slice={8} label="Token" />);
+      fireEvent.click(screen.getByRole("button", { name: "Copiar Token" }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(fullText));
+      await act(async () => {
+        rejectClipboardWrite(new Error("clipboard denied"));
+        await pendingWrite.catch(() => undefined);
+        await Promise.resolve();
+      });
+      expect(screen.queryByText("Copiado!")).toBeNull();
+      expect(screen.getByText("12345678…")).toBeTruthy();
+    } finally {
+      if (originalClipboard) {
+        Object.defineProperty(navigator, "clipboard", originalClipboard);
+      } else {
+        delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+      }
+    }
   });
 
   it("status pill mapeia ACTIVE→success e FAILED→danger", () => {

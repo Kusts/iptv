@@ -194,6 +194,55 @@ export class BillingController {
     return { charges: rows };
   }
 
+  @Get("charges/:id/pix")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("billing.read")
+  async getChargePix(@Param("id") id: string, @Req() req: FastifyRequest) {
+    const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
+    const port = await import("./asaas-port.js").then((m) =>
+      m.resolveAsaasPort(m.asaasAdapterNameFromEnv()),
+    );
+    const result = await withTenantTransaction(this.requireDb(), tenant.id, async (trx) => {
+      const charge = await trx
+        .selectFrom("billing.charges")
+        .select(["id", "order_id", "status"])
+        .where("tenant_id", "=", tenant.id)
+        .where("id", "=", id)
+        .executeTakeFirst();
+      if (charge === undefined) {
+        throw new HttpException({ code: "NOT_FOUND", message: "charge not found" }, 404);
+      }
+      const binding = await trx
+        .selectFrom("billing.charge_provider_bindings")
+        .select(["external_charge_id"])
+        .where("tenant_id", "=", tenant.id)
+        .where("charge_id", "=", charge.id)
+        .where("provider", "=", "ASAAS")
+        .orderBy("created_at", "desc")
+        .limit(1)
+        .executeTakeFirst();
+      if (binding === undefined || !binding.external_charge_id) {
+        throw new HttpException({ code: "PRECONDITION_FAILED", message: "charge has no provider binding" }, 412);
+      }
+      if (port.getPixQrCode) {
+        const qr = await port.getPixQrCode(binding.external_charge_id);
+        if (!qr.payload) {
+          throw new HttpException({ code: "UNAVAILABLE", message: "pix qr code not available" }, 503);
+        }
+        return {
+          chargeId: charge.id,
+          orderId: charge.order_id,
+          status: charge.status,
+          payload: qr.payload,
+          encodedImage: qr.encodedImage,
+          expirationDate: qr.expirationDate,
+        };
+      }
+      throw new HttpException({ code: "UNAVAILABLE", message: "pix qr code retrieval not supported" }, 503);
+    });
+    return result;
+  }
+
   @Get("payments")
   @UseGuards(AuthGuard, PermissionsGuard)
   @RequirePermission("billing.read")

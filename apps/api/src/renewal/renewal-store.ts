@@ -301,6 +301,26 @@ export async function getOrderForUpdate(
 }
 
 /**
+ * Person-derived customer lookup for the F16 ownership guard: normal orders
+ * leave the denormalized `commerce.orders.customer_id` NULL and identify the
+ * buyer with `person_id`; `crm.customers` is unique on (tenant_id, person_id)
+ * while `subscription.customer_id` is the canonical `crm.customers.id`.
+ */
+export async function getCustomerIdForPerson(
+  ctx: CommandHandlerContext,
+  personId: string,
+): Promise<string | null> {
+  const trx = requireTrx(ctx);
+  const row = await trx
+    .selectFrom("crm.customers")
+    .select(["id"])
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("person_id", "=", personId)
+    .executeTakeFirst();
+  return row === undefined ? null : row.id;
+}
+
+/**
  * Legacy-duplicate probe: an earlier cycle for the same subscription already
  * carries this renewal order, so the open cycle's identical pointer is a
  * stale copy from the pre-fix `subscription.renew` behavior — not a paid

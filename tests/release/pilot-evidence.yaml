@@ -17,6 +17,13 @@
 # re-executados contra a base 352cebb (branch closure/b2-rerun-20261019):
 # `pnpm test --concurrency=1` com TEST_DATABASE_URL descartável verificado
 # (container efêmero postgres:17-alpine sem volume, DB vazio 0 tabelas pré-run);
+# B3 2026-10-30: full rerun `pnpm test --concurrency=1` exit 0 — Turbo 20/20
+# (7 cached builds); @iptv/api 103 arquivos, 1267 passed / 1 skipped / 0 failed;
+# disposable PostgreSQL 17 (container efêmero, DB verificado VAZIO — 0 tabelas
+# pré-run); único skip intencional = paridade pooled opt-in
+# (worker-rls-matrix TEST_POOLED_DATABASE_URL, sem DB pooled); 33 PASS com
+# suíte citada verde; F12 sem re-run live (BLOCKED, dono operator);
+# G07 mantido DEFERRED_POST_MVP per ADR-0027.
 # 19/20 tasks turbo verdes; @iptv/api 84/85 arquivos (1073/1074 testes) —
 # único vermelho `commands-events-hitl` "parallel drains" (outbox-marker 3 vs
 # >=4), falha intermitente — hipótese temporal/ambiental não confirmada (vitest paralelo sob
@@ -29,7 +36,7 @@
   test: 'apps/api/test/golden-loop.integration.test.ts:"legs a-b: inbound WhatsApp → lead/person/conversation → durable trial ACTIVE + binding"'
   environment: integration (TEST_DATABASE_URL descartável; echo gateway, zero live)
   evidence: código + suíte existente
-  last_run: 2026-10-14 (re-executed green, branch gw3/security-headers-referrer-nosniff d415290, disposable PostgreSQL 17); suite B2 2026-10-19 re-executed green (golden-loop 3/3; base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-14 (re-executed green, branch gw3/security-headers-referrer-nosniff d415290, disposable PostgreSQL 17); suite B2 2026-10-19 re-executed green (golden-loop 3/3; base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: 'M1 live PASS em 2026-10-14 (evidence/p3-waha/m1-adopt-20261014.md): session/restart/outbound-texto/inbound/auth/dedupe ao vivo (send 201 com id + entrega no aparelho + inbound PROCESSED + replay deduped:true + restore); suíte usa echo gateway. M2 drill manual PASS em 2026-10-14 (evidence/p3-waha/m2-drill-20261014.md). Residuais live: media/audio outbound (não implementado), multi-sessão, reconnect profundo, restriction/timelock (nunca provocar)'
 - id: G02
@@ -37,7 +44,7 @@
   test: 'apps/api/test/agent-shadow-approval.integration.test.ts:"inbound → SHADOW run persisted + HumanReview created; shadow NEVER sends"'
   environment: integration (echo gateway)
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma (suite re-executada em 2026-10-12)
 - id: G03
@@ -45,7 +52,7 @@
   test: 'apps/api/test/trial-compat.integration.test.ts:"happy path: request -> provisioning(echo) -> ACTIVE -> technical PASSED -> trust renewal -> ENDED"'
   environment: integration (echo provider)
   evidence: código + suíte existente; readback em apps/api/test/trial-readback.integration.test.ts
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: provider live real (CINEVISION writes) pendente de Fase 6 Step 3; caminho echo certificado em software
 - id: G04
@@ -53,7 +60,7 @@
   test: 'apps/api/test/trial-compat.integration.test.ts:"retrial after INVALIDATED goes through human review, then provisions"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma (suite re-executada em 2026-10-12)
 - id: G05
@@ -61,7 +68,7 @@
   test: 'apps/api/test/commerce-billing.integration.test.ts:"happy path: quote → submit → charge → webhook PAID → payment → balanced ledger → SETTLED → customer (idempotent)"'
   environment: integration (echo Asaas; webhook sintético)
   evidence: código + suíte existente; lifecycle live sandbox em evidence/p3-asaas-sandbox/report.md (software PASS / live BLOCKED-B1) + loop fiel fechado em evidence/p3-asaas-sandbox/live-b1-faithful-20261013.md
-  last_run: '2026-10-19 (B1 nominal loop PASS sandbox, staging Contabo: charge PAID + payment CONFIRMED 500 + order SETTLED + ledger balanceado; webhook 202 entrega unica, zero replay manual; reconcile 409 correto pos-PAID; customer descartavel deletado); suite B2 2026-10-19 re-executed green (commerce-billing 23/23; base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)'
+  last_run: '2026-10-19 (B1 nominal loop PASS sandbox, staging Contabo: charge PAID + payment CONFIRMED 500 + order SETTLED + ledger balanceado; webhook 202 entrega unica, zero replay manual; reconcile 409 correto pos-PAID; customer descartavel deletado); suite B2 2026-10-19 re-executed green (commerce-billing 23/23; base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))'
   owner: coder
   limitations: 'PIX lifecycle live fechado em sandbox em 2026-10-19 no fluxo nominal (charge PAID + payment CONFIRMED 500 + order SETTLED + ledger balanceado; webhook 202 em entrega unica, zero replay manual; reconcile 409 correto; entitlement zero linhas — ativacao fora da lane; customer descartavel deletado). Loop anterior 2026-10-13 usou replay manual por tunel 530. Residuais: 2 tenants orfaos (Piloto, Piloto Operacao) + linhas de auditoria (FK append-only); payment RECEIVED irremovivel no sandbox; refund-live nao executado (decisao do operador); scheduler disabled e outbox-worker nao ativado no staging Contabo.'
 - id: G06
@@ -69,7 +76,7 @@
   test: 'apps/api/test/subscription-fulfillment.integration.test.ts:"full loop: SETTLED → PENDING + cycle → MANUAL resolve SUCCEEDED → ACTIVE + grants + notification"'
   environment: integration (echo provider)
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: provisionamento em provider live pendente de Fase 6 Steps 3/6–9
 - id: G07
@@ -88,7 +95,7 @@
   test: 'apps/api/test/renewal-retention.integration.test.ts:"full renewal happy path: quote → charge → webhook → renew → new OPEN cycle"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma (suite re-executada em 2026-10-12)
 - id: G09
@@ -96,7 +103,7 @@
   test: 'apps/api/test/trial-compat.integration.test.ts:"trust renewal boundary: 4 days denied, 3 days allowed"'
   environment: integration
   evidence: 'código + suíte existente; também renewal-retention "trust renewal: forbidden without review, bounded extension once with approval"'
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma (suite re-executada em 2026-10-12)
 - id: G10
@@ -104,7 +111,7 @@
   test: 'apps/api/test/subscription-fulfillment.integration.test.ts:"cancel_at_period_end keeps access until cycle expiry, then ENDED"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: G11
@@ -112,7 +119,7 @@
   test: 'apps/api/test/support-hitl-center.integration.test.ts:"runs the full ticket lifecycle with solution evidence"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: G12
@@ -120,7 +127,7 @@
   test: 'apps/api/test/support-technical-access-g12.integration.test.ts:"grants technical access on a ticket without creating a commercial trial"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: G13
@@ -128,7 +135,7 @@
   test: 'apps/api/test/referral-rewards.integration.test.ts:"happy path: create → qualify via settled order → issue → redeem zero-value → balanced ledger"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: G14
@@ -136,7 +143,7 @@
   test: 'apps/api/test/partners-resellers.integration.test.ts:"G14: onboarding → academy → READY → activate → order settled with 1:1 credit consumption"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: G15
@@ -144,7 +151,7 @@
   test: 'apps/api/test/partners-resellers.integration.test.ts:"G15: grandparent aggregates direct children only and cannot manage a grandchild"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: G16
@@ -152,7 +159,7 @@
   test: 'apps/api/test/partners-resellers.integration.test.ts:"G16: ACTIVE reseller converts to an isolated SaaS tenant and keeps operating"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: G17
@@ -160,7 +167,7 @@
   test: 'apps/api/test/campaigns-attribution.integration.test.ts:"keeps first-touch attribution and resolves conversions to the first-touch version (G17)"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: G18
@@ -168,7 +175,7 @@
   test: 'apps/api/test/copilot-w14b.integration.test.ts:"G18: filtered view → explain → prepare → execute allowed command with approval where required"'
   environment: integration
   evidence: código + suíte existente; caminho de aprovação em "approved HIGH-risk review authorizes the later execution (G18 approval path)"
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: F01
@@ -176,7 +183,7 @@
   test: 'apps/api/test/commerce-billing.integration.test.ts:"duplicate webhook delivery is a no-op (inbox dedupe + idempotent confirm)"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: F02
@@ -184,7 +191,7 @@
   test: 'apps/api/test/subscription-fulfillment.integration.test.ts:"F02: provider outage queues fulfillment; recovery resumes without duplicate effect"'
   environment: integration (echo provider; outage simulada)
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: outage de provider live real coberta apenas por simulação; bulkhead contra Hatchet pendente de certificação
 - id: F03
@@ -192,7 +199,7 @@
   test: 'apps/api/test/provider-dispatch.integration.test.ts:"post-send lease expiry parks VERIFYING/UNKNOWN and never re-executes"'
   environment: integration
   evidence: código + suíte existente; também multidomain "uncertain outcome parks VERIFYING with no second execution"
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: timeout contra browser/provider live real pendente de canary Fase 6
 - id: F04
@@ -200,15 +207,15 @@
   test: 'apps/api/test/subscription-fulfillment.integration.test.ts:"F04: DOM drift degrades only the affected write; unrelated fulfillment continues"'
   environment: integration (drift simulado)
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: DOM drift live real pendente de canary Fase 6
 - id: F05
   status: PASS
-  test: 'apps/api/test/waha-f05-f06.unit.test.ts (12 testes F05/F06, stubs HTTP só 127.0.0.1, zero live)'
+  test: 'apps/api/test/waha-f05-f06.unit.test.ts (13 testes F05/F06, stubs HTTP só 127.0.0.1, zero live)'
   environment: unit + stubs locais
   evidence: evidence/p3-waha/report.md item 13 (429→CAPPED, prospecção adiada, inbound preservado)
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: observação de timelock/capping contra sessão WAHA real é gate do operador M2; código/sintético PASS
 - id: F06
@@ -216,7 +223,7 @@
   test: 'apps/api/test/waha-f05-f06.unit.test.ts:"keeps routing correct across a session restart"'
   environment: unit + stubs locais
   evidence: evidence/p3-waha/report.md itens 1–2 (session/restart código PASS, live BLOCKED)
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: restart/reconnect contra sessão WAHA live é gate do operador M1; código/sintético PASS
 - id: F07
@@ -224,7 +231,7 @@
   test: 'apps/api/test/agent-model-failure.test.ts:"F07 harness: a failing primary model never yields an action"'
   environment: unit + integração com gateway mockado
   evidence: código + suíte existente ("deterministic workflows are unaffected and a healthy model recovers the path")
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: F08
@@ -232,23 +239,23 @@
   test: 'apps/api/test/commerce-billing.integration.test.ts:"self-approval is rejected and the requester cannot execute without approval"'
   environment: integration
   evidence: código + suíte existente; também agent-shadow approve/reject e copilot "execute routes the refund draft command through HITL approval (refund.request)"
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: F09
   status: PASS
-  test: 'apps/api/test/agent-shadow-approval.integration.test.ts:"unauthorized tool/command use is denied by the bus"'
-  environment: integration
-  evidence: código + suíte existente; agent-model-failure.test.ts ("loud refusal, never a silent pass-through of untrusted text")
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  test: 'apps/api/test/agent-shadow-approval.integration.test.ts:"unauthorized tool/command use is denied by the bus" + packages/ai-runtime/test/f09-prompt-injection.unit.test.ts (11/11 offline 2026-10-30)'
+  environment: integration (echo gateway) + unit offline (EchoModelGateway, sem rede/modelo/DB)
+  evidence: código + suíte existente; agent-model-failure.test.ts ("loud refusal, never a silent pass-through of untrusted text"); suíte dedicada do harness dirige AgentHarness/EchoModelGateway/ToolRegistry de produção (direct-prompt EN/PT, tool-like, quoted web-like em inbound prompt, hostile model-output)
+  last_run: 2026-10-30 (dedicada 11/11 offline verde; suites API re-executadas verdes em 2026-10-19, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
-  limitations: sem suíte adversarial dedicada de prompt-injection; cobertura é fail-closed do bus + classificação de conteúdo inseguro — considerar suíte adversarial futura (não bloqueia pilot)
+  limitations: EchoModelGateway/offline apenas; padrões EN/PT por regex; sem chamada a provider live; sem fetch web real nem boundary de proveniência exercitado (quoted web-like só como dado em inbound prompt)
 - id: F10
   status: PASS
   test: 'apps/api/test/cutover-ab-matrix.integration.test.ts:"own rows visible, cross-tenant invisible, no context fail-closed (REAL)" por domínio'
   environment: integration sob pool iptv_app real (RLS ativa)
   evidence: código + suíte existente; também commerce-billing "tenant isolation" e rls-tenant-context
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: F11
@@ -256,7 +263,7 @@
   test: 'apps/api/test/commerce-billing.integration.test.ts:"stale approval is rejected after the payment is drained by another refund"'
   environment: integration
   evidence: código + suíte existente; também commands.unit "rejects stale approvals via expectedStatus" e copilot "execute rejects a stale expectedStatus with 409"
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: F12
@@ -273,7 +280,7 @@
   test: 'apps/api/test/renewal-retention.integration.test.ts:"F13: settled renewal order suppresses the reminder before subscription.renew runs"'
   environment: integration
   evidence: código + suíte existente; também scheduler "tick revisits an ENDED tenant to cancel a queued reminder after its renewal order settles"
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: scheduler em staging com API_SCHEDULER_ENABLED=1 não exercitado para este caminho (staging-p0 usou scheduler desligado)
 - id: F14
@@ -281,7 +288,7 @@
   test: 'apps/api/test/analytics-w14a.integration.test.ts:"F14: a failing family degrades the payload without sinking the summary"'
   environment: integration
   evidence: 'código + suíte existente; também "F14-SQL: a genuinely aborted statement degrades one family without sinking the rest"'
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: nenhuma além de last_run
 - id: F15
@@ -289,7 +296,7 @@
   test: 'apps/api/test/inventory-supplier-credit.integration.test.ts:"blocks an over-balance reservation with the F15 signal and refuses manual refresh without a reading"'
   environment: integration
   evidence: código + suíte existente
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: saldo live real do fornecedor MK pendente do gate G07 do operador
 - id: F16
@@ -297,14 +304,14 @@
   test: 'apps/api/test/commerce-billing.integration.test.ts:"cross-customer refund within the same tenant is rejected"'
   environment: integration
   evidence: código + suíte existente; também inventory-app-trial "rejects invalid transitions and cross-customer mixes"
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
-  limitations: enforcement na camada de comando (FKs tenant-only são insuficientes por desenho — ver gate); sem varredura exaustiva Order/Subscription/Cycle/Entitlement/add-on em um único teste — considerar teste F16 dedicado cobrindo as 5 superfícies (não bloqueia pilot)
+  limitations: migração append-only 064 adiciona guards de insert/update no banco e `subscription.renew` valida ownership antes de replay/mutação; a suíte dedicada `apps/api/test/f16-cross-customer.integration.test.ts` (7/7 em PostgreSQL 17 descartável, 2026-10-30) cobre Order/Subscription/Cycle/Entitlement/add-on charge, IDs válidos de dois clientes no mesmo tenant, mutações parent-side e controles positivos; enforcement e probes locais não equivalem a prova de deploy/live
 - id: F17
   status: PASS
   test: 'apps/api/test/commerce-billing.integration.test.ts:"two concurrent partial refunds both succeed; a third over-refund is rejected" + "UNKNOWN refund effect holds the reservation, then reconciles to applied" + "chargeback follows the distinct path (CHARGEBACK status + loss posting + review exception)"'
   environment: integration
   evidence: código + suíte existente; também billing-rls-rehearsal "chargeback via webhook records CHARGEBACK + loss reversal"
-  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17)
+  last_run: 2026-10-19 (re-executed green, base 352cebb, branch closure/b2-rerun-20261019, disposable PostgreSQL 17; B3 2026-10-30 cited suite re-executed green via full `pnpm test --concurrency=1` (base 43f7e9c, branch main, disposable PG17))
   owner: coder
   limitations: refund live contra Asaas sandbox NÃO executado em 2026-10-13 por decisão do operador (pulso explícito) — sem promoção; chargeback live nunca observado (só via webhook sintético)

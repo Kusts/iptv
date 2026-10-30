@@ -39,6 +39,7 @@ import {
   findOpenTrustReview,
   findRenewalReminderMessage,
   getActivePlanPrice,
+  getCustomerIdForPerson,
   getCycle,
   getCycleByRenewalOrder,
   getOpenCycle,
@@ -289,6 +290,44 @@ async function handleRenew(
       ok: false,
       code: "precondition_failed",
       message: `subscription is ${subscription.status}; renewal requires ACTIVE/SUSPENDED/ENDED`,
+    };
+  }
+  // F16 same-tenant ownership: a settled RENEWAL order renews only the
+  // subscription of its own customer. Tenant-only FKs accept a cross-customer
+  // mix, so this application-level check rejects BEFORE the idempotent replay
+  // shortcuts and every cycle/grant/ledger mutation below. Normal orders
+  // leave the denormalized `orders.customer_id` NULL and identify the buyer
+  // with `person_id` (`crm.customers` is unique on (tenant_id, person_id)),
+  // so ownership compares the order's person-derived customer id to
+  // `subscription.customer_id`; a non-null denormalized `orders.customer_id`
+  // that contradicts either side is rejected as well.
+  const derivedCustomerId = await getCustomerIdForPerson(ctx, order.personId);
+  if (derivedCustomerId === null) {
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: "renewal order person has no customer in this tenant",
+    };
+  }
+  if (order.customerId !== null && order.customerId !== derivedCustomerId) {
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: "cross-customer renewal rejected: renewal order denormalized customer contradicts its person",
+    };
+  }
+  if (order.customerId !== null && order.customerId !== subscription.customerId) {
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: "cross-customer renewal rejected: renewal order customer does not match subscription customer",
+    };
+  }
+  if (derivedCustomerId !== subscription.customerId) {
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: "cross-customer renewal rejected: renewal order customer does not match subscription customer",
     };
   }
   // Idempotency: the renewal link rides on the PRIOR cycle only (canonical

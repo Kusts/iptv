@@ -22,9 +22,11 @@ export function CopySnippet({
 
   const handleCopy = async (e: React.MouseEvent): Promise<void> => {
     e.stopPropagation();
+    let ok = false;
     try {
       if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
         await navigator.clipboard.writeText(text);
+        ok = true;
       } else if (typeof document !== "undefined") {
         try {
           const textarea = document.createElement("textarea");
@@ -33,7 +35,7 @@ export function CopySnippet({
           document.body.appendChild(textarea);
           textarea.select();
           if (typeof document.execCommand === "function") {
-            document.execCommand("copy");
+            ok = document.execCommand("copy");
           }
           document.body.removeChild(textarea);
         } catch {
@@ -42,9 +44,12 @@ export function CopySnippet({
       }
     } catch {
       // Falha silenciosa de permissão de clipboard do host
+      ok = false;
     }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    }
   };
 
   return (

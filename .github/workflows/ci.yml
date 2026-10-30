@@ -144,8 +144,10 @@ jobs:
         run: python tests/security/test_ci_security_gates.py
 
   # Suites adversariais críticas em job próprio (F09 prompt-injection +
-  # F10 isolamento de tenant). Service PG próprio: são suites de
-  # integração que aplicam migrations num banco descartável.
+  # F10 isolamento de tenant). Service PG próprio: as suites de
+  # integração da API aplicam migrations num banco descartável e usam
+  # TEST_DATABASE_URL; a suíte unitária F09 do harness (@iptv/ai-runtime,
+  # EchoModelGateway, sem rede/modelo/DB) roda sem banco no step próprio.
   adversarial:
     runs-on: ubuntu-latest
     services:
@@ -176,7 +178,7 @@ jobs:
       # direto (bypass do turbo): sem build prévio, `@iptv/database` não tem
       # dist/ e o resolve falha. Build das deps primeiro (mesma ordem).
       - run: pnpm build --filter @iptv/api...
-      - name: Adversarial suites (agent-shadow + model-failure + tenant-context)
+      - name: Adversarial API suites (F09/F10 integration: agent-shadow + model-failure + tenant-context)
         run: >
           pnpm --filter @iptv/api exec vitest run
           test/agent-shadow-approval.integration.test.ts
@@ -184,3 +186,6 @@ jobs:
           test/rls-tenant-context.integration.test.ts
         env:
           TEST_DATABASE_URL: postgresql://iptv:iptv@localhost:5432/iptv_test
+      - name: F09 harness unit suite (prompt-injection, no DB)
+        run: >
+          pnpm --filter @iptv/ai-runtime exec vitest run test/f09-prompt-injection.unit.test.ts

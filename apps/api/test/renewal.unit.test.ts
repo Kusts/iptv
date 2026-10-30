@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CommandActor } from "@iptv/domain";
+import { CommandBus } from "../src/commands/command-bus.js";
+import { registerRenewalCommands } from "../src/renewal/renewal.commands.js";
+import { MemoryDb } from "./fakes/memory-fakes.js";
 import { computeProjectedState } from "../src/subscription/subscription-policy.js";
 import {
   DEFAULT_RENEWAL_POLICY,
@@ -157,5 +161,242 @@ describe("Wave 9 renewal policy (pure)", () => {
     expect(key).toBe("renewal-reminder:sub-1:cycle-1");
     expect(renewalReminderKey("sub-1", "cycle-2")).not.toBe(key);
     expect(renewalReminderKey("sub-2", "cycle-1")).not.toBe(key);
+  });
+});
+
+// F16 same-tenant ownership guard for `subscription.renew` (mocked stores, no
+// DB): a settled RENEWAL order whose person derives another customer of the
+// same tenant must be rejected with `precondition_failed` BEFORE the
+// idempotent replay shortcuts and every cycle/grant/ledger mutation. Normal
+// orders leave denormalized `orders.customer_id` NULL and identify the buyer
+// with `person_id`; a contradictory non-null denormalized id is rejected too.
+const renewStoreMocks = vi.hoisted(() => ({
+  getOrder: vi.fn(),
+  getCustomerIdForPerson: vi.fn(),
+  getCycleByRenewalOrder: vi.fn(),
+  advisoryLockSubscription: vi.fn(),
+  getSubscription: vi.fn(),
+  getCycle: vi.fn(),
+  listCycles: vi.fn(),
+  updateCycle: vi.fn(),
+  insertCycle: vi.fn(),
+  updateSubscription: vi.fn(),
+  updateEntitlementsStatusBySource: vi.fn(),
+  reopenEntitlementsForRenewal: vi.fn(),
+}));
+
+vi.mock("../src/renewal/renewal-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/renewal/renewal-store.js")>();
+  return { ...actual, ...renewStoreMocks } as unknown as typeof actual;
+});
+
+const subscriptionStoreMocks = vi.hoisted(() => ({
+  getCatalogPlan: vi.fn(),
+  listEntitlementsBySource: vi.fn(),
+  insertGrant: vi.fn(),
+  updateCycle: vi.fn(),
+}));
+
+vi.mock("../src/subscription/subscription-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/subscription/subscription-store.js")>();
+  return { ...actual, ...subscriptionStoreMocks } as unknown as typeof actual;
+});
+
+const wave2Mocks = vi.hoisted(() => ({
+  kyselyTrxOf: vi.fn(),
+  emitAndEnqueue: vi.fn(),
+}));
+
+vi.mock("../src/crm/wave2-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/crm/wave2-store.js")>();
+  return { ...actual, ...wave2Mocks } as unknown as typeof actual;
+});
+
+describe("F16 subscription.renew same-tenant ownership guard (mocked stores)", () => {
+  const TENANT = "11111111-1111-4111-8111-111111111111";
+  const CUSTOMER_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const CUSTOMER_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const SUB_A = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const ORDER_R = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const CYCLE_PRIOR = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const CYCLE_NEXT = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const PLAN_P = "99999999-9999-4999-8999-999999999999";
+  const PERSON_A = "22222222-2222-4222-8222-222222222222";
+  const PERSON_B = "33333333-3333-4333-8333-333333333333";
+
+  const PRIOR_START = new Date("2026-10-01T00:00:00.000Z");
+  const PRIOR_END = new Date("2026-11-01T00:00:00.000Z");
+
+  function actor(): CommandActor {
+    return {
+      userId: PERSON_A,
+      isPlatformAdmin: false,
+      tenantId: TENANT,
+      roleKeys: ["tenant_owner"],
+      permissions: ["subscription.write"],
+      actorType: "human",
+    };
+  }
+
+  function setupBus(): CommandBus {
+    const bus = new CommandBus(new MemoryDb());
+    registerRenewalCommands(bus);
+    return bus;
+  }
+
+  function orderFixture(input: { personId: string; customerId: string | null }) {
+    return {
+      id: ORDER_R,
+      personId: input.personId,
+      customerId: input.customerId,
+      orderType: "RENEWAL",
+      status: "SETTLED",
+      netMinor: "3000",
+      currency: "BRL",
+    };
+  }
+
+  function priorFixture() {
+    return {
+      id: CYCLE_PRIOR,
+      tenantId: TENANT,
+      subscriptionId: SUB_A,
+      cycleNo: 1,
+      startsAt: PRIOR_START,
+      endsAt: PRIOR_END,
+      renewalOrderId: ORDER_R,
+      status: "ACTIVE",
+      baseRevenueMinor: "3000",
+      currency: "BRL",
+    };
+  }
+
+  function subscriptionFixture() {
+    return {
+      id: SUB_A,
+      tenantId: TENANT,
+      customerId: CUSTOMER_A,
+      planId: PLAN_P,
+      originatingOrderId: null,
+      status: "ACTIVE",
+      startedAt: PRIOR_START,
+      currentPeriodStart: PRIOR_START,
+      currentPeriodEnd: PRIOR_END,
+      cancelAtPeriodEnd: false,
+      cancelledAt: null,
+    };
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    wave2Mocks.kyselyTrxOf.mockReturnValue({});
+    wave2Mocks.emitAndEnqueue.mockResolvedValue(undefined);
+    renewStoreMocks.advisoryLockSubscription.mockResolvedValue(undefined);
+    renewStoreMocks.updateEntitlementsStatusBySource.mockResolvedValue(undefined);
+    renewStoreMocks.reopenEntitlementsForRenewal.mockResolvedValue([]);
+    subscriptionStoreMocks.listEntitlementsBySource.mockResolvedValue([]);
+  });
+
+  it("rejects a settled RENEWAL order owned by another same-tenant customer before any mutation", async () => {
+    const bus = setupBus();
+    // Same tenant, two customers: the order's person derives B (denormalized
+    // customer_id is NULL, as normal orders leave it), the linked
+    // subscription names A.
+    renewStoreMocks.getOrder.mockResolvedValue(orderFixture({ personId: PERSON_B, customerId: null }));
+    renewStoreMocks.getCustomerIdForPerson.mockResolvedValue(CUSTOMER_B);
+    renewStoreMocks.getCycleByRenewalOrder.mockResolvedValue(priorFixture());
+    renewStoreMocks.getSubscription.mockResolvedValue(subscriptionFixture());
+
+    const result = await bus.execute(actor(), "subscription.renew", { orderId: ORDER_R });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("F16 defect: cross-customer renewal order was accepted");
+    }
+    expect(result.code).toBe("precondition_failed");
+    expect(result.message).toMatch(/customer|ownership|cross-customer|same customer/i);
+    // The guard owns both reads it needs ...
+    expect(renewStoreMocks.getCustomerIdForPerson).toHaveBeenCalledTimes(1);
+    expect(renewStoreMocks.getCycleByRenewalOrder).toHaveBeenCalledTimes(1);
+    expect(renewStoreMocks.getSubscription).toHaveBeenCalledTimes(1);
+    // ... and runs before the idempotent replay shortcuts (reads) ...
+    expect(renewStoreMocks.getCycle).not.toHaveBeenCalled();
+    expect(renewStoreMocks.listCycles).not.toHaveBeenCalled();
+    // ... and before every cycle/grant/ledger mutation.
+    expect(subscriptionStoreMocks.updateCycle).not.toHaveBeenCalled();
+    expect(renewStoreMocks.insertCycle).not.toHaveBeenCalled();
+    expect(renewStoreMocks.updateSubscription).not.toHaveBeenCalled();
+    expect(renewStoreMocks.updateEntitlementsStatusBySource).not.toHaveBeenCalled();
+    expect(renewStoreMocks.reopenEntitlementsForRenewal).not.toHaveBeenCalled();
+    expect(subscriptionStoreMocks.insertGrant).not.toHaveBeenCalled();
+    expect(wave2Mocks.emitAndEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("rejects a contradictory non-null denormalized orders.customer_id before any mutation", async () => {
+    const bus = setupBus();
+    // Person derives A (matching the subscription), but the denormalized
+    // orders.customer_id names B — contradictory denormalization is rejected.
+    renewStoreMocks.getOrder.mockResolvedValue(orderFixture({ personId: PERSON_A, customerId: CUSTOMER_B }));
+    renewStoreMocks.getCustomerIdForPerson.mockResolvedValue(CUSTOMER_A);
+    renewStoreMocks.getCycleByRenewalOrder.mockResolvedValue(priorFixture());
+    renewStoreMocks.getSubscription.mockResolvedValue(subscriptionFixture());
+
+    const result = await bus.execute(actor(), "subscription.renew", { orderId: ORDER_R });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("F16 defect: contradictory denormalized customer_id was accepted");
+    }
+    expect(result.code).toBe("precondition_failed");
+    expect(result.message).toMatch(/customer|cross-customer|contradict/i);
+    expect(renewStoreMocks.getCycle).not.toHaveBeenCalled();
+    expect(renewStoreMocks.listCycles).not.toHaveBeenCalled();
+    expect(renewStoreMocks.insertCycle).not.toHaveBeenCalled();
+    expect(wave2Mocks.emitAndEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("valid control: a same-customer settled RENEWAL order renews (already:false)", async () => {
+    const bus = setupBus();
+    const prior = priorFixture();
+    // Normal post-migration shape: denormalized customer_id is NULL; the
+    // order's person derives the subscription's customer.
+    renewStoreMocks.getOrder.mockResolvedValue(orderFixture({ personId: PERSON_A, customerId: null }));
+    renewStoreMocks.getCustomerIdForPerson.mockResolvedValue(CUSTOMER_A);
+    renewStoreMocks.getCycleByRenewalOrder.mockResolvedValue(prior);
+    renewStoreMocks.getSubscription.mockResolvedValue(subscriptionFixture());
+    renewStoreMocks.getCycle.mockResolvedValue(prior);
+    renewStoreMocks.listCycles.mockResolvedValue([prior]);
+    subscriptionStoreMocks.getCatalogPlan.mockResolvedValue({
+      id: PLAN_P,
+      planKey: "f16-monthly",
+      intervalUnit: "MONTH",
+      intervalCount: 1,
+      metadata: {},
+    });
+    subscriptionStoreMocks.updateCycle.mockResolvedValue({ ...prior, status: "COMPLETED" });    const next = {
+      ...prior,
+      id: CYCLE_NEXT,
+      cycleNo: 2,
+      startsAt: PRIOR_END,
+      endsAt: new Date("2026-12-01T00:00:00.000Z"),
+      status: "ACTIVE",
+      renewalOrderId: null,
+      baseRevenueMinor: "3000",
+    };
+    renewStoreMocks.insertCycle.mockResolvedValue(next);
+    renewStoreMocks.updateSubscription.mockResolvedValue({ ...subscriptionFixture() });
+
+    const result = await bus.execute<{ subscriptionId: string; already: boolean }>(actor(), "subscription.renew", {
+      orderId: ORDER_R,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(`valid control failed: ${JSON.stringify(result)}`);
+    }
+    expect(result.data.subscriptionId).toBe(SUB_A);
+    expect(result.data.already).toBe(false);
+    expect(renewStoreMocks.insertCycle).toHaveBeenCalledTimes(1);
+    expect(wave2Mocks.emitAndEnqueue).toHaveBeenCalledTimes(1);
   });
 });

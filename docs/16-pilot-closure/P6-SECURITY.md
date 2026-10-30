@@ -1,4 +1,4 @@
-# P6 — Security gates + revisão (parte 1: CI e sessão; sem mudar runtime)
+# P6 — Security gates + revisão (escopo original: CI e sessão; sem mudar runtime)
 
 > TASK_ID: CODER-P6A · branch `closure/p6-hardening` · SPEC C8 (fatia 1)
 > Escopo desta slice: jobs novos na CI + decisão de sessão documentada +
@@ -11,6 +11,11 @@
 > `frame-ancestors 'none'` + `X-Frame-Options: DENY` em todas as rotas web.
 > As seções 1–11 acima permanecem fiéis ao escopo original do P6a; a nota de
 > "nenhum header alterado" descreve aquela slice, não o estado atual.
+>
+> **Reconciliação posterior (issue #44, docs-only sem runtime):** S10/S13 (§1),
+> §8, §11 e follow-ups item 5 refletem o estado verificado no checkout (headers
+> da API, Report-Only+nonce web, rate-limit escopado); o restante histórico
+> permanece como estava.
 
 ## 1. Matriz de controles
 
@@ -18,17 +23,17 @@
 |---|---|---|---|
 | S1 | Secret scan na CI (gitleaks 8.24.0 pinado, histórico + `--redact`) | NOVO, verde | job `security-scans` em `.github/workflows/ci.yml`; `.gitleaks.toml`; §2 |
 | S2 | Dependency vuln scan (threshold high, baseline comparada) | NOVO, verde | `scripts/ci-audit-gate.py` + `tests/security/audit-baseline.json`; §3 |
-| S3 | Suites adversariais em job próprio | NOVO, verde (17/17) | job `adversarial`; §4 |
+| S3 | Suites adversariais em job próprio | 17/17 integração PG (registro histórico) + suite F09 harness 11/11 offline em 2026-10-30 | job `adversarial`; §4 |
 | S4 | Migration/proof PG tests na CI | Existente, sem mudança | job `build` (`run_pg_fixture_tests.sh`) + `outbox-050-role-guards`; sem lacuna — nenhum job novo |
 | S5 | Contracts/docs gates | Existente, sem mudança | `validate_docs.py`, `test_contracts.py`, `test_seed_contract.py` no `build` (+ guarda no self-test) |
 | S6 | Self-test dos gates P6 | NOVO, verde (22/22) | `tests/security/test_ci_security_gates.py`, roda no `security-scans` |
 | S7 | Branch governance | Compensação (protection indisponível) | §5 |
 | S8 | Sessão localStorage vs HttpOnly | DECIDIDO: manter localStorage no pilot (aceitação explícita) | §6 |
 | S9 | CORS | Revisado, sem achado bloqueante | §7 |
-| S10 | CSP / security headers | PARCIAL: frame policy web implementada; rate-limit/API headers/CSP geral pendentes (issue #44) | §8 |
+| S10 | CSP / security headers | PARCIAL: framing imposto + headers da API + Report-Only/nonce; GAP: CSP bloqueante geral + verificação de TLS/exposição do deploy (issue #44) | §8 |
 | S11 | Secrets no repo/CI | Revisado; scan verde | §9 |
 | S12 | Worker credentials | Revisado, fail-closed | §10 |
-| S13 | Admin endpoints | Revisado; sem rate-limit dedicado (follow-up) | §11 |
+| S13 | Admin endpoints | Revisado; rate-limit escopado em drains/dispatch/upload (sem throttle global/compartilhado) | §11 |
 
 ## 2. Secret scanning
 
@@ -232,18 +237,26 @@ nenhum upgrade amplo nesta fatia):
    (pnpm 11 e/ou o endpoint bulk/GHSA atual). A decisão de upgrade não é
    tomada aqui; este registro fixa apenas gatilho, ordem e pré-requisito.
 
-## 4. Suites adversariais (job `adversarial`, PG próprio descartável)
+## 4. Suites adversariais (job `adversarial`: integração PG + unit offline)
 
 | Suite | Cobre | Resultado local |
 |---|---|---|
 | `test/agent-shadow-approval.integration.test.ts` | bus nega tool/comando não autorizado, cross-tenant (F09/F10 núcleo) | PASS |
 | `test/agent-model-failure.test.ts` | recusa ruidosa em falha de modelo, sem envio | PASS (6/6) |
 | `test/rls-tenant-context.integration.test.ts` | isolamento de tenant no contexto (F10) | PASS |
-| Total | | **3 arquivos, 17/17** em PG scratch descartável (container removido após) |
+| Total de integração PG (registro histórico) | | **3 arquivos, 17/17** em PG scratch descartável (container removido após) |
 
-Limitação honesta (herdada da P5): não há dataset dedicado de red-team de
-prompt-injection além do fail-closed do bus + recusas do harness; cobertura
-é negação/guardas, não adversário gerativo. Não bloqueia o pilot.
+**Atualização F09 (2026-10-30):** `packages/ai-runtime/test/f09-prompt-injection.unit.test.ts`
+adiciona 11 testes offline no `AgentHarness`/`EchoModelGateway`/`ToolRegistry`
+(prompt direto EN/PT, pedidos tool-like, texto web-like citado no inbound,
+guardrail de saída hostil e controle positivo). O job `adversarial` executa
+essa suíte separadamente, sem DB, além das integrações acima.
+
+Limitações atuais: padrões de injeção EN/PT por regex; EchoModelGateway/offline
+apenas, sem provider live, fetch web real ou boundary de proveniência; superfície
+de tools desta suíte limitada a `crm.lookup_person` R0. A suíte prova o caminho
+determinístico do harness, não resistência geral a prompt injection nem bloqueio
+de CSP; não bloqueia o pilot.
 
 ## 5. Branch governance (protection indisponível → compensação)
 
@@ -310,66 +323,59 @@ allowlistados. Sem `origin:true`, sem `*`, sem reflexão.
 Observação (não-achado): `asaas-access-token` no allowlist é intencional
 para tooling de provider via browser, documentado no próprio arquivo.
 
-## 8. CSP / security headers — PARCIAL: frame policy web implementada (issue #44)
+## 8. CSP / security headers — PARCIAL: framing + API headers + Report-Only/nonce (issue #44)
 
-**Subfatia de baixo risco implementada nesta branch (issue #44,
-`closure/security-public-auth-20261010`):**
+**Estado reconciliado (inspeção estática do checkout em 2026-10-30; sem mudança de runtime):**
 
-- `apps/web/next.config.mjs` ganhou `headers()` global com uma única regra
-  `source: "/:path*"` (catch-all — todas as rotas web, sem `has`/`missing`)
-  emitindo **exatamente dois headers**: `Content-Security-Policy:
-  frame-ancestors 'none'` e `X-Frame-Options: DENY`.
-- Motivo do par: `frame-ancestors 'none'` é o mecanismo moderno e
-  `X-Frame-Options: DENY` cobre navegadores antigos sem suporte à diretiva.
-- Prova por teste de regressão: `apps/web/test/frame-policy.test.ts` (7 asserts,
-  roda em `pnpm --filter @iptv/web test`) chama o `headers()` real da config,
-  aplica o matcher do Next às rotas top-level descobertas de `apps/web/app` e
-  a caminhos aninhados/assets, e trava aplicação incondicional e valores exatos.
-- Prova por HTTP real: build de produção + servidor standalone local
-  (porta 3999) — `/`, `/login`, `/crm` responderam HTTP 200 e `/growth/abc`
-  respondeu 404, **todos** com os dois headers. Nenhum outro header de
-  segurança foi adicionado.
+Esta reconciliação documental não reexecutou build ou prova HTTP, nem verificou
+TLS/exposição no deploy. A evidência HTTP abaixo é registro histórico; a suíte
+local de headers da API foi reexecutada nesta sessão, mas não comprova o edge.
 
-**Ainda pendente nesta seção (segue GAP parcial; issue #44 registra o restante):**
+- Frame policy web = **imposta (bloqueante)**: `apps/web/next.config.mjs`
+  `headers()` catch-all `/:path*` emite `Content-Security-Policy:
+  frame-ancestors 'none'` + `X-Frame-Options: DENY` (mais `Referrer-Policy:
+  strict-origin-when-cross-origin` e `X-Content-Type-Options: nosniff` na web).
+  Evidência anteriormente registrada: `apps/web/test/frame-policy.test.ts`
+  (7 asserts sobre o `headers()` real) + HTTP real de build de produção (porta 3999): `/`, `/login`, `/crm`
+  200 e `/growth/abc` 404, todos com os dois headers de framing.
+- CSP geral web = **só Report-Only + nonce plumbing (não é mitigação
+  bloqueante)**: `next.config.mjs` emite `Content-Security-Policy-Report-Only`
+  base (`connect-src`/`img-src`/`font-src`/`style-src 'self'`/`object-src 'none'`/
+  `base-uri 'self'`, `report-uri /api/csp-report`); `apps/web/middleware.ts`
+  gera nonce por request, propaga via `x-nonce` e acrescenta `script-src 'self'
+  'nonce-<v>' 'strict-dynamic'` **somente** no Report-Only. Nenhum
+  `Content-Security-Policy` bloqueante geral.
+- Headers da API = **implementados (3 valores exatos)**:
+  `apps/api/src/security-headers.ts` (`Strict-Transport-Security:
+  max-age=31536000; includeSubDomains` — sem `preload`;
+  `X-Content-Type-Options: nosniff`; `Referrer-Policy:
+  strict-origin-when-cross-origin`), registrado em `apps/api/src/main.ts:31`
+  via `onRequest` em todas as respostas; prova em
+  `apps/api/test/security-headers.test.ts`. Sem CSP geral/helmet na API.
+  HSTS pressupõe TLS no edge — **TLS real e exposição pública do deploy não
+  verificados aqui** (residual aberto).
+- Rate limiting = **escopado e por processo** (mapa em §11): login/register
+  (duas dimensões por tentativa — identidade = e-mail normalizado hasheado +
+  origem = IP; login 5 falhas/15min por identidade + 30 tent./15min por origem;
+  register 10/1h + 20/1h) + `POST v1/admin/outbox/drain` + provider-dispatch
+  (`drain`/`recover`/`reconcile`) + upload de attachments. Saturação
+  fail-closed (429 com `Retry-After` após podar janelas expiradas em
+  `maxEntries = 20000`); sem store compartilhado — com N réplicas o limite
+  efetivo multiplica por N. Falha interna do limiter fail-open com log
+  (decisão documentada). Lockout de identidade de login é global por e-mail
+  (reparo de princípio = passo de challenge futuro).
+- **Residuais (GAP parcial; nada aqui declara "security pass"):** CSP
+  bloqueante geral; limiter global/compartilhado; verificação real de
+  TLS/exposição pública do deploy.
 
-1. **Rate limiting / throttling na API** — IMPLEMENTADO em follow-up do issue
-   #44 (posterior a esta subfatia; ver `apps/api/src/auth/rate-limit*.ts`,
-   guard aplicado às rotas públicas de login/cadastro): limiter em memória
-   por processo, duas dimensões por tentativa (identidade = e-mail normalizado
-   hasheado; origem = IP do socket TCP por padrão — `hops=0` ignora
-   `X-Forwarded-For`): login 5 falhas/15min por identidade + 30 tent./15min por
-   origem; register 10/1h por identidade + 20/1h por origem. Saturação
-   fail-closed: em `maxEntries = 20000` chaves, contadores ATIVOS nunca são
-   removidos para admitir chaves novas — admissão nova é negada (429 com
-   `Retry-After`) após podar janelas expiradas; identidade+origem admitidas em
-   conjunto, sem estado parcial. Limite por processo: com N réplicas o limite
-   efetivo multiplica por N (sem store compartilhado/Redis — fora de escopo).
-   201/409 do registro preservados; falha interna do limiter continua
-   fail-open com log (decisão documentada no serviço). Lockout deliberado: o
-   orçamento de identidade de login é global por e-mail (não escopado por IP),
-   então 5 falhas travam o dono legítimo até o fim da janela de 15min;
-   escopar por IP abriria guessing distribuído — o reparo de princípio seria
-   um passo de challenge (ex. CAPTCHA), trabalho futuro, números mantidos.
-   O texto original desta subfatia (abaixo, "permanece sem implementação")
-   descrevia o estado ANTES do follow-up e foi mantido como histórico.
-   Estado original: rate limiting permanecia sem implementação
-   (grep `throttle|rate.?limit`: 0). Login/cadastro são endpoints públicos;
-   não havia controle compensatório de ingress comprovado naquela revisão.
-2. **Security headers da API** (`Strict-Transport-Security`,
-   `X-Content-Type-Options`, `Referrer-Policy`, helmet) — fora do escopo desta
-   subfatia, que toca só a web.
-3. **CSP geral** (`default-src`/`script-src`/`style-src` com nonce) — deliberada
-   e explicitamente fora: CSP ampla exige inventariar os recursos inline do
-   App Router e quebraria a UI sem uma fatia dedicada. A CSP emitida agora é
-   apenas a diretiva de framing.
-4. **Exposição pública / auth pública** — o issue #44 foi aberto para registrar
-   o conjunto (auth + framing); a presente subfatia cobre somente framing web.
-   Nenhuma mudança de auth, CORS, sessão ou autorização foi feita aqui.
+**Histórico superseded (slice original P6a + subfatia framing — preservado para auditoria):**
 
-**Estado honesto:** frame policy web = implementada e verificada. Rate limit
-de auth pública = implementado em follow-up do issue #44 (ver item 1 acima).
-Headers de API, CSP geral e exposição pública = **pendentes**. Nada nesta seção
-declara "security pass" do piloto; a matriz S10 continua GAP residual.
+- A subfatia de framing tocou só a web (`frame-ancestors 'none'` +
+  `X-Frame-Options: DENY`); o texto original dizia "Nenhum outro header de
+  segurança foi adicionado" e "rate limiting permanecia sem implementação
+  (grep `throttle|rate.?limit`: 0)" — estados ANTERIORES aos follow-ups do
+  issue #44 (headers da API, Report-Only+nonce, rate-limit escopado acima).
+  Nenhuma mudança de auth, CORS, sessão ou autorização foi feita nessas fatias.
 
 ## 9. Secrets — revisado
 
@@ -394,9 +400,14 @@ Sem achado.
   `v1/admin/provider-dispatch`: `AuthGuard` + `isPlatformAdmin` explícito
   (403 caso contrário), derivado de `users.is_platform_admin` (migração
   012) — sem bypass por membership de tenant.
-- Observação: sem rate-limit/throttling dedicado na API (grep
-  `throttle|rate.?limit`: 0). Pilot de baixo volume + auth obrigatória
-  contém o risco; follow-up pós-pilot (mesma slice dos headers §8).
+- Rate-limit **escopado (sem throttle global/compartilhado)**: `@AuthRateLimit` +
+  `RateLimitGuard` só em `POST v1/admin/outbox/drain` (`admin-outbox-drain`),
+  `POST v1/admin/provider-dispatch/{drain,recover,reconcile}`
+  (`admin-provider-dispatch`) e no upload de attachments
+  (`communications.controller.ts`, `communications-attachments-upload`), além de
+  login/register (§8). O GET barato (`drain-state`) e demais rotas admin **não**
+  são throttled. Limiter por processo, sem store compartilhado (N réplicas =
+  N× orçamento).
 
 ## 12. Validação desta slice
 
@@ -591,9 +602,11 @@ Sem achado.
    por resolução real, baseline vazia por intenção, gate PASS e prova OTLP
    re-executada com os 3 sinais (§3, §12.2).
 4. Slice dedicada de upgrade fastify/nest (4 high runtime, §3).
-5. Security headers + rate-limit na API (§8, §11). Nota: a frame policy web
-   (`frame-ancestors 'none'` + `X-Frame-Options: DENY`) já está implementada
-   (§8) — o que resta neste item é rate-limit/throttling e os headers da API.
+5. ~~Security headers + rate-limit na API (§8, §11).~~ **PARCIAL (issue #44):**
+   feitos framing web imposto, 3 headers da API, CSP Report-Only+nonce plumbing
+   e rate-limit escopado (login/register, drains, dispatch, upload) — restam
+   CSP bloqueante geral, limiter global/compartilhado e verificação real de
+   TLS/exposição pública do deploy.
 6. Reduzir TTL de sessão / rotação (§6).
 7. `CODEOWNERS` + proteção de branch quando o plano GitHub permitir (§5).
 8. Dataset red-team de prompt-injection (§4).

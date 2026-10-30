@@ -62,16 +62,20 @@ export class CatalogController {
         .orderBy("pl.name", "asc")
         .execute();
 
-      return {
-        plans: plans.map((p) => ({
+      const resultPlans = plans
+        .filter((p) => p.priceMinor !== null)
+        .map((p) => ({
           id: p.id,
           planKey: p.planKey,
           name: p.name,
           billingIntervalUnit: p.billingIntervalUnit,
           billingIntervalCount: p.billingIntervalCount,
-          priceMinor: p.priceMinor !== null ? p.priceMinor.toString() : "0",
+          priceMinor: p.priceMinor!.toString(),
           currency: p.currency ?? "BRL",
-        })),
+        }));
+
+      return {
+        plans: resultPlans,
       };
     });
   }

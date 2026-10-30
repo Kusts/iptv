@@ -1,6 +1,6 @@
 # Database Migrations — MVP Core
 
-> Status: static-reviewed; PostgreSQL runtime gate pending  
+> Status: static-reviewed; migrations 001–064 applied in a disposable PostgreSQL 17 run for F16 validation (not deployed to staging/production)
 > Versão: 0.9  
 > Banco alvo: PostgreSQL
 
@@ -56,6 +56,20 @@
 48. `202610050001_048_rls_feature_flags_policy_split.sql`
 49. `202610060000_049_control_membership_resolvers.sql`
 50. `202610070000_050_platform_outbox_worker.sql`
+51. `202610080000_051_platform_outbox_runtime_interlock.sql`
+52. `202610090000_052_rls_billing_finance_rollout.sql`
+53. `202610100000_053_platform_spine_rollout.sql`
+54. `202610110000_054_scheduler_inbox_worker.sql`
+55. `202610120000_055_rls_transactional_rollout.sql`
+56. `202610120001_056_provider_dispatch_boundary.sql`
+57. `202610120002_057_rls_operational_support_knowledge_agent.sql`
+58. `202610120003_058_rls_operational_growth_partners.sql`
+59. `202610120004_059_rls_analytical_rollout.sql`
+60. `202610120005_060_billing_customer_provider_binding.sql`
+61. `202610200000_061_platform_outbound_attachments.sql`
+62. `202610210000_062_platform_inbound_attachments.sql`
+63. `202610210000_063_platform_message_transcripts.sql`
+64. `202610300000_064_f16_same_customer_ownership.sql`
 
 ## Coverage by batch
 
@@ -91,14 +105,13 @@
 - append-only Reward Wallet ledger;
 - Gift Pass baseline.
 
-### 012–050 — Append-only increments after MVP Core
+### 012–064 — Append-only increments after MVP Core
 
 - Applied in filename order after 011; each file is self-describing (RLS
-  policy rollout — CRM/communications, then control+identity with the 048
-  feature-flags policy split and the 049 control-membership resolvers +
-  enrollment —, WAHA channel resolver, provider CINEVISION
-  capability gates, provider dispatch lease, the 050 platform outbox worker
-  isolation, and other baseline increments).
+  policy rollout — CRM/communications, billing/finance, transactional and
+  operational domains —, WAHA channel resolver, provider CINEVISION capability
+  gates, provider dispatch lease, outbox/scheduler/attachment/transcription
+  increments, and F16 same-customer ownership guards).
 - The canonical list above is generated from `db/migrations/*.sql` —
   append new migrations there; never edit or reorder existing files.
 
@@ -106,6 +119,7 @@
 
 - active Identity uniqueness is tenant-scoped;
 - all critical cross-aggregate references use tenant-aware composite FKs where the target is tenant-owned;
+- same-tenant cross-customer links across subscription orders/cycles/entitlements/add-on charges are rejected;
 - one primary `TRIAL` per Person; exceptions are explicit `RETRIAL`;
 - Order `SETTLED` does not imply external Payment `PAID`;
 - financial and provider/reward ledgers are append-only;

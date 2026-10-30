@@ -18,15 +18,12 @@
    compra real ou worker durável virou BLOCKED com dono `operator` +
    condição de desbloqueio explícita (gates B1/M1/M2/G07/F12 já nomeados em
    P3 e no PLAN). Nenhum código de domínio foi editado.
-4. Honestidade de `last_run`: nenhuma suíte de integração foi re-executada
-   nesta tarefa (sem `TEST_DATABASE_URL` descartável verificado); PASS =
-   suíte/evidência existente citada exatamente, não re-run local.
-   (Atualização 2026-10-12: G01/G02/G03/G04/G05/G06/G08/G09 re-executados
-   verde contra a main `cfec222` — golden-loop 3/3, commerce-billing +
-   agent-shadow 31/31, trial-compat + subscription-fulfillment +
-   renewal-retention 34/34, g01-chain + waha-media 17/17, PostgreSQL 16
-   descartável; `last_run` real registrado no YAML. Demais IDs seguem
-   `not_rerun_in_this_task`; re-run integral (B2) segue aberto.)
+4. Histórico de `last_run`: no snapshot B2 de 2026-10-19, 19/20 tarefas Turbo
+   passaram e nenhuma suíte citada por uma linha G/F falhou; o rerun integral
+   automatizado foi concluído depois no B3 (2026-10-30), registrado por linha
+   no YAML. Atualização anterior (2026-10-12): G01/G02/G03/G04/G05/G06/G08/G09
+   re-executados contra a main `cfec222` (PostgreSQL 16 descartável); esse
+   registro histórico permanece preservado no YAML.
 
 ## Cobertura — resumo
 
@@ -57,17 +54,27 @@
 | Cross-customer F16 | PASS (`commerce-billing` cross-customer refund rejected + `inventory-app-trial` cross-customer mixes) |
 | Refunds F17 | PASS (concorrentes + stale + UNKNOWN-reconcile + chargeback distintos, todos em `commerce-billing`) |
 | Workflow crash F12 | **BLOCKED** (hatchet, motivado, dono operator) |
-| Injection F09 | PASS (`agent-shadow` bus nega tool/comando não autorizado + `agent-model-failure` recusa ruidosa; limitação: sem suíte adversarial dedicada) |
+| Injection F09 | PASS (`agent-shadow` bus nega tool/comando não autorizado + `agent-model-failure` recusa ruidosa + suíte adversarial dedicada `packages/ai-runtime/test/f09-prompt-injection.unit.test.ts` 11/11 offline: direct prompt EN/PT, tool-like refund/hostile-tool, quoted web-like em inbound prompt, hostile model-output guardrail, no-overblocking; limitações: EchoModelGateway/offline apenas, padrões EN/PT por regex, sem live provider, sem fetch web real nem boundary de proveniência, superfície de tools limitada a `crm.lookup_person` R0) |
 | Stale approval F11 | PASS (`commerce-billing` stale + `commands.unit` expectedStatus + `copilot` 409) |
 | Manual fallback (F05/WAHA) | PASS-código (`waha-f05-f06` unit + `p3-waha` item 14 runbook); drill live = gate M2 do operador |
 
 ## Gaps e follow-ups (não bloqueiam pilot)
 
-1. Re-run integral das 35 linhas com `TEST_DATABASE_URL` descartável (B2) —
-   registrar `last_run` real por ID antes do pilot.
-2. Suíte adversarial dedicada F09 (prompt-injection) — hoje só fail-closed.
-3. Teste F16 dedicado cobrindo as 5 superfícies
-   (Order/Subscription/Cycle/Entitlement/add-on) em um só lugar.
+1. Re-run integral das 35 linhas com `TEST_DATABASE_URL` descartável —
+   FECHADO para as suítes automatizadas (B3 2026-10-30): `pnpm test
+   --concurrency=1` exit 0 (Turbo 20/20; `@iptv/api` 103 arquivos, 1267 passed
+   / 1 skipped / 0 failed) contra PostgreSQL 17 descartável (0 tabelas pré-run);
+   33 PASS com suíte citada verde; G07 segue `DEFERRED_POST_MVP` e F12 segue
+   `BLOCKED` (gates de operador, sem re-run live); único skip intencional é a
+   paridade pooled opt-in (`TEST_POOLED_DATABASE_URL` em `worker-rls-matrix`).
+   `last_run` real registrado no YAML por ID.
+2. Suíte adversarial dedicada F09 (prompt-injection) — FECHADA (2026-10-30): `packages/ai-runtime/test/f09-prompt-injection.unit.test.ts` 11/11 no harness de produção (`AgentHarness` + `EchoModelGateway` + `ToolRegistry`, sem rede/modelo/DB); fail-closed do bus segue coberto por `agent-shadow`. Limites: offline/EchoModelGateway apenas, padrões EN/PT por regex, sem live provider, sem fetch web real nem boundary de proveniência (quoted web-like só como dado em inbound prompt).
+3. **F16 fechado (2026-10-30):** suite dedicada em
+   `apps/api/test/f16-cross-customer.integration.test.ts` cobre Order,
+   Subscription, Cycle, Entitlement e add-on charge, incluindo IDs válidos de
+   dois clientes do mesmo tenant, mutações parent-side e controles positivos;
+   migration append-only 064 aplica as invariantes no banco. Resultado em
+   PostgreSQL descartável: 7/7 testes passam.
 4. Gates do operador pendentes: B1 (PIX live), M1/M2 (WAHA live),
    Steps 3/6–9 Fase 6 (CINEVISION writes/canary), decisão Hatchet (F12).
    G07 (MK) diferido pós-MVP per ADR-0027 — reativação pós-MVP, fora do piloto.

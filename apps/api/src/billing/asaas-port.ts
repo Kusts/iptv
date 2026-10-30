@@ -116,9 +116,16 @@ export interface RefundStatusQuery {
   providerRefundId: string;
 }
 
+export interface PixQrCodeResult {
+  payload: string | null;
+  encodedImage: string | null;
+  expirationDate: string | null;
+}
+
 export interface AsaasPort {
   readonly name: string;
   createPixCharge(input: PixChargeRequest): Promise<PixChargeResult>;
+  getPixQrCode?(providerChargeId: string): Promise<PixQrCodeResult>;
   createCustomer(input: CustomerProvisionRequest): Promise<CustomerProvisionResult>;
   getCharge(query: ChargeStatusQuery): Promise<ChargeStatusResult>;
   executeRefund(input: RefundRequest): Promise<RefundResult>;
@@ -411,6 +418,25 @@ export class EchoAsaasAdapter implements AsaasPort {
     };
   }
 
+  async getPixQrCode(providerChargeId: string): Promise<PixQrCodeResult> {
+    if (!isEchoProviderReference(providerChargeId)) {
+      return {
+        payload: null,
+        encodedImage: null,
+        expirationDate: null,
+      };
+    }
+    // Extract charge id from echo-<chargeId>
+    const chargeId = providerChargeId.startsWith(ECHO_PROVIDER_PREFIX)
+      ? providerChargeId.slice(ECHO_PROVIDER_PREFIX.length)
+      : providerChargeId;
+    return {
+      payload: `echo-qr-${chargeId}`,
+      encodedImage: null,
+      expirationDate: null,
+    };
+  }
+
   async getCharge(query: ChargeStatusQuery): Promise<ChargeStatusResult> {
     // Chokepoint (MVP-ASAAS-05): the echo namespace is `echo-` ONLY. A real
     // (or otherwise foreign) reference under echo must never resolve with a
@@ -652,11 +678,68 @@ export class RealAsaasAdapter implements AsaasPort {
         detail: "asaas: create response without provider id, effect unknown",
       };
     }
+    // Some Asaas responses may include pixQrCode in creation; prefer fetching
+    // via the dedicated endpoint per official flow to be robust.
+    let qrCode: string | null = typeof json?.pixQrCode === "string" ? json.pixQrCode : null;
+    try {
+      const qr = await this.getPixQrCode(providerId);
+      if (qr.payload && qr.payload.trim().length > 0) {
+        qrCode = qr.payload;
+      } else if (qr.encodedImage && qr.encodedImage.trim().length > 0 && !qrCode) {
+        // Some integrations prefer the copia-e-cola payload; keep payload first
+        qrCode = qr.payload ?? qr.encodedImage;
+      }
+    } catch {
+      // If retrieval fails, keep what we have from creation response if any
+    }
     return {
       effect: "KNOWN_APPLIED",
       providerChargeId: providerId,
-      qrCode: typeof json?.pixQrCode === "string" ? json.pixQrCode : null,
+      qrCode,
       detail: `asaas: ${billingType.toLowerCase()} charge accepted`,
+    };
+  }
+
+  async getPixQrCode(providerChargeId: string): Promise<PixQrCodeResult> {
+    if (isSyntheticProviderReference(providerChargeId)) {
+      return {
+        payload: null,
+        encodedImage: null,
+        expirationDate: null,
+      };
+    }
+    let response: { ok: boolean; status: number; json: unknown };
+    try {
+      response = await this.getJson(`/payments/${encodeURIComponent(providerChargeId)}/pixQrCode`);
+    } catch (err) {
+      if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+        return {
+          payload: null,
+          encodedImage: null,
+          expirationDate: null,
+        };
+      }
+      return {
+        payload: null,
+        encodedImage: null,
+        expirationDate: null,
+      };
+    }
+    if (!response.ok) {
+      return {
+        payload: null,
+        encodedImage: null,
+        expirationDate: null,
+      };
+    }
+    const record = asRecordOrNull(response.json);
+    const payload = typeof record?.["payload"] === "string" && record["payload"].trim().length > 0 ? record["payload"].trim() : null;
+    const encodedImage = typeof record?.["encodedImage"] === "string" && record["encodedImage"].trim().length > 0 ? record["encodedImage"].trim() : null;
+    const expirationDate = typeof record?.["expirationDate"] === "string" && record["expirationDate"].trim().length > 0 ? record["expirationDate"].trim() : null;
+    return {
+      payload,
+      encodedImage,
+      expirationDate,
     };
   }
 
@@ -880,6 +963,12 @@ export function tracedAsaasPort(inner: AsaasPort): AsaasPort {
       withSpan("asaas.create_pix_charge", { adapter: inner.name, operation: "create_pix_charge" }, () =>
         inner.createPixCharge(input),
       ),
+    getPixQrCode: inner.getPixQrCode
+      ? (providerChargeId) =>
+          withSpan("asaas.get_pix_qrcode", { adapter: inner.name, operation: "get_pix_qrcode" }, () =>
+            inner.getPixQrCode!(providerChargeId),
+          )
+      : undefined,
     createCustomer: (input) =>
       withSpan("asaas.create_customer", { adapter: inner.name, operation: "create_customer" }, () =>
         inner.createCustomer(input),

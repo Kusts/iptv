@@ -56,7 +56,9 @@ esta lista.
   `Authorization: Bearer` em **um único wrapper** (`lib/api.ts`).
 - **Tradeoff MVP**: `localStorage` é simples e sobrevive a reloads, mas é legível por qualquer
   JS da página — **caveat XSS**: um script injetado rouba a sessão. Mitigações futuras:
-  cookie `HttpOnly + SameSite` (a API já aceita cookie `iptv_session`) e CSP estrita.
+  cookie `HttpOnly + SameSite` (a API já aceita cookie `iptv_session`) e CSP geral bloqueante.
+  Hoje, o framing é bloqueado (`frame-ancestors 'none'`); as demais diretivas CSP estão em
+  `Content-Security-Policy-Report-Only`, que observa violações sem bloquear scripts ou recursos.
 - 401 → limpa o token e redireciona para `/login` (com `onUnauthorized` injetável em testes).
 
 ## Desvios deliberados do stack canônico (com upgrade path)
