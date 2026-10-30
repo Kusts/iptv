@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Shell } from "../../components/Shell";
 import { Button } from "../../components/ui/Button";
@@ -15,7 +15,7 @@ import { useApi } from "../../lib/useApi";
 import { useOptionalHasPermission } from "../../lib/auth";
 import { formatDateTime, formatMinor } from "../../lib/money";
 import { CopySnippet } from "../../components/ui/CopySnippet";
-import { api, userMessage } from "../../lib/api";
+import { api, ApiError, userMessage } from "../../lib/api";
 import type { CatalogPlan, OrderDetail, OrderRow } from "../../lib/api";
 
 const WRITE_PERMISSION = "commerce.order.write";
@@ -56,6 +56,81 @@ function rowAmount(r: OrderRow): string | number {
 
 function rowCreated(r: OrderRow): string | null {
   return r.createdAt ?? r.created_at ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Idempotência PIX por pedido (G01B, issue #90 parte 4.2).
+// A key é estável por pedido em `localStorage` (`pix-idempotency-key:<orderId>`),
+// gerada UMA vez ANTES do primeiro POST e reutilizada em retries, reloads e
+// abas simultâneas — o backend (CommandBus claim por tenant+scope+key) faz
+// replay da cobrança existente em vez de criar nova no provider.
+// ---------------------------------------------------------------------------
+
+const PIX_IDEMPOTENCY_KEY_PREFIX = "pix-idempotency-key:";
+
+function pixStorageKey(orderId: string): string {
+  return `${PIX_IDEMPOTENCY_KEY_PREFIX}${orderId}`;
+}
+
+function readPixIdempotencyKey(orderId: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(pixStorageKey(orderId));
+  } catch {
+    return null;
+  }
+}
+
+function writePixIdempotencyKey(orderId: string, key: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(pixStorageKey(orderId), key);
+  } catch {
+    // armazenamento indisponível: a tentativa segue sem persistência
+  }
+}
+
+function clearPixIdempotencyKey(orderId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(pixStorageKey(orderId));
+  } catch {
+    // best-effort
+  }
+}
+
+function newPixIdempotencyKey(): string {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // fallback abaixo
+  }
+  return `pix-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+const PIX_TERMINAL_FAILURE = new Set(["EXPIRED", "CANCELLED", "FAILED"]);
+const PIX_TERMINAL_SUCCESS = new Set(["PAID", "SETTLED"]);
+
+function pixTerminalOf(status: string | undefined): "failed" | "paid" | null {
+  if (!status) return null;
+  const s = status.trim().toUpperCase();
+  if (PIX_TERMINAL_FAILURE.has(s)) return "failed";
+  if (PIX_TERMINAL_SUCCESS.has(s)) return "paid";
+  return null;
+}
+
+interface PixCharge {
+  id: string;
+  status: string;
+  providerChargeId?: string | null;
+  qrCode?: string | null;
+  effectUncertain?: boolean;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export default function OrdersPage(): React.JSX.Element {
@@ -151,6 +226,9 @@ function OrderDetailPanel({
 
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pixNotice, setPixNotice] = useState<string | null>(null);
+  const [effectUncertain, setEffectUncertain] = useState(false);
+  const [pixTerminal, setPixTerminal] = useState<"failed" | "paid" | null>(null);
   const [createdCharge, setCreatedCharge] = useState<{
     id: string;
     status: string;
@@ -162,7 +240,62 @@ function OrderDetailPanel({
     status: string;
     already: boolean;
   } | null>(null);
-  const [pixIdempotencyKey, setPixIdempotencyKey] = useState<string | null>(null);
+  const pixRecoveredRef = useRef(false);
+
+  // Recovery no mount: se há key estável armazenada e o pedido segue
+  // AWAITING_PAYMENT, re-POST o MESMO body com a MESMA key (o bus faz replay
+  // da cobrança existente, sem nova cobrança no provider) e restaura o
+  // payload copia-e-cola via GET /v1/charges/:id/pix (usa `payload`, NUNCA
+  // `encodedImage`).
+  useEffect(() => {
+    const order = data?.order;
+    if (!order || order.status !== "AWAITING_PAYMENT") return;
+    if (pixRecoveredRef.current || createdCharge) return;
+    const storedKey = readPixIdempotencyKey(order.id);
+    if (!storedKey) return;
+    pixRecoveredRef.current = true;
+    let cancelled = false;
+    (async () => {
+      setBusy(true);
+      try {
+        const replayed = await api.post<PixCharge>(
+          "/v1/charges",
+          { orderId: order.id, paymentMethod: "PIX", billingType: "PIX" },
+          { idempotencyKey: storedKey },
+        );
+        let withPix = replayed;
+        if (!replayed.qrCode && replayed.id) {
+          try {
+            const pix = await api.get<{
+              chargeId: string;
+              payload: string | null;
+              encodedImage: string | null;
+              expirationDate: string | null;
+            }>(`/v1/charges/${replayed.id}/pix`);
+            if (pix.payload) withPix = { ...replayed, qrCode: pix.payload };
+          } catch {
+            // Best effort: a cobrança foi recuperada mesmo sem o payload
+          }
+        }
+        if (cancelled) return;
+        setCreatedCharge(withPix);
+        setPixTerminal(pixTerminalOf(withPix.status));
+        if (withPix.effectUncertain) {
+          setEffectUncertain(true);
+          setPixNotice("Pagamento em processamento — não gere nova cobrança. Use Atualizar para reconciliar.");
+        }
+      } catch {
+        // Best effort: a key segue armazenada; a próxima tentativa manual
+        // reutiliza a mesma key (replay seguro, sem nova cobrança).
+        pixRecoveredRef.current = false;
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [data, createdCharge]);
 
   if (loading) return <LoadingSkeleton lines={4} />;
   if (error !== null) return <ErrorState message={error} onRetry={reload} />;
@@ -199,9 +332,10 @@ function OrderDetailPanel({
     }
   };
 
-  const generatePixCharge = async (): Promise<void> => {
+  const generatePixCharge = async (forceNew = false): Promise<void> => {
     setBusy(true);
     setActionError(null);
+    setPixNotice(null);
     try {
       const personId = o.person_id ?? o.personId;
       if (personId) {
@@ -211,53 +345,77 @@ function OrderDetailPanel({
           // Best-effort; charge.create will fail closed if binding missing
         }
       }
-      // Reuse idempotency key across retries to avoid duplicate charges
-      let idempotencyKey = pixIdempotencyKey;
+      // Key estável por pedido: gerada uma vez ANTES do POST e guardada em
+      // localStorage; retries, reloads e abas simultâneas reutilizam a mesma
+      // key (o bus serializa: replay / 409 in_progress / conflict).
+      // `forceNew` (cobrança anterior em estado final EXPIRED/CANCELLED/FAILED)
+      // limpa a key armazenada e cria uma nova — nunca bloqueia cobrança nova
+      // legítima. PAID/SETTLED nunca chegam aqui (sem botão de nova).
+      if (forceNew) {
+        clearPixIdempotencyKey(o.id);
+        setCreatedCharge(null);
+        setPixTerminal(null);
+        setEffectUncertain(false);
+      }
+      let idempotencyKey = forceNew ? null : readPixIdempotencyKey(o.id);
       if (!idempotencyKey) {
-        idempotencyKey = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `idemp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        setPixIdempotencyKey(idempotencyKey);
+        idempotencyKey = newPixIdempotencyKey();
+        writePixIdempotencyKey(o.id, idempotencyKey);
       }
+      const chargeBody = { orderId: o.id, paymentMethod: "PIX", billingType: "PIX" };
+      const postCharge = (): Promise<PixCharge> =>
+        api.post<PixCharge>("/v1/charges", chargeBody, { idempotencyKey: idempotencyKey as string });
+      let charge: PixCharge;
       try {
-        const charge = await api.post<{
-          id: string;
-          status: string;
-          providerChargeId?: string | null;
-          qrCode?: string | null;
-        }>("/v1/charges", {
-          orderId: o.id,
-          paymentMethod: "PIX",
-          billingType: "PIX",
-        }, { idempotencyKey });
-        let chargeWithPix = charge;
-        if (!charge.qrCode && charge.id) {
-          try {
-            const pix = await api.get<{
-              chargeId: string;
-              payload: string | null;
-              encodedImage: string | null;
-              expirationDate: string | null;
-            }>(`/v1/charges/${charge.id}/pix`);
-            if (pix.payload) {
-              chargeWithPix = { ...charge, qrCode: pix.payload };
-            }
-          } catch {
-            // Best effort - may not be available immediately
-          }
-        }
-        setCreatedCharge(chargeWithPix);
-        push("Cobrança PIX gerada com sucesso!");
-        refresh();
-        onOrderMutated();
-        return;
+        charge = await postCharge();
       } catch (err) {
-        // On retry after reload/network issues, try to recover existing charge
-        const msg = userMessage(err);
-        if (msg.includes("duplicate") || msg.includes("idempotency")) {
-          // If we have a cached charge, keep it
+        // 409 in_progress: outra tentativa (retry, reload, cross-tab) ainda
+        // está em curso no bus. Informa a UI e tenta UM replay após espera
+        // curta — sem polling infinito.
+        if (err instanceof ApiError && err.status === 409) {
+          setPixNotice("Pagamento em processamento — não gere nova cobrança. Tentando recuperar a cobrança existente…");
+          await sleep(400);
+          try {
+            charge = await postCharge();
+          } catch (retryErr) {
+            if (retryErr instanceof ApiError && retryErr.status === 409) {
+              setPixNotice("Pagamento em processamento — não gere nova cobrança. Use Atualizar para reconciliar.");
+              return;
+            }
+            throw retryErr;
+          }
+        } else {
+          throw err;
         }
-        // Try to fetch existing charge for this order via billing list? fallback to rethrow
-        throw err;
       }
+      let chargeWithPix = charge;
+      if (!charge.qrCode && charge.id) {
+        try {
+          const pix = await api.get<{
+            chargeId: string;
+            payload: string | null;
+            encodedImage: string | null;
+            expirationDate: string | null;
+          }>(`/v1/charges/${charge.id}/pix`);
+          // Restaura o copia-e-cola a partir de `payload` — NUNCA `encodedImage`.
+          if (pix.payload) {
+            chargeWithPix = { ...charge, qrCode: pix.payload };
+          }
+        } catch {
+          // Best effort - may not be available immediately
+        }
+      }
+      setCreatedCharge(chargeWithPix);
+      setPixTerminal(pixTerminalOf(chargeWithPix.status));
+      if (chargeWithPix.effectUncertain) {
+        setEffectUncertain(true);
+        setPixNotice("Pagamento em processamento — não gere nova cobrança. Use Atualizar para reconciliar.");
+      } else {
+        setEffectUncertain(false);
+      }
+      push("Cobrança PIX gerada com sucesso!");
+      refresh();
+      onOrderMutated();
     } catch (err) {
       setActionError(userMessage(err));
     } finally {
@@ -331,9 +489,14 @@ function OrderDetailPanel({
                 {busy ? "Cancelando…" : "Cancelar pedido"}
               </Button>
             ) : null}
-            {canWriteCharge && o.status === "AWAITING_PAYMENT" ? (
+            {canWriteCharge && o.status === "AWAITING_PAYMENT" && !effectUncertain && !createdCharge ? (
               <Button disabled={busy} onClick={() => void generatePixCharge()}>
                 {busy ? "Gerando cobrança…" : "Gerar cobrança PIX"}
+              </Button>
+            ) : null}
+            {canWriteCharge && o.status === "AWAITING_PAYMENT" && pixTerminal === "failed" && !effectUncertain ? (
+              <Button disabled={busy} onClick={() => void generatePixCharge(true)}>
+                {busy ? "Gerando cobrança…" : "Gerar nova cobrança"}
               </Button>
             ) : null}
             {canWriteSubscription && o.status === "SETTLED" ? (
@@ -343,6 +506,7 @@ function OrderDetailPanel({
             ) : null}
           </div>
           {actionError ? <p className="cc-field-error cc-u-mt-2">{actionError}</p> : null}
+          {pixNotice ? <p role="status" className="cc-muted cc-u-mt-2">{pixNotice}</p> : null}
           {createdCharge ? (
             <div className="cc-card cc-u-mt-3" style={{ padding: "0.85rem", background: "var(--cc-bg-surface-elevated, #fbfbfb)" }}>
               <p><strong>Cobrança PIX gerada:</strong></p>
