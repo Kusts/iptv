@@ -178,7 +178,7 @@ jobs:
       # direto (bypass do turbo): sem build prévio, `@iptv/database` não tem
       # dist/ e o resolve falha. Build das deps primeiro (mesma ordem).
       - run: pnpm build --filter @iptv/api...
-      - name: Adversarial API suites (F09/F10 integration: agent-shadow + model-failure + tenant-context)
+      - name: "Adversarial API suites (F09/F10 integration: agent-shadow + model-failure + tenant-context)"
         run: >
           pnpm --filter @iptv/api exec vitest run
           test/agent-shadow-approval.integration.test.ts

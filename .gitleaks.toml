@@ -26,6 +26,7 @@ regexes = [
   '''^2FA/passkeys/organization$''',
   '''^g01-chain-secret$''',
   '''^integration-test-secret-0123456789$''',
+  '''^sk-abcdefgh12345678\.$''',
 ]
 paths = [
   '''^apps/api/test/billing-rls-rehearsal\.integration\.test\.ts$''',
@@ -34,4 +35,5 @@ paths = [
   '''^docs/06-decisions/ADR-0015-auth-better-auth\.md$''',
   '''^apps/api/test/g01-manual-reply-chain\.integration\.test\.ts$''',
   '''^apps/api/test/security-altpath-evals\.integration\.test\.ts$''',
+  '''^packages/ai-runtime/test/f09-prompt-injection\.unit\.test\.ts$''',
 ]
