@@ -557,9 +557,11 @@ BEGIN
     END IF;
 
     -- provider.provider_accounts scratch lifecycle (childless: no bindings
-    -- or operations reference it).
-    INSERT INTO provider.provider_accounts (tenant_id, provider_id, name, secret_ref)
-    VALUES (ta, prov, 'Scratch account', 'scratch-secret') RETURNING id INTO scratch;
+    -- or operations reference it). PRODUCTION environment: migration 065
+    -- enforces one live binding per (tenant, provider, environment) and
+    -- the fixture already holds the (ta, prov, SANDBOX) key.
+    INSERT INTO provider.provider_accounts (tenant_id, provider_id, name, secret_ref, environment)
+    VALUES (ta, prov, 'Scratch account', 'scratch-secret', 'PRODUCTION') RETURNING id INTO scratch;
     UPDATE provider.provider_accounts SET name = 'Scratch account 2' WHERE id = scratch;
     GET DIAGNOSTICS affected = ROW_COUNT;
     IF affected <> 1 THEN
