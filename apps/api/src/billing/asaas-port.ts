@@ -685,9 +685,6 @@ export class RealAsaasAdapter implements AsaasPort {
       const qr = await this.getPixQrCode(providerId);
       if (qr.payload && qr.payload.trim().length > 0) {
         qrCode = qr.payload;
-      } else if (qr.encodedImage && qr.encodedImage.trim().length > 0 && !qrCode) {
-        // Some integrations prefer the copia-e-cola payload; keep payload first
-        qrCode = qr.payload ?? qr.encodedImage;
       }
     } catch {
       // If retrieval fails, keep what we have from creation response if any
