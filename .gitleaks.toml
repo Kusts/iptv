@@ -26,7 +26,7 @@ regexes = [
   '''^2FA/passkeys/organization$''',
   '''^g01-chain-secret$''',
   '''^integration-test-secret-0123456789$''',
-  '''^sk-abcdefgh12345678$''',
+  '''^sk-abcdefgh12345678\.$''',
 ]
 paths = [
   '''^apps/api/test/billing-rls-rehearsal\.integration\.test\.ts$''',
