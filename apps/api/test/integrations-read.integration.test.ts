@@ -77,6 +77,40 @@ describe.skipIf(!hasDb)("integrations read-only status (requires TEST_DATABASE_U
 
   beforeAll(async () => {
     await applyMigrations(connectionString as string, { migrationsDir: MIGRATIONS_DIR });
+    // `platform.capabilities` é um catálogo global compartilhado entre suítes;
+    // cada suíte fixa o próprio arrange: remove linhas residuais (UNKNOWN) e
+    // restaura `provider.cinevision` ao canônico fail-closed da migration 044.
+    await db
+      .deleteFrom("platform.capabilities")
+      .where("key", "in", ["provider.asaas", "provider.whatsapp"])
+      .execute();
+    await db
+      .insertInto("platform.capabilities")
+      .values({
+        id: newId(),
+        key: "provider.cinevision",
+        owner_context: "provider",
+        availability: "UNAVAILABLE",
+        certification_status: "UNCERTIFIED",
+        risk_level: "HIGH",
+        mvp_phase: "W0",
+        manual_equivalent:
+          "Provider operator fulfills the operation manually (HITL) via provider.resolve_operation",
+        policy_family: "provider-integration",
+        degradation:
+          "Forced MANUAL: every operation parks in HUMAN_REQUIRED until durable post-commit dispatch with certified readback",
+        permissions: [],
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .onConflict((oc) =>
+        oc.column("key").doUpdateSet({
+          availability: "UNAVAILABLE",
+          certification_status: "UNCERTIFIED",
+          updated_at: new Date(),
+        }),
+      )
+      .execute();
     process.env["DATABASE_URL"] = connectionString as string;
     process.env["BETTER_AUTH_SECRET"] = "integration-test-secret-0123456789";
     app = await NestFactory.create<NestFastifyApplication>(AppModule, createFastifyAdapter());
