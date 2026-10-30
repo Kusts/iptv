@@ -1,18 +1,23 @@
 import {
+  Body,
   Controller,
   Get,
   HttpException,
   Inject,
   Param,
+  Post,
   Req,
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely, Transaction } from "kysely";
 import { withTenantTransaction, type Database } from "@iptv/database";
+import { commandResultHttpStatus, type CommandResult } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
 import { AuthGuard } from "../auth/auth.guard.js";
 import { RequirePermission, PermissionsGuard } from "../auth/permissions.guard.js";
 import type { CapabilityStore } from "../capabilities/capability-registry.js";
+import { CommandBus, commandActorFromRequestParts } from "../commands/command-bus.js";
+import type { CommandActor } from "@iptv/domain";
 
 /**
  * S1C1 Central de Integrações — read-only status (SPEC S1 §4, S1-DESIGN-R2).
@@ -22,7 +27,10 @@ import type { CapabilityStore } from "../capabilities/capability-registry.js";
  * qualquer material de segredo NUNCA são selecionados — a resposta carrega
  * só `configured` + metadados de conexão. `capability_status` é DERIVADO do
  * registry (`platform.capabilities`) + certificação em runtime, nunca
- * persistido. Sem POST/configure/test/disable aqui (S1c2).
+ * persistido. S1c2 (SPEC S1 §4–§5): `POST /:provider/configure|test|disable`
+ * sob `integration.manage` (configure/disable) / `integration.test`
+ * (test), segredos server-side no vault (nunca na resposta), idempotência
+ * via `Idempotency-Key` e auditoria automática.
  */
 const INTEGRATION_PROVIDERS = ["asaas", "whatsapp", "cinevision"] as const;
 
@@ -63,11 +71,51 @@ interface IntegrationStatus {
   configured: boolean;
 }
 
+function actorFromRequest(req: FastifyRequest): CommandActor {
+  const auth = req.auth as NonNullable<FastifyRequest["auth"]>;
+  const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
+  return commandActorFromRequestParts({
+    userId: auth.userId,
+    isPlatformAdmin: auth.isPlatformAdmin,
+    tenantId: tenant.id,
+    roleKeys: tenant.roleKeys,
+    permissions: tenant.permissions,
+    actorType: "human",
+  });
+}
+
+function send<T>(result: CommandResult<T>): T {
+  if (result.ok) {
+    return result.data;
+  }
+  throw new HttpException(
+    { code: result.code.toUpperCase(), message: result.message },
+    commandResultHttpStatus(result),
+  );
+}
+
+function idempotencyKeyOf(req: FastifyRequest): string | undefined {
+  const header = req.headers["idempotency-key"];
+  const value = Array.isArray(header) ? header[0] : header;
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+  return undefined;
+}
+
+function requestBodyOf(body: unknown): Record<string, unknown> {
+  if (body !== null && typeof body === "object" && !Array.isArray(body)) {
+    return body as Record<string, unknown>;
+  }
+  return {};
+}
+
 @Controller("v1/integrations")
 export class IntegrationsController {
   constructor(
     @Inject("DB") private readonly db: Kysely<Database> | null,
     @Inject("CAPABILITY_STORE") private readonly capabilities: CapabilityStore,
+    @Inject(CommandBus) private readonly bus: CommandBus,
   ) {}
 
   private requireDb(): Kysely<Database> {
@@ -159,5 +207,80 @@ export class IntegrationsController {
     return withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
       this.statusOf(trx, tenant.id, normalized),
     );
+  }
+
+  /**
+   * S1C2 write surface (SPEC S1 §4–§5): configure/test/disable sob
+   * `integration.manage` (configure/disable) e `integration.test` (test),
+   * com idempotência via header `Idempotency-Key` e auditoria automática.
+   * Respostas sanitizadas por construção (só metadados do binding).
+   * WhatsApp recusa 501 `CAPABILITY_UNCERTIFIED` antes do bus — sem linha,
+   * sem vault (S3 certifica).
+   */
+  private resolveWritableProvider(raw: string): IntegrationProvider {
+    const normalized = raw.toLowerCase();
+    if (normalized === "whatsapp") {
+      throw new HttpException(
+        {
+          code: "CAPABILITY_UNCERTIFIED",
+          message: "whatsapp integration is uncertified (disponível em S3)",
+        },
+        501,
+      );
+    }
+    if (!isIntegrationProvider(normalized)) {
+      throw new HttpException({ code: "NOT_FOUND", message: `integration not found: ${raw}` }, 404);
+    }
+    return normalized;
+  }
+
+  @Post(":provider/configure")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("integration.manage")
+  async configure(
+    @Param("provider") provider: string,
+    @Body() body: unknown,
+    @Req() req: FastifyRequest,
+  ) {
+    const normalized = this.resolveWritableProvider(provider);
+    const result = await this.bus.execute(
+      actorFromRequest(req),
+      "integration.configure",
+      { ...requestBodyOf(body), provider: normalized },
+      { correlationId: req.id, idempotencyKey: idempotencyKeyOf(req) },
+    );
+    return send(result);
+  }
+
+  @Post(":provider/test")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("integration.test")
+  async test(@Param("provider") provider: string, @Body() body: unknown, @Req() req: FastifyRequest) {
+    const normalized = this.resolveWritableProvider(provider);
+    const result = await this.bus.execute(
+      actorFromRequest(req),
+      "integration.test",
+      { ...requestBodyOf(body), provider: normalized },
+      { correlationId: req.id, idempotencyKey: idempotencyKeyOf(req) },
+    );
+    return send(result);
+  }
+
+  @Post(":provider/disable")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("integration.manage")
+  async disable(
+    @Param("provider") provider: string,
+    @Body() body: unknown,
+    @Req() req: FastifyRequest,
+  ) {
+    const normalized = this.resolveWritableProvider(provider);
+    const result = await this.bus.execute(
+      actorFromRequest(req),
+      "integration.disable",
+      { ...requestBodyOf(body), provider: normalized },
+      { correlationId: req.id, idempotencyKey: idempotencyKeyOf(req) },
+    );
+    return send(result);
   }
 }
