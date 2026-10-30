@@ -9,6 +9,7 @@ import {
   MessageSquare,
   Users,
   LifeBuoy,
+  Settings,
   Tv,
   Zap,
   Server,
@@ -17,8 +18,7 @@ import {
   ShieldAlert,
   Bot,
   BookOpen,
-  ShoppingCart,
-  CreditCard,
+  ShoppingCart,  CreditCard,
   DollarSign,
   RefreshCw,
   Briefcase,
@@ -72,6 +72,10 @@ const NAV_SECTIONS: NavSection[] = [
       { href: "/inventory", label: "Inventário", icon: Boxes },
       { href: "/trials", label: "Trials", icon: PlayCircle },
     ],
+  },
+  {
+    title: "Configurações",
+    items: [{ href: "/settings/integrations", label: "Integrações", icon: Settings }],
   },
   {
     title: "IA & Supervisão",
