@@ -27,6 +27,7 @@ regexes = [
   '''^g01-chain-secret$''',
   '''^integration-test-secret-0123456789$''',
   '''^sk-abcdefgh12345678\.$''',
+  '''^s1c1-secret-marker-must-never-leak$''',
 ]
 paths = [
   '''^apps/api/test/billing-rls-rehearsal\.integration\.test\.ts$''',
@@ -36,4 +37,5 @@ paths = [
   '''^apps/api/test/g01-manual-reply-chain\.integration\.test\.ts$''',
   '''^apps/api/test/security-altpath-evals\.integration\.test\.ts$''',
   '''^packages/ai-runtime/test/f09-prompt-injection\.unit\.test\.ts$''',
+  '''^apps/api/test/integrations-read\.integration\.test\.ts$''',
 ]
