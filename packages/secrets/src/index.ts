@@ -483,6 +483,24 @@ export class InfisicalSecretsAdapter implements SecretsWriterPort {
     if (mode === "create" && res.status === 409) {
       return { status: "exists" };
     }
+    if (mode === "create" && res.status === 400) {
+      // Self-hosted v0.165.16 reports duplicate creates as 400 with
+      // "already exists" in the body (not 409). Only that message maps
+      // to "exists"; any other 400 stays a SERVER error (never masked).
+      let dupBody: unknown = null;
+      try {
+        dupBody = await res.json();
+      } catch {
+        dupBody = null;
+      }
+      if (dupBody !== null && JSON.stringify(dupBody).toLowerCase().includes("already exists")) {
+        return { status: "exists" };
+      }
+      return {
+        status: "error",
+        error: new SecretsError("SERVER", `infisical write failed with status ${res.status}`),
+      };
+    }
     if (mode === "update" && res.status === 404) {
       return { status: "missing" };
     }
@@ -505,7 +523,14 @@ export class InfisicalSecretsAdapter implements SecretsWriterPort {
     try {
       res = await this.fetchFn(url, {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        // Self-hosted v0.165.16 requires the scope in the DELETE body
+        // (query string alone returns 422 "Expected object, received null").
+        body: JSON.stringify({
+          workspaceId: this.projectId,
+          environment: transportEnv(binding.environment),
+          secretPath: binding.secretPath,
+        }),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
