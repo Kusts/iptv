@@ -7,6 +7,7 @@ import { Card } from "../../../components/ui/Card";
 import { StatusPill } from "../../../components/ui/Badge";
 import { EmptyState, ErrorState, LoadingSkeleton } from "../../../components/ui/States";
 import { Dialog } from "../../../components/ui/Dialog";
+import { CopySnippet } from "../../../components/ui/CopySnippet";
 import { Field, Input, Select } from "../../../components/ui/Input";
 import { useToast } from "../../../components/ui/Toast";
 import { api, ApiError, userMessage } from "../../../lib/api";
@@ -114,6 +115,22 @@ function newIdempotencyKey(): string {
   }
   return `hub-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
+
+/**
+ * Hosts Asaas fixos por environment — espelho de leitura do allowlist
+ * backend (`ASAAS_HOSTS` em `integrations.commands.ts`, pesquisa
+ * S2-RESEARCH-ASAAS). A UI exibe; NUNCA envia URL e o schema `strict()`
+ * do backend rejeita `baseUrl` e afins com 400.
+ */
+const ASAAS_HOSTS_DISPLAY = {
+  SANDBOX: "https://api-sandbox.asaas.com/v3",
+  PRODUCTION: "https://api.asaas.com/v3",
+} as const;
+
+type AsaasEnvironment = keyof typeof ASAAS_HOSTS_DISPLAY;
+
+/** Eventos que o webhook Asaas do tenant deve assinar (nomes oficiais). */
+const ASAAS_WEBHOOK_EVENTS_DISPLAY = "PAYMENT_RECEIVED, PAYMENT_OVERDUE, PAYMENT_REFUNDED";
 
 function conflictOrGeneric(err: unknown): string {
   if (err instanceof ApiError && err.status === 409) {
@@ -258,6 +275,8 @@ function IntegrationCard({
   const [actionError, setActionError] = useState<string | null>(null);
   const [configureOpen, setConfigureOpen] = useState(false);
   const [disableOpen, setDisableOpen] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const isAsaas = status.provider === "asaas";
 
   const runTest = async (): Promise<void> => {
     setBusy(true);
@@ -315,6 +334,11 @@ function IntegrationCard({
 
       {!isWhatsApp && (canManage || canTest) ? (
         <div className="cc-row cc-u-mt-2">
+          {canManage && isAsaas ? (
+            <Button variant="secondary" disabled={busy} onClick={() => setWizardOpen(true)}>
+              Assistente de conexão
+            </Button>
+          ) : null}
           {canManage && !isLive ? (
             <Button disabled={busy} onClick={() => setConfigureOpen(true)}>
               Conectar
@@ -359,6 +383,17 @@ function IntegrationCard({
           knownVersion={knownVersion}
           open={disableOpen}
           onClose={() => setDisableOpen(false)}
+          onVersion={onVersion}
+          onChanged={onChanged}
+        />
+      ) : null}
+      {isAsaas && canManage ? (
+        <AsaasWizardDialog
+          status={status}
+          knownVersion={knownVersion}
+          canTest={canTest}
+          open={wizardOpen}
+          onClose={() => setWizardOpen(false)}
           onVersion={onVersion}
           onChanged={onChanged}
         />
@@ -531,6 +566,423 @@ function ConfigureDialog({
             {busy ? "Salvando…" : "Salvar"}
           </Button>
         </div>
+      </div>
+    </Dialog>
+  );
+}
+
+interface WebhookEnsureResult {
+  webhookUrl: string;
+  providerWebhookId: string;
+  hasAuthToken: boolean;
+  status: string;
+}
+
+type WizardStep = 1 | 2 | 3 | 4;
+
+/**
+ * Assistente guiado de conexão Asaas (S2B, #86): ambiente → credencial →
+ * webhook → teste em sandbox. Reutiliza os contratos S1/S2A
+ * (`integration.configure|test` + `integration.webhook_ensure`); NENHUMA
+ * cobrança é criada a partir daqui — a etapa 4 executa somente a sonda
+ * read-only (`integration.test`) em SANDBOX, após confirmação explícita.
+ * Não existe endpoint backend de "cobrança de teste" em `origin/main`, e
+ * `charge.create` exigiria pedido + `billing.charge.write` (fora do gating
+ * deste hub): criar cobrança de teste segue no fluxo de pedidos/billing,
+ * não neste assistente. Sem segredo no DOM: a resposta do webhook nunca
+ * contém o authToken (`hasAuthToken: true` apenas).
+ */
+function AsaasWizardDialog({
+  status,
+  knownVersion,
+  canTest,
+  open,
+  onClose,
+  onVersion,
+  onChanged,
+}: {
+  status: IntegrationStatus;
+  knownVersion: number | null;
+  canTest: boolean;
+  open: boolean;
+  onClose: () => void;
+  onVersion: (version: number) => void;
+  onChanged: () => void;
+}): React.JSX.Element | null {
+  const { push } = useToast();
+  const isLive = status.configured && status.connection_status !== "DISABLED";
+  const [step, setStep] = useState<WizardStep>(1);
+  const [environment, setEnvironment] = useState<AsaasEnvironment>("SANDBOX");
+  const [prodConfirm, setProdConfirm] = useState(false);
+  const [apiKey, setApiKey] = useState("");
+  const [credSaved, setCredSaved] = useState(false);
+  const [credBusy, setCredBusy] = useState(false);
+  const [credError, setCredError] = useState<string | null>(null);
+  const [webhookBusy, setWebhookBusy] = useState(false);
+  const [webhookResult, setWebhookResult] = useState<WebhookEnsureResult | null>(null);
+  const [webhookMode, setWebhookMode] = useState<"idle" | "manual" | "limit" | "error">("idle");
+  const [webhookError, setWebhookError] = useState<string | null>(null);
+  const [manualAck, setManualAck] = useState(false);
+  const [testConfirm, setTestConfirm] = useState(false);
+  const [testBusy, setTestBusy] = useState(false);
+  const [testDone, setTestDone] = useState<string | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+  if (!open) return null;
+
+  const host = ASAAS_HOSTS_DISPLAY[environment];
+
+  const saveCredential = async (): Promise<void> => {
+    const key = apiKey.trim();
+    if (key.length === 0) {
+      setCredError("Informe a chave de API.");
+      return;
+    }
+    if (key.length > 512) {
+      setCredError("A chave de API deve ter no máximo 512 caracteres.");
+      return;
+    }
+    setCredError(null);
+    setCredBusy(true);
+    try {
+      let expected = knownVersion;
+      if (isLive && expected === null) {
+        try {
+          const probed = await api.post<BindingResult>(
+            "/v1/integrations/asaas/test",
+            {},
+            { idempotencyKey: newIdempotencyKey() },
+          );
+          expected = probed.version;
+          onVersion(probed.version);
+        } catch {
+          expected = null;
+        }
+      }
+      const body: Record<string, unknown> = { environment };
+      if (isLive && expected !== null) body.expectedVersion = expected;
+      body.secret = { apiKey: key };
+      const res = await api.post<BindingResult>("/v1/integrations/asaas/configure", body, {
+        idempotencyKey: newIdempotencyKey(),
+      });
+      onVersion(res.version);
+      setCredSaved(true);
+      push("Credencial Asaas salva (DRAFT). Avance para o webhook.");
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "INVALID_CREDENTIALS") {
+        const hint = RESOLUTION_HINTS.INVALID_CREDENTIALS ?? userMessage(err);
+        setCredError(hint);
+        push(hint);
+      } else {
+        const msg = conflictOrGeneric(err);
+        setCredError(msg);
+        push(msg);
+      }
+    } finally {
+      setCredBusy(false);
+    }
+  };
+
+  const runWebhook = async (): Promise<void> => {
+    setWebhookError(null);
+    setWebhookBusy(true);
+    try {
+      const res = await api.post<WebhookEnsureResult>(
+        "/v1/integrations/asaas/webhook",
+        { provider: "asaas", environment },
+        { idempotencyKey: newIdempotencyKey() },
+      );
+      setWebhookResult(res);
+      setWebhookMode("idle");
+      push("Webhook Asaas configurado.");
+      // Sem reload aqui: `onChanged` desmontaria o card (skeleton) e fecharia
+      // o assistente no remount. O refresh da lista acontece no "Concluir".
+    } catch (err) {
+      // 503 manual-mode e 409 de limite vêm com códigos sanitizados; o
+      // token nunca viaja na resposta (só `hasAuthToken: true`).
+      if (err instanceof ApiError && err.code === "WEBHOOK_BASE_URL_NOT_CONFIGURED") {
+        setWebhookMode("manual");
+      } else if (err instanceof ApiError && err.status === 409) {
+        setWebhookMode("limit");
+      } else {
+        setWebhookMode("error");
+        const msg = conflictOrGeneric(err);
+        setWebhookError(msg);
+        push(msg);
+      }
+    } finally {
+      setWebhookBusy(false);
+    }
+  };
+
+  const runSandboxTest = async (): Promise<void> => {
+    setTestError(null);
+    setTestBusy(true);
+    try {
+      const res = await api.post<BindingResult>(
+        "/v1/integrations/asaas/test",
+        {},
+        { idempotencyKey: newIdempotencyKey() },
+      );
+      onVersion(res.version);
+      setTestDone(`Teste concluído: ${connectionLabel(res.connection_status)}.`);
+      push("Teste em sandbox concluído.");
+      // Sem reload aqui (ver `runWebhook`): o refresh acontece no "Concluir".
+    } catch (err) {
+      const msg = conflictOrGeneric(err);
+      setTestError(msg);
+      push(msg);
+    } finally {
+      setTestBusy(false);
+    }
+  };
+
+  const finish = (): void => {
+    onClose();
+    onChanged();
+  };
+
+  return (
+    <Dialog title="Assistente Asaas" open={open} onClose={onClose}>
+      <div className="cc-form">
+        {step === 1 ? (
+          <div>
+            <p>
+              <strong>Etapa 1 de 4 — Ambiente</strong>
+            </p>
+            <p className="cc-muted">
+              O ambiente é explícito e o host é fixo por ambiente (sem campo de URL editável).
+            </p>
+            <div className="cc-field">
+              <span>Ambiente</span>
+              <label className="cc-row" style={{ gap: "0.5rem", alignItems: "center" }} htmlFor="asaas-wizard-env-sandbox">
+                <input
+                  type="radio"
+                  id="asaas-wizard-env-sandbox"
+                  name="asaas-wizard-env"
+                  checked={environment === "SANDBOX"}
+                  onChange={() => setEnvironment("SANDBOX")}
+                />
+                Sandbox (testes, sem dinheiro real)
+              </label>
+              <label className="cc-row cc-u-mt-2" style={{ gap: "0.5rem", alignItems: "center" }} htmlFor="asaas-wizard-env-production">
+                <input
+                  type="radio"
+                  id="asaas-wizard-env-production"
+                  name="asaas-wizard-env"
+                  checked={environment === "PRODUCTION"}
+                  onChange={() => setEnvironment("PRODUCTION")}
+                />
+                Produção (dinheiro real)
+              </label>
+            </div>
+            <p className="cc-muted">
+              Host fixo: <strong>{host}</strong>
+            </p>
+            {environment === "PRODUCTION" ? (
+              <div className="cc-field">
+                <span>Confirmação de impacto</span>
+                <label className="cc-row" style={{ gap: "0.5rem", alignItems: "center" }} htmlFor="asaas-wizard-prod-confirm">
+                  <input
+                    type="checkbox"
+                    id="asaas-wizard-prod-confirm"
+                    checked={prodConfirm}
+                    onChange={(e) => setProdConfirm(e.target.checked)}
+                  />
+                  Entendo que produção movimenta dinheiro real e afeta cobranças do tenant.
+                </label>
+              </div>
+            ) : null}
+            <div className="cc-row cc-u-mt-4">
+              <Button
+                disabled={environment === "PRODUCTION" && !prodConfirm}
+                onClick={() => setStep(2)}
+              >
+                Avançar para credencial
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {step === 2 ? (
+          <div>
+            <p>
+              <strong>Etapa 2 de 4 — Credencial</strong>
+            </p>
+            <p className="cc-muted">
+              A chave vai direto ao cofre do servidor e nunca volta para o navegador.
+            </p>
+            <Field label="Chave de API">
+              <Input
+                type="password"
+                autoComplete="new-password"
+                value={apiKey}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  setCredError(null);
+                  setCredSaved(false);
+                }}
+                disabled={credBusy}
+                placeholder="Cole a chave de API do Asaas"
+              />
+            </Field>
+            {credError !== null ? <p className="cc-field-error">{credError}</p> : null}
+            {credSaved ? <p>Credencial salva. Avance para configurar o webhook.</p> : null}
+            <div className="cc-row cc-u-mt-4">
+              <Button variant="secondary" disabled={credBusy} onClick={() => setStep(1)}>
+                Voltar
+              </Button>
+              <Button disabled={credBusy} onClick={() => void saveCredential()}>
+                {credBusy ? "Salvando…" : "Salvar credencial"}
+              </Button>
+              {isLive ? (
+                <Button variant="secondary" disabled={credBusy} onClick={() => setStep(3)}>
+                  Pular para webhook
+                </Button>
+              ) : null}
+              {credSaved ? (
+                <Button disabled={credBusy} onClick={() => setStep(3)}>
+                  Avançar para webhook
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {step === 3 ? (
+          <div>
+            <p>
+              <strong>Etapa 3 de 4 — Webhook</strong>
+            </p>
+            <p className="cc-muted">
+              O assistente cria ou atualiza o webhook na conta Asaas (eventos{" "}
+              {ASAAS_WEBHOOK_EVENTS_DISPLAY}) sem exibir o token.
+            </p>
+            <div className="cc-row cc-u-mt-2">
+              <Button disabled={webhookBusy} onClick={() => void runWebhook()}>
+                {webhookBusy ? "Configurando…" : "Configurar webhook automaticamente"}
+              </Button>
+            </div>
+            {webhookResult !== null ? (
+              <div className="cc-u-mt-2">
+                <p>
+                  Webhook ativo: <CopySnippet text={webhookResult.webhookUrl} label="URL do webhook" />
+                </p>
+                <p className="cc-muted">
+                  ID no provedor: <strong>{webhookResult.providerWebhookId}</strong> — status{" "}
+                  <strong>{webhookResult.status}</strong>.
+                </p>
+              </div>
+            ) : null}
+            {webhookMode === "manual" ? (
+              <div className="cc-u-mt-2">
+                <p>
+                  <strong>Modo manual:</strong> a base pública ainda não está configurada no
+                  servidor. Registre o webhook no painel do Asaas com a URL canônica no formato{" "}
+                  <strong>&lt;base-publica&gt;/v1/webhooks/asaas/:tenantKey</strong> (troque a base
+                  e a chave do tenant), eventos{" "}
+                  <strong>{ASAAS_WEBHOOK_EVENTS_DISPLAY}</strong>, envio sequencial e um
+                  authToken próprio de 32 a 255 caracteres (sem espaços, nunca a chave de API).
+                  Depois valide com um evento de sandbox e confirme que o ingresso responde 202
+                  com o cabeçalho <strong>asaas-access-token</strong>.
+                </p>
+                <div className="cc-field">
+                  <span>Confirmação manual</span>
+                  <label className="cc-row" style={{ gap: "0.5rem", alignItems: "center" }} htmlFor="asaas-wizard-manual-ack">
+                    <input
+                      type="checkbox"
+                      id="asaas-wizard-manual-ack"
+                      checked={manualAck}
+                      onChange={(e) => setManualAck(e.target.checked)}
+                    />
+                    Registrei manualmente e validei o 202
+                  </label>
+                </div>
+              </div>
+            ) : null}
+            {webhookMode === "limit" ? (
+              <p className="cc-u-mt-2">
+                A conta Asaas atingiu o limite de 10 webhooks sem nenhum igual ao canônico deste
+                tenant. No painel do Asaas, atualize ou exclua um webhook não utilizado e tente de
+                novo — o assistente nunca apaga webhooks de outra origem sozinho.
+              </p>
+            ) : null}
+            {webhookMode === "error" && webhookError !== null ? (
+              <p className="cc-field-error cc-u-mt-2">{webhookError}</p>
+            ) : null}
+            <div className="cc-row cc-u-mt-4">
+              <Button variant="secondary" disabled={webhookBusy} onClick={() => setStep(2)}>
+                Voltar para credencial
+              </Button>
+              <Button variant="secondary" disabled={webhookBusy} onClick={() => setStep(4)}>
+                Pular para teste sandbox
+              </Button>
+              {webhookResult !== null || manualAck ? (
+                <Button disabled={webhookBusy} onClick={() => setStep(4)}>
+                  Avançar para teste sandbox
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {step === 4 ? (
+          <div>
+            <p>
+              <strong>Etapa 4 de 4 — Teste em sandbox</strong>
+            </p>
+            {environment !== "SANDBOX" ? (
+              <p className="cc-muted">
+                Teste automático indisponível em produção: nenhuma sonda é executada a partir
+                deste assistente em ambiente PRODUCTION. Conclua o assistente e acompanhe o
+                status no card.
+              </p>
+            ) : !canTest ? (
+              <p className="cc-muted">
+                Seu perfil não tem a permissão <strong>integration.test</strong> — peça a um
+                administrador para executar a sonda de sandbox.
+              </p>
+            ) : (
+              <div>
+                <p className="cc-muted">
+                  Executa somente a sonda read-only (<strong>sem criar cobrança</strong>): nada é
+                  criado automaticamente ao abrir esta etapa.
+                </p>
+                <div className="cc-field">
+                  <span>Confirmação explícita</span>
+                  <label className="cc-row" style={{ gap: "0.5rem", alignItems: "center" }} htmlFor="asaas-wizard-test-confirm">
+                    <input
+                      type="checkbox"
+                      id="asaas-wizard-test-confirm"
+                      checked={testConfirm}
+                      onChange={(e) => {
+                        setTestConfirm(e.target.checked);
+                        setTestError(null);
+                      }}
+                      disabled={testBusy}
+                    />
+                    Confirmo que quero executar o teste em sandbox
+                  </label>
+                </div>
+                <div className="cc-row cc-u-mt-2">
+                  <Button
+                    disabled={testBusy || !testConfirm}
+                    onClick={() => void runSandboxTest()}
+                  >
+                    {testBusy ? "Testando…" : "Testar conexão em sandbox"}
+                  </Button>
+                </div>
+                {testDone !== null ? <p className="cc-u-mt-2">{testDone}</p> : null}
+                {testError !== null ? <p className="cc-field-error cc-u-mt-2">{testError}</p> : null}
+              </div>
+            )}
+            <div className="cc-row cc-u-mt-4">
+              <Button variant="secondary" onClick={() => setStep(3)}>
+                Voltar para webhook
+              </Button>
+              <Button onClick={finish}>Concluir</Button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </Dialog>
   );

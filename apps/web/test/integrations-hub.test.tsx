@@ -485,3 +485,278 @@ describe("IntegrationsHubPage", () => {
     expect(within(card as HTMLElement).getByText(/Confira a chave de API/)).toBeTruthy();
   });
 });
+
+describe("AsaasWizard (S2B, #86)", () => {
+  function openWizard(): HTMLElement {
+    const card = screen.getByText("Asaas (Cobranças)").closest("section") as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: "Assistente de conexão" }));
+    return within(card).getByRole("dialog", { name: "Assistente Asaas" }) as HTMLElement;
+  }
+
+  function dialogScope(): { scope: ReturnType<typeof within>; dialog: HTMLElement } {
+    const dialog = screen.getByRole("dialog", { name: "Assistente Asaas" }) as HTMLElement;
+    return { scope: within(dialog), dialog };
+  }
+
+  it("abre no ambiente SANDBOX com host fixo e sem campo de URL", async () => {
+    installFetch({ permissions: fullPermissions(), integrations: sampleList() });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("Asaas (Cobranças)")).toBeTruthy());
+    openWizard();
+    const { scope, dialog } = dialogScope();
+    expect(scope.getByText("Etapa 1 de 4 — Ambiente")).toBeTruthy();
+    const sandbox = scope.getByLabelText(/Sandbox/) as HTMLInputElement;
+    expect(sandbox.checked).toBe(true);
+    expect(scope.getByText("https://api-sandbox.asaas.com/v3")).toBeTruthy();
+    expect(scope.queryByLabelText(/URL/)).toBeNull();
+    expect(scope.queryByPlaceholderText(/https?:\/\//)).toBeNull();
+    expect(dialog.innerHTML).not.toMatch(/secret_ref|infisical:\/\//);
+  });
+
+  it("produção exige confirmação explícita de impacto para avançar", async () => {
+    installFetch({ permissions: fullPermissions(), integrations: sampleList() });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("Asaas (Cobranças)")).toBeTruthy());
+    openWizard();
+    const { scope } = dialogScope();
+    fireEvent.click(scope.getByLabelText(/Produção/));
+    expect(scope.getByText("https://api.asaas.com/v3")).toBeTruthy();
+    const next = scope.getByRole("button", { name: "Avançar para credencial" });
+    expect(next).toBeDisabled();
+    fireEvent.click(scope.getByLabelText(/Entendo que produção movimenta dinheiro real/));
+    expect(scope.getByRole("button", { name: "Avançar para credencial" })).not.toBeDisabled();
+  });
+
+  it("credencial salva via configure com environment e expectedVersion", async () => {
+    const seen = installFetch({ permissions: fullPermissions(), integrations: sampleList() });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("Asaas (Cobranças)")).toBeTruthy());
+    openWizard();
+    let { scope } = dialogScope();
+    fireEvent.click(scope.getByRole("button", { name: "Avançar para credencial" }));
+    await waitFor(() => expect(scope.getByText("Etapa 2 de 4 — Credencial")).toBeTruthy());
+    ({ scope } = dialogScope());
+    const apiKeyInput = scope.getByLabelText(/Chave de API/) as HTMLInputElement;
+    expect(apiKeyInput.getAttribute("type")).toBe("password");
+    fireEvent.change(apiKeyInput, { target: { value: "wizard-fixture-synthetic-key-001" } });
+    fireEvent.click(scope.getByRole("button", { name: "Salvar credencial" }));
+    await waitFor(() =>
+      expect(seen.posts.some((p) => p.url.includes("/v1/integrations/asaas/configure"))).toBe(true),
+    );
+    const calls = seen.posts.filter((p) => p.url.includes("/v1/integrations/asaas/configure"));
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.body).toEqual({
+      environment: "SANDBOX",
+      expectedVersion: 2,
+      secret: { apiKey: "wizard-fixture-synthetic-key-001" },
+    });
+    await waitFor(() => expect(scope.getByText(/Credencial salva/)).toBeTruthy());
+    expect(document.body.textContent ?? "").not.toContain("wizard-fixture-synthetic-key-001");
+  });
+
+  it("configure com INVALID_CREDENTIALS exibe instrução de resolução", async () => {
+    installFetch({
+      permissions: fullPermissions(),
+      integrations: sampleList(),
+      onPost: (url) => {
+        if (url.includes("/asaas/test")) {
+          return {
+            status: 200,
+            body: {
+              id: "bind-1",
+              provider: "asaas",
+              environment: "SANDBOX",
+              connection_status: "TESTING",
+              version: 2,
+              last_checked_at: "2026-10-30T12:00:00.000Z",
+              last_error_code: null,
+            },
+          };
+        }
+        if (url.includes("/asaas/configure")) {
+          return { status: 400, body: { code: "INVALID_CREDENTIALS" } };
+        }
+        return null;
+      },
+    });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("Asaas (Cobranças)")).toBeTruthy());
+    openWizard();
+    let { scope } = dialogScope();
+    fireEvent.click(scope.getByRole("button", { name: "Avançar para credencial" }));
+    await waitFor(() => expect(scope.getByText("Etapa 2 de 4 — Credencial")).toBeTruthy());
+    ({ scope } = dialogScope());
+    fireEvent.change(scope.getByLabelText(/Chave de API/), { target: { value: "wizard-fixture-bad-key" } });
+    fireEvent.click(scope.getByRole("button", { name: "Salvar credencial" }));
+    await waitFor(() => expect(scope.getByText(/Confira a chave de API/)).toBeTruthy());
+  });
+
+  it("webhook exibe URL canônica retornada com copiar e sem token", async () => {
+    const seen = installFetch({
+      permissions: fullPermissions(),
+      integrations: sampleList(),
+      onPost: (url, body) => {
+        if (url.includes("/asaas/test")) {
+          return {
+            status: 200,
+            body: {
+              id: "bind-1",
+              provider: "asaas",
+              environment: "SANDBOX",
+              connection_status: "CONNECTED_READ_ONLY",
+              version: 2,
+              last_checked_at: "2026-10-30T12:00:00.000Z",
+              last_error_code: null,
+            },
+          };
+        }
+        if (url.includes("/asaas/webhook")) {
+          return {
+            status: 200,
+            body: {
+              webhookUrl: "https://app.exemplo.com/v1/webhooks/asaas/asaas-abc123",
+              providerWebhookId: "wh_123",
+              hasAuthToken: true,
+              status: "ACTIVE",
+            },
+          };
+        }
+        return null;
+      },
+    });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("Asaas (Cobranças)")).toBeTruthy());
+    openWizard();
+    let { scope } = dialogScope();
+    // Pula ambiente (SANDBOX default) e credencial (binding já vivo: sonda aprende versão).
+    fireEvent.click(scope.getByRole("button", { name: "Avançar para credencial" }));
+    await waitFor(() => expect(scope.getByText("Etapa 2 de 4 — Credencial")).toBeTruthy());
+    ({ scope } = dialogScope());
+    fireEvent.click(scope.getByRole("button", { name: "Pular para webhook" }));
+    await waitFor(() => expect(scope.getByText("Etapa 3 de 4 — Webhook")).toBeTruthy());
+    ({ scope } = dialogScope());
+    fireEvent.click(scope.getByRole("button", { name: "Configurar webhook automaticamente" }));
+    await waitFor(() =>
+      expect(seen.posts.some((p) => p.url.includes("/v1/integrations/asaas/webhook"))).toBe(true),
+    );
+    const call = seen.posts.find((p) => p.url.includes("/v1/integrations/asaas/webhook"));
+    expect(call?.body).toEqual({ provider: "asaas", environment: "SANDBOX" });
+    await waitFor(() =>
+      expect(scope.getByText("https://app.exemplo.com/v1/webhooks/asaas/asaas-abc123")).toBeTruthy(),
+    );
+    expect(scope.getByRole("button", { name: /Copiar URL do webhook/ })).toBeTruthy();
+    expect(scope.getByText("wh_123")).toBeTruthy();
+    const html = (scope as unknown as { baseElement?: HTMLElement }).baseElement?.innerHTML ?? document.body.innerHTML;
+    expect(html).not.toMatch(/authToken|access_token|secret_ref/);
+  });
+
+  it("webhook 503 exibe modo manual com formato esperado e validação", async () => {
+    installFetch({
+      permissions: fullPermissions(),
+      integrations: sampleList(),
+      onPost: (url) => {
+        if (url.includes("/asaas/webhook")) {
+          return { status: 503, body: { code: "WEBHOOK_BASE_URL_NOT_CONFIGURED" } };
+        }
+        return null;
+      },
+    });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("Asaas (Cobranças)")).toBeTruthy());
+    openWizard();
+    let { scope } = dialogScope();
+    fireEvent.click(scope.getByRole("button", { name: "Avançar para credencial" }));
+    await waitFor(() => expect(scope.getByText("Etapa 2 de 4 — Credencial")).toBeTruthy());
+    ({ scope } = dialogScope());
+    fireEvent.click(scope.getByRole("button", { name: "Pular para webhook" }));
+    await waitFor(() => expect(scope.getByText("Etapa 3 de 4 — Webhook")).toBeTruthy());
+    ({ scope } = dialogScope());
+    fireEvent.click(scope.getByRole("button", { name: "Configurar webhook automaticamente" }));
+    await waitFor(() => expect(scope.getByText(/Modo manual/)).toBeTruthy());
+    expect(scope.getByText(/\/v1\/webhooks\/asaas\/:tenantKey/)).toBeTruthy();
+    expect(scope.getAllByText(/PAYMENT_RECEIVED/).length).toBeGreaterThanOrEqual(1);
+    expect(scope.getAllByText(/PAYMENT_OVERDUE/).length).toBeGreaterThanOrEqual(1);
+    expect(scope.getAllByText(/PAYMENT_REFUNDED/).length).toBeGreaterThanOrEqual(1);
+    expect(scope.getByText(/responde 202/)).toBeTruthy();
+  });
+
+  it("webhook 409 de limite orienta update/delete manual", async () => {
+    installFetch({
+      permissions: fullPermissions(),
+      integrations: sampleList(),
+      onPost: (url) => {
+        if (url.includes("/asaas/webhook")) {
+          return { status: 409, body: { code: "PRECONDITION_FAILED" } };
+        }
+        return null;
+      },
+    });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("Asaas (Cobranças)")).toBeTruthy());
+    openWizard();
+    let { scope } = dialogScope();
+    fireEvent.click(scope.getByRole("button", { name: "Avançar para credencial" }));
+    await waitFor(() => expect(scope.getByText("Etapa 2 de 4 — Credencial")).toBeTruthy());
+    ({ scope } = dialogScope());
+    fireEvent.click(scope.getByRole("button", { name: "Pular para webhook" }));
+    await waitFor(() => expect(scope.getByText("Etapa 3 de 4 — Webhook")).toBeTruthy());
+    ({ scope } = dialogScope());
+    fireEvent.click(scope.getByRole("button", { name: "Configurar webhook automaticamente" }));
+    await waitFor(() => expect(scope.getByText(/limite de 10 webhooks/)).toBeTruthy());
+    expect(scope.getByText(/atualize ou exclua um webhook/)).toBeTruthy();
+  });
+
+  it("teste sandbox exige confirmação explícita e nunca auto-executa", async () => {
+    const seen = installFetch({ permissions: fullPermissions(), integrations: sampleList() });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("Asaas (Cobranças)")).toBeTruthy());
+    openWizard();
+    let { scope } = dialogScope();
+    fireEvent.click(scope.getByRole("button", { name: "Avançar para credencial" }));
+    await waitFor(() => expect(scope.getByText("Etapa 2 de 4 — Credencial")).toBeTruthy());
+    ({ scope } = dialogScope());
+    fireEvent.click(scope.getByRole("button", { name: "Pular para webhook" }));
+    await waitFor(() => expect(scope.getByText("Etapa 3 de 4 — Webhook")).toBeTruthy());
+    ({ scope } = dialogScope());
+    fireEvent.click(scope.getByRole("button", { name: "Pular para teste sandbox" }));
+    await waitFor(() => expect(scope.getByText("Etapa 4 de 4 — Teste em sandbox")).toBeTruthy());
+    ({ scope } = dialogScope());
+    // Entrar na etapa não dispara sonda sozinha.
+    expect(seen.posts.some((p) => p.url.includes("/asaas/test"))).toBe(false);
+    const run = scope.getByRole("button", { name: "Testar conexão em sandbox" });
+    expect(run).toBeDisabled();
+    fireEvent.click(scope.getByLabelText(/Confirmo que quero executar o teste em sandbox/));
+    fireEvent.click(scope.getByRole("button", { name: "Testar conexão em sandbox" }));
+    await waitFor(() =>
+      expect(seen.posts.some((p) => p.url.includes("/v1/integrations/asaas/test"))).toBe(true),
+    );
+    await waitFor(() => expect(scope.getByText(/Teste concluído/)).toBeTruthy());
+  });
+
+  it("sem integration.manage o wizard não abre", async () => {
+    installFetch({ permissions: ["integration.read", "integration.test"], integrations: sampleList() });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("Asaas (Cobranças)")).toBeTruthy());
+    const card = screen.getByText("Asaas (Cobranças)").closest("section") as HTMLElement;
+    expect(within(card).queryByRole("button", { name: "Assistente de conexão" })).toBeNull();
+  });
+
+  it("sem integration.test a sonda sandbox fica indisponível", async () => {
+    installFetch({ permissions: ["integration.read", "integration.manage"], integrations: sampleList() });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("Asaas (Cobranças)")).toBeTruthy());
+    openWizard();
+    let { scope } = dialogScope();
+    fireEvent.click(scope.getByRole("button", { name: "Avançar para credencial" }));
+    await waitFor(() => expect(scope.getByText("Etapa 2 de 4 — Credencial")).toBeTruthy());
+    ({ scope } = dialogScope());
+    fireEvent.click(scope.getByRole("button", { name: "Pular para webhook" }));
+    await waitFor(() => expect(scope.getByText("Etapa 3 de 4 — Webhook")).toBeTruthy());
+    ({ scope } = dialogScope());
+    fireEvent.click(scope.getByRole("button", { name: "Pular para teste sandbox" }));
+    await waitFor(() => expect(scope.getByText("Etapa 4 de 4 — Teste em sandbox")).toBeTruthy());
+    ({ scope } = dialogScope());
+    expect(scope.getByText(/não tem a permissão/)).toBeTruthy();
+    expect(scope.queryByRole("button", { name: "Testar conexão em sandbox" })).toBeNull();
+  });
+});
