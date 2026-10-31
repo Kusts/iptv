@@ -116,7 +116,7 @@ services:
       # Readiness (not liveness): it proves the database answers too. The
       # image already declares this HEALTHCHECK; repeating it here keeps the
       # probe visible next to the resource limits.
-      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/v1/health/ready').then(function(r){if(!r.ok)process.exit(1)}).catch(function(){process.exit(1)})\""]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/v1/health/ready').then(function(r){if(!r.ok)process.exit(1)}).catch(function(){process.exit(1)})"]
       interval: 30s
       timeout: 5s
       retries: 3
