@@ -18,6 +18,9 @@
  */
 
 import { withSpan } from "@iptv/observability";
+import type { Transaction } from "kysely";
+import type { Database } from "@iptv/database";
+import { resolveSecretsPort, type SecretsPort } from "@iptv/secrets";
 
 export type AsaasEffect = "KNOWN_APPLIED" | "KNOWN_NOT_APPLIED" | "UNKNOWN";
 
@@ -632,18 +635,59 @@ let echoWebhookSeq = 0;
  * `ASAAS_BASE_URL`; without them it reports misconfiguration (the command
  * maps that to a failed attempt with the charge staying PENDING/PROCESSING —
  * never a blind retry). Timeouts and transport errors map to UNKNOWN.
+ *
+ * Tenant cutover (S2C, #86): the same class ALSO accepts injected
+ * per-tenant credentials (`RealAsaasOptions`). Injected values take
+ * precedence over the process env; without either source the adapter keeps
+ * the legacy env behavior untouched (single-tenant staging compat).
  */
+export interface RealAsaasOptions {
+  /** Per-tenant vault-resolved API key (never logged, never thrown). */
+  apiKey?: string;
+  /** Per-tenant allowlist host for its environment (never client-supplied). */
+  baseUrl?: string;
+  /** Injectable transport (global fetch in production, fake in tests). */
+  fetchFn?: typeof fetch;
+}
+
 export class RealAsaasAdapter implements AsaasPort {
   readonly name = "real";
+
+  private readonly injectedApiKey: string | undefined;
+  private readonly injectedBaseUrl: string | undefined;
+  private readonly fetchImpl: typeof fetch;
 
   /**
    * Injectable transport (global fetch in production, fake in tests via
    * `integration.webhook_ensure`'s test doubles). Existing charge/refund
    * helpers keep the global fetch path untouched.
+   *
+   * Back-compat: `new RealAsaasAdapter()` and
+   * `new RealAsaasAdapter(fetchImpl)` keep working — a bare function argument
+   * is treated as the transport, exactly as before.
    */
-  constructor(private readonly fetchFn: typeof fetch = fetch) {}
+  constructor(optionsOrFetch?: RealAsaasOptions | typeof fetch, legacyFetch?: typeof fetch) {
+    if (typeof optionsOrFetch === "function") {
+      this.injectedApiKey = undefined;
+      this.injectedBaseUrl = undefined;
+      this.fetchImpl = (legacyFetch ?? optionsOrFetch) as typeof fetch;
+      return;
+    }
+    const options = optionsOrFetch ?? {};
+    const apiKey = typeof options.apiKey === "string" && options.apiKey.length > 0 ? options.apiKey : undefined;
+    const baseUrl = typeof options.baseUrl === "string" && options.baseUrl.length > 0 ? options.baseUrl : undefined;
+    this.injectedApiKey = apiKey;
+    this.injectedBaseUrl = baseUrl;
+    this.fetchImpl = options.fetchFn ?? legacyFetch ?? fetch;
+  }
 
   private config(): { apiKey: string; baseUrl: string } | null {
+    if (this.injectedApiKey !== undefined || this.injectedBaseUrl !== undefined) {
+      if (this.injectedApiKey === undefined || this.injectedBaseUrl === undefined) {
+        return null;
+      }
+      return { apiKey: this.injectedApiKey, baseUrl: this.injectedBaseUrl };
+    }
     const apiKey = process.env["ASAAS_API_KEY"];
     const baseUrl = process.env["ASAAS_BASE_URL"];
     if (typeof apiKey !== "string" || apiKey.length === 0) {
@@ -660,7 +704,7 @@ export class RealAsaasAdapter implements AsaasPort {
     if (cfg === null) {
       throw new Error("asaas is not configured (ASAAS_API_KEY/ASAAS_BASE_URL)");
     }
-    const res = await fetch(`${cfg.baseUrl}${path}`, {
+    const res = await this.fetchImpl(`${cfg.baseUrl}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", access_token: cfg.apiKey },
       body: JSON.stringify(body),
@@ -680,7 +724,7 @@ export class RealAsaasAdapter implements AsaasPort {
     if (cfg === null) {
       throw new Error("asaas is not configured (ASAAS_API_KEY/ASAAS_BASE_URL)");
     }
-    const res = await fetch(`${cfg.baseUrl}${path}`, {
+    const res = await this.fetchImpl(`${cfg.baseUrl}${path}`, {
       method: "GET",
       headers: { "Content-Type": "application/json", access_token: cfg.apiKey },
       signal: AbortSignal.timeout(8000),
@@ -1082,7 +1126,7 @@ export class RealAsaasAdapter implements AsaasPort {
   ): Promise<{ ok: boolean; status: number; json: unknown }> {
     let res: Response;
     try {
-      res = await (fetchImpl ?? this.fetchFn)(url, {
+      res = await (fetchImpl ?? this.fetchImpl)(url, {
         method: "GET",
         headers: this.webhookHeaders(apiKey),
         signal: AbortSignal.timeout(ASAAS_WEBHOOK_TIMEOUT_MS),
@@ -1111,7 +1155,7 @@ export class RealAsaasAdapter implements AsaasPort {
   ): Promise<{ ok: boolean; status: number; json: unknown }> {
     let res: Response;
     try {
-      res = await (fetchImpl ?? this.fetchFn)(url, {
+      res = await (fetchImpl ?? this.fetchImpl)(url, {
         method,
         headers: this.webhookHeaders(apiKey),
         body: JSON.stringify(body),
@@ -1196,6 +1240,144 @@ export function asaasAdapterNameFromEnv(): "echo" | "real" {
 export function resolveAsaasPort(name: "echo" | "real"): AsaasPort {
   const inner: AsaasPort = name === "real" ? new RealAsaasAdapter() : new EchoAsaasAdapter();
   return tracedAsaasPort(inner);
+}
+
+// ---------------------------------------------------------------------------
+// Tenant-scoped runtime (S2C, #86).
+//
+// `resolveAsaasPortForTenant` replaces the process-global
+// `ASAAS_API_KEY`/`ASAAS_BASE_URL` with the tenant's own vaulted credential:
+//
+//  1. look up `provider.providers` for `provider_key = 'asaas'` (missing → legacy);
+//  2. look up the tenant's NEWEST non-DISABLED `provider.provider_accounts`
+//     row for that provider + its environment, restricted to
+//     `connection_status = 'CONNECTED_READ_ONLY'` (probe-passed only).
+//     DRAFT / TESTING / REAUTH_REQUIRED / DEGRADED / NOT_CONFIGURED rows are
+//     NOT eligible — they fall back to the legacy env adapter (compat), never
+//     to a half-provisioned key. DISABLED rows are never eligible.
+//  3. `getSecret(secret_ref)` from the vault (injected in tests, live via
+//     `resolveSecretsPort()` in production); vault down / secret missing with
+//     a live binding present throws fail-closed — NEVER a silent echo
+//     fallback (echo happens ONLY when the legacy path was already echo).
+//  4. base URL comes from the fixed per-environment allowlist below — never
+//     from the client, the DB row, or the secret.
+//
+// Resolution matrix:
+//
+// | binding (non-DISABLED) | vault            | result                              |
+// |------------------------|------------------|-------------------------------------|
+// | none                   | n/a              | legacy env adapter (compat)         |
+// | CONNECTED_READ_ONLY    | key resolves     | tenant RealAsaasAdapter (dedicated) |
+// | CONNECTED_READ_ONLY    | down/missing     | throw fail-closed (no echo)         |
+// | DRAFT/TESTING/other    | n/a              | legacy env adapter (compat)         |
+// | DISABLED               | n/a              | legacy env adapter (compat)         |
+// | unknown environment    | n/a              | throw fail-closed (no silent host)  |
+//
+// SECURITY: the vault value travels only into the adapter's `access_token`
+// header (required). It is NEVER logged, thrown inside messages, or attached
+// to telemetry — errors name the environment only, never the ref/key/value.
+// ---------------------------------------------------------------------------
+
+/**
+ * Fixed Asaas hosts per environment. MIRROR of
+ * `apps/api/src/integrations/integrations.commands.ts` (`ASAAS_HOSTS`) —
+ * kept local so `billing/` never imports the integrations write context
+ * (and vice-versa: that file owns the write path). The two copies MUST stay
+ * identical; the contracts gate (`test_contracts.py`) pins the values.
+ */
+export const ASAAS_TENANT_HOSTS = {
+  SANDBOX: "https://api-sandbox.asaas.com/v3",
+  PRODUCTION: "https://api.asaas.com/v3",
+} as const;
+
+/** Only probe-passed bindings own a usable tenant credential. */
+const TENANT_ELIGIBLE_CONNECTION_STATUS = "CONNECTED_READ_ONLY" as const;
+
+export interface TenantAsaasResolution {
+  port: AsaasPort;
+  /** `tenant` = dedicated vaulted key; `legacy` = env compat path. */
+  source: "tenant" | "legacy";
+  /** Environment of the winning binding (`null` on the legacy path). */
+  environment: string | null;
+}
+
+export interface ResolveTenantAsaasOptions {
+  secretsPort?: SecretsPort;
+  fetchFn?: typeof fetch;
+}
+
+function tenantHostFor(environment: string): string {
+  if (environment === "SANDBOX") {
+    return ASAAS_TENANT_HOSTS.SANDBOX;
+  }
+  if (environment === "PRODUCTION") {
+    return ASAAS_TENANT_HOSTS.PRODUCTION;
+  }
+  throw new Error(
+    `asaas tenant binding has unknown environment ${JSON.stringify(environment)} (expected SANDBOX or PRODUCTION); refusing to guess a host`,
+  );
+}
+
+/**
+ * Resolve the Asaas port for one tenant. Prefers the tenant's vaulted key;
+ * falls back to the legacy env adapter ONLY when no eligible binding exists.
+ * Throws fail-closed when a live binding exists but its credential/host
+ * cannot be resolved (vault down, secret missing, unknown environment).
+ */
+export async function resolveAsaasPortForTenant(
+  trx: Transaction<Database>,
+  tenantId: string,
+  options: ResolveTenantAsaasOptions = {},
+): Promise<AsaasPort> {
+  return (await resolveTenantAsaas(trx, tenantId, options)).port;
+}
+
+export async function resolveTenantAsaas(
+  trx: Transaction<Database>,
+  tenantId: string,
+  options: ResolveTenantAsaasOptions = {},
+): Promise<TenantAsaasResolution> {
+  const providerRow = await trx
+    .selectFrom("provider.providers")
+    .select(["id"])
+    .where("provider_key", "=", "asaas")
+    .executeTakeFirst();
+  if (providerRow === undefined) {
+    return { port: resolveAsaasPort(asaasAdapterNameFromEnv()), source: "legacy", environment: null };
+  }
+  const binding = await trx
+    .selectFrom("provider.provider_accounts")
+    .select(["secret_ref", "environment", "connection_status"])
+    .where("tenant_id", "=", tenantId)
+    .where("provider_id", "=", providerRow.id)
+    .where("connection_status", "=", TENANT_ELIGIBLE_CONNECTION_STATUS)
+    .orderBy("updated_at", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  if (binding === undefined) {
+    return { port: resolveAsaasPort(asaasAdapterNameFromEnv()), source: "legacy", environment: null };
+  }
+  const environment = String(binding.environment);
+  const host = tenantHostFor(environment);
+  const secrets = options.secretsPort ?? resolveSecretsPort();
+  // Fail-closed: a live binding with an unreadable credential must NEVER
+  // degrade into a silent echo/global-key fallback. The vault error is
+  // sanitized by the secrets port (never the value); wrap without the ref.
+  let apiKey: string;
+  try {
+    apiKey = await secrets.getSecret(binding.secret_ref);
+  } catch {
+    throw new Error(
+      `asaas tenant credential unavailable in environment ${JSON.stringify(environment)} (binding present, vault read failed; retry later)`,
+    );
+  }
+  if (typeof apiKey !== "string" || apiKey.length === 0) {
+    throw new Error(
+      `asaas tenant credential unavailable in environment ${JSON.stringify(environment)} (vault returned an empty value; retry later)`,
+    );
+  }
+  const inner = new RealAsaasAdapter({ apiKey, baseUrl: host, fetchFn: options.fetchFn });
+  return { port: tracedAsaasPort(inner), source: "tenant", environment };
 }
 
 /**
