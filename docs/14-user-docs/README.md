@@ -16,6 +16,7 @@ These documents explain intended operation in human language. Domain/SPEC/Contra
 - `admin/provider-operations.md`
 - `admin/referrals-rewards.md`
 - `admin/incidents-hitl.md`
+- `admin/integrations-user-guide.md`
 
 ## Customer help baseline
 
