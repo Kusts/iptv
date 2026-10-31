@@ -357,14 +357,186 @@ describe("CinevisionCard (S4b, #88)", () => {
     expect(seen.posts.length).toBe(0);
   });
 
-  it("importação: modo manual supervisionado, pendente S4c, sem endpoint inventado", async () => {
-    const seen = installFetch({ permissions: fullPermissions(), integrations: liveCinevision() });
+  it("sem vínculo ativo: importação orienta conectar conta primeiro, sem rede", async () => {
+    const seen = installFetch({ permissions: fullPermissions(), integrations: cinevisionOnly({}) });
     renderPage(<IntegrationsHubPage />);
     await waitFor(() => expect(screen.getByText("CINEVISION (Servidor/Ativação)")).toBeTruthy());
     const scope = cinevisionScope();
-    expect(scope.getByText(/manual supervisionado/)).toBeTruthy();
-    expect(scope.getAllByText(/pendente S4c/).length).toBeGreaterThan(0);
+    expect(scope.getByText("Importação")).toBeTruthy();
+    expect(scope.getByText(/use Conectar conta primeiro/)).toBeTruthy();
+    expect(scope.queryByRole("button", { name: "Pré-visualizar importação" })).toBeNull();
     expect(seen.posts.some((p) => p.url.includes("/import"))).toBe(false);
+  });
+
+  it("preview 404 sem vínculo vivo orienta conectar conta primeiro", async () => {
+    const seen = installFetch({
+      permissions: fullPermissions(),
+      integrations: liveCinevision(),
+      onPost: (url) => {
+        if (url.includes("/cinevision/import-preview")) {
+          return { status: 404, body: { code: "NOT_FOUND" } };
+        }
+        return null;
+      },
+    });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("CINEVISION (Servidor/Ativação)")).toBeTruthy());
+    fireEvent.click(cinevisionScope().getByRole("button", { name: "Pré-visualizar importação" }));
+    await waitFor(() =>
+      expect(seen.posts.some((p) => p.url.includes("/cinevision/import-preview"))).toBe(true),
+    );
+    await waitFor(() =>
+      expect(cinevisionScope().getByText(/use Conectar conta primeiro/)).toBeTruthy(),
+    );
+  });
+});
+
+describe("CinevisionCard importação assistida (S4d, #88)", () => {
+  const PREVIEW_HASH = "a".repeat(64);
+
+  const previewPayload = {
+    provider: "cinevision",
+    version: "cinevision-import-v1",
+    total: 3,
+    novos: 1,
+    duplicados: 1,
+    conflitos: 1,
+    previewHash: PREVIEW_HASH,
+    items: [
+      { externalId: "cine-ext-001", decision: "novo" },
+      { externalId: "cine-ext-002", decision: "duplicado" },
+      { externalId: "cine-ext-003", decision: "conflito" },
+    ],
+  };
+
+  it("fluxo completo mockado: preview 3 itens → confirma → resumo, sem segredo no DOM", async () => {
+    const seen = installFetch({
+      permissions: fullPermissions(),
+      integrations: liveCinevision(),
+      onPost: (url) => {
+        if (url.includes("/cinevision/import-preview")) {
+          return { status: 200, body: previewPayload };
+        }
+        if (url.includes("/cinevision/import-execute")) {
+          return {
+            status: 200,
+            body: {
+              provider: "cinevision",
+              version: "cinevision-import-v1",
+              total: 3,
+              criados: 1,
+              pulados: 1,
+              conflitos: 1,
+              previewHash: PREVIEW_HASH,
+            },
+          };
+        }
+        return null;
+      },
+    });
+    const { container } = render(
+      <AuthProvider>
+        <ToastProvider>
+          <IntegrationsHubPage />
+        </ToastProvider>
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("CINEVISION (Servidor/Ativação)")).toBeTruthy());
+
+    // Pré-visualização: POST sem body de escrita, com Idempotency-Key.
+    fireEvent.click(cinevisionScope().getByRole("button", { name: "Pré-visualizar importação" }));
+    await waitFor(() =>
+      expect(seen.posts.some((p) => p.url.includes("/cinevision/import-preview"))).toBe(true),
+    );
+    const previewCall = seen.posts.find((p) => p.url.includes("/cinevision/import-preview"));
+    expect(previewCall?.body).toEqual({});
+    expect(previewCall?.headers?.["idempotency-key"]).toBeTruthy();
+
+    // Tabela de preview: externo + decisão em pt-BR.
+    await waitFor(() => expect(cinevisionScope().getByText("cine-ext-001")).toBeTruthy());
+    const scope = cinevisionScope();
+    expect(scope.getByText("cine-ext-002")).toBeTruthy();
+    expect(scope.getByText("cine-ext-003")).toBeTruthy();
+    expect(scope.getByText("Novo")).toBeTruthy();
+    expect(scope.getByText("Duplicado")).toBeTruthy();
+    expect(scope.getByText("Conflito")).toBeTruthy();
+    expect(scope.getByText("Confirmo a importação dos 1 novos clientes desta pré-visualização")).toBeTruthy();
+
+    // Sem confirmação explícita não há escrita.
+    const confirmButton = scope.getByRole("button", { name: "Confirmar importação" });
+    expect(confirmButton).toBeDisabled();
+    fireEvent.click(confirmButton);
+    expect(seen.posts.some((p) => p.url.includes("/import-execute"))).toBe(false);
+
+    // Confirmação explícita + execute com hash + Idempotency-Key.
+    fireEvent.click(scope.getByText(/Confirmo a importação dos 1 novos clientes/));
+    fireEvent.click(scope.getByRole("button", { name: "Confirmar importação" }));
+    await waitFor(() =>
+      expect(seen.posts.some((p) => p.url.includes("/cinevision/import-execute"))).toBe(true),
+    );
+    const execCall = seen.posts.find((p) => p.url.includes("/cinevision/import-execute"));
+    expect(execCall?.body).toEqual({ previewHash: PREVIEW_HASH, confirmed: true });
+    expect(execCall?.headers?.["idempotency-key"]).toBeTruthy();
+
+    // Resumo + sem segredo/hash no DOM.
+    await waitFor(() => expect(cinevisionScope().getByText(/1 criados/)).toBeTruthy());
+    const html = container.innerHTML;
+    expect(html).not.toContain(PREVIEW_HASH);
+    expect(html).not.toContain("secret_ref");
+    expect(html).not.toContain("infisical://");
+    expect(document.body.textContent ?? "").not.toContain("cine-fixture-pass");
+  });
+
+  it("execute 409 (tamper) orienta re-preview sem concluir", async () => {
+    const seen = installFetch({
+      permissions: fullPermissions(),
+      integrations: liveCinevision(),
+      onPost: (url) => {
+        if (url.includes("/cinevision/import-preview")) {
+          return { status: 200, body: previewPayload };
+        }
+        if (url.includes("/cinevision/import-execute")) {
+          return { status: 409, body: { code: "PRECONDITION_FAILED" } };
+        }
+        return null;
+      },
+    });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("CINEVISION (Servidor/Ativação)")).toBeTruthy());
+    fireEvent.click(cinevisionScope().getByRole("button", { name: "Pré-visualizar importação" }));
+    await waitFor(() => expect(cinevisionScope().getByText("cine-ext-001")).toBeTruthy());
+    const scope = cinevisionScope();
+    fireEvent.click(scope.getByText(/Confirmo a importação dos 1 novos clientes/));
+    fireEvent.click(scope.getByRole("button", { name: "Confirmar importação" }));
+    await waitFor(() =>
+      expect(seen.posts.some((p) => p.url.includes("/cinevision/import-execute"))).toBe(true),
+    );
+    await waitFor(() =>
+      expect(cinevisionScope().getByText(/execute a pré-visualização de novo/)).toBeTruthy(),
+    );
+    // Sem resumo de sucesso após o 409.
+    expect(cinevisionScope().queryByText(/Importação concluída/)).toBeNull();
+  });
+
+  it("sem manage: preview liberado (read), confirmação exige manage", async () => {
+    const seen = installFetch({
+      permissions: ["integration.read", "integration.test"],
+      integrations: liveCinevision(),
+      onPost: (url) => {
+        if (url.includes("/cinevision/import-preview")) {
+          return { status: 200, body: previewPayload };
+        }
+        return null;
+      },
+    });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("CINEVISION (Servidor/Ativação)")).toBeTruthy());
+    fireEvent.click(cinevisionScope().getByRole("button", { name: "Pré-visualizar importação" }));
+    await waitFor(() => expect(cinevisionScope().getByText("cine-ext-001")).toBeTruthy());
+    const scope = cinevisionScope();
+    expect(scope.queryByRole("button", { name: "Confirmar importação" })).toBeNull();
+    expect(scope.getByText(/exige integration.manage/)).toBeTruthy();
+    expect(seen.posts.some((p) => p.url.includes("/import-execute"))).toBe(false);
   });
 
   it("sem manage/test mostra somente leitura sem ações de escrita", async () => {
