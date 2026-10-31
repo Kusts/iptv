@@ -180,6 +180,35 @@ describe("InfisicalSecretsAdapter.putSecret", () => {
     expect(writes).toHaveLength(2);
   });
 
+  it("falls back to update on 400 already-exists (v0.165.16 duplicate shape)", async () => {
+    const { calls, requests } = stubFetch([
+      mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(400, { message: "Secret already exists with the provided key" }),
+      mockResponse(200, { secret: { secretKey: "ASAAS_API_KEY" } }),
+    ]);
+    const adapter = new InfisicalSecretsAdapter(OPTIONS);
+    const result = await adapter.putSecret({ ...TARGET, value: WRITE_VALUE });
+    expect(result.created).toBe(false);
+    expect(result.ref).toBe("infisical://sandbox/integrations/tenant-1/asaas/ASAAS_API_KEY");
+    const writes = requests.filter((r) => r.url.includes("/api/v3/secrets/raw/"));
+    expect(writes).toHaveLength(2);
+    expect(writes[0]?.init?.method).toBe("POST");
+    expect(writes[1]?.init?.method).toBe("PATCH");
+    expect(calls.filter((c) => c.includes("/api/v3/secrets/raw/"))).toHaveLength(2);
+  });
+
+  it("keeps other 400 create failures as SERVER (never masked as conflict)", async () => {
+    stubFetch([
+      mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(400, { message: "environment is invalid" }),
+    ]);
+    const adapter = new InfisicalSecretsAdapter(OPTIONS);
+    const err = await adapter.putSecret({ ...TARGET, value: WRITE_VALUE }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SecretsError);
+    expect((err as SecretsError).code).toBe("SERVER");
+    expect((err as SecretsError).message).not.toContain(WRITE_VALUE);
+  });
+
   it("is idempotent for a stable request-id (same ref, no duplicate)", async () => {
     const { requests } = stubFetch([
       mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
@@ -244,6 +273,38 @@ describe("InfisicalSecretsAdapter.deleteSecret", () => {
     expect(calls[1]).toContain("/api/v3/secrets/raw/ASAAS_API_KEY");
     expect(calls[1]).toContain("secretPath=%2Fintegrations%2Ftenant-1%2Fasaas");
     for (const m of debugMessages) {
+      expect(m).not.toContain("stub-token-1");
+    }
+  });
+
+  it("sends the scope in the DELETE body (v0.165.16 requires it, query kept)", async () => {
+    const debugMessages: string[] = [];
+    const { calls, requests } = stubFetch([
+      mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(200, {}),
+    ]);
+    const adapter = new InfisicalSecretsAdapter({
+      ...OPTIONS,
+      debug: (m) => debugMessages.push(m),
+    });
+    const ref = "infisical://sandbox/integrations/tenant-1/asaas/ASAAS_API_KEY";
+    await adapter.deleteSecret(ref);
+    expect(calls).toHaveLength(2);
+    const del = requests[1];
+    expect(del?.init?.method).toBe("DELETE");
+    // Query string preserved.
+    expect(del?.url).toContain("secretPath=%2Fintegrations%2Ftenant-1%2Fasaas");
+    // Scope now also in the JSON body.
+    expect(header(del?.init, "Content-Type")).toBe("application/json");
+    const payload = bodyJson(del?.init);
+    expect(payload["workspaceId"]).toBe("proj-123");
+    expect(payload["environment"]).toBe("sandbox");
+    expect(payload["secretPath"]).toBe("/integrations/tenant-1/asaas");
+    // Debug log carries the masked ref hash, never the full ref, key or token.
+    expect(debugMessages.some((m) => m.includes("refHash="))).toBe(true);
+    for (const m of debugMessages) {
+      expect(m).not.toContain(ref);
+      expect(m).not.toContain("ASAAS_API_KEY");
       expect(m).not.toContain("stub-token-1");
     }
   });
