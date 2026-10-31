@@ -7,10 +7,12 @@ job novo `security-scans` e localmente com `python tests/security/test_ci_securi
 
 Também exercita `scripts/ci-audit-gate.py` com `subprocess.run` mockado
 (sem rede): falha operacional/saída inválida nunca pode virar PASS, JSON
-inconsistente (severidade ausente/desconhecida em qualquer advisory,
-metadata.vulnerabilities inválido ou contador divergente) FALHA fechado, e
-o exit code não-zero legítimo do `pnpm audit` com advisories válidos é
-preservado.
+inconsistente fail-closed (severidade ausente/desconhecida em qualquer
+advisory, metadata.vulnerabilities inválido ou contador divergente em
+severidade BLOQUEANTE high/critical) FALHA fechado, skew de contador em
+severidade report-only (info/low/moderate) vira `AUDIT-GATE WARN` sem
+falhar, e o exit code não-zero legítimo do `pnpm audit` com advisories
+válidos é preservado.
 
 Cada cenário negativo asserta a MENSAGEM do ramo pretendido na saída do
 gate, além do exit code: sem essa assertiva, um fixture que caia no ramo
@@ -49,7 +51,9 @@ GITLEAKS_CONFIG = ROOT / ".gitleaks.toml"
 AUDIT_GATE = ROOT / "scripts" / "ci-audit-gate.py"
 AUDIT_BASELINE = ROOT / "tests" / "security" / "audit-baseline.json"
 # Espelha o enum do gate (`scripts/ci-audit-gate.py`): a validação
-# estrutural fail-closed cobre TODAS as severidades, não só high/critical.
+# estrutural fail-closed cobre severidade ausente/desconhecida em TODAS as
+# severidades e reconciliação EXATA em high/critical; skew de contador em
+# info/low/moderate é WARN tolerado (report-only).
 KNOWN_SEVERITIES = ("info", "low", "moderate", "high", "critical")
 
 # Suítes adversariais críticas com job próprio (F09 prompt-injection +
@@ -479,8 +483,10 @@ class TestAuditGateStrictness(unittest.TestCase):
         )
 
     def test_vulnerabilities_count_mismatch_fails(self):
-        # Contadores de metadata precisam reconciliar com os registros:
-        # divergência em qualquer severidade é inconsistência, não veredito.
+        # Contadores BLOQUEANTES (high/critical) precisam reconciliar com os
+        # registros: divergência nessas severidades é inconsistência, não
+        # veredito. Skew em info/low/moderate é WARN tolerado (cobertura em
+        # test_nonblocking_count_mismatch_warns_and_passes).
         # Todos os advisories são reconhecidos (fixture sintética — a baseline
         # real fica VAZIA por intenção), então sem a checagem de
         # reconciliação o gate PASSaria — o teste exige o ramo.
@@ -503,13 +509,40 @@ class TestAuditGateStrictness(unittest.TestCase):
                 "não reconcilia",
                 baseline=baseline,
             )
-        with self.subTest(case="moderate fantasma sem registro"):
+        with self.subTest(case="moderate fantasma sem registro vira WARN e passa"):
             phantom = dict(observed, moderate=observed["moderate"] + 1)
-            self.assert_fails_closed(
+            output = self.assert_gate_passes(
                 audit_stdout(payload, metadata={"vulnerabilities": phantom}),
-                "não reconcilia",
                 baseline=baseline,
             )
+            self.assertIn("AUDIT-GATE WARN", output)
+            self.assertIn("não reconcilia", output)
+
+    def test_nonblocking_count_mismatch_warns_and_passes(self):
+        # Skew tolerado SOMENTE em severidade report-only (info/low/moderate):
+        # registry rasgado (ex.: metadata.moderate=9 vs 8 advisories, 0
+        # high/critical) vira WARN e o gate segue para o veredito
+        # high/critical. Mismatch em high/critical continua fail-closed
+        # (coberto por test_vulnerabilities_count_mismatch_fails).
+        keys = ["70000010", *acknowledged_keys()]
+        baseline = synthetic_acknowledged(keys)
+        payload = {k: fake_advisory("high") for k in keys}
+        observed = severity_counts(payload)
+        for severity in ("info", "low", "moderate"):
+            with self.subTest(severity=severity):
+                skewed = dict(observed, **{severity: observed[severity] + 1})
+                stdout = audit_stdout(
+                    payload, metadata={"vulnerabilities": skewed}
+                )
+                exit_code, output = run_audit_gate_capture(
+                    stdout, baseline=baseline
+                )
+                self.assertEqual(
+                    exit_code, 0, f"gate deveria tolerar skew {severity}; saída:\n{output}"
+                )
+                self.assertIn("AUDIT-GATE PASS", output)
+                self.assertIn("AUDIT-GATE WARN", output)
+                self.assertIn("não reconcilia", output)
 
     def test_vulnerabilities_missing_or_invalid_fails(self):
         payload = {"780": fake_advisory("moderate")}
