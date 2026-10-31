@@ -1196,3 +1196,38 @@ describe("loadConfig INTEGRATIONS_PUBLIC_BASE_URL", () => {
     }
   });
 });
+
+/**
+ * AUTH_REGISTER_CLOSED: public-signup gate (P84-B3). "1" (default) closes
+ * `POST /v1/auth/register` with 403 REGISTER_CLOSED; "0" keeps the current
+ * open bootstrap. Fail-closed default: staging and env-less boots never open
+ * signup by accident. Blank counts as absent (repo rule, `emptyToUndefined`);
+ * any other value fails boot validation (never a silent fallback to open).
+ */
+describe("loadConfig AUTH_REGISTER_CLOSED", () => {
+  it("defaults to closed when unset", () => {
+    expect(loadConfig({}).AUTH_REGISTER_CLOSED).toBe("1");
+  });
+
+  it("treats a blank value as absent (default closed applies)", () => {
+    for (const blank of ["", "   ", "\t"]) {
+      expect(loadConfig({ AUTH_REGISTER_CLOSED: blank }).AUTH_REGISTER_CLOSED, JSON.stringify(blank)).toBe("1");
+    }
+  });
+
+  it("accepts the explicit open value", () => {
+    expect(loadConfig({ AUTH_REGISTER_CLOSED: "0" }).AUTH_REGISTER_CLOSED).toBe("0");
+    expect(loadConfig({ AUTH_REGISTER_CLOSED: "1" }).AUTH_REGISTER_CLOSED).toBe("1");
+  });
+
+  it("rejects any other value with a boot-time validation error", () => {
+    // Note: `emptyToUndefined` trims, so a padded " 1 " is accepted as "1"
+    // (same blank-means-absent rule as the other enum flags); anything else
+    // fails closed at boot, never falling back to open.
+    for (const bad of ["yes", "no", "true", "false", "2", "00", "closed", "open"]) {
+      expect(() => loadConfig({ AUTH_REGISTER_CLOSED: bad }), bad).toThrow(
+        /invalid environment configuration/,
+      );
+    }
+  });
+});

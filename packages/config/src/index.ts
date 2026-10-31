@@ -20,6 +20,12 @@ const envSchema = z.object({
   // Session lifetime in hours (default 168 = 7 days). Positive integers
   // only: zero/negative/fractional/non-numeric values fail validation.
   SESSION_TTL_HOURS: z.coerce.number().int().min(1).default(168),
+  // Public signup gate (`POST /v1/auth/register`). "1" (default) closes
+  // public registration with 403 REGISTER_CLOSED; "0" keeps the current
+  // open bootstrap. Fail-closed default: staging and env-less boots never
+  // open signup by accident. Blank counts as absent (repo rule) and any other
+  // value fails boot validation (never a silent fallback to open).
+  AUTH_REGISTER_CLOSED: z.enum(["0", "1"]).default("1"),
   // W1-08 worker infrastructure: in-process scheduler is opt-in
   // (`API_SCHEDULER_ENABLED=1`); default off so boot never starts
   // background work unless the operator asks for it.
@@ -698,6 +704,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     SESSION_TTL_HOURS: emptyToUndefined(env.SESSION_TTL_HOURS),
     API_SCHEDULER_ENABLED: env.API_SCHEDULER_ENABLED,
     API_SCHEDULER_TICK_SECONDS: env.API_SCHEDULER_TICK_SECONDS,
+    AUTH_REGISTER_CLOSED: emptyToUndefined(env.AUTH_REGISTER_CLOSED),
     HATCHET_API_TOKEN: emptyToUndefined(env.HATCHET_API_TOKEN),
     HATCHET_SERVER_URL: emptyToUndefined(env.HATCHET_SERVER_URL),
     OTEL_EXPORTER_OTLP_ENDPOINT: env.OTEL_EXPORTER_OTLP_ENDPOINT,
