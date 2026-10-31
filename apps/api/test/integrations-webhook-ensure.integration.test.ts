@@ -624,4 +624,150 @@ describe.skipIf(!hasDb)("integrations webhook_ensure provisioning (requires TEST
       expect(dumped).not.toContain(ASAAS_KEY_A);
     }
   });
+
+  it("rotates the webhook token: old token 401, new token 202, tenant B untouched (S5B, #89)", async () => {
+    const channelBefore = await channelOf(tenantA);
+    const tenantKey = channelBefore?.tenant_key as string;
+    expect(typeof tenantKey).toBe("string");
+    const t1 = vault.store.get(webhookTokenRef(tenantA)) as string;
+    expect(typeof t1).toBe("string");
+
+    // T1 verifies end-to-end through the real ingress path before rotation.
+    const pre = await inject({
+      method: "POST",
+      url: `/v1/webhooks/asaas/${tenantKey}?defer=1`,
+      headers: { "asaas-access-token": t1 },
+      payload: { event: "PAYMENT_RECEIVED", payment: { id: "pay_s5b_pre" } },
+    });
+    expect(pre.statusCode).toBe(202);
+
+    // Tenant B snapshot (must stay untouched by A's rotation).
+    const bTokenBefore = vault.store.get(webhookTokenRef(tenantB));
+    const bChannelBefore = await channelOf(tenantB);
+
+    // Rotation: delete the vault token, then re-ensure as a NEW operation
+    // (fresh idempotency key) — the handler must mint a DIFFERENT token.
+    await vault.deleteSecret(webhookTokenRef(tenantA));
+    expect(vault.store.has(webhookTokenRef(tenantA))).toBe(false);
+    const savesBefore = seenSaves.length;
+    const re = await inject({
+      method: "POST",
+      url: "/v1/integrations/asaas/webhook",
+      token: tokenA,
+      idempotencyKey: "s5b-rotation-1",
+      payload: { environment: "SANDBOX" },
+    });
+    expect(re.statusCode).toBe(201);
+    const t2 = vault.store.get(webhookTokenRef(tenantA)) as string;
+    expect(typeof t2).toBe("string");
+    expect(t2).not.toBe(t1);
+    expect(t2.length).toBeGreaterThanOrEqual(32);
+    expect(t2).not.toMatch(/\s/);
+    expect((await channelOf(tenantA))?.webhook_secret_hash).toBe(sha256Hex(t2));
+    // Dedupe by canonical URL: exactly one provider webhook for this tenant,
+    // and the response points at it (POST on first provisioning after the
+    // array reset, PUT on re-provision — either way, no duplicate).
+    expect(seenSaves.length).toBe(savesBefore + 1);
+    const canonicalUrl = `${PUBLIC_BASE}/v1/webhooks/asaas/${tenantKey}`;
+    const matches = remoteWebhooks.filter((webhook) => webhook.url === canonicalUrl);
+    expect(matches).toHaveLength(1);
+    expect(re.json<Record<string, unknown>>()["providerWebhookId"]).toBe(matches[0]?.id);
+
+    // Old token rejected, new token accepted — end to end via ingress.
+    const stale = await inject({
+      method: "POST",
+      url: `/v1/webhooks/asaas/${tenantKey}?defer=1`,
+      headers: { "asaas-access-token": t1 },
+      payload: { event: "PAYMENT_RECEIVED", payment: { id: "pay_s5b_old" } },
+    });
+    expect(stale.statusCode).toBe(401);
+    const fresh = await inject({
+      method: "POST",
+      url: `/v1/webhooks/asaas/${tenantKey}?defer=1`,
+      headers: { "asaas-access-token": t2 },
+      payload: { event: "PAYMENT_RECEIVED", payment: { id: "pay_s5b_new" } },
+    });
+    expect(fresh.statusCode).toBe(202);
+    expect(fresh.json()).toEqual({ accepted: true, deduped: false });
+
+    // Tenant B untouched: same vault token, same channel hash.
+    expect(vault.store.get(webhookTokenRef(tenantB))).toBe(bTokenBefore);
+    expect((await channelOf(tenantB))?.webhook_secret_hash).toBe(
+      bChannelBefore?.webhook_secret_hash,
+    );
+  });
+
+  it("failed rotation save keeps the new vault token and the old channel hash; retry converges (S5B, #89)", async () => {
+    const channelBefore = await channelOf(tenantA);
+    const tenantKey = channelBefore?.tenant_key as string;
+    const tCurrent = vault.store.get(webhookTokenRef(tenantA)) as string;
+    const hashBefore = channelBefore?.webhook_secret_hash;
+    expect(hashBefore).toBe(sha256Hex(tCurrent));
+
+    // Rotation attempt whose Asaas save fails once (transport).
+    await vault.deleteSecret(webhookTokenRef(tenantA));
+    failNextSave = true;
+    const failed = await inject({
+      method: "POST",
+      url: "/v1/integrations/asaas/webhook",
+      token: tokenA,
+      idempotencyKey: "s5b-rotation-2",
+      payload: { environment: "SANDBOX" },
+    });
+    expect(failed.statusCode).toBe(503);
+    expect(failed.json<{ code: string }>().code).toBe("PROVIDER_UNAVAILABLE");
+
+    // Rollback preserved: the NEW token stays in the vault (reusable, never
+    // deleted) while the channel still points at the OLD hash (not corrupted),
+    // so the pre-rotation token keeps verifying at ingress meanwhile.
+    const tNew = vault.store.get(webhookTokenRef(tenantA)) as string;
+    expect(typeof tNew).toBe("string");
+    expect(tNew).not.toBe(tCurrent);
+    expect((await channelOf(tenantA))?.webhook_secret_hash).toBe(hashBefore);
+    const stillValid = await inject({
+      method: "POST",
+      url: `/v1/webhooks/asaas/${tenantKey}?defer=1`,
+      headers: { "asaas-access-token": tCurrent },
+      payload: { event: "PAYMENT_RECEIVED", payment: { id: "pay_s5b_mid" } },
+    });
+    expect(stillValid.statusCode).toBe(202);
+    const notYet = await inject({
+      method: "POST",
+      url: `/v1/webhooks/asaas/${tenantKey}?defer=1`,
+      headers: { "asaas-access-token": tNew },
+      payload: { event: "PAYMENT_RECEIVED", payment: { id: "pay_s5b_mid" } },
+    });
+    expect(notYet.statusCode).toBe(401);
+
+    // Retry with Asaas healthy converges: SAME new token reused (PUT + upsert).
+    const savesBefore = seenSaves.length;
+    const retry = await inject({
+      method: "POST",
+      url: "/v1/integrations/asaas/webhook",
+      token: tokenA,
+      idempotencyKey: "s5b-rotation-3",
+      payload: { environment: "SANDBOX" },
+    });
+    expect(retry.statusCode).toBe(201);
+    expect(vault.store.get(webhookTokenRef(tenantA))).toBe(tNew);
+    expect((await channelOf(tenantA))?.webhook_secret_hash).toBe(sha256Hex(tNew));
+    expect(seenSaves.length).toBe(savesBefore + 1);
+    expect(seenSaves[seenSaves.length - 1]?.method).toBe("PUT");
+
+    // Post-convergence: rotated-out token rejected, current token accepted.
+    const rotatedOut = await inject({
+      method: "POST",
+      url: `/v1/webhooks/asaas/${tenantKey}?defer=1`,
+      headers: { "asaas-access-token": tCurrent },
+      payload: { event: "PAYMENT_RECEIVED", payment: { id: "pay_s5b_final" } },
+    });
+    expect(rotatedOut.statusCode).toBe(401);
+    const converged = await inject({
+      method: "POST",
+      url: `/v1/webhooks/asaas/${tenantKey}?defer=1`,
+      headers: { "asaas-access-token": tNew },
+      payload: { event: "PAYMENT_RECEIVED", payment: { id: "pay_s5b_final2" } },
+    });
+    expect(converged.statusCode).toBe(202);
+  });
 });
