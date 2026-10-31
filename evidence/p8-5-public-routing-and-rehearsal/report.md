@@ -89,3 +89,48 @@ Nenhum `configure`, `test`, `webhook_ensure`, pedido, PIX, pagamento, liquidaç�
 
 Estado de engenharia: B3 + healthcheck prontos para PRs pequenos e separados (CI com DB pendente).
 Estado operacional: `BLOCKED_OPERATOR_ACTION` (Cloudflare/VPS, Infisical, deploy, PR). Nenhuma nova missão P8.6 necessária — retomar deste handoff.
+
+## Addendum 2026-10-31 — fatos consumados após autorização do operador
+
+1. **PRs mergeados.** `#115 fix/deploy/api-healthcheck-exec` MERGED (`562ac5b`, CI 8/8 verde: build/adversarial/outbox-050-role-guards/security-scans). `#116 feat/api/register-closed` MERGED (`3934c33`, CI verde; conflito de CHANGELOG resolvido via merge commit `e482225` mantendo as duas linhas). `main` atual: `3934c33`.
+2. **Causa raiz A PROVADA (não mais hipótese).** Dois conectores no túnel `iptv-staging` (`36b0d32e`): `4499dc4b` (v2026.10.1, `run_at` 19/10, `origin_ip 213.199.37.252` = Contabo VPS, container `iptv-staging-tunnel` Created 19/10 11:30:52 = `run_at`) e `f2a5fb2a` (v2026.10.6, origin `187.6.127.120` = host local do operador). DNS confirmado: ambos os hostnames CNAME para `36b0d32e.cfargotunnel.com`, proxied. Serviço systemd `cloudflared` na Contabo é de OUTRO túnel (`e21e6483`, `stg-pg`) e foi preservado.
+3. **Correção aplicada.** `docker stop -t 30 iptv-staging-tunnel` na Contabo (rollback: `docker start iptv-staging-tunnel`); API de conexões passou a listar 1 conector; saúde pública mudou para `scheduler: disabled`; web mudou de `len 6140` com marcador para `len 6761` sem marcador; requestId público correlacionado nos logs do container local (prova de origem correta).
+4. **Incidente de sonda.** 1 `POST /v1/auth/register` de teste retornou `201` (B3 ainda não implantada no staging), criando usuário `probe-b3@example.invalid`; removido em seguida via DELETE com CASCADE verificado (`credentials 0`, `sessions 0`).
+5. **Deploy em andamento no host local.** `main@3934c33`, `AUTH_REGISTER_CLOSED=1` anexado ao `.env.staging`, backup do compose em temp aprovado, build+recreate da `api` em curso. Pendente: healthy, `403` público, suite B2 (100+100), login de conta autorizada, Infisical, rehearsal Asaas.
+6. **Matriz de veredito atualizada.**
+
+| Gate | Status | Evidência |
+|---|---|---|
+| PUBLIC_TUNNEL_STABLE | PASS (parcial) | rota provada e corrigida (1 conector, requestId correlacionado); B2 completa (100+100) pendente |
+| PUBLIC_REGISTRATION_CLOSED | BLOCKED | B3 mergeada (3934c33), deploy em curso, sem prova pública ainda |
+| STAGING_API_HEALTHY | BLOCKED | recreate da api em curso, healthy pendente |
+| STAGING_VAULT_READY | BLOCKED | identidade/smoke pendentes |
+| ASAAS_SELF_SERVICE_SANDBOX_VALIDATED | BLOCKED | não executado |
+| FIRST_SALE_REHEARSAL_PASSED | BLOCKED | não executado |
+
+## Addendum 2 — 2026-10-31 (staging correto, suite B2, Infisical travado)
+
+Autor: subagente (P85-REPORT-ADDENDUM2). Escopo: registrar fatos consumados; sem segredos (sem tokens/senhas; IPs já públicos no relatório).
+
+1. **B2 PASS completo — suite independente, 297 requests (teto 300).** Executada por tester independente contra os hostnames públicos:
+   - health 100/100: `scheduler: disabled` (origem local correta);
+   - web 100/100: sem marcador fantasma (só nonces CSP variam);
+   - 20/20 pares público/loopback idênticos (bodies byte-idênticos excluindo `requestId`);
+   - 20/20 concorrentes; 5/5 `requestId`s públicos encontrados nos logs locais;
+   - 5/5 `POST /v1/auth/register` → `403 REGISTER_CLOSED`, `control.users` 3→3 (nenhum usuário criado).
+   - Notas neutras (não invalidam): e-mail com `+` devolve `400` do ValidationPipe antes do gate; 5 sondas iniciais com JSON malformado por quoting deram `400` (nada criado).
+2. **Deploy staging correto (host local).** `main@3934c33`, `AUTH_REGISTER_CLOSED=1` no `.env.staging`, rebuild + `up -d --force-recreate api` após `docker rm -f` do container órfão; `migrate` OK; `api` healthy (healthcheck exec confirma Gate D no ambiente real); registro público `403` com corpo `{"code":"REGISTER_CLOSED","message":"public registration is closed"}` (curl). Gate C PASS, Gate D PASS.
+3. **Contabo: stack antigo removido.** Backup `pg_dump` 28MB em `/home/deploy/backups/old-staging-20261031.dump`, volume `pgdata` preservado, imagens mantidas; rollback = `up -d` no projeto `/home/deploy/iptv-staging`. Túnel `iptv-staging` com 1 conector (`f2a5fb2a`); serviço systemd `cloudflared` (outro túnel `stg-pg`) e demais serviços intactos.
+4. **Infisical BLOCKED com diagnóstico.** Adapter resolve `infisical` (não noop); login trava (timeout 8s). Da origem: DNS ok, TCP 443 ok, TLSv1.3 ok em 90ms, mas `GET /` e `POST` login travam. DNS `infisical.synkroo.com.br` = A `187.77.249.47` proxied (Hostinger parkada, SSH timeout); Contabo sem Infisical (traefik sem rotas); backups locais existem em `D:\projetos\vps-hostinger\backups`. Sem cofre não há `configure`/`webhook_ensure` (fail-closed por desenho).
+5. **Matriz atualizada.**
+
+   | Gate | Status | Evidência |
+   |---|---|---|
+   | PUBLIC_TUNNEL_STABLE | PASS | §1–2: 100+100 + loopback idêntico + requestIds nos logs locais |
+   | PUBLIC_REGISTRATION_CLOSED | PASS | §1–2: 403 público + `control.users` estável, flag ativa no staging |
+   | STAGING_API_HEALTHY | PASS | §2: `api` healthy, healthcheck exec, `migrate` OK |
+   | STAGING_VAULT_READY | BLOCKED | §4: login trava, cofre inacessível |
+   | ASAAS_SELF_SERVICE | BLOCKED | depende do cofre |
+   | FIRST_SALE_REHEARSAL_PASSED | BLOCKED | depende do cofre |
+
+   Pendentes: senha da conta `operador@iptv.com` (login C7 + rehearsal G) e decisão do operador sobre o Infisical.
