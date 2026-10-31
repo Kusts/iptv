@@ -13,14 +13,14 @@ import {
   webhookAmountMatchesCharge,
 } from "../commerce/money-math.js";
 import {
-  asaasAdapterNameFromEnv,
   isEchoProviderReference,
   isSyntheticProviderReference,
   provenExternalChargeId,
-  resolveAsaasPort,
+  resolveAsaasPortForTenant,
   type AsaasPort,
   type RefundResult,
 } from "./asaas-port.js";
+import type { SecretsPort } from "@iptv/secrets";
 import {
   chargebackReversalEntries,
   confirmationEntries,
@@ -66,6 +66,43 @@ import { evaluateOrderSettlement } from "./settlement.js";
 
 export interface BillingCommandDeps {
   asaasPort?: AsaasPort;
+  /**
+   * Tenant-runtime seams (S2C, #86). When `asaasPort` is set it wins
+   * (existing unit fakes keep working with zero DB reads); otherwise the
+   * handlers resolve the port per tenant: `resolveAsaasPortForTenant` with
+   * the vault reader below (live `resolveSecretsPort()` when omitted) and
+   * the transport below (global fetch when omitted).
+   */
+  secretsPort?: SecretsPort;
+  asaasFetch?: typeof fetch;
+}
+
+async function resolveBillingPort(
+  ctx: CommandHandlerContext,
+  trx: Transaction<Database>,
+  deps: BillingCommandDeps,
+): Promise<AsaasPort> {
+  if (deps.asaasPort !== undefined) {
+    return deps.asaasPort;
+  }
+  return resolveAsaasPortForTenant(trx, ctx.tenantId, {
+    secretsPort: deps.secretsPort,
+    fetchFn: deps.asaasFetch,
+  });
+}
+
+/**
+ * Fail-closed mapping for tenant-credential resolution: a live binding whose
+ * vault read fails must surface an explicit `precondition_failed` (retry
+ * later) — never a silent PENDING/echo as if the provider had rejected.
+ * The message names the cause only, never the secret, ref, or key.
+ */
+function tenantCredentialUnavailable(): { ok: false; code: "precondition_failed"; message: string } {
+  return {
+    ok: false,
+    code: "precondition_failed",
+    message: "asaas tenant credential unavailable (binding present, vault read failed; retry later)",
+  };
 }
 
 function requireTrx(ctx: CommandHandlerContext): Transaction<Database> {
@@ -332,7 +369,12 @@ function handleChargeCreateFactory(deps: BillingCommandDeps) {
         currency: order.currency,
       },
     });
-    const port = deps.asaasPort ?? resolveAsaasPort(asaasAdapterNameFromEnv());
+    let port;
+    try {
+      port = await resolveBillingPort(ctx, trx, deps);
+    } catch {
+      return tenantCredentialUnavailable();
+    }
     let created;
     try {
       created = await port.createPixCharge({
@@ -477,7 +519,12 @@ function handleCustomerProvisionFactory(deps: BillingCommandDeps) {
         },
       };
     }
-    const port = deps.asaasPort ?? resolveAsaasPort(asaasAdapterNameFromEnv());
+    let port;
+    try {
+      port = await resolveBillingPort(ctx, trx, deps);
+    } catch {
+      return tenantCredentialUnavailable();
+    }
     let created;
     try {
       created = await port.createCustomer({
@@ -764,7 +811,12 @@ function handleChargeReconcileFactory(deps: BillingCommandDeps) {
     if (binding === undefined) {
       return { ok: false, code: "precondition_failed", message: "charge has no provider binding to reconcile" };
     }
-    const port = deps.asaasPort ?? resolveAsaasPort(asaasAdapterNameFromEnv());
+    let port;
+    try {
+      port = await resolveBillingPort(ctx, trx, deps);
+    } catch {
+      return tenantCredentialUnavailable();
+    }
     // Namespace guard (MVP-ASAAS-04): the adapter identity lives in the
     // persisted reference, NOT in `port.name`. An echo-configured process
     // must never confirm a real (or otherwise foreign) reference with a
@@ -1299,7 +1351,12 @@ function handleRefundExecuteFactory(deps: BillingCommandDeps) {
     if (reserveInsert === undefined) {
       return { ok: false, code: "precondition_failed", message: "refund already executed for this request" };
     }
-    const port = deps.asaasPort ?? resolveAsaasPort(asaasAdapterNameFromEnv());
+    let port;
+    try {
+      port = await resolveBillingPort(ctx, trx, deps);
+    } catch {
+      return tenantCredentialUnavailable();
+    }
     // CRITICAL: the provider refund targets the EXTERNAL Asaas charge id
     // (Payment → Charge → charge_provider_bindings), never the internal
     // `billing.payments` UUID. Without a proven external id the effect is
@@ -1445,7 +1502,12 @@ function handleRefundReconcileFactory(deps: BillingCommandDeps) {
       };
     }
     await advisoryLockPayment(trx, refund.payment_id);
-    const port = deps.asaasPort ?? resolveAsaasPort(asaasAdapterNameFromEnv());
+    let port;
+    try {
+      port = await resolveBillingPort(ctx, trx, deps);
+    } catch {
+      return tenantCredentialUnavailable();
+    }
     // Namespace guard (MVP-ASAAS-04): reconcile safety comes from the
     // persisted reference namespace, never from `port.name` alone.
     // - REAL resolves ONLY proven external refs (synthetic/local → hold).

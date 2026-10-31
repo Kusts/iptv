@@ -337,6 +337,28 @@ factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
   normalize (`?defer=1` leaves rows `RECEIVED` for
   `AsaasWebhookService.drainPending()`).
 
+### Billing tenant runtime (Asaas, S2C #86)
+
+- **Resolução por tenant**: `charge.create`, `billing.customer_provision`,
+  `charge.reconcile`, `refund.execute_approved` e `refund.reconcile` resolvem
+  o `AsaasPort` via `resolveAsaasPortForTenant(trx, tenantId)` — binding vivo
+  (`provider.provider_accounts`, `connection_status = CONNECTED_READ_ONLY`,
+  o mais recente) → `getSecret(secret_ref)` no vault → `RealAsaasAdapter`
+  dedicado com `{ apiKey, baseUrl }` (host da allowlist fixa por environment:
+  `SANDBOX https://api-sandbox.asaas.com/v3`,
+  `PRODUCTION https://api.asaas.com/v3` — nunca do cliente/DB/segredo).
+- **Elegibilidade**: só `CONNECTED_READ_ONLY` usa a chave do tenant.
+  Sem binding, binding `DRAFT`/`TESTING`/outro status, ou linha `DISABLED` →
+  adapter legado do env (`ASAAS_ADAPTER`, compat staging único). Matriz de
+  falha: binding vivo + vault down/segredo ausente → erro fail-closed
+  `precondition_failed` (nunca echo silencioso; echo só quando o legado já
+  era echo); environment desconhecido → throw fail-closed (nenhum host
+  adivinhado). `deps.asaasPort` injetado continua vencendo (fakes de teste).
+- **Segurança**: a chave viaja só no header `access_token` (obrigatório);
+  nunca em logs, erros, telemetria ou respostas. `ASAAS_API_KEY` /
+  `ASAAS_BASE_URL` seguem como fallback legado quando nenhum binding
+  elegível existe.
+
 ### Integrations self-service (S1: read + configure/test/disable)
 
 - **Status** (`S1C1`, `GET /v1/integrations[/:provider]` sob
