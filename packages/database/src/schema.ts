@@ -456,7 +456,7 @@ export interface CommunicationControlEventsTable {
   occurred_at: Date;
 }
 
-/** Mirrors `communication.tenant_channels` (migration 015). */
+/** Mirrors `communication.tenant_channels` (migrations 015 + 067). */
 export interface CommunicationTenantChannelsTable {
   id: string;
   tenant_id: string;
@@ -464,6 +464,10 @@ export interface CommunicationTenantChannelsTable {
   tenant_key: string;
   webhook_secret_hash: string | null;
   status: string;
+  /** Exclusive WAHA session bound to this tenant (S3a); NULL until provisioned. */
+  waha_session_name: string | null;
+  /** Last observed WAHA session status, verbatim; NULL until observed. */
+  waha_status: string | null;
   created_at: Date;
   updated_at: Date;
 }

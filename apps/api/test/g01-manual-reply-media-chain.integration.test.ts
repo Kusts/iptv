@@ -168,6 +168,8 @@ describe.skipIf(!hasDb)("G01-clone media chain (requires TEST_DATABASE_URL)", ()
         tenant_key: tenantKey,
         webhook_secret_hash: sha256Hex(WAHA_FIXTURE_TOKEN),
         status: "ACTIVE",
+        waha_session_name: null,
+        waha_status: null,
         created_at: new Date(),
         updated_at: new Date(),
       })

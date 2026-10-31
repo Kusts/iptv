@@ -20,6 +20,7 @@ import {
   validateInboundUploadBytes,
 } from "./waha-inbound-attachments.js";
 import { validateSessionForTenant } from "./waha-sessions.js";
+import { checkInboundSession } from "./waha-session-store.js";
 import { setRiskState } from "./waha-risk-state.js";
 import { AgentPipeline } from "../agent/pipeline.js";
 
@@ -260,8 +261,18 @@ export class WahaWebhookService {
     // Fail closed BEFORE any media download: a foreign session is
     // quarantined through the same `message.ingest` path as TEXT (session
     // mismatch → UNMATCHED_INBOUND exception, no message row), so the media
-    // port is never invoked for another tenant's session.
-    const sessionCheck = validateSessionForTenant(tenantId, normalized.session);
+    // port is never invoked for another tenant's session. S3a: DB-backed
+    // guard when a pool exists (bound → strict; unbound + foreign-owned
+    // session → mismatch); memory lane keeps the legacy Map/env check.
+    const sessionCheck =
+      this.db === null
+        ? validateSessionForTenant(tenantId, normalized.session)
+        : await checkInboundSession(
+            this.db,
+            tenantId,
+            normalized.session,
+            validateSessionForTenant,
+          );
     if (!sessionCheck.ok) {
       const refusal = await this.bus.execute<{
         messageId: string | null;

@@ -132,6 +132,8 @@ describe.skipIf(!hasDb)("Wave 2 CRM + Communications (requires TEST_DATABASE_URL
         tenant_key: tenantKey,
         webhook_secret_hash: sha256(webhookSecret),
         status: "ACTIVE",
+        waha_session_name: null,
+        waha_status: null,
         created_at: new Date(),
         updated_at: new Date(),
       })
@@ -375,6 +377,8 @@ describe.skipIf(!hasDb)("Wave 2 CRM + Communications (requires TEST_DATABASE_URL
         tenant_key: fallbackKey,
         webhook_secret_hash: null,
         status: "ACTIVE",
+        waha_session_name: null,
+        waha_status: null,
         created_at: new Date(),
         updated_at: new Date(),
       })
