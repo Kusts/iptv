@@ -145,6 +145,27 @@ describe("InfisicalSecretsAdapter.putSecret", () => {
     }
   });
 
+  it("lowercases the environment ONLY on the transport (uppercase ref preserved)", async () => {
+    const { calls, requests } = stubFetch([
+      mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(200, { secret: { secretKey: "ASAAS_API_KEY" } }),
+    ]);
+    const adapter = new InfisicalSecretsAdapter(OPTIONS);
+    const result = await adapter.putSecret({
+      tenantId: "t",
+      provider: "asaas",
+      environment: "SANDBOX",
+      key: "ASAAS_API_KEY",
+      value: WRITE_VALUE,
+    });
+    // Canonical ref keeps the original uppercase environment.
+    expect(result.ref).toBe("infisical://SANDBOX/integrations/t/asaas/ASAAS_API_KEY");
+    expect(calls).toHaveLength(2);
+    const payload = bodyJson(requests[1]?.init);
+    // Transport body uses the lowercase slug the server accepts.
+    expect(payload["environment"]).toBe("sandbox");
+  });
+
   it("falls back to update on conflict (upsert, still one logical secret)", async () => {
     const { calls } = stubFetch([
       mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),

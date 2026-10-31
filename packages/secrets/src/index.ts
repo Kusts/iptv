@@ -189,6 +189,18 @@ function asRecordOrNull(value: unknown): Record<string, unknown> | null {
 }
 
 /**
+ * Transport-level environment normalization: the self-hosted Infisical
+ * server (v0.165.16) only accepts lowercase environment slugs (`sandbox`),
+ * while domain refs canonically use uppercase (`infisical://SANDBOX/...`).
+ * Apply ONLY when mounting the HTTP transport (query `environment=` /
+ * body `environment:`); refs, validations, error messages and
+ * `buildIntegrationSecretRef` keep the original spelling.
+ */
+function transportEnv(environment: string): string {
+  return environment.toLowerCase();
+}
+
+/**
  * Enforce TLS for the Infisical site URL: only `https://` is accepted,
  * except explicit `http://localhost` / `http://127.0.0.1` for local dev.
  * Plain HTTP elsewhere would transmit the clientSecret (login body) and
@@ -450,7 +462,7 @@ export class InfisicalSecretsAdapter implements SecretsWriterPort {
         headers,
         body: JSON.stringify({
           workspaceId: this.projectId,
-          environment: parsed.environment,
+          environment: transportEnv(parsed.environment),
           secretPath: parsed.secretPath,
           secretValue: value,
         }),
@@ -487,7 +499,7 @@ export class InfisicalSecretsAdapter implements SecretsWriterPort {
     const url =
       `${this.siteUrl}/api/v3/secrets/raw/${encodeURIComponent(binding.key)}` +
       `?workspaceId=${encodeURIComponent(this.projectId)}` +
-      `&environment=${encodeURIComponent(binding.environment)}` +
+      `&environment=${encodeURIComponent(transportEnv(binding.environment))}` +
       `&secretPath=${encodeURIComponent(binding.secretPath)}`;
     let res: Response;
     try {
@@ -533,7 +545,7 @@ export class InfisicalSecretsAdapter implements SecretsWriterPort {
     const url =
       `${this.siteUrl}/api/v3/secrets/raw/${encodeURIComponent(parsed.key)}` +
       `?workspaceId=${encodeURIComponent(this.projectId)}` +
-      `&environment=${encodeURIComponent(parsed.environment)}` +
+      `&environment=${encodeURIComponent(transportEnv(parsed.environment))}` +
       `&secretPath=${encodeURIComponent(parsed.secretPath)}`;
     let res: Response;
     try {
