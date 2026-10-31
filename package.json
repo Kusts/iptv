@@ -32,7 +32,8 @@
       "zod": "^4.6.6",
       "launch-editor": "^2.14.2",
       "vitest>vite": "7.3.7",
-      "@vitest/mocker>vite": "7.3.7"
+      "@vitest/mocker>vite": "7.3.7",
+      "follow-redirects": "1.16.2"
     }
   },
   "engines": {
