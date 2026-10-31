@@ -35,7 +35,6 @@ import { resolveSupplierBalancePort, supplierBalanceAdapterFromEnv } from "../in
 import { refundReviewResolvedHook, refundTargetRevalidator } from "../billing/refund-review.js";
 import { copilotTargetRevalidator } from "../agent/copilot-review.js";
 import type { CommandHandlerContext, StoredReviewRequest } from "./command-bus.js";
-import { asaasAdapterNameFromEnv, resolveAsaasPort } from "../billing/asaas-port.js";
 import {
   StubProviderReadback,
   adapterNameFromEnv,
@@ -109,7 +108,14 @@ export const CommandsProvider = {
       registerTrialCommands(bus, { opsPort });
       registerProviderCommands(bus, { opsPort, readbackPort: new StubProviderReadback() });
       registerCommerceCommands(bus);
-      registerBillingCommands(bus, { asaasPort: resolveAsaasPort(asaasAdapterNameFromEnv()) });
+      // Billing resolves the Asaas port PER TENANT at handler time
+      // (`resolveAsaasPortForTenant`): a CONNECTED_READ_ONLY binding +
+      // readable vault yields a dedicated RealAsaasAdapter; without a binding
+      // it falls back to the legacy env adapter (compat). Injecting a fixed
+      // port here would pin every tenant to it and make vaulted billing
+      // unreachable — so no `asaasPort` is passed (test doubles still win
+      // when injected explicitly at the command layer).
+      registerBillingCommands(bus);
       registerFinanceCommands(bus);
       registerSubscriptionCommands(bus);
       registerRenewalCommands(bus);
