@@ -103,6 +103,14 @@ function installFetch(opts: {
       if (opts.offlineGets && url.includes("/v1/integrations")) {
         throw new TypeError("Failed to fetch");
       }
+      // Contrato S3a: sessão/QR do WhatsApp têm rotas próprias (fora do GET
+      // genérico de integrações). Sem vínculo, 404 fail-closed.
+      if (url.includes("/v1/integrations/whatsapp/session")) {
+        return jsonResponse(404, { code: "NO_SESSION", message: "no whatsapp session bound in this tenant" });
+      }
+      if (url.includes("/v1/integrations/whatsapp/qr")) {
+        return jsonResponse(404, { code: "QR_NOT_READY", message: "no QR available" });
+      }
       if (url.includes("/v1/integrations")) {
         if (opts.failGetsWith) return jsonResponse(opts.failGetsWith.status, opts.failGetsWith.body);
         return jsonResponse(opts.integrationsStatus ?? 200, opts.integrations);
@@ -258,15 +266,18 @@ describe("IntegrationsHubPage", () => {
     );
   });
 
-  it("whatsapp informa disponibilidade em S3 sem form de segredo", async () => {
+  it("whatsapp exibe conexão via QR sem form de segredo", async () => {
     installFetch({ permissions: fullPermissions(), integrations: sampleList() });
     renderPage(<IntegrationsHubPage />);
     await waitFor(() => expect(screen.getByText("WhatsApp (Atendimento)")).toBeTruthy());
     const card = screen.getByText("WhatsApp (Atendimento)").closest("section");
     expect(card).not.toBeNull();
     const scope = within(card as HTMLElement);
-    expect(scope.getByText(/Disponível em S3/)).toBeTruthy();
+    // S3b: o card agora conecta de verdade (sem sessão vinculada neste mock).
+    await waitFor(() => expect(scope.getByText(/Nenhuma sessão WhatsApp vinculada/)).toBeTruthy());
+    expect(scope.getByRole("button", { name: "Conectar WhatsApp" })).toBeTruthy();
     expect(scope.queryByText("Chave de API")).toBeNull();
+    expect((card as HTMLElement).querySelector('input[type="password"]')).toBeNull();
     expect(scope.queryByRole("button", { name: "Testar" })).toBeNull();
     expect(scope.queryByRole("button", { name: "Desconectar" })).toBeNull();
   });

@@ -16,6 +16,8 @@ import { commandResultHttpStatus, type CommandResult } from "@iptv/domain";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { AuthGuard } from "../auth/auth.guard.js";
 import { RequirePermission, PermissionsGuard } from "../auth/permissions.guard.js";
+import { AuthRateLimit } from "../auth/rate-limit.js";
+import { RateLimitGuard } from "../auth/rate-limit.guard.js";
 import { CommandBus } from "../commands/command-bus.js";
 import { commandActorFromRequestParts } from "../commands/command-bus.js";
 import type { CommandActor } from "@iptv/domain";
@@ -24,7 +26,7 @@ import {
   saveWahaSessionBinding,
 } from "../communications/waha-session-store.js";
 import { WahaAdminError, resolveWahaAdminPort } from "./waha-admin.port.js";
-import type { WhatsappSessionResult } from "./whatsapp-sessions.commands.js";
+import type { WhatsappSessionResult, WhatsappTestMessageResult } from "./whatsapp-sessions.commands.js";
 
 /**
  * S3a WhatsApp session onboarding (SPEC S1 §6, etapas 1–5).
@@ -38,7 +40,21 @@ import type { WhatsappSessionResult } from "./whatsapp-sessions.commands.js";
  * `default` compartilhada de outro tenant). O QR é um proxy de bytes
  * (`image/png`, `no-store`, sem persistência); restrição/timelock NÃO vira
  * "desconectado genérico" — o estado real do provider é exposto verbatim.
+ *
+ * S3c (#87): `POST …/test-message` sob `integration.manage` (+ backstop por
+ * origem `whatsapp-test-message`) e `lastInbound` no `GET …/session`.
  */
+export interface WhatsappSessionStatus {
+  sessionName: string;
+  status: string;
+  /**
+   * Último inbound WHATSAPP do tenant (1 query, sem join): `{ occurredAt,
+   * preview }` com os primeiros 80 chars do corpo (ou `[anexo]` quando só há
+   * mídia) — `null` quando a linha ainda não recebeu nada. Leitura sob
+   * `integration.read`, mesmos dados do próprio tenant.
+   */
+  lastInbound: { occurredAt: string; preview: string } | null;
+}
 @Controller("v1/integrations/whatsapp")
 export class WhatsappSessionsController {
   constructor(
@@ -112,7 +128,7 @@ export class WhatsappSessionsController {
   @Get("session")
   @UseGuards(AuthGuard, PermissionsGuard)
   @RequirePermission("integration.read")
-  async status(@Req() req: FastifyRequest): Promise<WhatsappSessionResult | { sessionName: string; status: string }> {
+  async status(@Req() req: FastifyRequest): Promise<WhatsappSessionStatus> {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
     const port = resolveWahaAdminPort();
     if (port === null) {
@@ -142,7 +158,27 @@ export class WhatsappSessionsController {
       // Refresh do último estado observado (fail-closed: a escrita é na
       // própria linha do tenant, sob o mesmo contexto RLS).
       await saveWahaSessionBinding(trx, tenant.id, { sessionName: bound.sessionName, status });
-      return { sessionName: bound.sessionName, status };
+      // S3c: último inbound do tenant em 1 query (preview curto, sem join).
+      // Nunca inventado: ausente → null (linha ainda sem inbound).
+      const lastInboundRow = await trx
+        .selectFrom("communication.messages")
+        .select(["occurred_at", "body_text"])
+        .where("tenant_id", "=", tenant.id)
+        .where("channel", "=", "WHATSAPP")
+        .where("direction", "=", "INBOUND")
+        .orderBy("occurred_at", "desc")
+        .executeTakeFirst();
+      const lastInbound =
+        lastInboundRow === undefined
+          ? null
+          : {
+              occurredAt: lastInboundRow.occurred_at.toISOString(),
+              preview:
+                typeof lastInboundRow.body_text === "string" && lastInboundRow.body_text.length > 0
+                  ? lastInboundRow.body_text.slice(0, 80)
+                  : "[anexo]",
+            };
+      return { sessionName: bound.sessionName, status, lastInbound };
     });
   }
 
@@ -222,6 +258,59 @@ export class WhatsappSessionsController {
       payload,
       { correlationId: req.id, idempotencyKey: idempotencyKeyOf(req) },
     );
+    return send(result);
+  }
+
+  /**
+   * S3c (#87) mensagem de teste: `POST .../test-message` sob
+   * `integration.manage` (envio é efeito) + backstop por origem
+   * (`whatsapp-test-message`: 30 envios / 5 min; o anti-duplo-envio em retry
+   * é o `Idempotency-Key`, com replay do `CommandBus` sem reenviar).
+   *
+   * Contrato: Zod `{ to: ^\+[1-9]\d{7,14}$ (E.164), text: 1..500 }` (400 em
+   * inválido); sem vínculo → 404 `NO_SESSION`; vínculo sem sessão viva no
+   * provider → 404 `SESSION_NOT_FOUND_AT_PROVIDER`; status vivo ≠ WORKING →
+   * 409 `SESSION_NOT_READY`; recusa do provider → 503/429 honestos. Resposta
+   * sanitizada `{ to, textLength, sessionName, providerMessageId }` — o
+   * conteúdo NUNCA volta (nem na auditoria automática, que registra só
+   * `command`/`command_id`/`result`).
+   */
+  @Post("test-message")
+  @HttpCode(200)
+  @AuthRateLimit("whatsapp-test-message")
+  @UseGuards(AuthGuard, PermissionsGuard, RateLimitGuard)
+  @RequirePermission("integration.manage")
+  async testMessage(
+    @Body() body: unknown,
+    @Req() req: FastifyRequest,
+  ): Promise<WhatsappTestMessageResult> {
+    const payload = body !== null && typeof body === "object" && !Array.isArray(body) ? body : {};
+    const result = await this.bus.execute<WhatsappTestMessageResult>(
+      actorFromRequest(req),
+      "whatsapp.test_message",
+      payload,
+      { correlationId: req.id, idempotencyKey: idempotencyKeyOf(req) },
+    );
+    if (!result.ok) {
+      if (result.code === "not_found") {
+        // `not_found` do bus vira o vocabulário do endpoint: sem vínculo →
+        // NO_SESSION; sessão sumida no provider → SESSION_NOT_FOUND_AT_PROVIDER.
+        const noSession = result.message.startsWith("no whatsapp session bound");
+        throw new HttpException(
+          {
+            code: noSession ? "NO_SESSION" : "SESSION_NOT_FOUND_AT_PROVIDER",
+            message: result.message,
+          },
+          404,
+        );
+      }
+      if (result.code === "precondition_failed" && result.message.startsWith("SESSION_NOT_READY")) {
+        throw new HttpException({ code: "SESSION_NOT_READY", message: result.message }, 409);
+      }
+      if (result.code === "precondition_failed" && result.message.startsWith("SESSION_MISMATCH")) {
+        throw new HttpException({ code: "SESSION_MISMATCH", message: result.message }, 409);
+      }
+    }
     return send(result);
   }
 }

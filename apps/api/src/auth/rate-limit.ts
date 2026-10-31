@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { FastifyRequest } from "fastify";
 
 /** Routes that carry an independent, explicit rate-limit budget (public auth routes and expensive authenticated POSTs). */
-export type AuthRateLimitKind = "login" | "register" | "admin-outbox-drain" | "admin-provider-dispatch" | "communications-attachments-upload";
+export type AuthRateLimitKind = "login" | "register" | "admin-outbox-drain" | "admin-provider-dispatch" | "communications-attachments-upload" | "whatsapp-test-message";
 
 export const RATE_LIMIT_POLICY_KEY = "authRateLimitPolicy";
 
@@ -17,7 +17,7 @@ export const RATE_LIMIT_POLICY_KEY = "authRateLimitPolicy";
  * form — so per-identity budgeting would be meaningless there).
  */
 export function isOriginOnlyKind(kind: AuthRateLimitKind): boolean {
-  return kind === "admin-outbox-drain" || kind === "admin-provider-dispatch" || kind === "communications-attachments-upload";
+  return kind === "admin-outbox-drain" || kind === "admin-provider-dispatch" || kind === "communications-attachments-upload" || kind === "whatsapp-test-message";
 }
 
 /** Declare the rate-limit policy for a public auth route (method-level). */
@@ -96,6 +96,22 @@ export const AUTH_RATE_LIMIT_POLICIES: Readonly<Record<AuthRateLimitKind, AuthRa
   // while a flooding source is denied with 429 + Retry-After. The identity
   // budget is present but unreachable (no identity is ever derived).
   "communications-attachments-upload": {
+    identityLimit: 30,
+    identityWindowMs: 5 * 60_000,
+    originLimit: 30,
+    originWindowMs: 5 * 60_000,
+  },
+  // WhatsApp test-message (`POST /v1/integrations/whatsapp/test-message`,
+  // S3c #87): origin-only by design (the body carries `to`/`text`, never an
+  // email identity). Same operator backstop as the drains/uploads above — a
+  // human testing a pairing (1–3 sends) never reaches 30 sends / 5 min while
+  // a flooding source is denied with 429 + Retry-After. Accidental
+  // double-submit on retry is covered one layer up by the `CommandBus`
+  // idempotency (`Idempotency-Key` replay in the command's own scope):
+  // same key + same payload replays the stored result WITHOUT re-sending,
+  // so the limiter only ever sees genuinely new sends. The identity budget
+  // is present but unreachable (no identity is ever derived for this kind).
+  "whatsapp-test-message": {
     identityLimit: 30,
     identityWindowMs: 5 * 60_000,
     originLimit: 30,

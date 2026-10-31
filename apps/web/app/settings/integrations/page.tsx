@@ -10,6 +10,7 @@ import { Dialog } from "../../../components/ui/Dialog";
 import { CopySnippet } from "../../../components/ui/CopySnippet";
 import { Field, Input, Select } from "../../../components/ui/Input";
 import { useToast } from "../../../components/ui/Toast";
+import { WhatsAppSessionCard } from "./whatsapp-card";
 import { api, ApiError, userMessage } from "../../../lib/api";
 import { useApi } from "../../../lib/useApi";
 import { useOptionalHasPermission } from "../../../lib/auth";
@@ -326,11 +327,7 @@ function IntegrationCard({
         <li>{status.configured ? "Configurado neste tenant." : "Não configurado neste tenant."}</li>
       </ul>
 
-      {isWhatsApp ? (
-        <p className="cc-muted cc-u-mt-2">
-          Disponível em S3 — o pareamento WhatsApp chega na próxima etapa e não pede segredo aqui.
-        </p>
-      ) : null}
+      {isWhatsApp ? <WhatsAppSessionCard canManage={canManage} /> : null}
 
       {!isWhatsApp && (canManage || canTest) ? (
         <div className="cc-row cc-u-mt-2">
