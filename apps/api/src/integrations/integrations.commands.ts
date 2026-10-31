@@ -19,6 +19,11 @@ import {
   type SecretsPort,
   type SecretsWriterPort,
 } from "@iptv/secrets";
+import {
+  SpawnCinevisionWorkerRunner,
+  type CinevisionProbeOutcome,
+  type CinevisionWorkerRunner,
+} from "./cinevision-worker-probe.js";
 
 /**
  * S1C2 Central de Integrações — write/test/disable (SPEC S1 §4–§5).
@@ -51,9 +56,13 @@ import {
  * (`INVALID_CREDENTIALS` / `PROVIDER_UNAVAILABLE` / `TIMEOUT` — nunca corpo,
  * valor ou header).
  *
- * CINEVISION (test): SEM browser (S4 faz live) — só verifica resolução do
- * vault (presença, nunca o valor) + coerência do binding → mantém `TESTING`
- * com `last_checked_at`. `CONNECTED_READ_ONLY` cinevision SÓ em S4.
+ * CINEVISION (test): live read-only validation via per-tenant worker
+ * spawn (S4A, #88) — resolves the binding + both secrets from the vault,
+ * spawns `read-identity` + `list-servers` with per-invocation env, and maps
+ * the worker envelope to `CONNECTED_READ_ONLY` (both reads confirmed) or
+ * `TESTING` + sanitized code (auth-fail/challenge/timeout → distinct codes;
+ * vault down → 503). NUNCA executa write; challenge/CAPTCHA/2FA →
+ * HUMAN_REQUIRED sem bypass.
  *
  * WhatsApp: 501 `CAPABILITY_UNCERTIFIED` ("disponível em S3") no controller,
  * antes do bus — sem criar linha, sem tocar no vault.
@@ -77,6 +86,12 @@ interface IntegrationTestDoubles {
   secretsWriter?: SecretsWriterPort;
   secretsReader?: SecretsPort;
   asaasFetch?: typeof fetch;
+  /**
+   * Cinevision live probe (S4A): the real runner spawns the worker CLI;
+   * tests inject a fake with scripted outcomes (zero rede/CINEVISION real).
+   * `undefined` = sem override, resolve o runner real.
+   */
+  cinevisionProbe?: CinevisionWorkerRunner;
   /**
    * Override explícito da base pública (`null` simula ausente para o teste
    * de manual-mode; `undefined` = sem override, lê o env real).
@@ -118,6 +133,13 @@ function resolveFetch(): typeof fetch {
     return testDoubles.asaasFetch;
   }
   return fetch;
+}
+
+function resolveCinevisionProbe(): CinevisionWorkerRunner {
+  if (testDoubles?.cinevisionProbe !== undefined) {
+    return testDoubles.cinevisionProbe;
+  }
+  return new SpawnCinevisionWorkerRunner();
 }
 
 /**
@@ -582,19 +604,71 @@ async function handleTest(
   const reader = resolveReader();
   const at = now();
 
-  // CINEVISION: sem browser em S1 — só resolução do vault (presença; o valor
-  // nunca é retornado nem logado) + coerência do binding → mantém TESTING.
-  // CONNECTED_READ_ONLY cinevision SÓ com certificação live (S4).
+  // CINEVISION: live read-only validation via per-tenant worker spawn
+  // (S4A). Resolves BOTH secrets from the vault (USER from the binding
+  // `secret_ref`, PASS from the backend-owned derived ref — never from the
+  // client), spawns `read-identity` + `list-servers`, and maps the envelope:
+  // both confirmed → CONNECTED_READ_ONLY; auth-fail/challenge/timeout →
+  // TESTING + distinct sanitized code (nunca 500 vazio). Vault down (CONFIG/
+  // TRANSPORT/SERVER/UNAUTHORIZED) → 503 fail-closed, linha intocada.
   if (input.provider === "cinevision") {
-    let code: string | null = null;
+    let username: string;
+    let password: string;
     try {
-      await reader.getSecret(binding.secret_ref);
+      username = await reader.getSecret(binding.secret_ref);
+      password = await reader.getSecret(
+        buildIntegrationSecretRef({
+          tenantId: ctx.tenantId,
+          provider: "cinevision",
+          environment: binding.environment,
+          key: "CINEVISION_PASS",
+        }),
+      );
     } catch (err) {
-      code = vaultReadErrorOf(err);
+      if (
+        err instanceof SecretsError &&
+        err.code !== "NOT_FOUND" &&
+        err.code !== "MALFORMED_REF"
+      ) {
+        throw vaultUnavailable();
+      }
+      const code = "INVALID_CREDENTIALS";
+      await trx
+        .updateTable("provider.provider_accounts")
+        .set({ connection_status: "TESTING", last_checked_at: at, last_error_code: code, updated_at: at })
+        .where("tenant_id", "=", ctx.tenantId)
+        .where("id", "=", binding.id)
+        .execute();
+      return {
+        ok: true,
+        data: sanitize({
+          id: binding.id,
+          provider: input.provider,
+          environment: binding.environment,
+          connection_status: "TESTING",
+          version: binding.version,
+          last_checked_at: at,
+          last_error_code: code,
+        }),
+      };
     }
+    let outcome: CinevisionProbeOutcome;
+    try {
+      outcome = await resolveCinevisionProbe().runProbe({
+        tenantId: ctx.tenantId,
+        providerAccountId: binding.id,
+        username,
+        password,
+      });
+    } catch {
+      // Runner inesperado (ex.: CLI ausente): TESTING sanitizado, nunca 500.
+      outcome = { ok: false, code: "PROVIDER_UNAVAILABLE" };
+    }
+    const status = outcome.ok ? "CONNECTED_READ_ONLY" : "TESTING";
+    const code = outcome.ok ? null : outcome.code;
     await trx
       .updateTable("provider.provider_accounts")
-      .set({ connection_status: "TESTING", last_checked_at: at, last_error_code: code, updated_at: at })
+      .set({ connection_status: status, last_checked_at: at, last_error_code: code, updated_at: at })
       .where("tenant_id", "=", ctx.tenantId)
       .where("id", "=", binding.id)
       .execute();
@@ -604,7 +678,7 @@ async function handleTest(
         id: binding.id,
         provider: input.provider,
         environment: binding.environment,
-        connection_status: "TESTING",
+        connection_status: status,
         version: binding.version,
         last_checked_at: at,
         last_error_code: code,
