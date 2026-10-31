@@ -390,9 +390,24 @@ factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
   `GET /v3/customers?limit=1`, timeout bounded 8000ms. Sucesso →
   `CONNECTED_READ_ONLY`; falha → `TESTING` + `last_error_code` sanitizado
   (`INVALID_CREDENTIALS` / `PROVIDER_UNAVAILABLE` / `TIMEOUT`).
-- **CINEVISION test**: sem browser (S4 faz live) — só resolução do vault
-  (presença, nunca o valor) + coerência do binding → mantém `TESTING`;
-  `CONNECTED_READ_ONLY` cinevision SÓ com certificação live (S4).
+- **CINEVISION test** (`S4A`, #88): validação live read-only via spawn do
+  browser-worker por tenant — resolve o binding + `CINEVISION_USER` (do
+  `secret_ref` da linha) e `CINEVISION_PASS` (ref backend-owned derivada do
+  contexto validado, nunca do cliente) no vault e spawna `read-identity` +
+  `list-servers` (allowlist fixa, nenhum write existe nesse caminho) com env
+  por invocação (`BROWSER_WORKER_TENANT_ID`/`ACCOUNT_ID` + credencial +
+  profile root isolado por tenant+account) e timeout bounded
+  (`CINEVISION_WORKER_TIMEOUT_MS`, default 120s p/ os dois reads; expirou →
+  SIGKILL + close aguardado, sem órfão). Ambos os reads confirmados →
+  `CONNECTED_READ_ONLY` + `last_checked_at`; auth-fail →
+  `TESTING` + `INVALID_CREDENTIALS`; challenge/CAPTCHA/2FA/Cloudflare →
+  `TESTING` + `CHALLENGE_DETECTED` (instrução manual, sem bypass);
+  timeout → `TESTING` + `TIMEOUT`; resto → `TESTING` +
+  `PROVIDER_UNAVAILABLE` (nunca 500 vazio); vault down → 503
+  `VAULT_UNAVAILABLE`, linha intocada. Origem allowlisted fixa no worker
+  (`CINEVISION_ALLOWED_ORIGIN`); a API nunca passa URL (sem SSRF) e nunca
+  loga valores. Ver `src/integrations/cinevision-worker-probe.ts`
+  (guia manual por código em `CINEVISION_MANUAL_GUIDANCE`).
   **WhatsApp**: 501 `CAPABILITY_UNCERTIFIED` ("disponível em S3") antes do
   bus — sem linha, sem vault (S3 certifica).
 - **Webhook Asaas** (`S2A`, `POST /v1/integrations/asaas/webhook` sob
