@@ -10,11 +10,11 @@ import { ApiError, api, userMessage } from "../../../lib/api";
 import { formatDateTime } from "../../../lib/money";
 
 /**
- * Card da conta CINEVISION (S4b, #88): conectar conta, validação read-only,
- * capacidades/limites reais e caminho manual de importação/ativação.
+ * Card da conta CINEVISION (S4b, #88; importação assistida S4d): conectar
+ * conta, validação read-only, capacidades/limites reais e importação
+ * assistida com preview (S4c).
  *
- * Contratos verificados no backend (`origin/main`, etapa S4a ainda NÃO
- * inclusa — `feat/s4a-cinevision-validate-88` vive em branch paralela):
+ * Contratos verificados no backend (`origin/main`):
  *
  * - `POST /v1/integrations/cinevision/configure` aceita SOMENTE
  *   `{ environment: SANDBOX|PRODUCTION, expectedVersion?, secret: {
@@ -25,20 +25,26 @@ import { formatDateTime } from "../../../lib/money";
  *   nenhum campo de URL.
  * - `POST /v1/integrations/cinevision/test` devolve só metadados do vínculo
  *   (`connection_status`, `version`, `last_checked_at`, `last_error_code`).
- *   Em S1 o teste mantém `TESTING`; com a S4a passa a devolver
- *   `CONNECTED_READ_ONLY` (leitura dupla `read-identity` + `list-servers`
- *   confirmada) ou `TESTING` + código sanitizado. A UI trata os dois mundos.
- * - NÃO existe endpoint de leitura de servidores/clientes/saldo nem de
- *   importação na API (o probe S4a lê identidade+servidores internamente sem
- *   expor a lista). Servidores/clientes/saldo e Importação são, portanto,
- *   seções de capacidade + fallback manual — nenhum número é inventado e
- *   nenhum POST é feito para endpoint inexistente. Importação assistida fica
- *   pendente S4c.
+ * - S4c importação assistida:
+ *   `POST /v1/integrations/cinevision/import-preview` sob
+ *   `integration.read` (corpo `{}`; classifica sem escrever CRM; devolve
+ *   `{total,novos,duplicados,conflitos,previewHash,items[]}` com
+ *   `items[] = {externalId, decision: novo|duplicado|conflito}`) e
+ *   `POST /v1/integrations/cinevision/import-execute` sob
+ *   `integration.manage` (corpo `{previewHash, confirmed: true}` +
+ *   `Idempotency-Key` OBRIGATÓRIO; devolve
+ *   `{total,criados,pulados,conflitos}`). Sem vínculo vivo → 404; hash
+ *   divergente/tamper → 409 (re-rodar o preview).
+ * - NÃO existe endpoint de leitura de servidores/clientes/saldo na API.
+ *   Servidores/clientes/saldo seguem como seção de capacidade + fallback
+ *   manual — nenhum número é inventado.
  *
  * Sem dado sensível no DOM: usuário/senha viajam só no corpo do configure e
  * nunca são renderizados; respostas sanitizadas nunca contêm valor de
- * credencial. Gating: conectar sob `integration.manage`, validar sob
- * `integration.test`.
+ * credencial; o `previewHash` anti-tamper vive só em estado (nunca
+ * renderizado). Gating: conectar/executar sob `integration.manage`,
+ * validar sob `integration.test`, pré-visualizar sob `integration.read`
+ * (o card só monta com `integration.read` no hub).
  */
 
 interface CinevisionStatus {
@@ -57,6 +63,43 @@ interface CinevisionTestResult {
   last_checked_at: string | null;
   last_error_code: string | null;
 }
+
+/** Decisão por item do preview S4c (espelho do backend, sem PII). */
+type CinevisionImportDecision = "novo" | "duplicado" | "conflito";
+
+interface CinevisionImportPreviewItem {
+  externalId: string;
+  decision: CinevisionImportDecision;
+}
+
+/** Resposta de `POST /v1/integrations/cinevision/import-preview`. */
+interface CinevisionImportPreview {
+  provider: "cinevision";
+  version: string;
+  total: number;
+  novos: number;
+  duplicados: number;
+  conflitos: number;
+  previewHash: string;
+  items: CinevisionImportPreviewItem[];
+}
+
+/** Resposta de `POST /v1/integrations/cinevision/import-execute`. */
+interface CinevisionImportSummary {
+  provider: "cinevision";
+  version: string;
+  total: number;
+  criados: number;
+  pulados: number;
+  conflitos: number;
+  previewHash: string;
+}
+
+const IMPORT_DECISION_LABELS: Record<CinevisionImportDecision, string> = {
+  novo: "Novo",
+  duplicado: "Duplicado",
+  conflito: "Conflito",
+};
 
 const CONNECTION_LABELS: Record<string, string> = {
   NOT_CONFIGURED: "Não configurado",
@@ -228,11 +271,7 @@ export function CinevisionCard({
       </p>
 
       <h4 className="cc-u-mt-2">Importação</h4>
-      <p className="cc-muted">
-        Sem endpoint de importação na API — nenhuma importação automática é executada a partir daqui. O modo
-        atual é manual supervisionado: ative no painel CINEVISION e acompanhe pelo tenant. Importação
-        assistida com preview: pendente S4c.
-      </p>
+      <CinevisionImportSection status={status} canManage={canManage} />
 
       <h4 className="cc-u-mt-2">Ativação manual</h4>
       <p className="cc-muted">
@@ -275,6 +314,185 @@ export function CinevisionCard({
           onChanged={onChanged}
         />
       ) : null}
+    </div>
+  );
+}
+
+function previewErrorMessage(err: unknown): string {
+  if (err instanceof ApiError && err.status === 404) {
+    return (
+      "Sem vínculo CINEVISION ativo neste tenant — use Conectar conta primeiro e repita a pré-visualização."
+    );
+  }
+  return userMessage(err);
+}
+
+function executeErrorMessage(err: unknown): string {
+  if (err instanceof ApiError && (err.status === 409 || err.status === 412)) {
+    return (
+      "Os dados mudaram desde a pré-visualização — execute a pré-visualização de novo e confirme o " +
+      "resultado atual."
+    );
+  }
+  if (err instanceof ApiError && err.status === 404) {
+    return (
+      "Sem vínculo CINEVISION ativo neste tenant — use Conectar conta primeiro e repita a pré-visualização."
+    );
+  }
+  return userMessage(err);
+}
+
+/**
+ * Importação assistida S4c/S4d: pré-visualização (`integration.read`, sem
+ * escrita) + execução confirmada (`integration.manage`, idempotente).
+ * O `previewHash` anti-tamper vive só em estado — nunca renderizado.
+ */
+function CinevisionImportSection({
+  status,
+  canManage,
+}: {
+  status: CinevisionStatus;
+  canManage: boolean;
+}): React.JSX.Element {
+  const { push } = useToast();
+  const isLive = status.configured && status.connection_status !== "DISABLED";
+  const [preview, setPreview] = useState<CinevisionImportPreview | null>(null);
+  const [summary, setSummary] = useState<CinevisionImportSummary | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [executeBusy, setExecuteBusy] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+
+  const runPreview = async (): Promise<void> => {
+    setPreviewBusy(true);
+    setImportError(null);
+    try {
+      const res = await api.post<CinevisionImportPreview>(
+        "/v1/integrations/cinevision/import-preview",
+        {},
+        { idempotencyKey: newIdempotencyKey() },
+      );
+      setPreview(res);
+      setSummary(null);
+      setConfirmed(false);
+      push(
+        `Pré-visualização pronta: ${res.total} itens ` +
+          `(${res.novos} novos, ${res.duplicados} duplicados, ${res.conflitos} conflitos).`,
+      );
+    } catch (err) {
+      const msg = previewErrorMessage(err);
+      setImportError(msg);
+      push(msg);
+    } finally {
+      setPreviewBusy(false);
+    }
+  };
+
+  const runExecute = async (): Promise<void> => {
+    if (preview === null) return;
+    if (!confirmed) {
+      const msg = "Confirme explicitamente a importação para continuar.";
+      setImportError(msg);
+      push(msg);
+      return;
+    }
+    setExecuteBusy(true);
+    setImportError(null);
+    try {
+      const res = await api.post<CinevisionImportSummary>(
+        "/v1/integrations/cinevision/import-execute",
+        { previewHash: preview.previewHash, confirmed: true },
+        { idempotencyKey: newIdempotencyKey() },
+      );
+      setSummary(res);
+      setConfirmed(false);
+      push(`Importação concluída: ${res.criados} criados, ${res.pulados} pulados, ${res.conflitos} conflitos.`);
+    } catch (err) {
+      const msg = executeErrorMessage(err);
+      setImportError(msg);
+      push(msg);
+    } finally {
+      setExecuteBusy(false);
+    }
+  };
+
+  if (!isLive) {
+    return (
+      <p className="cc-muted">
+        Sem conta conectada não há importação: use Conectar conta primeiro — a pré-visualização exige um
+        vínculo ativo. Nenhuma importação automática é executada a partir daqui sem confirmação explícita.
+      </p>
+    );
+  }
+
+  return (
+    <div>
+      <p className="cc-muted">
+        Importação assistida e supervisionada: a pré-visualização classifica cada cliente externo como novo,
+        duplicado ou conflito sem escrever nada; a execução só acontece após confirmação explícita.
+      </p>
+      <div className="cc-row cc-u-mt-2">
+        <Button variant="secondary" disabled={previewBusy || executeBusy} onClick={() => void runPreview()}>
+          {previewBusy ? "Pré-visualizando…" : preview !== null ? "Atualizar pré-visualização" : "Pré-visualizar importação"}
+        </Button>
+      </div>
+      {preview !== null ? (
+        <div className="cc-u-mt-2">
+          <p>
+            Pré-visualização: <strong>{preview.total} itens</strong> — {preview.novos} novos,{" "}
+            {preview.duplicados} duplicados, {preview.conflitos} conflitos.
+          </p>
+          <table className="cc-table">
+            <thead>
+              <tr>
+                <th scope="col">ID externo</th>
+                <th scope="col">Decisão</th>
+              </tr>
+            </thead>
+            <tbody>
+              {preview.items.map((item) => (
+                <tr key={item.externalId}>
+                  <td>{item.externalId}</td>
+                  <td>{IMPORT_DECISION_LABELS[item.decision] ?? item.decision}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {canManage ? (
+            <div className="cc-u-mt-2">
+              <label className="cc-row" style={{ gap: "0.5rem", alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={confirmed}
+                  onChange={(e) => {
+                    setConfirmed(e.target.checked);
+                    setImportError(null);
+                  }}
+                  disabled={executeBusy}
+                />
+                Confirmo a importação dos {preview.novos} novos clientes desta pré-visualização
+              </label>
+              <div className="cc-row cc-u-mt-2">
+                <Button disabled={executeBusy || !confirmed} onClick={() => void runExecute()}>
+                  {executeBusy ? "Importando…" : "Confirmar importação"}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <p className="cc-muted cc-u-mt-2">
+              Seu perfil não tem permissão para confirmar a importação (exige integration.manage) — peça a um
+              administrador para executar após revisar a pré-visualização.
+            </p>
+          )}
+        </div>
+      ) : null}
+      {summary !== null ? (
+        <p className="cc-u-mt-2">
+          Importação concluída: <strong>{summary.criados} criados</strong>, {summary.pulados} pulados,{" "}
+          {summary.conflitos} conflitos (total {summary.total}).
+        </p>
+      ) : null}
+      {importError !== null ? <p className="cc-field-error cc-u-mt-2">{importError}</p> : null}
     </div>
   );
 }
