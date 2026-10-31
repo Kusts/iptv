@@ -1178,7 +1178,7 @@ export class RealAsaasAdapter implements AsaasPort {
 
   async listWebhooks(input: AsaasWebhookAuth): Promise<AsaasWebhookListResult> {
     const { json } = await this.webhookReadJson(
-      `${input.host}/v3/webhooks?limit=100`,
+      `${input.host}/webhooks?limit=100`,
       input.apiKey,
       input.fetchFn,
     );
@@ -1200,7 +1200,7 @@ export class RealAsaasAdapter implements AsaasPort {
 
   async createWebhook(input: AsaasWebhookSaveInput): Promise<AsaasWebhookSaveResult> {
     const { json } = await this.webhookWriteJson(
-      `${input.host}/v3/webhooks`,
+      `${input.host}/webhooks`,
       "POST",
       input.apiKey,
       asaasWebhookSaveBody(input),
@@ -1213,7 +1213,7 @@ export class RealAsaasAdapter implements AsaasPort {
     input: AsaasWebhookSaveInput & { providerWebhookId: string },
   ): Promise<AsaasWebhookSaveResult> {
     const { json } = await this.webhookWriteJson(
-      `${input.host}/v3/webhooks/${encodeURIComponent(input.providerWebhookId)}`,
+      `${input.host}/webhooks/${encodeURIComponent(input.providerWebhookId)}`,
       "PUT",
       input.apiKey,
       asaasWebhookSaveBody(input),
