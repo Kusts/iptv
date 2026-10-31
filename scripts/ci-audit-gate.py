@@ -16,12 +16,17 @@ estrutural é fail-closed em dois níveis:
    com severidade desconhecida) não pode ser decidido, então FALHA.
 2. `metadata.vulnerabilities` precisa existir, com contador inteiro
    não-negativo para cada severidade do enum, sem campos desconhecidos, e os
-   contadores precisam reconciliar com os registros de `advisories`
-   (contrato verificado contra `pnpm audit --json` real, pnpm 10.15.0).
+   contadores das severidades BLOQUEANTES (`high`/`critical`) precisam
+   reconciliar EXATAMENTE com os registros de `advisories` (contrato
+   verificado contra `pnpm audit --json` real, pnpm 10.15.0). Divergência em
+   severidade report-only (`info`/`low`/`moderate`) — ex.: registry servindo
+   `metadata.moderate` rasgado — vira `AUDIT-GATE WARN` e NÃO falha: o gate
+   segue para o veredito high/critical.
 
 O exit code do `pnpm audit` (!= 0 quando há vulnerabilidades, inclusive as
 reconhecidas) NÃO decide o gate — o veredito vem do conteúdo do JSON. O que
-não pode virar PASS é dado ausente, desconhecido ou inconsistente.
+não pode virar PASS é dado ausente, desconhecido ou inconsistente em
+severidade bloqueante.
 
 Sem dependências além da stdlib. Sem segredos: só conta/identifica
 advisories públicos do registry.
@@ -36,6 +41,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_PATH = ROOT / "tests" / "security" / "audit-baseline.json"
 BLOCKING = {"high", "critical"}
+NON_BLOCKING = {"info", "low", "moderate"}
 # Enum de severidade do contrato JSON do `pnpm audit` (formato npm-audit):
 # `metadata.vulnerabilities` usa exatamente estas chaves e cada advisory
 # carrega `severity` dentro deste conjunto. Verificado contra saída real
@@ -49,8 +55,33 @@ def audit_payload_problems(data: dict) -> list[str]:
 
     Fail-closed: severidade ausente/vazia/desconhecida em qualquer advisory,
     `metadata`/`metadata.vulnerabilities` ausente, contador faltando, não-int
-    (bool não conta), negativo, campo desconhecido ou contador divergente dos
-    registros são inconsistência — sem veredito possível sobre dado ruim.
+    (bool não conta), negativo, campo desconhecido ou contador de severidade
+    BLOQUEANTE (`high`/`critical`) divergente dos registros são
+    inconsistência — sem veredito possível sobre dado ruim. Divergência em
+    severidade report-only (`info`/`low`/`moderate`) NÃO entra aqui: vai para
+    `audit_payload_warnings` como WARN tolerado.
+    """
+    problems, _warnings = audit_payload_findings(data)
+    return problems
+
+
+def audit_payload_warnings(data: dict) -> list[str]:
+    """Skews tolerados em severidades report-only (vazio = sem skew).
+
+    Contador `info`/`low`/`moderate` divergente dos registros vira WARNING
+    impresso (`AUDIT-GATE WARN: ... não reconcilia ...`) sem falhar o gate.
+    """
+    _problems, warnings = audit_payload_findings(data)
+    return warnings
+
+
+def audit_payload_findings(data: dict) -> tuple[list[str], list[str]]:
+    """Separa fail-closed (problems) de skew tolerado (warnings).
+
+    Raciocínio de segurança: o veredito bloqueante (high/critical) só é
+    emitido com reconciliação EXATA dessas severidades + zero objetos
+    high/critical não reconhecidos; a inconsistência tolerada nunca afeta
+    severidades bloqueantes — só contadores report-only que não decidem nada.
     """
     problems: list[str] = []
 
@@ -73,19 +104,29 @@ def audit_payload_problems(data: dict) -> list[str]:
             continue
         counts[severity] += 1
 
-    problems += _vulnerabilities_problems(data.get("metadata"), counts)
-    return problems
+    vuln_problems, vuln_warnings = _vulnerabilities_findings(
+        data.get("metadata"), counts
+    )
+    problems += vuln_problems
+    return problems, vuln_warnings
 
 
-def _vulnerabilities_problems(metadata, counts: dict) -> list[str]:
-    """Valida `metadata.vulnerabilities` e reconcilia com os advisories."""
+def _vulnerabilities_findings(metadata, counts: dict) -> tuple[list[str], list[str]]:
+    """Valida `metadata.vulnerabilities` e reconcilia com os advisories.
+
+    Retorna `(problems, warnings)`: divergência em `high`/`critical` é
+    fail-closed; em `info`/`low`/`moderate` é skew tolerado (WARN).
+    Todo o resto (ausente/não-objeto/contador inválido/campo desconhecido)
+    continua fail-closed em qualquer severidade.
+    """
     if not isinstance(metadata, dict):
-        return ["metadata ausente ou não-objeto"]
+        return ["metadata ausente ou não-objeto"], []
     vulnerabilities = metadata.get("vulnerabilities")
     if not isinstance(vulnerabilities, dict):
-        return ["metadata.vulnerabilities ausente ou não-objeto"]
+        return ["metadata.vulnerabilities ausente ou não-objeto"], []
 
     problems = []
+    warnings = []
     unknown = sorted(k for k in vulnerabilities if k not in KNOWN_SEVERITIES)
     if unknown:
         problems.append(
@@ -104,10 +145,20 @@ def _vulnerabilities_problems(metadata, counts: dict) -> list[str]:
             )
             continue
         if value != counts[severity]:
-            problems.append(
+            msg = (
                 f"metadata.vulnerabilities.{severity}={value} não reconcilia "
                 f"com {counts[severity]} advisory(s) reportado(s)"
             )
+            if severity in BLOCKING:
+                problems.append(msg)
+            else:
+                warnings.append(msg)
+    return problems, warnings
+
+
+def _vulnerabilities_problems(metadata, counts: dict) -> list[str]:
+    """Valida `metadata.vulnerabilities` e reconcilia com os advisories."""
+    problems, _warnings = _vulnerabilities_findings(metadata, counts)
     return problems
 
 
@@ -154,9 +205,12 @@ def main() -> int:
         return 1
 
     # Validação estrutural fail-closed ANTES de qualquer veredito: advisory
-    # sem severidade conhecida (em qualquer nível, não só high/critical) ou
-    # metadata.vulnerabilities ausente/inválido/inconsistente falham — nunca
-    # passam por ausência de bloqueio.
+    # sem severidade conhecida (em qualquer nível, não só high/critical),
+    # metadata.vulnerabilities ausente/inválido, ou reconciliação divergente
+    # em severidade BLOQUEANTE (high/critical) falham — nunca passam por
+    # ausência de bloqueio. Skew em info/low/moderate vira WARN tolerado:
+    # o veredito high/critical só sai com reconciliação EXATA dessas
+    # severidades, então o skew report-only nunca mascara bloqueio.
     problems = audit_payload_problems(data)
     if problems:
         print(
@@ -168,6 +222,8 @@ def main() -> int:
         print(stdout[:2000])
         print(stderr[:2000])
         return 1
+    for warning in audit_payload_warnings(data):
+        print(f"AUDIT-GATE WARN: {warning} (skew report-only tolerado)")
 
     advisories = data["advisories"]
     blocking = {k: v for k, v in advisories.items() if v.get("severity") in BLOCKING}
