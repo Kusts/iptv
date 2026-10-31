@@ -11,6 +11,7 @@ import { CopySnippet } from "../../../components/ui/CopySnippet";
 import { Field, Input, Select } from "../../../components/ui/Input";
 import { useToast } from "../../../components/ui/Toast";
 import { WhatsAppSessionCard } from "./whatsapp-card";
+import { CinevisionCard } from "./cinevision-card";
 import { api, ApiError, userMessage } from "../../../lib/api";
 import { useApi } from "../../../lib/useApi";
 import { useOptionalHasPermission } from "../../../lib/auth";
@@ -91,6 +92,8 @@ const RESOLUTION_HINTS: Record<string, string> = {
   TIMEOUT: "Tempo esgotado ao falar com o provedor. Tente Testar novamente.",
   REAUTH_REQUIRED: "Reautorização necessária. Reconfigure a integração com credenciais válidas.",
   CAPABILITY_UNCERTIFIED: "Recurso ainda não certificado para este tenant. O WhatsApp chega em S3.",
+  CHALLENGE_DETECTED:
+    "O painel exigiu verificação humana (challenge/CAPTCHA/2FA). Conclua o acesso manualmente no painel CINEVISION e repita o teste — sem bypass.",
 };
 
 function connectionLabel(status: string): string {
@@ -271,6 +274,7 @@ function IntegrationCard({
     ? PROVIDER_META[status.provider]
     : { title: status.provider, description: "" };
   const isWhatsApp = status.provider === "whatsapp";
+  const isCinevision = status.provider === "cinevision";
   const isLive = status.configured && status.connection_status !== "DISABLED";
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -329,7 +333,18 @@ function IntegrationCard({
 
       {isWhatsApp ? <WhatsAppSessionCard canManage={canManage} /> : null}
 
-      {!isWhatsApp && (canManage || canTest) ? (
+      {isCinevision ? (
+        <CinevisionCard
+          status={status}
+          canManage={canManage}
+          canTest={canTest}
+          knownVersion={knownVersion}
+          onVersion={onVersion}
+          onChanged={onChanged}
+        />
+      ) : null}
+
+      {!isWhatsApp && !isCinevision && (canManage || canTest) ? (
         <div className="cc-row cc-u-mt-2">
           {canManage && isAsaas ? (
             <Button variant="secondary" disabled={busy} onClick={() => setWizardOpen(true)}>
@@ -358,13 +373,13 @@ function IntegrationCard({
           ) : null}
         </div>
       ) : null}
-      {!isWhatsApp && !canManage && !canTest ? (
+      {!isWhatsApp && !isCinevision && !canManage && !canTest ? (
         <p className="cc-muted cc-u-mt-2">Somente leitura para o seu perfil.</p>
       ) : null}
 
       {actionError !== null ? <p className="cc-field-error cc-u-mt-2">{actionError}</p> : null}
 
-      {!isWhatsApp && canManage ? (
+      {!isWhatsApp && !isCinevision && canManage ? (
         <ConfigureDialog
           status={status}
           knownVersion={knownVersion}

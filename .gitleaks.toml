@@ -30,6 +30,8 @@ regexes = [
   '''^s1c1-secret-marker-must-never-leak$''',
   '''^s1c2-synthetic-asaas-key-bbb222$''',
   '''^s1c2-synthetic-zzz999$''',
+  '''^cine-fixture-pass-001$''',
+  '''^cine-fixture-pass-002$''',
 ]
 paths = [
   '''^apps/api/test/billing-rls-rehearsal\.integration\.test\.ts$''',
@@ -41,4 +43,5 @@ paths = [
   '''^packages/ai-runtime/test/f09-prompt-injection\.unit\.test\.ts$''',
   '''^apps/api/test/integrations-read\.integration\.test\.ts$''',
   '''^apps/api/test/integrations-write\.integration\.test\.ts$''',
+  '''^apps/web/test/cinevision-hub\.test\.tsx$''',
 ]

@@ -375,9 +375,9 @@ describe("IntegrationsHubPage", () => {
     renderPage(<IntegrationsHubPage />);
     await waitFor(() => expect(screen.getByText("CINEVISION (Servidor/Ativação)")).toBeTruthy());
     const card = screen.getByText("CINEVISION (Servidor/Ativação)").closest("section");
-    fireEvent.click(within(card as HTMLElement).getByRole("button", { name: "Conectar" }));
-    await waitFor(() => expect(screen.getByRole("dialog", { name: "Conectar integração" })).toBeTruthy());
-    const dialog = within(screen.getByRole("dialog", { name: "Conectar integração" }));
+    fireEvent.click(within(card as HTMLElement).getByRole("button", { name: "Conectar conta" }));
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "Conectar conta CINEVISION" })).toBeTruthy());
+    const dialog = within(screen.getByRole("dialog", { name: "Conectar conta CINEVISION" }));
     fireEvent.click(dialog.getByRole("button", { name: "Salvar" }));
     await waitFor(() => expect(dialog.getByText("Informe o usuário.")).toBeTruthy());
     expect(seen.posts.length).toBe(0);
