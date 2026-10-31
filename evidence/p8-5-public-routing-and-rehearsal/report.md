@@ -107,3 +107,30 @@ Estado operacional: `BLOCKED_OPERATOR_ACTION` (Cloudflare/VPS, Infisical, deploy
 | STAGING_VAULT_READY | BLOCKED | identidade/smoke pendentes |
 | ASAAS_SELF_SERVICE_SANDBOX_VALIDATED | BLOCKED | não executado |
 | FIRST_SALE_REHEARSAL_PASSED | BLOCKED | não executado |
+
+## Addendum 2 — 2026-10-31 (staging correto, suite B2, Infisical travado)
+
+Autor: subagente (P85-REPORT-ADDENDUM2). Escopo: registrar fatos consumados; sem segredos (sem tokens/senhas; IPs já públicos no relatório).
+
+1. **B2 PASS completo — suite independente, 297 requests (teto 300).** Executada por tester independente contra os hostnames públicos:
+   - health 100/100: `scheduler: disabled` (origem local correta);
+   - web 100/100: sem marcador fantasma (só nonces CSP variam);
+   - 20/20 pares público/loopback idênticos (bodies byte-idênticos excluindo `requestId`);
+   - 20/20 concorrentes; 5/5 `requestId`s públicos encontrados nos logs locais;
+   - 5/5 `POST /v1/auth/register` → `403 REGISTER_CLOSED`, `control.users` 3→3 (nenhum usuário criado).
+   - Notas neutras (não invalidam): e-mail com `+` devolve `400` do ValidationPipe antes do gate; 5 sondas iniciais com JSON malformado por quoting deram `400` (nada criado).
+2. **Deploy staging correto (host local).** `main@3934c33`, `AUTH_REGISTER_CLOSED=1` no `.env.staging`, rebuild + `up -d --force-recreate api` após `docker rm -f` do container órfão; `migrate` OK; `api` healthy (healthcheck exec confirma Gate D no ambiente real); registro público `403` com corpo `{"code":"REGISTER_CLOSED","message":"public registration is closed"}` (curl). Gate C PASS, Gate D PASS.
+3. **Contabo: stack antigo removido.** Backup `pg_dump` 28MB em `/home/deploy/backups/old-staging-20261031.dump`, volume `pgdata` preservado, imagens mantidas; rollback = `up -d` no projeto `/home/deploy/iptv-staging`. Túnel `iptv-staging` com 1 conector (`f2a5fb2a`); serviço systemd `cloudflared` (outro túnel `stg-pg`) e demais serviços intactos.
+4. **Infisical BLOCKED com diagnóstico.** Adapter resolve `infisical` (não noop); login trava (timeout 8s). Da origem: DNS ok, TCP 443 ok, TLSv1.3 ok em 90ms, mas `GET /` e `POST` login travam. DNS `infisical.synkroo.com.br` = A `187.77.249.47` proxied (Hostinger parkada, SSH timeout); Contabo sem Infisical (traefik sem rotas); backups locais existem em `D:\projetos\vps-hostinger\backups`. Sem cofre não há `configure`/`webhook_ensure` (fail-closed por desenho).
+5. **Matriz atualizada.**
+
+   | Gate | Status | Evidência |
+   |---|---|---|
+   | PUBLIC_TUNNEL_STABLE | PASS | §1–2: 100+100 + loopback idêntico + requestIds nos logs locais |
+   | PUBLIC_REGISTRATION_CLOSED | PASS | §1–2: 403 público + `control.users` estável, flag ativa no staging |
+   | STAGING_API_HEALTHY | PASS | §2: `api` healthy, healthcheck exec, `migrate` OK |
+   | STAGING_VAULT_READY | BLOCKED | §4: login trava, cofre inacessível |
+   | ASAAS_SELF_SERVICE | BLOCKED | depende do cofre |
+   | FIRST_SALE_REHEARSAL_PASSED | BLOCKED | depende do cofre |
+
+   Pendentes: senha da conta `operador@iptv.com` (login C7 + rehearsal G) e decisão do operador sobre o Infisical.
