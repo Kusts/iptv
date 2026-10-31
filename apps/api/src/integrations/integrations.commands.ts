@@ -1,5 +1,5 @@
 import { HttpException } from "@nestjs/common";
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { newId, now } from "@iptv/domain";
 import { parseIntegrationsPublicBaseUrl } from "@iptv/config";
@@ -97,6 +97,15 @@ interface IntegrationTestDoubles {
    * de manual-mode; `undefined` = sem override, lê o env real).
    */
   webhookBaseUrl?: string | null;
+  /**
+   * Worker CINEVISION `list-customers` (S4C): a suite injeta um fake
+   * paginado; SEM double, o import falha fechado orientando o modo manual
+   * (o live browser nunca é invocado a partir daqui sem certificação S4).
+   */
+  cinevisionListCustomers?: (args: {
+    page?: number;
+    perPage?: number;
+  }) => Promise<CinevisionImportPage>;
 }
 
 let testDoubles: IntegrationTestDoubles | null = null;
@@ -140,6 +149,12 @@ function resolveCinevisionProbe(): CinevisionWorkerRunner {
     return testDoubles.cinevisionProbe;
   }
   return new SpawnCinevisionWorkerRunner();
+}
+
+function resolveCinevisionListCustomers():
+  | ((args: { page?: number; perPage?: number }) => Promise<CinevisionImportPage>)
+  | null {
+  return testDoubles?.cinevisionListCustomers ?? null;
 }
 
 /**
@@ -1147,6 +1162,487 @@ async function handleWebhookEnsure(
   };
 }
 
+// ---------------------------------------------------------------------------
+// S4C (#88 etapa 5): importação assistida de clientes CINEVISION.
+//
+// `integration.cinevision_import_preview` sob `integration.read` (leitura:
+// lista via worker e classifica, SEM escrever CRM) e
+// `integration.cinevision_import_execute` sob `integration.manage` (escrita
+// idempotente com `previewHash` anti-tamper + `Idempotency-Key`).
+//
+// Fonte: snapshots PII-free do worker (`id`, status, plano — o worker nunca
+// emite documentos/telefones; ver `browser-worker .../schemas.ts`
+// `CUSTOMER_FIELDS`). Mapeamento: `identity.identities`
+// (`identity_type=CINEVISION_CUSTOMER`, `normalized_value=<customer id>`,
+// `external_provider=cinevision`) → `identity.persons` → `crm.customers`.
+// Classificação usa as unicidades reais: `identities_active_normalized`
+// (tenant,type,value, `detached_at IS NULL`) + `customers_tenant_person_unique`.
+//
+// Anti-tamper: `previewHash = sha256(tenant|versão|ids-ordenados-dedup)`.
+// O execute re-lista e recomputa; divergência → 409 (o operador re-roda o
+// preview). Auditoria suplementar (mesma transação do bus) grava SÓ
+// contagens + provider/versão — NUNCA ids externos, documentos ou telefones.
+// ---------------------------------------------------------------------------
+
+/** Versão do formato do import (compõe o `previewHash`; bump invalida previews). */
+export const CINEVISION_IMPORT_VERSION = "cinevision-import-v1" as const;
+
+/** Tipo de identidade que ancora o cliente importado (unicidade ativa). */
+export const CINEVISION_CUSTOMER_IDENTITY_TYPE = "CINEVISION_CUSTOMER" as const;
+
+const CINEVISION_IMPORT_PAGE_SIZE = 50;
+const CINEVISION_IMPORT_MAX_PAGES = 100;
+
+/** Instrução fixa de modo manual (sem detalhe cru do worker, sem segredo). */
+const CINEVISION_WORKER_MANUAL_HINT =
+  "run browser-worker list-customers manually and retry once the session is healthy; no automatic retry was performed";
+
+/** Snapshot PII-free espelhado do `CustomerResult` do browser-worker. */
+export interface CinevisionImportCustomer {
+  id: string;
+  userId: string | null;
+  serverId: string | null;
+  packageId: string | null;
+  status: string;
+  isTrial: boolean;
+  connections: number | null;
+  hasMultipleConnections: boolean | null;
+  expiresAt: string | null;
+  planPrice: number | null;
+}
+
+export interface CinevisionImportPage {
+  items: CinevisionImportCustomer[];
+  total: number;
+  lastPage: number;
+}
+
+/** Falha do worker com código FIXO (nunca detalhe cru, nunca segredo). */
+export class CinevisionWorkerError extends Error {
+  readonly workerCode: string;
+  constructor(workerCode: string) {
+    super(`cinevision worker failed: ${workerCode}`);
+    this.name = "CinevisionWorkerError";
+    this.workerCode = workerCode;
+  }
+}
+
+function cinevisionWorkerCodeOf(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && /^[A-Z][A-Z0-9_]{2,31}$/.test(code)) {
+    return code;
+  }
+  if (err instanceof CinevisionWorkerError) {
+    return err.workerCode;
+  }
+  return "WORKER_DOWN";
+}
+
+function humanRequiredMessage(code: string): string {
+  return (
+    `cinevision worker needs operator attention (HUMAN_REQUIRED/${code}): ` +
+    `${CINEVISION_WORKER_MANUAL_HINT}`
+  );
+}
+
+/** Binding cinevision vivo (qualquer environment, não-DISABLED) ou null. */
+async function findLiveCinevisionBinding(
+  trx: ReturnType<typeof requireTrx>,
+  tenantId: string,
+): Promise<{ id: string; environment: string } | null> {
+  const providerRow = await trx
+    .selectFrom("provider.providers")
+    .select(["id"])
+    .where("provider_key", "=", "cinevision")
+    .executeTakeFirst();
+  if (providerRow === undefined) {
+    return null;
+  }
+  const binding = await trx
+    .selectFrom("provider.provider_accounts")
+    .select(["id", "environment"])
+    .where("tenant_id", "=", tenantId)
+    .where("provider_id", "=", providerRow.id)
+    .where("connection_status", "<>", "DISABLED")
+    .orderBy("updated_at", "desc")
+    .executeTakeFirst();
+  return binding ?? null;
+}
+
+/** Lista TODAS as páginas do worker (fail-closed: forma inválida → erro fixo). */
+async function collectCinevisionCustomers(
+  port: (args: { page?: number; perPage?: number }) => Promise<CinevisionImportPage>,
+): Promise<CinevisionImportCustomer[]> {
+  const out: CinevisionImportCustomer[] = [];
+  let page = 1;
+  for (;;) {
+    let result: CinevisionImportPage;
+    try {
+      result = await port({ page, perPage: CINEVISION_IMPORT_PAGE_SIZE });
+    } catch (err) {
+      throw new CinevisionWorkerError(cinevisionWorkerCodeOf(err));
+    }
+    if (
+      result === null ||
+      typeof result !== "object" ||
+      !Array.isArray(result.items) ||
+      typeof result.total !== "number" ||
+      typeof result.lastPage !== "number"
+    ) {
+      throw new CinevisionWorkerError("BAD_RESPONSE");
+    }
+    for (const item of result.items) {
+      const id = (item as { id?: unknown } | null)?.id;
+      if (typeof id !== "string" || id.trim().length === 0 || id.length > 128) {
+        throw new CinevisionWorkerError("BAD_RESPONSE");
+      }
+      out.push(item as CinevisionImportCustomer);
+    }
+    if (page >= result.lastPage || page >= CINEVISION_IMPORT_MAX_PAGES) {
+      if (page >= CINEVISION_IMPORT_MAX_PAGES && result.lastPage > CINEVISION_IMPORT_MAX_PAGES) {
+        throw new CinevisionWorkerError("TOO_LARGE");
+      }
+      break;
+    }
+    page += 1;
+  }
+  return out;
+}
+
+type CinevisionImportDecision = "novo" | "duplicado" | "conflito";
+
+interface ClassifiedImportItem {
+  externalId: string;
+  decision: CinevisionImportDecision;
+  personId: string | null;
+}
+
+/**
+ * Classifica cada snapshot contra as unicidades reais do tenant:
+ * - `conflito`: id externo repetido DENTRO do payload (só a 1ª ocorrência
+ *   processa; as demais exigem revisão do operador, sem falhar o import);
+ * - `duplicado`: identidade ativa + linha `crm.customers` já existem;
+ * - `novo`: identidade ausente, ou identidade ativa sem customer (cria só a
+ *   linha `crm.customers` que falta — `personId` preenchido).
+ */
+async function classifyCinevisionImport(
+  trx: ReturnType<typeof requireTrx>,
+  tenantId: string,
+  snapshots: CinevisionImportCustomer[],
+): Promise<ClassifiedImportItem[]> {
+  const seen = new Set<string>();
+  const out: ClassifiedImportItem[] = [];
+  for (const snapshot of snapshots) {
+    if (seen.has(snapshot.id)) {
+      out.push({ externalId: snapshot.id, decision: "conflito", personId: null });
+      continue;
+    }
+    seen.add(snapshot.id);
+    const identity = await trx
+      .selectFrom("identity.identities")
+      .select(["person_id"])
+      .where("tenant_id", "=", tenantId)
+      .where("identity_type", "=", CINEVISION_CUSTOMER_IDENTITY_TYPE)
+      .where("normalized_value", "=", snapshot.id)
+      .where("detached_at", "is", null)
+      .executeTakeFirst();
+    if (identity === undefined) {
+      out.push({ externalId: snapshot.id, decision: "novo", personId: null });
+      continue;
+    }
+    const customer = await trx
+      .selectFrom("crm.customers")
+      .select(["id"])
+      .where("tenant_id", "=", tenantId)
+      .where("person_id", "=", identity.person_id)
+      .executeTakeFirst();
+    if (customer === undefined) {
+      out.push({ externalId: snapshot.id, decision: "novo", personId: identity.person_id });
+    } else {
+      out.push({ externalId: snapshot.id, decision: "duplicado", personId: identity.person_id });
+    }
+  }
+  return out;
+}
+
+/** Hash server-side anti-tamper: `sha256(tenant|versão|ids-ordenados-dedup)`. */
+function computeCinevisionPreviewHash(tenantId: string, externalIds: string[]): string {
+  const canonical = `${tenantId}|${CINEVISION_IMPORT_VERSION}|${[...new Set(externalIds)].sort().join(",")}`;
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
+function previewHashMatches(expected: string, actual: string): boolean {
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(actual, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+export const previewCinevisionImportInput = z
+  .object({ provider: z.literal("cinevision") })
+  .strict();
+export type PreviewCinevisionImportInput = z.infer<typeof previewCinevisionImportInput>;
+
+export const executeCinevisionImportInput = z
+  .object({
+    provider: z.literal("cinevision"),
+    previewHash: z.string().regex(/^[0-9a-f]{64}$/),
+    confirmed: z.literal(true),
+  })
+  .strict();
+export type ExecuteCinevisionImportInput = z.infer<typeof executeCinevisionImportInput>;
+
+export interface CinevisionImportPreview {
+  provider: "cinevision";
+  version: typeof CINEVISION_IMPORT_VERSION;
+  total: number;
+  novos: number;
+  duplicados: number;
+  conflitos: number;
+  previewHash: string;
+  items: Array<{ externalId: string; decision: CinevisionImportDecision }>;
+}
+
+export interface CinevisionImportSummary {
+  provider: "cinevision";
+  version: typeof CINEVISION_IMPORT_VERSION;
+  total: number;
+  criados: number;
+  pulados: number;
+  conflitos: number;
+  previewHash: string;
+}
+
+function summarizeClassification(items: ClassifiedImportItem[]): {
+  novos: number;
+  duplicados: number;
+  conflitos: number;
+} {
+  let novos = 0;
+  let duplicados = 0;
+  let conflitos = 0;
+  for (const item of items) {
+    if (item.decision === "novo") novos += 1;
+    else if (item.decision === "duplicado") duplicados += 1;
+    else conflitos += 1;
+  }
+  return { novos, duplicados, conflitos };
+}
+
+async function handleCinevisionImportPreview(
+  ctx: CommandHandlerContext,
+  input: PreviewCinevisionImportInput,
+): Promise<CommandResult<CinevisionImportPreview>> {
+  void input;
+  const trx = requireTrx(ctx);
+  if ((await findLiveCinevisionBinding(trx, ctx.tenantId)) === null) {
+    return { ok: false, code: "not_found", message: "no live cinevision binding in this tenant" };
+  }
+  const port = resolveCinevisionListCustomers();
+  if (port === null) {
+    return { ok: false, code: "precondition_failed", message: humanRequiredMessage("NOT_WIRED") };
+  }
+  let snapshots: CinevisionImportCustomer[];
+  try {
+    snapshots = await collectCinevisionCustomers(port);
+  } catch (err) {
+    return { ok: false, code: "precondition_failed", message: humanRequiredMessage(cinevisionWorkerCodeOf(err)) };
+  }
+  const classified = await classifyCinevisionImport(trx, ctx.tenantId, snapshots);
+  const counts = summarizeClassification(classified);
+  const previewHash = computeCinevisionPreviewHash(
+    ctx.tenantId,
+    snapshots.map((snapshot) => snapshot.id),
+  );
+  // Auditoria suplementar (mesma transação do bus, que grava metadata fixa):
+  // SÓ contagens + provider/versão — nunca ids externos ou PII.
+  await ctx.tx.writeAudit({
+    tenantId: ctx.tenantId,
+    actorType: ctx.actor.actorType,
+    actorId: ctx.actor.userId,
+    action: "integration.cinevision_import_preview",
+    resourceType: "cinevision_import",
+    resourceId: null,
+    correlationId: ctx.correlationId,
+    metadata: {
+      provider: "cinevision",
+      version: CINEVISION_IMPORT_VERSION,
+      total: classified.length,
+      novos: counts.novos,
+      duplicados: counts.duplicados,
+      conflitos: counts.conflitos,
+    },
+  });
+  return {
+    ok: true,
+    data: {
+      provider: "cinevision",
+      version: CINEVISION_IMPORT_VERSION,
+      total: classified.length,
+      novos: counts.novos,
+      duplicados: counts.duplicados,
+      conflitos: counts.conflitos,
+      previewHash,
+      items: classified.map((item) => ({ externalId: item.externalId, decision: item.decision })),
+    },
+  };
+}
+
+async function handleCinevisionImportExecute(
+  ctx: CommandHandlerContext,
+  input: ExecuteCinevisionImportInput,
+): Promise<CommandResult<CinevisionImportSummary>> {
+  const trx = requireTrx(ctx);
+  if ((await findLiveCinevisionBinding(trx, ctx.tenantId)) === null) {
+    return { ok: false, code: "not_found", message: "no live cinevision binding in this tenant" };
+  }
+  const port = resolveCinevisionListCustomers();
+  if (port === null) {
+    return { ok: false, code: "precondition_failed", message: humanRequiredMessage("NOT_WIRED") };
+  }
+  let snapshots: CinevisionImportCustomer[];
+  try {
+    snapshots = await collectCinevisionCustomers(port);
+  } catch (err) {
+    return { ok: false, code: "precondition_failed", message: humanRequiredMessage(cinevisionWorkerCodeOf(err)) };
+  }
+  const freshHash = computeCinevisionPreviewHash(
+    ctx.tenantId,
+    snapshots.map((snapshot) => snapshot.id),
+  );
+  if (!previewHashMatches(input.previewHash, freshHash)) {
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message:
+        "preview hash mismatch: the worker dataset changed since the preview; re-run import-preview and confirm the fresh hash",
+    };
+  }
+  const classified = await classifyCinevisionImport(trx, ctx.tenantId, snapshots);
+  let criados = 0;
+  let pulados = 0;
+  let conflitos = 0;
+  const at = now();
+  for (const item of classified) {
+    if (item.decision === "conflito") {
+      conflitos += 1;
+      continue;
+    }
+    if (item.decision === "duplicado") {
+      pulados += 1;
+      continue;
+    }
+    // `novo`: cria person (se ausente) + identidade + customer. Concorrência
+    // converge: 23505 na identidade → re-lê e pula; customer com
+    // `doNothing` → ausência de returning significa já existente.
+    let personId = item.personId;
+    if (personId === null) {
+      personId = newId();
+      await trx
+        .insertInto("identity.persons")
+        .values({
+          id: personId,
+          tenant_id: ctx.tenantId,
+          status: "ACTIVE",
+          canonical_name: null,
+          locale: null,
+          timezone: null,
+          created_at: at,
+          updated_at: at,
+          anonymized_at: null,
+        })
+        .execute();
+      try {
+        await trx
+          .insertInto("identity.identities")
+          .values({
+            id: newId(),
+            tenant_id: ctx.tenantId,
+            person_id: personId,
+            identity_type: CINEVISION_CUSTOMER_IDENTITY_TYPE,
+            normalized_value: item.externalId,
+            external_provider: "cinevision",
+            external_id: item.externalId,
+            verification_status: "UNVERIFIED",
+            link_confidence: null,
+            metadata_json: {},
+            created_at: at,
+            verified_at: null,
+            detached_at: null,
+          })
+          .execute();
+      } catch (err) {
+        if ((err as { code?: unknown }).code !== "23505") {
+          throw err;
+        }
+        const raced = await trx
+          .selectFrom("identity.identities")
+          .select(["person_id"])
+          .where("tenant_id", "=", ctx.tenantId)
+          .where("identity_type", "=", CINEVISION_CUSTOMER_IDENTITY_TYPE)
+          .where("normalized_value", "=", item.externalId)
+          .where("detached_at", "is", null)
+          .executeTakeFirst();
+        if (raced === undefined) {
+          throw err;
+        }
+        personId = raced.person_id;
+      }
+    }
+    const inserted = await trx
+      .insertInto("crm.customers")
+      .values({
+        id: newId(),
+        tenant_id: ctx.tenantId,
+        person_id: personId,
+        status: "ACTIVE",
+        customer_since: at,
+        last_reactivated_at: null,
+        created_at: at,
+        updated_at: at,
+      })
+      .onConflict((oc) => oc.columns(["tenant_id", "person_id"]).doNothing())
+      .returning(["id"])
+      .executeTakeFirst();
+    if (inserted === undefined) {
+      pulados += 1;
+    } else {
+      criados += 1;
+    }
+  }
+  // Auditoria suplementar: SÓ contagens + provider/versão (o guard de
+  // auditoria do repo proíbe segredos E hashes em metadata — o `previewHash`
+  // vincula a execução via lógica do handler, não via trilha de auditoria).
+  await ctx.tx.writeAudit({
+    tenantId: ctx.tenantId,
+    actorType: ctx.actor.actorType,
+    actorId: ctx.actor.userId,
+    action: "integration.cinevision_import_execute",
+    resourceType: "cinevision_import",
+    resourceId: null,
+    correlationId: ctx.correlationId,
+    metadata: {
+      provider: "cinevision",
+      version: CINEVISION_IMPORT_VERSION,
+      total: classified.length,
+      criados,
+      pulados,
+      conflitos,
+    },
+  });
+  return {
+    ok: true,
+    data: {
+      provider: "cinevision",
+      version: CINEVISION_IMPORT_VERSION,
+      total: classified.length,
+      criados,
+      pulados,
+      conflitos,
+      previewHash: input.previewHash,
+    },
+  };
+}
+
 export function registerIntegrationCommands(bus: CommandBus): void {
   bus.register<ConfigureIntegrationInput, IntegrationBindingResult>({
     name: "integration.configure",
@@ -1179,5 +1675,21 @@ export function registerIntegrationCommands(bus: CommandBus): void {
     auditResource: "tenant_channel",
     input: webhookEnsureInput,
     handler: handleWebhookEnsure,
+  });
+  bus.register<PreviewCinevisionImportInput, CinevisionImportPreview>({
+    name: "integration.cinevision_import_preview",
+    permission: "integration.read",
+    auditAction: "integration.cinevision_import_preview",
+    auditResource: "cinevision_import",
+    input: previewCinevisionImportInput,
+    handler: handleCinevisionImportPreview,
+  });
+  bus.register<ExecuteCinevisionImportInput, CinevisionImportSummary>({
+    name: "integration.cinevision_import_execute",
+    permission: "integration.manage",
+    auditAction: "integration.cinevision_import_execute",
+    auditResource: "cinevision_import",
+    input: executeCinevisionImportInput,
+    handler: handleCinevisionImportExecute,
   });
 }

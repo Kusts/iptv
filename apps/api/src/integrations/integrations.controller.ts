@@ -298,6 +298,13 @@ export class IntegrationsController {
    * (override explícito no corpo é permitido e validado — notification
    * routing only). Resposta sanitizada por construção (`webhookUrl`,
    * `providerWebhookId`, `hasAuthToken`, `status`) — nunca o authToken.
+   *
+   * S4C (#88 etapa 5) importação assistida CINEVISION:
+   * `POST /v1/integrations/cinevision/import-preview` sob `integration.read`
+   * (classifica sem escrever CRM; `previewHash` anti-tamper) e
+   * `POST /v1/integrations/cinevision/import-execute` sob
+   * `integration.manage` (exige `{previewHash, confirmed: true}` +
+   * `Idempotency-Key`; revalida o hash contra o worker antes de escrever).
    */
   @Post(":provider/webhook")
   @UseGuards(AuthGuard, PermissionsGuard)
@@ -317,6 +324,47 @@ export class IntegrationsController {
       correlationId: req.id,
       idempotencyKey: idempotencyKeyOf(req),
     });
+    return send(result);
+  }
+
+  @Post("cinevision/import-preview")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("integration.read")
+  async importPreview(@Body() body: unknown, @Req() req: FastifyRequest) {
+    const result = await this.bus.execute(
+      actorFromRequest(req),
+      "integration.cinevision_import_preview",
+      { ...requestBodyOf(body), provider: "cinevision" },
+      { correlationId: req.id, idempotencyKey: idempotencyKeyOf(req) },
+    );
+    return send(result);
+  }
+
+  /**
+   * S4C execute: escrita idempotente; `Idempotency-Key` é OBRIGATÓRIO
+   * (400 sem ele) e o corpo exige `{previewHash, confirmed: true}` (Zod
+   * estrito → 400; hash divergente → 409 anti-tamper no handler).
+   */
+  @Post("cinevision/import-execute")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("integration.manage")
+  async importExecute(@Body() body: unknown, @Req() req: FastifyRequest) {
+    const key = idempotencyKeyOf(req);
+    if (key === undefined) {
+      throw new HttpException(
+        {
+          code: "VALIDATION_FAILED",
+          message: "Idempotency-Key header is required for cinevision import-execute",
+        },
+        400,
+      );
+    }
+    const result = await this.bus.execute(
+      actorFromRequest(req),
+      "integration.cinevision_import_execute",
+      { ...requestBodyOf(body), provider: "cinevision" },
+      { correlationId: req.id, idempotencyKey: key },
+    );
     return send(result);
   }
 }
