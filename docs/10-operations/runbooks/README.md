@@ -12,6 +12,7 @@ Available baseline runbooks:
 
 - [Provider unavailable / CINEVISION degraded](provider-down.md)
 - [WhatsApp gateway unavailable](whatsapp-down.md)
+- [Central de Integrações — hub por tenant (operador)](integrations-hub-operator.md)
 - [AI/model runtime unavailable](ai-down.md)
 - [Asaas webhook failure / queue drift](payment-webhook-failure.md)
 
