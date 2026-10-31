@@ -315,6 +315,15 @@ factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
 
 ### Billing webhooks (Asaas)
 
+- **Provisionamento** (`S2A`, `POST /v1/integrations/asaas/webhook` sob
+  `integration.manage`, comando `integration.webhook_ensure`): cria/atualiza o
+  webhook na conta Asaas (dedupe pela URL canônica
+  `<INTEGRATIONS_PUBLIC_BASE_URL>/v1/webhooks/asaas/:tenantKey`), gera um
+  authToken distinto da API key (64 chars base64url via `crypto`, guardado no
+  cofre antes de chamar o Asaas) e sincroniza `sha256(token)` no
+  `billing.tenant_channels`. Base pública ausente → 503
+  `WEBHOOK_BASE_URL_NOT_CONFIGURED` com instrução de modo manual; resposta
+  sanitizada (`webhookUrl`, `providerWebhookId`, `hasAuthToken`, `status`).
 - **Webhook** (`POST /v1/webhooks/asaas/:tenantKey`, public): Asaas sends
   the configured authToken as the `asaas-access-token` header; the legacy
   `X-Asaas-Secret` header remains accepted as a backward-compatible alias,
@@ -364,6 +373,15 @@ factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
   `CONNECTED_READ_ONLY` cinevision SÓ com certificação live (S4).
   **WhatsApp**: 501 `CAPABILITY_UNCERTIFIED` ("disponível em S3") antes do
   bus — sem linha, sem vault (S3 certifica).
+- **Webhook Asaas** (`S2A`, `POST /v1/integrations/asaas/webhook` sob
+  `integration.manage`, comando `integration.webhook_ensure` com
+  `Idempotency-Key`): provisiona o webhook na conta Asaas (PUT-or-POST pelo
+  match da URL canônica; limite de 10 webhooks → 409 orientando
+  update/delete manual), authToken gerado via `crypto` guardado no cofre
+  antes do POST/PUT e reutilizado no retry (nunca deletado após falha),
+  canal `billing.tenant_channels` sincronizado com `sha256(token)`; base
+  pública ausente → 503 `WEBHOOK_BASE_URL_NOT_CONFIGURED` em modo manual;
+  resposta sanitizada sem o token.
 
 ### Support, HITL and knowledge
 

@@ -53,6 +53,12 @@ const envSchema = z.object({
   // provider account of the trial's tenant, and the trial dispatch must
   // target exactly that account. Never a secret value — just the account id.
   PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID: z.string().uuid().optional(),
+  // Public base URL of THIS platform (Asaas posts webhook deliveries to it).
+  // Needed by `integration.webhook_ensure` to build the canonical per-tenant
+  // callback `POST <base>/v1/webhooks/asaas/:tenantKey`. Absent by default
+  // (fail-closed per command: `WEBHOOK_BASE_URL_NOT_CONFIGURED` + manual
+  // mode) — never a client-supplied host.
+  INTEGRATIONS_PUBLIC_BASE_URL: z.string().min(1).optional(),
 });
 
 export type AppConfig = Omit<z.infer<typeof envSchema>, "CORS_ALLOWED_ORIGINS"> & {
@@ -113,6 +119,36 @@ export function parseCorsAllowedOrigins(raw: string | undefined, nodeEnv: string
     }
   }
   return normalized;
+}
+
+/** Local loopback hosts allowed over plain `http://` (dev/test only). */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+/**
+ * Canonicalize the platform public base URL (webhook callback origin).
+ *
+ * Returns the `url.origin` (`scheme://host[:port]`) or `null` when absent
+ * (empty counts as absent, per the repo rule). Anything else malformed —
+ * unknown scheme, credentials, path/query/hash beyond the bare root, or
+ * plain `http://` outside loopback — returns `null` (the caller fails
+ * closed; `loadConfig` throws instead, fail-fast at boot).
+ */
+export function parseIntegrationsPublicBaseUrl(raw: string | undefined): string | null {
+  if (raw === undefined) return null;
+  if (raw.trim() === "") return null;
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  if (url.username !== "" || url.password !== "") return null;
+  if (url.hash !== "" || url.search !== "") return null;
+  if (url.pathname !== "/" && url.pathname !== "") return null;
+  if (url.host === "") return null;
+  if (url.protocol === "http:" && !LOOPBACK_HOSTS.has(url.hostname)) return null;
+  return url.origin;
 }
 
 /** Treat empty-string env values as absent so `.min(1).optional()` fields accept shipped placeholders. */
@@ -672,6 +708,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     INFISICAL_CLIENT_SECRET: emptyToUndefined(env.INFISICAL_CLIENT_SECRET),
     INFISICAL_ENVIRONMENT: emptyToUndefined(env.INFISICAL_ENVIRONMENT),
     PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID: emptyToUndefined(env.PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID),
+    INTEGRATIONS_PUBLIC_BASE_URL: emptyToUndefined(env.INTEGRATIONS_PUBLIC_BASE_URL),
     CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
   });
   if (!parsed.success) {
@@ -697,6 +734,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       "invalid environment configuration: BETTER_AUTH_SECRET must be overridden in production",
     );
   }
+  // Public webhook origin: fail fast at boot on an explicit but malformed
+  // value; unset stays `undefined` (each command fails closed per call).
+  const integrationsPublicBaseUrl = parseIntegrationsPublicBaseUrl(
+    parsed.data.INTEGRATIONS_PUBLIC_BASE_URL,
+  );
+  if (
+    parsed.data.INTEGRATIONS_PUBLIC_BASE_URL !== undefined &&
+    integrationsPublicBaseUrl === null
+  ) {
+    throw new Error(
+      "invalid environment configuration: INTEGRATIONS_PUBLIC_BASE_URL must be an absolute https:// origin (http allowed only for localhost/127.0.0.1 dev), with no path/query/hash/credentials",
+    );
+  }
   // Deliberately NOT a schema field: the value is read straight from env so an
   // inline/typo value stays legal outside production, and `AppConfig` keeps no
   // copy that could drift from the call-time resolver in `provider-port.ts`.
@@ -720,5 +770,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     assertNoPrivilegedDatabaseEnv(env);
     validateProductionAppDatabaseUrl(parsed.data.APP_DATABASE_URL);
   }
-  return { ...parsed.data, CORS_ALLOWED_ORIGINS: corsAllowedOrigins };
+  return {
+    ...parsed.data,
+    CORS_ALLOWED_ORIGINS: corsAllowedOrigins,
+    INTEGRATIONS_PUBLIC_BASE_URL: integrationsPublicBaseUrl ?? undefined,
+  };
 }

@@ -130,6 +130,100 @@ export interface AsaasPort {
   getCharge(query: ChargeStatusQuery): Promise<ChargeStatusResult>;
   executeRefund(input: RefundRequest): Promise<RefundResult>;
   getRefund(query: RefundStatusQuery): Promise<RefundResult>;
+  /**
+   * Webhook provisioning (S2A, `integration.webhook_ensure`): OPTIONAL on the
+   * port so existing unit fakes (billing/charge-only) keep compiling —
+   * `EchoAsaasAdapter` and `RealAsaasAdapter` both implement it. Credentials
+   * are explicit per call (the tenant's vault-resolved API key + the fixed
+   * allowlist host), never the process `ASAAS_API_KEY` env. Outbound auth
+   * uses the official `access_token` header (the `asaas-access-token` header
+   * is the INBOUND direction: Asaas → our ingress, echoing our authToken).
+   */
+  listWebhooks?(input: AsaasWebhookAuth): Promise<AsaasWebhookListResult>;
+  createWebhook?(input: AsaasWebhookSaveInput): Promise<AsaasWebhookSaveResult>;
+  updateWebhook?(input: AsaasWebhookSaveInput & { providerWebhookId: string }): Promise<AsaasWebhookSaveResult>;
+}
+
+/**
+ * Per-call provisioning credentials: the tenant's vault-resolved Asaas API
+ * key plus the fixed allowlist host for its environment. `fetchFn` is an
+ * injectable transport (global fetch in production, fake in tests). The API
+ * key authenticates the call (`access_token` header); the webhook token
+ * below travels in the save body — never the same value.
+ */
+export interface AsaasWebhookAuth {
+  host: string;
+  apiKey: string;
+  fetchFn?: typeof fetch;
+}
+
+/** PIX-billing events this platform subscribes to (official Asaas names). */
+export const ASAAS_WEBHOOK_EVENTS = ["PAYMENT_RECEIVED", "PAYMENT_OVERDUE", "PAYMENT_REFUNDED"] as const;
+
+/** Official Asaas cap: at most 10 webhooks per account. */
+export const ASAAS_WEBHOOK_LIMIT = 10;
+
+/** Bounded transport budget for webhook provisioning (same as probes). */
+export const ASAAS_WEBHOOK_TIMEOUT_MS = 8000;
+
+export interface AsaasWebhookRecord {
+  id: string;
+  url: string;
+}
+
+export interface AsaasWebhookListResult {
+  webhooks: AsaasWebhookRecord[];
+}
+
+/** `POST /v3/webhooks` body (official required fields + our authToken). */
+export interface AsaasWebhookSaveInput extends AsaasWebhookAuth {
+  name: string;
+  url: string;
+  /** Operational notification email (required by Asaas; notification routing only). */
+  email: string;
+  /** Webhook token (32–255 chars, no spaces, never an API key) for the body. */
+  authToken: string;
+}
+
+export interface AsaasWebhookSaveResult {
+  id: string;
+}
+
+/**
+ * Typed provisioning failure. `status` is the provider HTTP status, or
+ * `TRANSPORT` (timeout/network), or `MALFORMED` (2xx without a usable `id` —
+ * effect unknown). `detail` carries the status only — never the response
+ * body, the authToken, or any header.
+ */
+export class AsaasWebhookError extends Error {
+  readonly status: number | "TRANSPORT" | "MALFORMED";
+
+  constructor(status: number | "TRANSPORT" | "MALFORMED", detail: string) {
+    super(`asaas webhook: ${detail}`);
+    this.name = "AsaasWebhookError";
+    this.status = status;
+  }
+}
+
+/**
+ * Official `POST /v3/webhooks` (+ `PUT`) body. `enabled: true` keeps the
+ * queue flowing; `interrupted: false` never pauses delivery on provision;
+ * `apiVersion: 3` pins the payload shape our ingress parses;
+ * `sendType: "SEQUENTIALLY"` preserves event order. The authToken travels in
+ * this body (required) and is NEVER logged, thrown, or telemetered.
+ */
+export function asaasWebhookSaveBody(input: { name: string; url: string; email: string; authToken: string }): Record<string, unknown> {
+  return {
+    name: input.name,
+    url: input.url,
+    email: input.email,
+    enabled: true,
+    interrupted: false,
+    apiVersion: 3,
+    authToken: input.authToken,
+    sendType: "SEQUENTIALLY",
+    events: [...ASAAS_WEBHOOK_EVENTS],
+  };
 }
 
 function envMode(name: string, def: string): string {
@@ -508,7 +602,30 @@ export class EchoAsaasAdapter implements AsaasPort {
     }
     return { effect: "KNOWN_APPLIED", providerRefundId: query.providerRefundId, detail: `echo: refund confirmed ${query.providerRefundId}` };
   }
+
+  /**
+   * Synthetic webhook surface (S2A): no network, no credentials. The echo
+   * namespace owns nothing at the provider, so listing is always empty and
+   * saves mint `echo-wh-` ids that no other adapter will ever resolve.
+   * `integration.webhook_ensure` never routes here (provisioning is
+   * inherently a real-provider write against per-tenant credentials); these
+   * exist for local-shape flows only.
+   */
+  async listWebhooks(): Promise<AsaasWebhookListResult> {
+    return { webhooks: [] };
+  }
+
+  async createWebhook(): Promise<AsaasWebhookSaveResult> {
+    echoWebhookSeq += 1;
+    return { id: `echo-wh-${echoWebhookSeq}` };
+  }
+
+  async updateWebhook(input: AsaasWebhookSaveInput & { providerWebhookId: string }): Promise<AsaasWebhookSaveResult> {
+    return { id: input.providerWebhookId };
+  }
 }
+
+let echoWebhookSeq = 0;
 
 /**
  * Env-gated real adapter. Requires BOTH `ASAAS_API_KEY` and
@@ -518,6 +635,13 @@ export class EchoAsaasAdapter implements AsaasPort {
  */
 export class RealAsaasAdapter implements AsaasPort {
   readonly name = "real";
+
+  /**
+   * Injectable transport (global fetch in production, fake in tests via
+   * `integration.webhook_ensure`'s test doubles). Existing charge/refund
+   * helpers keep the global fetch path untouched.
+   */
+  constructor(private readonly fetchFn: typeof fetch = fetch) {}
 
   private config(): { apiKey: string; baseUrl: string } | null {
     const apiKey = process.env["ASAAS_API_KEY"];
@@ -938,6 +1062,131 @@ export class RealAsaasAdapter implements AsaasPort {
       detail: `asaas: refund status ${raw === "" ? "unknown" : raw}`,
     };
   }
+
+  /**
+   * Webhook provisioning HTTP (S2A). Uses the EXPLICIT per-tenant API key
+   * (vault-resolved, `access_token` header) — never the process env key —
+   * and the injected `fetchFn` (fake in tests).
+   * SECURITY: the API key and the webhook token travel in headers/body
+   * (required) but are NEVER logged, thrown inside messages, or attached to
+   * telemetry; errors carry the status only.
+   */
+  private webhookHeaders(apiKey: string): Record<string, string> {
+    return { "Content-Type": "application/json", access_token: apiKey };
+  }
+
+  private async webhookReadJson(
+    url: string,
+    apiKey: string,
+    fetchImpl?: typeof fetch,
+  ): Promise<{ ok: boolean; status: number; json: unknown }> {
+    let res: Response;
+    try {
+      res = await (fetchImpl ?? this.fetchFn)(url, {
+        method: "GET",
+        headers: this.webhookHeaders(apiKey),
+        signal: AbortSignal.timeout(ASAAS_WEBHOOK_TIMEOUT_MS),
+      });
+    } catch {
+      throw new AsaasWebhookError("TRANSPORT", "webhook list transport error (retry later)");
+    }
+    let json: unknown = null;
+    try {
+      json = await res.json();
+    } catch {
+      json = null;
+    }
+    if (!res.ok) {
+      throw new AsaasWebhookError(res.status, `webhook list rejected with status ${res.status}`);
+    }
+    return { ok: res.ok, status: res.status, json };
+  }
+
+  private async webhookWriteJson(
+    url: string,
+    method: "POST" | "PUT",
+    apiKey: string,
+    body: Record<string, unknown>,
+    fetchImpl?: typeof fetch,
+  ): Promise<{ ok: boolean; status: number; json: unknown }> {
+    let res: Response;
+    try {
+      res = await (fetchImpl ?? this.fetchFn)(url, {
+        method,
+        headers: this.webhookHeaders(apiKey),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(ASAAS_WEBHOOK_TIMEOUT_MS),
+      });
+    } catch {
+      throw new AsaasWebhookError("TRANSPORT", "webhook save transport error (retry later)");
+    }
+    let json: unknown = null;
+    try {
+      json = await res.json();
+    } catch {
+      json = null;
+    }
+    if (!res.ok) {
+      throw new AsaasWebhookError(res.status, `webhook save rejected with status ${res.status}`);
+    }
+    return { ok: res.ok, status: res.status, json };
+  }
+
+  async listWebhooks(input: AsaasWebhookAuth): Promise<AsaasWebhookListResult> {
+    const { json } = await this.webhookReadJson(
+      `${input.host}/v3/webhooks?limit=100`,
+      input.apiKey,
+      input.fetchFn,
+    );
+    const items = Array.isArray(json) ? json : asRecordOrNull(json)?.["data"];
+    if (!Array.isArray(items)) {
+      throw new AsaasWebhookError("MALFORMED", "webhook list response without a data array");
+    }
+    const webhooks: AsaasWebhookRecord[] = [];
+    for (const item of items) {
+      const record = asRecordOrNull(item);
+      const id = typeof record?.["id"] === "string" ? (record["id"] as string).trim() : "";
+      const hookUrl = typeof record?.["url"] === "string" ? (record["url"] as string).trim() : "";
+      if (id.length > 0 && hookUrl.length > 0) {
+        webhooks.push({ id, url: hookUrl });
+      }
+    }
+    return { webhooks };
+  }
+
+  async createWebhook(input: AsaasWebhookSaveInput): Promise<AsaasWebhookSaveResult> {
+    const { json } = await this.webhookWriteJson(
+      `${input.host}/v3/webhooks`,
+      "POST",
+      input.apiKey,
+      asaasWebhookSaveBody(input),
+      input.fetchFn,
+    );
+    return { id: webhookSaveIdOf(json) };
+  }
+
+  async updateWebhook(
+    input: AsaasWebhookSaveInput & { providerWebhookId: string },
+  ): Promise<AsaasWebhookSaveResult> {
+    const { json } = await this.webhookWriteJson(
+      `${input.host}/v3/webhooks/${encodeURIComponent(input.providerWebhookId)}`,
+      "PUT",
+      input.apiKey,
+      asaasWebhookSaveBody(input),
+      input.fetchFn,
+    );
+    return { id: webhookSaveIdOf(json) };
+  }
+}
+
+/** Extract the provider webhook `id` from a save response (2xx without one = unknown effect). */
+function webhookSaveIdOf(json: unknown): string {
+  const record = asRecordOrNull(json);
+  const id = typeof record?.["id"] === "string" ? (record["id"] as string).trim() : "";
+  if (id.length === 0) {
+    throw new AsaasWebhookError("MALFORMED", "webhook save response without provider id");
+  }
+  return id;
 }
 
 export function asaasAdapterNameFromEnv(): "echo" | "real" {
@@ -978,5 +1227,23 @@ export function tracedAsaasPort(inner: AsaasPort): AsaasPort {
       ),
     getRefund: (query) =>
       withSpan("asaas.get_refund", { adapter: inner.name, operation: "get_refund" }, () => inner.getRefund(query)),
+    listWebhooks: inner.listWebhooks
+      ? (input) =>
+          withSpan("asaas.list_webhooks", { adapter: inner.name, operation: "list_webhooks" }, () =>
+            inner.listWebhooks!(input),
+          )
+      : undefined,
+    createWebhook: inner.createWebhook
+      ? (input) =>
+          withSpan("asaas.create_webhook", { adapter: inner.name, operation: "create_webhook" }, () =>
+            inner.createWebhook!(input),
+          )
+      : undefined,
+    updateWebhook: inner.updateWebhook
+      ? (input) =>
+          withSpan("asaas.update_webhook", { adapter: inner.name, operation: "update_webhook" }, () =>
+            inner.updateWebhook!(input),
+          )
+      : undefined,
   };
 }

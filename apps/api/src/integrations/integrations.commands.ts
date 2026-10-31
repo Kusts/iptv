@@ -1,12 +1,20 @@
 import { HttpException } from "@nestjs/common";
+import { randomBytes, createHash } from "node:crypto";
 import { z } from "zod";
 import { newId, now } from "@iptv/domain";
+import { parseIntegrationsPublicBaseUrl } from "@iptv/config";
 import type { CommandResult } from "@iptv/domain";
 import type { CommandBus, CommandHandlerContext } from "../commands/command-bus.js";
 import { kyselyTrxOf } from "../crm/wave2-store.js";
 import {
+  ASAAS_WEBHOOK_LIMIT,
+  AsaasWebhookError,
+  RealAsaasAdapter,
+} from "../billing/asaas-port.js";
+import {
   resolveSecretsPort,
   resolveSecretsWriterPort,
+  buildIntegrationSecretRef,
   SecretsError,
   type SecretsPort,
   type SecretsWriterPort,
@@ -69,6 +77,11 @@ interface IntegrationTestDoubles {
   secretsWriter?: SecretsWriterPort;
   secretsReader?: SecretsPort;
   asaasFetch?: typeof fetch;
+  /**
+   * Override explícito da base pública (`null` simula ausente para o teste
+   * de manual-mode; `undefined` = sem override, lê o env real).
+   */
+  webhookBaseUrl?: string | null;
 }
 
 let testDoubles: IntegrationTestDoubles | null = null;
@@ -105,6 +118,18 @@ function resolveFetch(): typeof fetch {
     return testDoubles.asaasFetch;
   }
   return fetch;
+}
+
+/**
+ * Base pública canônica (origem `scheme://host[:port]`). Override de teste
+ * primeiro; depois `INTEGRATIONS_PUBLIC_BASE_URL` validada pela mesma regra
+ * do `loadConfig` (NUNCA host do cliente).
+ */
+function resolvePublicBaseUrl(): string | null {
+  if (testDoubles?.webhookBaseUrl !== undefined) {
+    return testDoubles.webhookBaseUrl;
+  }
+  return parseIntegrationsPublicBaseUrl(process.env["INTEGRATIONS_PUBLIC_BASE_URL"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +201,31 @@ export const disableIntegrationInput = z
     }
   });
 export type DisableIntegrationInput = z.infer<typeof disableIntegrationInput>;
+
+// ---------------------------------------------------------------------------
+// webhook_ensure: input + resultado sanitizado (nunca o authToken).
+// ---------------------------------------------------------------------------
+
+export const webhookEnsureInput = z
+  .object({
+    provider: z.literal("asaas"),
+    environment: environmentSchema,
+    /**
+     * Email operacional que recebe os avisos do Asaas sobre o webhook
+     * (notification routing only). O controller preenche com o email da
+     * sessão quando ausente; um valor explícito é validado aqui.
+     */
+    email: z.string().trim().email().max(320).optional(),
+  })
+  .strict();
+export type WebhookEnsureInput = z.infer<typeof webhookEnsureInput>;
+
+export interface WebhookEnsureResult {
+  webhookUrl: string;
+  providerWebhookId: string;
+  hasAuthToken: true;
+  status: "ACTIVE";
+}
 
 // ---------------------------------------------------------------------------
 // Sanitized result (nunca secret_ref, valor ou settings).
@@ -685,6 +735,344 @@ async function handleDisable(
   };
 }
 
+// ---------------------------------------------------------------------------
+// webhook_ensure: provisiona o webhook Asaas do tenant (S2A, #86).
+//
+// Idempotente por natureza: PUT-or-POST pelo match da URL canônica
+// (`<base>/v1/webhooks/asaas/:tenantKey`), então não há `expectedVersion` —
+// a concorrência converge (mesma URL, mesmo authToken reutilizado do vault).
+//
+// Ordem de escrita SEGURA:
+//  1. resolve o binding vivo + a API key no vault (falha → 503, nada marcado);
+//  2. resolve a tenant_key (reusa a linha existente, senão deriva estável);
+//  3. base pública ausente/inválida → 503 `WEBHOOK_BASE_URL_NOT_CONFIGURED`
+//     com instrução de modo manual (path esperado + como validar);
+//  4. `GET /v3/webhooks` (dedupe pela URL canônica; 10 existentes sem match
+//     → 409 orientando update/delete manual);
+//  5. authToken via `crypto` (64 chars base64url, sem espaços) SOMENTE sem um
+//     token válido existente; `put` no vault ANTES de chamar o Asaas;
+//  6. `POST` (novo) ou `PUT` (match) com o authToken;
+//  7. upsert do `billing.tenant_channels` (`webhook_secret_hash=sha256`,
+//     ACTIVE) — SOMENTE após o provider confirmar.
+//
+// Falha em 6 após 5 mantém o token no vault (NÃO deleta): o retry reutiliza
+// o mesmo valor e converge (PUT com o mesmo authToken). Falha em 7 após 6
+// também é recuperável pelo retry (dedupe encontra o webhook criado e faz
+// PUT + upsert). A resposta NUNCA contém o token (`hasAuthToken: true`).
+// ---------------------------------------------------------------------------
+
+const ASAAS_WEBHOOK_CHANNEL = "ASAAS";
+
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/** Token válido: 32–255 chars (regra oficial Asaas), sem whitespace. */
+function isValidAuthToken(value: unknown): value is string {
+  return (
+    typeof value === "string" && value.length >= 32 && value.length <= 255 && !/\s/.test(value)
+  );
+}
+
+/** Gera um authToken fresco: 48 bytes aleatórios em base64url (64 chars). */
+function generateAuthToken(): string {
+  return randomBytes(48).toString("base64url");
+}
+
+/**
+ * Deriva a tenant_key estável `asaas-<tenantId-short>`: 12 hex do tenant id
+ * (48 bits — colisão cross-tenant exige ~2^24 tenants; o insert ainda trata
+ * `23505` estendendo a chave, sem nunca ler linhas de outro tenant sob RLS).
+ */
+function tenantKeyCandidates(tenantId: string): string[] {
+  const hex = tenantId.replace(/-/g, "").toLowerCase();
+  const lens = [12, 16, 20, 24, 32].filter((len) => len <= hex.length);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const len of lens) {
+    const candidate = `asaas-${hex.slice(0, len)}`;
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      out.push(candidate);
+    }
+  }
+  return out.length > 0 ? out : [`asaas-${hex}`];
+}
+
+function webhookManualMode(tenantKey: string): HttpException {
+  return new HttpException(
+    {
+      code: "WEBHOOK_BASE_URL_NOT_CONFIGURED",
+      message:
+        "public webhook base URL is not configured (set INTEGRATIONS_PUBLIC_BASE_URL, e.g. https://app.exemplo.com, and retry). " +
+        `Manual mode: register the webhook at the Asaas dashboard with url <base>/v1/webhooks/asaas/${tenantKey} ` +
+        "(path /v1/webhooks/asaas/:tenantKey), events PAYMENT_RECEIVED/PAYMENT_OVERDUE/PAYMENT_REFUNDED, " +
+        "sendType SEQUENTIALLY, apiVersion 3 and your own 32-255-char authToken (no spaces, not an API key); " +
+        "then validate with a sandbox event and confirm the ingress answers 202 with the asaas-access-token header. " +
+        "Re-run integration.webhook_ensure once the base URL is set to sync the channel hash.",
+    },
+    503,
+  );
+}
+
+function webhookProviderErrorOf(err: unknown): HttpException | CommandResult<WebhookEnsureResult> {
+  if (err instanceof AsaasWebhookError) {
+    if (err.status === 401 || err.status === 403) {
+      return {
+        ok: false,
+        code: "precondition_failed",
+        message:
+          "asaas rejected the vaulted API credential (INVALID_CREDENTIALS); rotate via integration.configure and retry",
+      };
+    }
+    if (typeof err.status === "number" && err.status >= 400 && err.status < 500) {
+      return {
+        ok: false,
+        code: "precondition_failed",
+        message: `asaas refused the webhook save with status ${err.status} (check the binding credential/environment and retry)`,
+      };
+    }
+    throw new HttpException(
+      { code: "PROVIDER_UNAVAILABLE", message: "asaas webhook API unavailable; retry later" },
+      503,
+    );
+  }
+  throw err;
+}
+
+async function handleWebhookEnsure(
+  ctx: CommandHandlerContext,
+  input: WebhookEnsureInput,
+): Promise<CommandResult<WebhookEnsureResult>> {
+  const trx = requireTrx(ctx);
+
+  // 1. Binding vivo do tenant (provider + environment exatos).
+  const providerRow = await trx
+    .selectFrom("provider.providers")
+    .select(["id"])
+    .where("provider_key", "=", "asaas")
+    .executeTakeFirst();
+  if (providerRow === undefined) {
+    return { ok: false, code: "not_found", message: "no live asaas binding in this tenant" };
+  }
+  const binding = await trx
+    .selectFrom("provider.provider_accounts")
+    .select(["id", "environment", "secret_ref"])
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("provider_id", "=", providerRow.id)
+    .where("environment", "=", input.environment)
+    .where("connection_status", "<>", "DISABLED")
+    .orderBy("updated_at", "desc")
+    .forUpdate()
+    .executeTakeFirst();
+  if (binding === undefined) {
+    return {
+      ok: false,
+      code: "not_found",
+      message: `no live asaas binding for environment ${input.environment} in this tenant`,
+    };
+  }
+
+  // 2. tenant_key: reusa a linha existente (qualquer status — URL estável
+  //    entre disable/enable), senão deriva a primeira candidata.
+  const existingChannel = await trx
+    .selectFrom("billing.tenant_channels")
+    .select(["id", "tenant_key"])
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("channel", "=", ASAAS_WEBHOOK_CHANNEL)
+    .orderBy("updated_at", "desc")
+    .forUpdate()
+    .executeTakeFirst();
+  const tenantKey =
+    existingChannel?.tenant_key ?? (tenantKeyCandidates(ctx.tenantId)[0] as string);
+
+  // 3. Base pública fail-closed com instrução de modo manual.
+  const base = resolvePublicBaseUrl();
+  if (base === null) {
+    throw webhookManualMode(tenantKey);
+  }
+  const webhookUrl = `${base}/v1/webhooks/asaas/${tenantKey}`;
+
+  // 4. API key do vault (falha → 503, nada marcado, nenhum valor vaza).
+  const reader = resolveReader();
+  let apiKey: string;
+  try {
+    apiKey = await reader.getSecret(binding.secret_ref);
+  } catch (err) {
+    if (err instanceof SecretsError) {
+      throw vaultUnavailable();
+    }
+    throw err;
+  }
+
+  const host =
+    input.environment === "PRODUCTION" ? ASAAS_HOSTS.PRODUCTION : ASAAS_HOSTS.SANDBOX;
+  const port = new RealAsaasAdapter(resolveFetch());
+
+  // 5. Dedupe pela URL canônica (falha do provider mapeada sem corpo/valor).
+  let remote: { id: string; url: string }[];
+  try {
+    remote = (await port.listWebhooks({ host, apiKey, fetchFn: resolveFetch() })).webhooks;
+  } catch (err) {
+    const mapped = webhookProviderErrorOf(err);
+    if (mapped instanceof HttpException) {
+      throw mapped;
+    }
+    return mapped;
+  }
+  const match = remote.find((webhook) => webhook.url === webhookUrl);
+  if (match === undefined && remote.length >= ASAAS_WEBHOOK_LIMIT) {
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message:
+        `asaas account already holds ${remote.length} webhooks (limit ${ASAAS_WEBHOOK_LIMIT}) with none matching ${webhookUrl}; ` +
+        "update or delete an unused webhook manually at the Asaas dashboard and retry",
+    };
+  }
+
+  // 6. authToken: reusa o válido existente (retry converge), senão gera + put
+  //    no vault ANTES de chamar o Asaas. Falha do put → 503, nada marcado.
+  const writer = resolveWriter();
+  const webhookRefTarget = {
+    tenantId: ctx.tenantId,
+    provider: "asaas" as const,
+    environment: input.environment,
+    key: "ASAAS_WEBHOOK_TOKEN",
+  };
+  let authToken: string | null = null;
+  try {
+    const current = await writer.getSecret(buildIntegrationSecretRef(webhookRefTarget));
+    if (isValidAuthToken(current)) {
+      authToken = current;
+    }
+  } catch (err) {
+    if (!(err instanceof SecretsError) || err.code !== "NOT_FOUND") {
+      if (err instanceof SecretsError) {
+        throw vaultUnavailable();
+      }
+      throw err;
+    }
+  }
+  if (authToken === null) {
+    const fresh = generateAuthToken();
+    try {
+      await writer.putSecret({ ...webhookRefTarget, value: fresh, requestId: ctx.commandId });
+    } catch (err) {
+      if (err instanceof SecretsError) {
+        throw vaultUnavailable();
+      }
+      throw err;
+    }
+    authToken = fresh;
+  }
+
+  // 7. POST (novo) ou PUT (match). Falha após o put mantém o token no vault
+  //    (reutilizável no retry — NUNCA deletar aqui). O email operacional vem
+  //    da sessão (o controller preenche); chamada direta sem email falha
+  //    fechado em vez de inventar um endereço.
+  const notificationEmail = input.email;
+  if (notificationEmail === undefined) {
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: "notification email is required (resolved from the operator session)",
+    };
+  }
+  let providerWebhookId: string;
+  try {
+    providerWebhookId =
+      match === undefined
+        ? (
+            await port.createWebhook({
+              host,
+              apiKey,
+              fetchFn: resolveFetch(),
+              name: `iptv-asaas-${tenantKey}`,
+              url: webhookUrl,
+              email: notificationEmail,
+              authToken,
+            })
+          ).id
+        : (
+            await port.updateWebhook({
+              host,
+              apiKey,
+              fetchFn: resolveFetch(),
+              providerWebhookId: match.id,
+              name: `iptv-asaas-${tenantKey}`,
+              url: webhookUrl,
+              email: notificationEmail,
+              authToken,
+            })
+          ).id;
+  } catch (err) {
+    const mapped = webhookProviderErrorOf(err);
+    if (mapped instanceof HttpException) {
+      throw mapped;
+    }
+    return mapped;
+  }
+
+  // 8. Upsert do canal SOMENTE após o provider confirmar (hash sha256 do
+  //    token — o ingress verifica timing-safe contra ele). Falha do DB após
+  //    o save → 503 com o token retido no vault (o retry faz PUT + upsert).
+  const secretHash = sha256Hex(authToken);
+  const at = now();
+  try {
+    if (existingChannel === undefined) {
+      let inserted = false;
+      const candidates = tenantKeyCandidates(ctx.tenantId);
+      let lastError: unknown = null;
+      for (const candidate of candidates) {
+        try {
+          await trx
+            .insertInto("billing.tenant_channels")
+            .values({
+              id: newId(),
+              tenant_id: ctx.tenantId,
+              channel: ASAAS_WEBHOOK_CHANNEL,
+              tenant_key: candidate,
+              webhook_secret_hash: secretHash,
+              status: "ACTIVE",
+              created_at: at,
+              updated_at: at,
+            })
+            .execute();
+          inserted = true;
+          break;
+        } catch (err) {
+          if ((err as { code?: unknown }).code === "23505") {
+            lastError = err;
+            continue;
+          }
+          throw err;
+        }
+      }
+      if (!inserted) {
+        throw lastError ?? vaultUnavailable();
+      }
+    } else {
+      await trx
+        .updateTable("billing.tenant_channels")
+        .set({ webhook_secret_hash: secretHash, status: "ACTIVE", updated_at: at })
+        .where("tenant_id", "=", ctx.tenantId)
+        .where("id", "=", existingChannel.id)
+        .execute();
+    }
+  } catch (err) {
+    if (err instanceof HttpException) {
+      throw err;
+    }
+    throw vaultUnavailable();
+  }
+
+  return {
+    ok: true,
+    data: { webhookUrl, providerWebhookId, hasAuthToken: true as const, status: "ACTIVE" as const },
+  };
+}
+
 export function registerIntegrationCommands(bus: CommandBus): void {
   bus.register<ConfigureIntegrationInput, IntegrationBindingResult>({
     name: "integration.configure",
@@ -709,5 +1097,13 @@ export function registerIntegrationCommands(bus: CommandBus): void {
     auditResource: "provider_account",
     input: disableIntegrationInput,
     handler: handleDisable,
+  });
+  bus.register<WebhookEnsureInput, WebhookEnsureResult>({
+    name: "integration.webhook_ensure",
+    permission: "integration.manage",
+    auditAction: "integration.webhook_ensure",
+    auditResource: "tenant_channel",
+    input: webhookEnsureInput,
+    handler: handleWebhookEnsure,
   });
 }
