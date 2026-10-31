@@ -1,7 +1,9 @@
 import { Module } from "@nestjs/common";
 import {
   assertNoPrivilegedDatabaseEnv,
+  loadConfig,
   validateProductionAppDatabaseUrl,
+  type AppConfig,
 } from "@iptv/config";
 import { createDb } from "@iptv/database";
 import type { Database } from "@iptv/database";
@@ -200,6 +202,10 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     AgentController,
   ],
   providers: [
+    // Canonical runtime config (single `loadConfig()` boot validation, same
+    // blank-means-absent + fail-fast rules as `main.ts`). Controllers read
+    // flags from here — never from `process.env` directly.
+    { provide: "APP_CONFIG", useFactory: (): AppConfig => loadConfig() },
     { provide: "DB", useFactory: dbFactory },
     { provide: "AUTH", useFactory: authFactory, inject: ["DB"] },
     AuditService,

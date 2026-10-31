@@ -16,5 +16,10 @@ export default defineConfig({
     // into a flaky "Hook timed out" (observed 2026-10-05 on a fresh
     // disposable DB). Same rationale as packages/database/vitest.config.ts.
     hookTimeout: 120_000,
+    // Test-only default: keep public `POST /v1/auth/register` OPEN so the
+    // pre-existing integration suite is unaffected by the fail-closed
+    // production default ("1"). See `test/setup.ts`; the dedicated
+    // `auth-register-closed` suite overrides per app instance.
+    setupFiles: ["./test/setup.ts"],
   },
 });

@@ -77,7 +77,10 @@ paths:
         require X-Tenant-Context-Revision. Creates the user (and an owned
         tenant when tenantName is supplied), then returns the opaque session
         token plus the authoritative tenant-context revision (decimal string)
-        used as a precondition on subsequent protected requests.
+        used as a precondition on subsequent protected requests. When public
+        signup is closed (`AUTH_REGISTER_CLOSED=1`, the default) this endpoint
+        returns 403 REGISTER_CLOSED before any validation, creation or audit
+        write; only login/session/logout stay available to existing users.
       security: []
       parameters:
       - $ref: '#/components/parameters/CorrelationId'
@@ -102,6 +105,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Email is already registered (EMAIL_TAKEN)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Public registration is closed (REGISTER_CLOSED)
           content:
             application/json:
               schema:

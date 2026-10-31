@@ -10,6 +10,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { AuthInstance } from "@iptv/auth";
+import type { AppConfig } from "@iptv/config";
 import type { FastifyRequest } from "fastify";
 import { AuditService } from "../audit/audit.service.js";
 import { AuthGuard } from "./auth.guard.js";
@@ -56,6 +57,9 @@ export class AuthController {
     // to `undefined` at test runtime. Never rely on inferred injection here.
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(RateLimitService) private readonly rateLimit: RateLimitService,
+    // Canonical runtime config (fail-closed `AUTH_REGISTER_CLOSED` flag).
+    // Read from the injected `APP_CONFIG` provider — never `process.env`.
+    @Inject("APP_CONFIG") private readonly config: AppConfig,
   ) {}
 
   private requireAuth(): AuthInstance {
@@ -74,6 +78,19 @@ export class AuthController {
     activeTenantId: string | null;
     tenantContextRevision: string;
   }> {
+    // Fail-closed public-signup gate: checked FIRST, before any body
+    // validation, DB access, user/tenant/session creation or audit write, so
+    // a closed registration leaves zero side effects. The `RateLimitGuard`
+    // above still runs (and its origin/identity budgets are still charged and
+    // never reset on this path), so the limiter keeps throttling flood
+    // sources exactly as when open. No bypass exists: the flag comes from the
+    // injected boot-validated config, not from any request input.
+    if (this.config.AUTH_REGISTER_CLOSED !== "0") {
+      throw new HttpException(
+        { code: "REGISTER_CLOSED", message: "public registration is closed" },
+        403,
+      );
+    }
     const auth = this.requireAuth();
     try {
       const email = asString(body.email, "email");
