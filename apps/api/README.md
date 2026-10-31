@@ -419,6 +419,22 @@ factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
   canal `billing.tenant_channels` sincronizado com `sha256(token)`; base
   pública ausente → 503 `WEBHOOK_BASE_URL_NOT_CONFIGURED` em modo manual;
   resposta sanitizada sem o token.
+- **Importação assistida CINEVISION** (`S4C`, #88 etapa 5): `POST
+  /v1/integrations/cinevision/import-preview` sob `integration.read`
+  (comando `integration.cinevision_import_preview` — lista clientes via
+  worker e classifica `{novos, conflitos, duplicados}` pelas unicidades
+  reais sem escrever CRM; retorna `previewHash` anti-tamper) e `POST
+  .../import-execute` sob `integration.manage` (comando
+  `integration.cinevision_import_execute` — exige `{previewHash, confirmed:
+  true}` + `Idempotency-Key` (400 sem chave), re-lista e revalida o hash
+  (mismatch → 409), cria `identity.persons`/`identities`
+  (`CINEVISION_CUSTOMER`, `external_provider=cinevision`) + `crm.customers`
+  idempotentes (replay sem duplicar, existentes pulados, duplicados no
+  payload viram `conflitos` sem falhar); binding vivo exigido (404 sem
+  ele); falha do worker → 409 `HUMAN_REQUIRED/<código>` orientando modo
+  manual, sem bypass; sem live wiring em produção (fail-closed `NOT_WIRED`
+  até a certificação S4); auditoria suplementar só com contagens + provider
+  (o guard do repo proíbe segredos e hashes em metadata).
 
 ### WhatsApp sessions (S3a, WAHA)
 
