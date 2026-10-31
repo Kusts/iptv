@@ -278,12 +278,15 @@ describe.skipIf(!hasDb)("integrations cinevision import-preview/execute (S4C, re
     });
     expect(unconfirmed.statusCode).toBe(400);
 
+    // Garante divergência em exatamente 1 char (mesmo length p/ timingSafeEqual).
+    const first = previewHash[0] === "0" ? "1" : "0";
+    const tamperedHash = `${first}${previewHash.slice(1)}`;
     const tampered = await inject({
       method: "POST",
       url: "/v1/integrations/cinevision/import-execute",
       token: tokenA,
       idempotencyKey: `s4c-tampered-${newId()}`,
-      payload: { previewHash: `0${previewHash.slice(1)}`, confirmed: true },
+      payload: { previewHash: tamperedHash, confirmed: true },
     });
     expect(tampered.statusCode).toBe(409);
     expect(tampered.json<{ code: string }>().code).toBe("PRECONDITION_FAILED");
