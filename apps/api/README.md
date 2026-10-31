@@ -60,8 +60,8 @@ directly at the point of use and is safe to leave unset.
 | `INFISICAL_SITE_URL` / `INFISICAL_PROJECT_ID` / `INFISICAL_CLIENT_ID` / `INFISICAL_CLIENT_SECRET` | unset | Enable the real `@iptv/secrets` adapter; all four must be present or the Noop port is used. |
 | `INFISICAL_ENVIRONMENT` | `development` | Fallback environment; refs carry their own. |
 | `PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID` | unset | UUID of the single disposable provider account real trial dispatches may use. |
-| `WAHA_BASE_URL` / `WAHA_API_KEY` | unset | Select the WAHA messaging gateway; otherwise `LocalEchoGateway`. |
-| `WAHA_SESSION` | `default` | Expected WAHA session name per tenant. |
+| `WAHA_BASE_URL` / `WAHA_API_KEY` | unset | Select the WAHA messaging gateway; otherwise `LocalEchoGateway`. S3a session onboarding also fails closed without both. |
+| `WAHA_SESSION` | `default` | Legacy lane only: fallback expected session name when the gateway is echo/dev or the tenant has no S3a binding. |
 | `ASAAS_ADAPTER` | `echo` | `real` selects the Asaas port; requires `ASAAS_API_KEY` + `ASAAS_BASE_URL`. |
 | `ASAAS_API_KEY` / `ASAAS_BASE_URL` | unset | Asaas credentials/endpoint for the real adapter. |
 | `REFUND_APPROVAL_TTL_HOURS` | `168` | Approved-refund decision TTL before it is rejected as stale. |
@@ -240,7 +240,7 @@ One line per real directory under `src/`.
 | `growth/` | Campaigns, message intents, quiet hours, budget caps and attribution under `v1`. |
 | `human-review/` | `v1/human-reviews` HITL lifecycle, claim, decisions and the aggregated center. |
 | `inbox/` | Durable inbox: insert-once dedupe + envelope normalization for inbound events. |
-| `integrations/` | `v1/integrations` sanitized status per provider (`integration.read`; capability derived from the registry, never persisted; no secrets) plus the S1C2 write surface `POST /v1/integrations/:provider/configure|test|disable` (`integration.manage` for configure/disable, `integration.test` for test; server-side vault writes, `Idempotency-Key` idempotency, automatic audit; whatsapp 501 uncertified). |
+| `integrations/` | `v1/integrations` sanitized status per provider (`integration.read`; capability derived from the registry, never persisted; no secrets) plus the S1C2 write surface `POST /v1/integrations/:provider/configure|test|disable` (`integration.manage` for configure/disable, `integration.test` for test; server-side vault writes, `Idempotency-Key` idempotency, automatic audit; whatsapp 501 uncertified) plus the S3a WhatsApp session surface (`POST|GET …/whatsapp/session`, `GET …/qr`, `POST …/reconnect|disconnect`; per-tenant WAHA session in `communication.tenant_channels`, QR proxied without persistence). |
 | `inventory/` | Supplier app catalog, app trials, license assets and supplier credit/balance operations. |
 | `knowledge/` | `v1/knowledge` items, versions, solutions, corrections, gaps, freshness and search. |
 | `outbox/` | `v1/admin/outbox` legacy drain of domain events plus the local transport (LEGACY — quiescence-gated, see below). |
@@ -382,6 +382,10 @@ factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
   canal `billing.tenant_channels` sincronizado com `sha256(token)`; base
   pública ausente → 503 `WEBHOOK_BASE_URL_NOT_CONFIGURED` em modo manual;
   resposta sanitizada sem o token.
+
+### WhatsApp sessions (S3a, WAHA)
+
+Provisionamento (`POST /v1/integrations/whatsapp/session`, `integration.manage`, comando `whatsapp.session_ensure`): sessão exclusiva `tenant-<12hex>` via `POST /api/sessions` com webhook por sessão (`message`, `session.status`, header estático `x-waha-secret`); token no cofre antes do WAHA, hash + sessão + status em `communication.tenant_channels` (migration 067) após confirmação. Idempotente (reuse, `STOPPED→start`, `FAILED→restart`); sem vínculo → 404 `NO_SESSION`, nunca a sessão default de outro tenant. Status/QR (`GET`, `integration.read`): estado verbatim, QR em bytes sem persistência (`no-store`, 404 `QR_NOT_READY`). Reconnect/disconnect (`POST`, `integration.manage`): restart/parada sem apagar histórico. Inbound/outbound fail-closed pelo banco; lane echo/dev inalterada. Pairing-code e update de webhook em reuse não implementados (engine não pinado; QR é o caminho). Ver `waha-admin.port.ts`.
 
 ### Support, HITL and knowledge
 

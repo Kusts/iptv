@@ -8,6 +8,7 @@ import { CommandBus, type DbPort } from "./command-bus.js";
 import { KyselyCommandDb } from "./kysely-command-db.js";
 import { registerHumanReviewCommands } from "../human-review/human-review.commands.js";
 import { registerIntegrationCommands } from "../integrations/integrations.commands.js";
+import { registerWhatsappSessionCommands } from "../integrations/whatsapp-sessions.commands.js";
 import { registerPolicyCommands } from "../policy/policy.commands.js";
 import { registerCapabilityCommands } from "../capabilities/capability.commands.js";
 import { registerCrmCommands } from "../crm/crm.commands.js";
@@ -99,6 +100,7 @@ export const CommandsProvider = {
         onResolved: refundReviewResolvedHook,
       });
       registerIntegrationCommands(bus);
+      registerWhatsappSessionCommands(bus);
       registerPolicyCommands(bus);
       registerCapabilityCommands(bus);
       registerCrmCommands(bus);

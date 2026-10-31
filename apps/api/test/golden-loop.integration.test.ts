@@ -167,19 +167,27 @@ describe.skipIf(!hasDb)("Golden Loop E2E (requires TEST_DATABASE_URL)", () => {
   }
 
   async function seedChannel(schema: "communication" | "billing", channel: "WHATSAPP" | "ASAAS", key: string, secret: string) {
-    await db
-      .insertInto(`${schema}.tenant_channels` as "communication.tenant_channels")
-      .values({
-        id: newId(),
-        tenant_id: tenantId,
-        channel,
-        tenant_key: key,
-        webhook_secret_hash: sha256Hex(secret),
-        status: "ACTIVE",
-        created_at: new Date(),
-        updated_at: new Date(),
-      })
-      .execute();
+    const base = {
+      id: newId(),
+      tenant_id: tenantId,
+      channel,
+      tenant_key: key,
+      webhook_secret_hash: sha256Hex(secret),
+      status: "ACTIVE",
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    // S3a: `waha_session_name`/`waha_status` vivem SÓ em
+    // `communication.tenant_channels` (migration 067) — a tabela billing não
+    // as tem; o cast antigo escondia o erro do typecheck e quebrava no PG.
+    if (schema === "communication") {
+      await db
+        .insertInto("communication.tenant_channels")
+        .values({ ...base, waha_session_name: null, waha_status: null })
+        .execute();
+      return;
+    }
+    await db.insertInto("billing.tenant_channels").values(base).execute();
   }
 
   async function seedMonthlyPlan(): Promise<{ planId: string; planKey: string }> {

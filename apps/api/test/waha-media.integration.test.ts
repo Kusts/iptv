@@ -229,6 +229,8 @@ describe.skipIf(!hasDb)("WAHA media inbound (requires TEST_DATABASE_URL)", () =>
         tenant_key: tenantKey,
         webhook_secret_hash: sha256Hex(WAHA_SECRET),
         status: "ACTIVE",
+        waha_session_name: null,
+        waha_status: null,
         created_at: new Date(),
         updated_at: new Date(),
       })
@@ -495,6 +497,8 @@ describe.skipIf(!hasDb)("WAHA media inbound (requires TEST_DATABASE_URL)", () =>
         tenant_key: otherKey,
         webhook_secret_hash: sha256Hex(WAHA_SECRET),
         status: "ACTIVE",
+        waha_session_name: null,
+        waha_status: null,
         created_at: new Date(),
         updated_at: new Date(),
       })

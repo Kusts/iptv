@@ -33,6 +33,10 @@ import { ATTACHMENT_UPLOAD_BODY_LIMIT_BYTES } from "./attachment-upload-parser.j
 import { normalizeSender } from "./waha-normalizer.js";
 import { getRiskState, riskBlockReason, setRiskState } from "./waha-risk-state.js";
 import { expectedSessionFor, validateSessionForTenant } from "./waha-sessions.js";
+import {
+  checkInboundSessionWithTrx,
+  resolveOutboundSession,
+} from "./waha-session-store.js";
 
 /**
  * Wave 2 Communications slice.
@@ -592,7 +596,16 @@ async function handleSendManual(
   if (block.blocked) {
     return { ok: false, code: "forbidden", message: block.reason };
   }
-  const session = expectedSessionFor(ctx.tenantId);
+  const sessionResolution = await resolveOutboundSession(
+    kyselyTrxOf(ctx),
+    ctx.tenantId,
+    expectedSessionFor,
+    currentGateway().name,
+  );
+  if (!sessionResolution.ok) {
+    return { ok: false, code: sessionResolution.code, message: sessionResolution.message };
+  }
+  const session = sessionResolution.session;
   const risk = getRiskState(ctx.tenantId, conv.channel);
   if (risk === "CAPPED" && !(await conversationHasHistory(ctx, conv.id))) {
     return { ok: false, code: "precondition_failed", message: riskBlockReason(risk) };
@@ -858,7 +871,16 @@ async function handleSendMediaManual(
   if (block.blocked) {
     return { ok: false, code: "forbidden", message: block.reason };
   }
-  const session = expectedSessionFor(ctx.tenantId);
+  const sessionResolution = await resolveOutboundSession(
+    kyselyTrxOf(ctx),
+    ctx.tenantId,
+    expectedSessionFor,
+    currentGateway().name,
+  );
+  if (!sessionResolution.ok) {
+    return { ok: false, code: sessionResolution.code, message: sessionResolution.message };
+  }
+  const session = sessionResolution.session;
   const risk = getRiskState(ctx.tenantId, conv.channel);
   if (risk === "CAPPED" && !(await conversationHasHistory(ctx, conv.id))) {
     return { ok: false, code: "precondition_failed", message: riskBlockReason(risk) };
@@ -1057,7 +1079,14 @@ async function handleIngest(
 ): Promise<
   CommandResult<{ messageId: string | null; conversationId: string | null; exceptionId: string | null; duplicate: boolean }>
 > {
-  const sessionCheck = validateSessionForTenant(ctx.tenantId, input.session);
+  // S3a: DB-backed session guard (bound → strict; unbound + foreign-owned
+  // session → quarantine; otherwise legacy Map/env). Memory lane keeps the
+  // legacy sync check.
+  const ingestTrx = kyselyTrxOf(ctx);
+  const sessionCheck =
+    ingestTrx === null
+      ? validateSessionForTenant(ctx.tenantId, input.session)
+      : await checkInboundSessionWithTrx(ingestTrx, ctx.tenantId, input.session, validateSessionForTenant);
   if (!sessionCheck.ok) {
     const reason = `session mismatch: expected ${sessionCheck.expected}, got ${sessionCheck.observed}`;
     const trxForMismatch = kyselyTrxOf(ctx);
