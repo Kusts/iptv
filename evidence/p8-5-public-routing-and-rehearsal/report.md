@@ -89,3 +89,21 @@ Nenhum `configure`, `test`, `webhook_ensure`, pedido, PIX, pagamento, liquidaç�
 
 Estado de engenharia: B3 + healthcheck prontos para PRs pequenos e separados (CI com DB pendente).
 Estado operacional: `BLOCKED_OPERATOR_ACTION` (Cloudflare/VPS, Infisical, deploy, PR). Nenhuma nova missão P8.6 necessária — retomar deste handoff.
+
+## Addendum 2026-10-31 — fatos consumados após autorização do operador
+
+1. **PRs mergeados.** `#115 fix/deploy/api-healthcheck-exec` MERGED (`562ac5b`, CI 8/8 verde: build/adversarial/outbox-050-role-guards/security-scans). `#116 feat/api/register-closed` MERGED (`3934c33`, CI verde; conflito de CHANGELOG resolvido via merge commit `e482225` mantendo as duas linhas). `main` atual: `3934c33`.
+2. **Causa raiz A PROVADA (não mais hipótese).** Dois conectores no túnel `iptv-staging` (`36b0d32e`): `4499dc4b` (v2026.10.1, `run_at` 19/10, `origin_ip 213.199.37.252` = Contabo VPS, container `iptv-staging-tunnel` Created 19/10 11:30:52 = `run_at`) e `f2a5fb2a` (v2026.10.6, origin `187.6.127.120` = host local do operador). DNS confirmado: ambos os hostnames CNAME para `36b0d32e.cfargotunnel.com`, proxied. Serviço systemd `cloudflared` na Contabo é de OUTRO túnel (`e21e6483`, `stg-pg`) e foi preservado.
+3. **Correção aplicada.** `docker stop -t 30 iptv-staging-tunnel` na Contabo (rollback: `docker start iptv-staging-tunnel`); API de conexões passou a listar 1 conector; saúde pública mudou para `scheduler: disabled`; web mudou de `len 6140` com marcador para `len 6761` sem marcador; requestId público correlacionado nos logs do container local (prova de origem correta).
+4. **Incidente de sonda.** 1 `POST /v1/auth/register` de teste retornou `201` (B3 ainda não implantada no staging), criando usuário `probe-b3@example.invalid`; removido em seguida via DELETE com CASCADE verificado (`credentials 0`, `sessions 0`).
+5. **Deploy em andamento no host local.** `main@3934c33`, `AUTH_REGISTER_CLOSED=1` anexado ao `.env.staging`, backup do compose em temp aprovado, build+recreate da `api` em curso. Pendente: healthy, `403` público, suite B2 (100+100), login de conta autorizada, Infisical, rehearsal Asaas.
+6. **Matriz de veredito atualizada.**
+
+| Gate | Status | Evidência |
+|---|---|---|
+| PUBLIC_TUNNEL_STABLE | PASS (parcial) | rota provada e corrigida (1 conector, requestId correlacionado); B2 completa (100+100) pendente |
+| PUBLIC_REGISTRATION_CLOSED | BLOCKED | B3 mergeada (3934c33), deploy em curso, sem prova pública ainda |
+| STAGING_API_HEALTHY | BLOCKED | recreate da api em curso, healthy pendente |
+| STAGING_VAULT_READY | BLOCKED | identidade/smoke pendentes |
+| ASAAS_SELF_SERVICE_SANDBOX_VALIDATED | BLOCKED | não executado |
+| FIRST_SALE_REHEARSAL_PASSED | BLOCKED | não executado |
