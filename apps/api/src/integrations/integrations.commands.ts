@@ -49,8 +49,9 @@ import {
  *
  * Probe Asaas (test): SOMENTE contra a allowlist fixa por environment
  * (`ASAAS_HOSTS`), NUNCA URL do cliente (o schema `strict()` rejeita
- * `baseUrl` e afins com 400). `GET /v3/webhooks?limit=1` com header
- * `access_token`, fallback `GET /v3/customers?limit=1`; timeout bounded
+ * `baseUrl` e afins com 400). `GET {host}/webhooks?limit=1` (o host da
+ * allowlist já termina com `/v3`) com header `access_token`, fallback
+ * `GET {host}/customers?limit=1`; timeout bounded
  * 8000ms via `AbortSignal.timeout`. Sucesso → `CONNECTED_READ_ONLY`;
  * falha → `TESTING` + `last_error_code` sanitizado
  * (`INVALID_CREDENTIALS` / `PROVIDER_UNAVAILABLE` / `TIMEOUT` — nunca corpo,
@@ -543,7 +544,7 @@ async function probeAsaas(input: { host: string; authToken: string }): Promise<A
     });
   let res: Response;
   try {
-    res = await run("/v3/webhooks?limit=1");
+    res = await run("/webhooks?limit=1");
   } catch (err) {
     return {
       ok: false,
@@ -560,7 +561,7 @@ async function probeAsaas(input: { host: string; authToken: string }): Promise<A
   // sem webhook; confirma identidade via leitura de customers.
   if (res.status === 404) {
     try {
-      const fallback = await run("/v3/customers?limit=1");
+      const fallback = await run("/customers?limit=1");
       if (fallback.ok) {
         return { ok: true };
       }
