@@ -526,11 +526,17 @@ async function handleConfigure(
 
 type AsaasProbeOutcome =
   | { ok: true }
-  | { ok: false; code: "INVALID_CREDENTIALS" | "PROVIDER_UNAVAILABLE" | "TIMEOUT" };
+  | {
+      ok: false;
+      code: "INVALID_CREDENTIALS" | "PROVIDER_CONTRACT_MISMATCH" | "PROVIDER_UNAVAILABLE" | "TIMEOUT";
+    };
 
 function probeErrorOfStatus(status: number): AsaasProbeOutcome {
   if (status === 401 || status === 403) {
     return { ok: false, code: "INVALID_CREDENTIALS" };
+  }
+  if (status === 404) {
+    return { ok: false, code: "PROVIDER_CONTRACT_MISMATCH" };
   }
   return { ok: false, code: "PROVIDER_UNAVAILABLE" };
 }
@@ -557,21 +563,11 @@ async function probeAsaas(input: { host: string; authToken: string }): Promise<A
   if (res.status === 401 || res.status === 403) {
     return { ok: false, code: "INVALID_CREDENTIALS" };
   }
-  // Fallback documentado (S2-RESEARCH-ASAAS): webhooks pode 404ar em contas
-  // sem webhook; confirma identidade via leitura de customers.
+  // The official collection contract is 200 with `data: []` when no webhook
+  // exists. A 404 is not proof of an empty list, even when `/customers` works;
+  // fail closed as an endpoint/environment contract mismatch.
   if (res.status === 404) {
-    try {
-      const fallback = await run("/customers?limit=1");
-      if (fallback.ok) {
-        return { ok: true };
-      }
-      return probeErrorOfStatus(fallback.status);
-    } catch (err) {
-      return {
-        ok: false,
-        code: err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError") ? "TIMEOUT" : "PROVIDER_UNAVAILABLE",
-      };
-    }
+    return { ok: false, code: "PROVIDER_CONTRACT_MISMATCH" };
   }
   return probeErrorOfStatus(res.status);
 }
@@ -905,25 +901,60 @@ function webhookManualMode(tenantKey: string): HttpException {
   );
 }
 
-function webhookProviderErrorOf(err: unknown): HttpException | CommandResult<WebhookEnsureResult> {
+export function webhookProviderErrorOf(err: unknown): HttpException | CommandResult<WebhookEnsureResult> {
   if (err instanceof AsaasWebhookError) {
-    if (err.status === 401 || err.status === 403) {
+    const phase =
+      err.step === "list" ? "webhook list" : err.step === "create" ? "webhook create" : "webhook update";
+    if (err.code === "INVALID_CREDENTIALS") {
       return {
         ok: false,
         code: "precondition_failed",
-        message:
-          "asaas rejected the vaulted API credential (INVALID_CREDENTIALS); rotate via integration.configure and retry",
+        message: `asaas rejected the vaulted API credential during ${phase} (INVALID_CREDENTIALS); rotate via integration.configure and retry`,
       };
     }
-    if (typeof err.status === "number" && err.status >= 400 && err.status < 500) {
+    if (err.status === 404 && err.code === "PROVIDER_CONTRACT_MISMATCH") {
       return {
         ok: false,
         code: "precondition_failed",
-        message: `asaas refused the webhook save with status ${err.status} (check the binding credential/environment and retry)`,
+        message: `asaas ${phase} returned undocumented HTTP 404 (PROVIDER_CONTRACT_MISMATCH); verify the API contract and environment before retry`,
+      };
+    }
+    if (err.code === "WEBHOOK_RESOURCE_NOT_FOUND") {
+      return {
+        ok: false,
+        code: "precondition_failed",
+        message: `asaas ${phase} target was not found (WEBHOOK_RESOURCE_NOT_FOUND); verify provider state before retry`,
+      };
+    }
+    if (err.code === "PROVIDER_REQUEST_REJECTED") {
+      return {
+        ok: false,
+        code: "precondition_failed",
+        message: `asaas refused ${phase} with status ${err.status} (PROVIDER_REQUEST_REJECTED); check the binding environment and provider contract`,
+      };
+    }
+    if (err.code === "PROVIDER_CONTRACT_MISMATCH") {
+      const message =
+        err.step === "list"
+          ? `asaas ${phase} response did not match the expected contract (PROVIDER_CONTRACT_MISMATCH); verify the provider contract before retry`
+          : `asaas ${phase} response did not confirm the provider ID (PROVIDER_CONTRACT_MISMATCH); the write effect may have occurred, verify provider state before retry`;
+      throw new HttpException(
+        {
+          code: "PROVIDER_UNAVAILABLE",
+          message,
+        },
+        503,
+      );
+    }
+    if (err.code === "PROVIDER_RATE_LIMITED") {
+      return {
+        ok: false,
+        code: "precondition_failed",
+        message: `asaas ${phase} was rate limited (PROVIDER_RATE_LIMITED); retry later`,
       };
     }
     throw new HttpException(
-      { code: "PROVIDER_UNAVAILABLE", message: "asaas webhook API unavailable; retry later" },
+      { code: "PROVIDER_UNAVAILABLE", message: `asaas ${phase} API unavailable (PROVIDER_UNAVAILABLE); retry later` },
       503,
     );
   }

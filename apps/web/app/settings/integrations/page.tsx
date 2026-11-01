@@ -88,6 +88,8 @@ const CAPABILITY_LABELS: Record<string, string> = {
 const RESOLUTION_HINTS: Record<string, string> = {
   INVALID_CREDENTIALS:
     "Credenciais inválidas. Confira a chave de API (Asaas) ou o usuário e a senha (CINEVISION) e configure novamente.",
+  PROVIDER_CONTRACT_MISMATCH:
+    "A listagem de webhooks do Asaas respondeu fora do contrato esperado. Confirme o ambiente e solicite revisão da integração antes de tentar novamente.",
   PROVIDER_UNAVAILABLE: "Provedor indisponível. Aguarde alguns instantes e use Testar novamente.",
   TIMEOUT: "Tempo esgotado ao falar com o provedor. Tente Testar novamente.",
   REAUTH_REQUIRED: "Reautorização necessária. Reconfigure a integração com credenciais válidas.",

@@ -4507,7 +4507,14 @@ describe("Operações de provider (fila + detalhe sanitizado)", () => {
     requestedAt: "2026-03-02T10:00:00.000Z",
     attempts: 1,
   };
-  const LIST = { operations: [SECRET_ROW, SYNTHETIC_ROW], limit: 20, offset: 0 };
+  const MANUAL_SUBSCRIPTION_ROW = {
+    ...SYNTHETIC_ROW,
+    id: "33333333-3333-4333-8333-333333333333",
+    action: "subscription.provision",
+    entityType: "subscription",
+    entityId: "44444444-4444-4444-8444-444444444444",
+  };
+  const LIST = { operations: [SECRET_ROW, SYNTHETIC_ROW, MANUAL_SUBSCRIPTION_ROW], limit: 20, offset: 0 };
 
   function detailOf(row: { id: string }) {
     return {
@@ -4534,12 +4541,16 @@ describe("Operações de provider (fila + detalhe sanitizado)", () => {
     return { user: { id: "u1", email: "op@tenant.com" }, activeTenant: { id: "t1" }, roleKeys: [], permissions };
   }
 
-  function stubProviderApi(permissions: string[]): { calls: string[] } {
+  function stubProviderApi(permissions: string[]): { calls: string[]; posts: Array<{ url: string; body: unknown }> } {
     const calls: string[] = [];
+    const posts: Array<{ url: string; body: unknown }> = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
         calls.push(`${init?.method ?? "GET"} ${url}`);
+        if (init?.method === "POST" && init.body !== undefined) {
+          posts.push({ url: String(url), body: JSON.parse(String(init.body)) as unknown });
+        }
         if (url.endsWith("/v1/auth/session")) return jsonResponse(200, sessionBody());
         if (url.endsWith("/v1/me")) return jsonResponse(200, meBody(permissions));
         if (url.includes("/v1/provider/operations/") && url.includes("/reconcile")) return jsonResponse(201, { status: "VERIFYING" });
@@ -4551,13 +4562,19 @@ describe("Operações de provider (fila + detalhe sanitizado)", () => {
           // receber o próprio detalhe, não o da linha secret-required.
           const parts = url.split("/v1/provider/operations/");
           const id = parts[1]?.split(/[/?]/)[0] ?? "";
-          return jsonResponse(200, detailOf(id === SYNTHETIC_ROW.id ? SYNTHETIC_ROW : SECRET_ROW));
+          const row =
+            id === MANUAL_SUBSCRIPTION_ROW.id
+              ? MANUAL_SUBSCRIPTION_ROW
+              : id === SYNTHETIC_ROW.id
+                ? SYNTHETIC_ROW
+                : SECRET_ROW;
+          return jsonResponse(200, detailOf(row));
         }
         if (url.includes("/v1/provider/operations")) return jsonResponse(200, LIST);
         return jsonResponse(404, { code: "NOT_FOUND" });
       }),
     );
-    return { calls };
+    return { calls, posts };
   }
 
   function renderPanel(): void {
@@ -4605,6 +4622,10 @@ describe("Operações de provider (fila + detalhe sanitizado)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Resolver" }));
     const dialog = await screen.findByRole("dialog");
     expect(dialog.textContent).toContain("Desfechos terminais (SUCCEEDED/FAILED) exigem readback conclusivo");
+    expect(within(dialog).queryByLabelText(/Referência externa CINEVISION/)).toBeNull();
+    expect(
+      (within(dialog).getByRole("button", { name: "Confirmar resolução" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
     // As opções vivem no select do dialog; fora dele o filtro de status tem
     // opções de mesmo nome (SUCCEEDED/FAILED/...). Para proveniência real o
     // servidor recusa SUCCEEDED E FAILED: sobra somente UNKNOWN.
@@ -4619,6 +4640,50 @@ describe("Operações de provider (fila + detalhe sanitizado)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Resolver" }));
     const syntheticDialog = await screen.findByRole("dialog");
     expect(within(syntheticDialog).getByRole("option", { name: "SUCCEEDED" })).toBeTruthy();
+    expect(within(syntheticDialog).queryByLabelText(/Referência externa CINEVISION/)).toBeNull();
+    expect(
+      (within(syntheticDialog).getByRole("button", { name: "Confirmar resolução" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("exige referência externa somente para resolver assinatura CINEVISION com sucesso", async () => {
+    window.localStorage.setItem("iptv.session_token", "tok-abc");
+    const { posts } = stubProviderApi(["provider.operation.read", "provider.operation.write"]);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText("subscription.provision")).toBeTruthy());
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Detalhe" })[2]!);
+    await waitFor(() => expect(screen.getByText(MANUAL_SUBSCRIPTION_ROW.id)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Resolver" }));
+    const dialog = await screen.findByRole("dialog");
+    const confirm = within(dialog).getByRole("button", { name: "Confirmar resolução" }) as HTMLButtonElement;
+
+    expect(within(dialog).getByText(/declaração manual do operador, não uma consulta ao fornecedor/)).toBeTruthy();
+    expect(within(dialog).queryByLabelText(/Referência externa CINEVISION/)).toBeNull();
+    expect((within(dialog).getByRole("combobox") as HTMLSelectElement).value).toBe("");
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(within(dialog).getByRole("combobox"), { target: { value: "SUCCEEDED" } });
+    const reference = within(dialog).getByLabelText(/Referência externa CINEVISION/) as HTMLInputElement;
+    expect(reference.required).toBe(true);
+    expect(within(dialog).getByText(/O sistema não valida esse ID no fornecedor/)).toBeTruthy();
+    expect(within(dialog).getByText(/não inclua senhas ou tokens/)).toBeTruthy();
+    expect(confirm.disabled).toBe(true);
+
+    fireEvent.change(within(dialog).getByRole("combobox"), { target: { value: "FAILED" } });
+    expect(within(dialog).queryByLabelText(/Referência externa CINEVISION/)).toBeNull();
+    fireEvent.change(within(dialog).getByRole("combobox"), { target: { value: "SUCCEEDED" } });
+    const resetReference = within(dialog).getByLabelText(/Referência externa CINEVISION/) as HTMLInputElement;
+    expect(resetReference.value).toBe("");
+
+    fireEvent.change(resetReference, { target: { value: "p86-test-cinevision-ref-123" } });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(screen.getByText("Resolução registrada.")).toBeTruthy());
+    expect(posts.find((post) => post.url.includes("/resolve"))?.body).toEqual({
+      outcome: "SUCCEEDED",
+      externalRef: "p86-test-cinevision-ref-123",
+    });
   });
 
   it("reconciliação e resolução chamam a API e avisam o operador", async () => {
