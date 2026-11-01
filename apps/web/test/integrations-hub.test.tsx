@@ -495,6 +495,19 @@ describe("IntegrationsHubPage", () => {
     const card = screen.getByText("Asaas (Cobranças)").closest("section");
     expect(within(card as HTMLElement).getByText(/Confira a chave de API/)).toBeTruthy();
   });
+
+  it("código PROVIDER_CONTRACT_MISMATCH pede revisão de ambiente/contrato, sem sugerir conexão", async () => {
+    const withError = sampleList();
+    (withError.integrations[0] as Record<string, unknown>)["last_error_code"] = "PROVIDER_CONTRACT_MISMATCH";
+    (withError.integrations[0] as Record<string, unknown>)["connection_status"] = "TESTING";
+    installFetch({ permissions: fullPermissions(), integrations: withError });
+    renderPage(<IntegrationsHubPage />);
+    await waitFor(() => expect(screen.getByText("Asaas (Cobranças)")).toBeTruthy());
+    const card = screen.getByText("Asaas (Cobranças)").closest("section");
+    expect(within(card as HTMLElement).getByText(/fora do contrato esperado/)).toBeTruthy();
+    expect(within(card as HTMLElement).getByText("TESTING")).toBeTruthy();
+    expect(within(card as HTMLElement).queryByText(/CONNECTED_READ_ONLY/)).toBeNull();
+  });
 });
 
 describe("AsaasWizard (S2B, #86)", () => {

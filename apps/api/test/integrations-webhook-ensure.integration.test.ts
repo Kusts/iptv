@@ -4,13 +4,16 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { NestFactory } from "@nestjs/core";
 import type { NestFastifyApplication } from "@nestjs/platform-fastify";
+import { HttpException } from "@nestjs/common";
 import { createDb, applyMigrations } from "@iptv/database";
-import { newId } from "@iptv/domain";
+import { commandResultHttpStatus, newId } from "@iptv/domain";
 import { SecretsError, buildIntegrationSecretRef, type SecretsWriterPort } from "@iptv/secrets";
 import { AppModule } from "../src/app.module.js";
+import { AsaasWebhookError, RealAsaasAdapter } from "../src/billing/asaas-port.js";
 import {
   __resetIntegrationTestDoubles,
   __setIntegrationTestDoubles,
+  webhookProviderErrorOf,
 } from "../src/integrations/integrations.commands.js";
 import { createFastifyAdapter, registerRequestIdHook } from "../src/request-id.js";
 
@@ -769,5 +772,271 @@ describe.skipIf(!hasDb)("integrations webhook_ensure provisioning (requires TEST
       payload: { event: "PAYMENT_RECEIVED", payment: { id: "pay_s5b_final2" } },
     });
     expect(converged.statusCode).toBe(202);
+  });
+});
+
+/**
+ * P86-E2: erro tipado preserva a etapa sem payload bruto e o mapeamento
+ * distingue 404 de LIST (endpoint/contrato) de 404 de CREATE (endpoint) e de
+ * UPDATE (recurso). Suite sem DB/rede: adapter real com fetch mockado +
+ * `webhookProviderErrorOf` exportado; nenhum checkout financeiro, nenhum write
+ * real, nenhum segredo.
+ */
+describe("webhook_ensure provider error stage mapping (P86-E2, no DB)", () => {
+  const HOST = "https://api-sandbox.asaas.com/v3";
+  const API_KEY = "s2a-synthetic-asaas-eee111";
+  const AUTH_TOKEN = "s2a-synthetic-webhook-token-eee111";
+  const CANONICAL_URL = "https://app.example.test/v1/webhooks/asaas/asaas-abc123";
+  const KNOWN_ID = "wh_s2a_e2stage";
+
+  function fetchWith(status: number, body: unknown = { denied: true }): typeof fetch {
+    return (async () =>
+      new Response(typeof body === "string" ? body : JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof fetch;
+  }
+
+  function fetchTransport(): typeof fetch {
+    return (async () => {
+      throw Object.assign(new Error("s2a synthetic timeout"), { name: "TimeoutError" });
+    }) as unknown as typeof fetch;
+  }
+
+  function saveInput() {
+    return {
+      host: HOST,
+      apiKey: API_KEY,
+      name: "iptv-asaas-tenant",
+      url: CANONICAL_URL,
+      email: "ops@example.test",
+      authToken: AUTH_TOKEN,
+    };
+  }
+
+  function expectSanitized(text: string): void {
+    expect(text).not.toContain(API_KEY);
+    expect(text).not.toContain(AUTH_TOKEN);
+    expect(text).not.toContain(CANONICAL_URL);
+    expect(text).not.toContain(KNOWN_ID);
+    expect(text).not.toContain("denied");
+  }
+
+  it("404 no LIST preserva etapa list e fala de endpoint/contrato (nunca save)", async () => {
+    const port = new RealAsaasAdapter();
+    let failure: unknown = null;
+    try {
+      await port.listWebhooks?.({ host: HOST, apiKey: API_KEY, fetchFn: fetchWith(404) });
+    } catch (err) {
+      failure = err;
+    }
+    expect(failure).toBeInstanceOf(AsaasWebhookError);
+    const typed = failure as AsaasWebhookError;
+    expect(typed.status).toBe(404);
+    expect(typed.step).toBe("list");
+    expect(typed.code).toBe("PROVIDER_CONTRACT_MISMATCH");
+    expectSanitized(typed.message);
+
+    const mapped = webhookProviderErrorOf(typed);
+    expect(mapped instanceof HttpException).toBe(false);
+    if (mapped instanceof HttpException) {
+      throw new Error("expected a CommandResult, got HttpException");
+    }
+    expect(mapped.ok).toBe(false);
+    if (mapped.ok) {
+      throw new Error("expected a failure result");
+    }
+    expect(mapped.code).toBe("precondition_failed");
+    expect(commandResultHttpStatus(mapped)).toBe(409);
+    expect(mapped.message).toMatch(/list/i);
+    expect(mapped.message).toMatch(/PROVIDER_CONTRACT_MISMATCH/);
+    expect(mapped.message).not.toMatch(/save/i);
+    expectSanitized(JSON.stringify(mapped));
+  });
+
+  it("404 no CREATE preserva etapa create e fala de endpoint/contrato", async () => {
+    const port = new RealAsaasAdapter();
+    let failure: unknown = null;
+    try {
+      await port.createWebhook?.({ ...saveInput(), fetchFn: fetchWith(404) });
+    } catch (err) {
+      failure = err;
+    }
+    expect(failure).toBeInstanceOf(AsaasWebhookError);
+    const typed = failure as AsaasWebhookError;
+    expect(typed.status).toBe(404);
+    expect(typed.step).toBe("create");
+    expect(typed.code).toBe("PROVIDER_CONTRACT_MISMATCH");
+    expectSanitized(typed.message);
+
+    const mapped = webhookProviderErrorOf(typed);
+    expect(mapped instanceof HttpException).toBe(false);
+    if (mapped instanceof HttpException || mapped.ok) {
+      throw new Error("expected a precondition_failed result");
+    }
+    expect(mapped.code).toBe("precondition_failed");
+    expect(commandResultHttpStatus(mapped)).toBe(409);
+    expect(mapped.message).toMatch(/create/i);
+    expect(mapped.message).toMatch(/PROVIDER_CONTRACT_MISMATCH/);
+    expectSanitized(JSON.stringify(mapped));
+  });
+
+  it("404 no UPDATE preserva etapa update e fala do recurso (nunca endpoint)", async () => {
+    const port = new RealAsaasAdapter();
+    let failure: unknown = null;
+    try {
+      await port.updateWebhook?.({ ...saveInput(), providerWebhookId: KNOWN_ID, fetchFn: fetchWith(404) });
+    } catch (err) {
+      failure = err;
+    }
+    expect(failure).toBeInstanceOf(AsaasWebhookError);
+    const typed = failure as AsaasWebhookError;
+    expect(typed.status).toBe(404);
+    expect(typed.step).toBe("update");
+    expect(typed.code).toBe("WEBHOOK_RESOURCE_NOT_FOUND");
+    expectSanitized(typed.message);
+
+    const mapped = webhookProviderErrorOf(typed);
+    expect(mapped instanceof HttpException).toBe(false);
+    if (mapped instanceof HttpException || mapped.ok) {
+      throw new Error("expected a precondition_failed result");
+    }
+    expect(mapped.code).toBe("precondition_failed");
+    expect(commandResultHttpStatus(mapped)).toBe(409);
+    expect(mapped.message).toMatch(/not found/i);
+    expect(mapped.message).toMatch(/WEBHOOK_RESOURCE_NOT_FOUND/);
+    expect(mapped.message).not.toMatch(/endpoint/i);
+    expectSanitized(JSON.stringify(mapped));
+  });
+
+  it("4xx fora de 404 distingue list de save sem vazar segredo", () => {
+    const listedError = new AsaasWebhookError(422, "webhook list rejected", "list");
+    const savedError = new AsaasWebhookError(422, "webhook save rejected", "create");
+    const limitedError = new AsaasWebhookError(429, "provider rate limited", "list");
+    expect(listedError.code).toBe("PROVIDER_REQUEST_REJECTED");
+    expect(savedError.code).toBe("PROVIDER_REQUEST_REJECTED");
+    expect(limitedError.code).toBe("PROVIDER_RATE_LIMITED");
+    const listed = webhookProviderErrorOf(listedError);
+    const saved = webhookProviderErrorOf(savedError);
+    const limited = webhookProviderErrorOf(limitedError);
+    expect(listed instanceof HttpException).toBe(false);
+    expect(saved instanceof HttpException).toBe(false);
+    expect(limited instanceof HttpException).toBe(false);
+    if (
+      listed instanceof HttpException || listed.ok ||
+      saved instanceof HttpException || saved.ok ||
+      limited instanceof HttpException || limited.ok
+    ) {
+      throw new Error("expected precondition_failed results");
+    }
+    expect(listed.message).toMatch(/webhook list/i);
+    expect(listed.message).not.toMatch(/webhook create|save/i);
+    expect(saved.message).toMatch(/webhook create/i);
+    expect(saved.message).toMatch(/PROVIDER_REQUEST_REJECTED/);
+    expect(limited.code).toBe("precondition_failed");
+    expect(limited.message).toMatch(/PROVIDER_RATE_LIMITED/);
+    expect(commandResultHttpStatus(listed)).toBe(409);
+    expect(commandResultHttpStatus(saved)).toBe(409);
+    expect(commandResultHttpStatus(limited)).toBe(409);
+    expectSanitized(JSON.stringify({ listed, saved, limited }));
+  });
+
+  it("401/403 continua INVALID_CREDENTIALS e transporte/malformada segue 503 sanitizado", async () => {
+    for (const status of [401, 403] as const) {
+      for (const step of ["list", "create", "update"] as const) {
+        const error = new AsaasWebhookError(status, "rejected", step);
+        expect(error.code).toBe("INVALID_CREDENTIALS");
+        const mapped = webhookProviderErrorOf(error);
+        if (mapped instanceof HttpException || mapped.ok) {
+          throw new Error("expected a precondition_failed result");
+        }
+        expect(mapped.message).toMatch(new RegExp(step));
+        expect(mapped.message).toMatch(/INVALID_CREDENTIALS/);
+      }
+    }
+
+    let serverError: unknown = null;
+    try {
+      webhookProviderErrorOf(new AsaasWebhookError(503, "provider unavailable", "update"));
+    } catch (err) {
+      serverError = err;
+    }
+    expect(serverError).toBeInstanceOf(HttpException);
+    if (!(serverError instanceof HttpException)) throw new Error("expected provider-unavailable exception");
+    expect(serverError.getStatus()).toBe(503);
+    const serverErrorPayload = JSON.stringify(serverError.getResponse());
+    expect(serverErrorPayload).toMatch(/webhook update/);
+    expect(serverErrorPayload).toMatch(/PROVIDER_UNAVAILABLE/);
+    expectSanitized(serverErrorPayload);
+
+    const port = new RealAsaasAdapter();
+    let malformedList: unknown = null;
+    try {
+      await port.listWebhooks?.({ host: HOST, apiKey: API_KEY, fetchFn: fetchWith(200, { noData: true }) });
+    } catch (err) {
+      malformedList = err;
+    }
+    expect(malformedList).toBeInstanceOf(AsaasWebhookError);
+    expect((malformedList as AsaasWebhookError).status).toBe("MALFORMED");
+    expect((malformedList as AsaasWebhookError).step).toBe("list");
+    expect((malformedList as AsaasWebhookError).code).toBe("PROVIDER_CONTRACT_MISMATCH");
+    let malformedListThrown: unknown = null;
+    try {
+      webhookProviderErrorOf(malformedList);
+    } catch (err) {
+      malformedListThrown = err;
+    }
+    expect(malformedListThrown).toBeInstanceOf(HttpException);
+    const malformedListPayload = JSON.stringify((malformedListThrown as HttpException).getResponse());
+    expect(malformedListPayload).toMatch(/webhook list/);
+    expect(malformedListPayload).toMatch(/contract/i);
+    expect(malformedListPayload).not.toMatch(/save/i);
+    expectSanitized(malformedListPayload);
+
+    let transport: unknown = null;
+    try {
+      await port.listWebhooks?.({ host: HOST, apiKey: API_KEY, fetchFn: fetchTransport() });
+    } catch (err) {
+      transport = err;
+    }
+    expect(transport).toBeInstanceOf(AsaasWebhookError);
+    expect((transport as AsaasWebhookError).step).toBe("list");
+    expect((transport as AsaasWebhookError).status).toBe("TRANSPORT");
+    expect((transport as AsaasWebhookError).code).toBe("PROVIDER_UNAVAILABLE");
+    let thrown: unknown = null;
+    try {
+      webhookProviderErrorOf(transport);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(HttpException);
+    expect((thrown as HttpException).getStatus()).toBe(503);
+    const transportPayload = JSON.stringify((thrown as HttpException).getResponse());
+    expect(transportPayload).toMatch(/webhook list/);
+    expectSanitized(transportPayload);
+
+    let malformed: unknown = null;
+    try {
+      await port.createWebhook?.({ ...saveInput(), fetchFn: fetchWith(200, { noId: true }) });
+    } catch (err) {
+      malformed = err;
+    }
+    expect(malformed).toBeInstanceOf(AsaasWebhookError);
+    expect((malformed as AsaasWebhookError).status).toBe("MALFORMED");
+    expect((malformed as AsaasWebhookError).step).toBe("create");
+    expect((malformed as AsaasWebhookError).code).toBe("PROVIDER_CONTRACT_MISMATCH");
+    let malformedThrown: unknown = null;
+    try {
+      webhookProviderErrorOf(malformed);
+    } catch (err) {
+      malformedThrown = err;
+    }
+    expect(malformedThrown).toBeInstanceOf(HttpException);
+    expect((malformedThrown as HttpException).getStatus()).toBe(503);
+    const payload = JSON.stringify((malformedThrown as HttpException).getResponse());
+    expect(payload).toMatch(/contract/i);
+    expect(payload).toMatch(/webhook create/i);
+    expect(payload).toMatch(/effect may have occurred/i);
+    expectSanitized(payload);
   });
 });

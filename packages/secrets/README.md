@@ -21,7 +21,11 @@ and the only place allowed to write tenant secrets (S1 self-service writer).
   value, so boot succeeds and secret consumption fails loudly.
 - `InfisicalSecretsAdapter` — env-gated Universal Auth login + raw secret
   read AND write (create POST with PATCH-on-409 upsert, DELETE by ref)
-  against the self-hosted Infisical instance.
+  against the self-hosted Infisical instance. Before `putSecret`, it idempotently
+  ensures the backend-derived provider folder under
+  `/integrations/<tenantId>/<provider>`; an existing/racing folder is accepted
+  only after an exact readback, and an unconfirmed folder fails closed before
+  secret bytes are sent.
 - `resolveSecretsPort(env)` — builds the Infisical adapter only when all four
   `INFISICAL_*` connection vars are present; otherwise the Noop port. Never
   throws for missing env (no boot crash).
@@ -105,6 +109,12 @@ The Browser Worker uses a separate `BROWSER_INFISICAL_SITE_URL` /
   `GET {site}/api/v3/secrets/raw/{secretName}?workspaceId=…&environment=…&secretPath=…`.
   Writes: `POST {site}/api/v3/secrets/raw/{secretName}` (create;
   `PATCH` on 409 for upsert) and `DELETE` with the same query params.
+  Folder setup uses `POST /api/v2/folders` with a backend-derived parent/name
+  and confirms the exact child via `GET /api/v2/folders` after duplicate or
+  ambiguous results. The machine identity needs folder read/create on the
+  tenant parent and secret read/create/edit/delete on the allowlisted provider
+  path (read, configure, compensation and rotation); scope these grants to the
+  intended environment and namespace rather than the whole project.
   The access token is cached in memory and refreshed 30s (or 10% of TTL)
   before expiry; a 401 triggers exactly one re-login + retry (reads and
   writes alike — no blind retries on 5xx/transport).
