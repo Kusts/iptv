@@ -267,6 +267,7 @@ describe.skipIf(!hasDb)("Scheduler tick end-to-end (requires TEST_DATABASE_URL)"
     const resolved = await bus.execute(actor(), "provider.resolve_operation", {
       operationId,
       outcome: "SUCCEEDED",
+      externalRef: "p86-test-subscription-ref-scheduler-seed",
     });
     if (!resolved.ok) {
       throw new Error(`provider resolve failed: ${JSON.stringify(resolved)}`);
@@ -539,6 +540,7 @@ describe.skipIf(!hasDb)("Scheduler tick end-to-end (requires TEST_DATABASE_URL)"
     const resolved = await bus.execute(actor(), "provider.resolve_operation", {
       operationId,
       outcome: "SUCCEEDED",
+      externalRef: "p86-test-subscription-ref-scheduler-stale",
     });
     if (!resolved.ok) {
       throw new Error(`provider resolve failed: ${JSON.stringify(resolved)}`);
