@@ -47,14 +47,24 @@ chmod 600 .env.infisical
 # Gerar e injetar cada segredo (substitui os REPLACE_ME):
 ENCRYPTION_KEY=$(openssl rand -hex 16)
 AUTH_SECRET=$(openssl rand -base64 32)
-PG_PASS=$(openssl rand -hex 32)
+# INFISICAL_POSTGRES_PASSWORD usa o nome exato esperado pelo compose.
+INFISICAL_POSTGRES_PASSWORD=$(openssl rand -hex 32)
 # Edite .env.infisical com esses 3 valores (editor, sem echo no historico
 # compartilhado; confira com `grep -c REPLACE_ME .env.infisical` == 0
 # para as 3 chaves obrigatorias).
+# SOMENTE bootstrap novo. Em recuperacao, nao gere/substitua estes valores:
+# restaure as referencias originais guardadas fora da VPS; sem a mesma
+# ENCRYPTION_KEY, pare e escale ao operador.
 ```
 
 Validacao: `grep -c REPLACE_ME .env.infisical` retorna 0 nas chaves
 obrigatorias; `stat -c %a .env.infisical` retorna `600`.
+Em upgrade/recuperacao, confirme que `INFISICAL_POSTGRES_DB` e
+`INFISICAL_POSTGRES_USER`/`INFISICAL_POSTGRES_PASSWORD` correspondem ao volume
+existente; nao substitua configuracao persistente pelos defaults do template.
+`ENCRYPTION_KEY` precisa ser a original; `AUTH_SECRET` tambem deve ser
+preservado para a recuperacao prevista. Rotacionar qualquer um deles exige um
+procedimento proprio, fora deste runbook.
 
 ## 3. Rechecar imagem antes do pull (latest move; tag+digest nao)
 
@@ -122,7 +132,17 @@ exatamente `https://infisical.synkroo.com.br`.
 
 Validacao: mesma checagem HTTPS da opcao A + certificado valido no browser.
 
-## 7. Backup do volume do postgres (rotina)
+## 7. Snapshot local do Postgres (nao e backup DR)
+
+O comando abaixo grava um dump SQL em claro no proprio host. Ele serve como
+snapshot operacional local, mas **nao** satisfaz recuperacao externa: nao
+copie esse arquivo em claro para fora da VPS nem conte-o como backup offsite.
+Para uma copia externa criptografada, reutilize `scripts/backup-dr.sh`
+(`backup` + `offsite-put`) conforme `docs/16-pilot-closure/P6-DR.md`, com um
+destino S3 compativel autorizado (`OFFSITE_S3_DEST`/`OFFSITE_S3_ENDPOINT`).
+O arquivo `BACKUP_CRYPTO_KEY_FILE` e distinto da `ENCRYPTION_KEY` do Infisical
+e deve permanecer em cofre separado dos arquivos de backup. O driver local de
+`offsite-put` e apenas simulacao e nao passa no gate externo.
 
 ```sh
 cd ~/infisical
@@ -143,6 +163,25 @@ docker compose --env-file .env.infisical -f docker-compose.infisical.yml exec -T
 
 Validacao do restore (em staging ou janela de manutencao): subir, checar
 `/api/status` == 200 e login admin funcional.
+
+### Conteudo minimo e prova de recuperacao Infisical
+
+Preserve, sem imprimir valores, a configuracao versionada do Compose/digest e
+as referencias dos seguintes campos de `.env.infisical`: `SITE_URL`,
+`ENCRYPTION_KEY`, `AUTH_SECRET`, `INFISICAL_POSTGRES_DB`,
+`INFISICAL_POSTGRES_USER` e `INFISICAL_POSTGRES_PASSWORD`. O template versionado
+`.env.infisical.example` contem apenas placeholders. Se SMTP for configurado,
+registre tambem os nomes dos campos necessarios, sem copiar valores para o
+backup ou relatorio.
+
+O `scripts/backup-dr.sh drill` valida o schema da plataforma IPTV e **nao** e
+prova de restore do banco Infisical. A prova especifica exige restaurar a
+copia criptografada em uma stack descartavel e isolada (sem tunel/rota publica),
+usar o mesmo digest e a mesma `ENCRYPTION_KEY`/`AUTH_SECRET`, confirmar
+`/api/status` e login administrativo, e ler um segredo sintetico de referencia
+previamente sem imprimir o valor. Confirme a integridade do ciphertext e do
+manifest antes do restore; a chave de backup, a `ENCRYPTION_KEY` e o dump nao
+podem ficar juntos na mesma copia.
 
 ## 8. Rollback
 

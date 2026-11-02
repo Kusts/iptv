@@ -114,6 +114,8 @@ export const resolveOperationInput = z.object({
   operationId: z.string().uuid(),
   outcome: z.enum(["SUCCEEDED", "FAILED", "UNKNOWN"]),
   note: z.string().trim().min(1).max(500).optional(),
+  /** Operator-reported provider identity for manual fulfillment; never a readback proof. */
+  externalRef: z.string().min(1).max(128).optional(),
 });
 
 export type ResolveOperationInput = z.infer<typeof resolveOperationInput>;
@@ -1084,6 +1086,18 @@ async function handleResolve(
       message: `operation is already ${operation.status}`,
     };
   }
+  const observedStatus = operation.status;
+  const isSuccessfulSubscriptionFulfillment =
+    operation.action === "subscription.provision" &&
+    operation.entityType === "subscription" &&
+    input.outcome === "SUCCEEDED";
+  if (input.externalRef !== undefined && !isSuccessfulSubscriptionFulfillment) {
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: "external reference is only accepted for successful manual subscription fulfillment",
+    };
+  }
   if (input.outcome === "UNKNOWN") {
     // FASE5-FIX4-N4 (SPEC §16): the park is fenced on the status observed
     // at read time — a concurrent `reconcileOnce` convergence (CAS-fenced
@@ -1093,7 +1107,6 @@ async function handleResolve(
     // Snapshot the observation BEFORE the write: on the memory store
     // `operation` is a live row reference, so a concurrent move would
     // otherwise rewrite both the fence predicate and the loser message.
-    const observedStatus = operation.status;
     const updated = await updateProviderOperation(
       ctx,
       operation.id,
@@ -1140,15 +1153,51 @@ async function handleResolve(
       message: "secret-required operations resolve only via provider.reconcile with conclusive readback",
     };
   }
+  let safeExternalRef: string | null = null;
+  if (isSuccessfulSubscriptionFulfillment) {
+    // This is an operator attestation for the legacy manual path, not an
+    // independently verified provider readback. The external reference is
+    // syntactically projected and persisted for audit/binding only. Real
+    // secret-required operations remain terminalizable only by reconcile.
+    const projected = projectSecretPortResult({
+      outcome: input.outcome,
+      detail: "",
+      externalRef: input.externalRef ?? null,
+    });
+    if (input.externalRef === undefined || projected.externalRefInvalid || projected.safeExternalRef === null) {
+      return {
+        ok: false,
+        code: "precondition_failed",
+        message: "successful subscription resolution requires a valid provider external reference",
+      };
+    }
+    safeExternalRef = projected.safeExternalRef;
+  }
   const terminal = input.outcome;
   const effectCertainty = terminal === "SUCCEEDED" ? "KNOWN_APPLIED" : "KNOWN_NOT_APPLIED";
-  await updateProviderOperation(ctx, operation.id, {
-    status: terminal,
-    effectCertainty,
-    resultSummary: { ...(operation.resultSummary ?? {}), resolve_note: input.note ?? null },
-    started: true,
-    completed: true,
-  });
+  const updated = await updateProviderOperation(
+    ctx,
+    operation.id,
+    {
+      status: terminal,
+      effectCertainty,
+      resultSummary: {
+        ...(operation.resultSummary ?? {}),
+        ...(safeExternalRef !== null ? { external_ref: safeExternalRef } : {}),
+        resolve_note: input.note ?? null,
+      },
+      started: true,
+      completed: true,
+    },
+    { expectedStatuses: [observedStatus] },
+  );
+  if (updated === null) {
+    return {
+      ok: false,
+      code: "precondition_failed",
+      message: `operation changed concurrently (observed ${observedStatus}); refresh against current state`,
+    };
+  }
   await insertProviderAttempt(ctx, { operationId: operation.id, status: terminal });
   await emitProvider(ctx, {
     eventType: terminal === "SUCCEEDED" ? "provider.operation_succeeded.v1" : "provider.operation_failed.v1",

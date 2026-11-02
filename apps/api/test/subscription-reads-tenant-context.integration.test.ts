@@ -325,6 +325,7 @@ describe.skipIf(!hasDb)("Subscription reads under iptv_app (requires TEST_DATABA
       operationId,
       outcome: "SUCCEEDED",
       note: "reads-test manual activation",
+      externalRef: "p86-test-subscription-ref-reads",
     });
     expect(resolved.ok).toBe(true);
     const active = await injectRaw({ method: "GET", url: `/v1/subscriptions/${subscriptionId}` });

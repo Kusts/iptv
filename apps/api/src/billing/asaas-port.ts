@@ -193,18 +193,50 @@ export interface AsaasWebhookSaveResult {
 }
 
 /**
+ * Webhook provisioning step. Preserved on every typed failure so callers can
+ * distinguish a LIST problem (endpoint/contract) from a SAVE problem
+ * (create endpoint vs. update target) without ever carrying the raw payload.
+ */
+export type AsaasWebhookStep = "list" | "create" | "update";
+
+export type AsaasWebhookFailureCode =
+  | "INVALID_CREDENTIALS"
+  | "WEBHOOK_RESOURCE_NOT_FOUND"
+  | "PROVIDER_REQUEST_REJECTED"
+  | "PROVIDER_RATE_LIMITED"
+  | "PROVIDER_CONTRACT_MISMATCH"
+  | "PROVIDER_UNAVAILABLE";
+
+function webhookFailureCodeOf(
+  status: number | "TRANSPORT" | "MALFORMED",
+  step: AsaasWebhookStep,
+): AsaasWebhookFailureCode {
+  if (status === 401 || status === 403) return "INVALID_CREDENTIALS";
+  if (status === 404) return step === "update" ? "WEBHOOK_RESOURCE_NOT_FOUND" : "PROVIDER_CONTRACT_MISMATCH";
+  if (status === "MALFORMED") return "PROVIDER_CONTRACT_MISMATCH";
+  if (status === "TRANSPORT" || (typeof status === "number" && status >= 500)) return "PROVIDER_UNAVAILABLE";
+  if (status === 429) return "PROVIDER_RATE_LIMITED";
+  return "PROVIDER_REQUEST_REJECTED";
+}
+
+/**
  * Typed provisioning failure. `status` is the provider HTTP status, or
  * `TRANSPORT` (timeout/network), or `MALFORMED` (2xx without a usable `id` —
- * effect unknown). `detail` carries the status only — never the response
- * body, the authToken, or any header.
+ * effect unknown). `step` is the provisioning phase that failed. `detail`
+ * carries the status only — never the response body, the authToken, any
+ * header, an external id, or a URL.
  */
 export class AsaasWebhookError extends Error {
   readonly status: number | "TRANSPORT" | "MALFORMED";
+  readonly step: AsaasWebhookStep;
+  readonly code: AsaasWebhookFailureCode;
 
-  constructor(status: number | "TRANSPORT" | "MALFORMED", detail: string) {
+  constructor(status: number | "TRANSPORT" | "MALFORMED", detail: string, step: AsaasWebhookStep) {
     super(`asaas webhook: ${detail}`);
     this.name = "AsaasWebhookError";
     this.status = status;
+    this.step = step;
+    this.code = webhookFailureCodeOf(status, step);
   }
 }
 
@@ -1132,7 +1164,7 @@ export class RealAsaasAdapter implements AsaasPort {
         signal: AbortSignal.timeout(ASAAS_WEBHOOK_TIMEOUT_MS),
       });
     } catch {
-      throw new AsaasWebhookError("TRANSPORT", "webhook list transport error (retry later)");
+      throw new AsaasWebhookError("TRANSPORT", "webhook list transport error (retry later)", "list");
     }
     let json: unknown = null;
     try {
@@ -1141,7 +1173,7 @@ export class RealAsaasAdapter implements AsaasPort {
       json = null;
     }
     if (!res.ok) {
-      throw new AsaasWebhookError(res.status, `webhook list rejected with status ${res.status}`);
+      throw new AsaasWebhookError(res.status, `webhook list rejected with status ${res.status}`, "list");
     }
     return { ok: res.ok, status: res.status, json };
   }
@@ -1153,6 +1185,7 @@ export class RealAsaasAdapter implements AsaasPort {
     body: Record<string, unknown>,
     fetchImpl?: typeof fetch,
   ): Promise<{ ok: boolean; status: number; json: unknown }> {
+    const step: AsaasWebhookStep = method === "PUT" ? "update" : "create";
     let res: Response;
     try {
       res = await (fetchImpl ?? this.fetchImpl)(url, {
@@ -1162,7 +1195,7 @@ export class RealAsaasAdapter implements AsaasPort {
         signal: AbortSignal.timeout(ASAAS_WEBHOOK_TIMEOUT_MS),
       });
     } catch {
-      throw new AsaasWebhookError("TRANSPORT", "webhook save transport error (retry later)");
+      throw new AsaasWebhookError("TRANSPORT", "webhook save transport error (retry later)", step);
     }
     let json: unknown = null;
     try {
@@ -1171,7 +1204,7 @@ export class RealAsaasAdapter implements AsaasPort {
       json = null;
     }
     if (!res.ok) {
-      throw new AsaasWebhookError(res.status, `webhook save rejected with status ${res.status}`);
+      throw new AsaasWebhookError(res.status, `webhook save rejected with status ${res.status}`, step);
     }
     return { ok: res.ok, status: res.status, json };
   }
@@ -1184,7 +1217,7 @@ export class RealAsaasAdapter implements AsaasPort {
     );
     const items = Array.isArray(json) ? json : asRecordOrNull(json)?.["data"];
     if (!Array.isArray(items)) {
-      throw new AsaasWebhookError("MALFORMED", "webhook list response without a data array");
+      throw new AsaasWebhookError("MALFORMED", "webhook list response without a data array", "list");
     }
     const webhooks: AsaasWebhookRecord[] = [];
     for (const item of items) {
@@ -1206,7 +1239,7 @@ export class RealAsaasAdapter implements AsaasPort {
       asaasWebhookSaveBody(input),
       input.fetchFn,
     );
-    return { id: webhookSaveIdOf(json) };
+    return { id: webhookSaveIdOf(json, "create") };
   }
 
   async updateWebhook(
@@ -1219,16 +1252,16 @@ export class RealAsaasAdapter implements AsaasPort {
       asaasWebhookSaveBody(input),
       input.fetchFn,
     );
-    return { id: webhookSaveIdOf(json) };
+    return { id: webhookSaveIdOf(json, "update") };
   }
 }
 
 /** Extract the provider webhook `id` from a save response (2xx without one = unknown effect). */
-function webhookSaveIdOf(json: unknown): string {
+function webhookSaveIdOf(json: unknown, step: AsaasWebhookStep): string {
   const record = asRecordOrNull(json);
   const id = typeof record?.["id"] === "string" ? (record["id"] as string).trim() : "";
   if (id.length === 0) {
-    throw new AsaasWebhookError("MALFORMED", "webhook save response without provider id");
+    throw new AsaasWebhookError("MALFORMED", "webhook save response without provider id", step);
   }
   return id;
 }

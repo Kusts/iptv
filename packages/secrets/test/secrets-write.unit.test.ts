@@ -117,10 +117,11 @@ describe("buildIntegrationSecretRef (backend-owned namespace)", () => {
 });
 
 describe("InfisicalSecretsAdapter.putSecret", () => {
-  it("creates the secret and returns the backend-owned ref", async () => {
+  it("creates the provider folder then the secret and returns the backend-owned ref", async () => {
     const debugMessages: string[] = [];
     const { calls, requests } = stubFetch([
       mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(200, { folder: { name: "asaas", path: "/integrations/tenant-1/asaas" } }),
       mockResponse(200, { secret: { secretKey: "ASAAS_API_KEY" } }),
     ]);
     const adapter = new InfisicalSecretsAdapter({
@@ -132,13 +133,21 @@ describe("InfisicalSecretsAdapter.putSecret", () => {
       ref: "infisical://sandbox/integrations/tenant-1/asaas/ASAAS_API_KEY",
       created: true,
     });
-    expect(calls).toHaveLength(2);
-    expect(calls[1]).toContain("/api/v3/secrets/raw/ASAAS_API_KEY");
-    const payload = bodyJson(requests[1]?.init);
+    expect(calls).toHaveLength(3);
+    // Folder creation comes before any secret write.
+    expect(calls[1]).toContain("/api/v2/folders");
+    expect(calls[2]).toContain("/api/v3/secrets/raw/ASAAS_API_KEY");
+    const folderPayload = bodyJson(requests[1]?.init);
+    expect(folderPayload["projectId"]).toBe("proj-123");
+    expect(folderPayload["environment"]).toBe("sandbox");
+    expect(folderPayload["path"]).toBe("/integrations/tenant-1");
+    expect(folderPayload["name"]).toBe("asaas");
+    expect(requests[1]?.init?.method).toBe("POST");
+    const payload = bodyJson(requests[2]?.init);
     expect(payload["workspaceId"]).toBe("proj-123");
     expect(payload["environment"]).toBe("sandbox");
     expect(payload["secretPath"]).toBe("/integrations/tenant-1/asaas");
-    expect(requests[1]?.init?.signal).toBeDefined();
+    expect(requests[2]?.init?.signal).toBeDefined();
     for (const m of debugMessages) {
       expect(m).not.toContain(WRITE_VALUE);
       expect(m).not.toContain("stub-token-1");
@@ -148,6 +157,7 @@ describe("InfisicalSecretsAdapter.putSecret", () => {
   it("lowercases the environment ONLY on the transport (uppercase ref preserved)", async () => {
     const { calls, requests } = stubFetch([
       mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(200, { folder: { name: "asaas", path: "/integrations/t/asaas" } }),
       mockResponse(200, { secret: { secretKey: "ASAAS_API_KEY" } }),
     ]);
     const adapter = new InfisicalSecretsAdapter(OPTIONS);
@@ -160,8 +170,13 @@ describe("InfisicalSecretsAdapter.putSecret", () => {
     });
     // Canonical ref keeps the original uppercase environment.
     expect(result.ref).toBe("infisical://SANDBOX/integrations/t/asaas/ASAAS_API_KEY");
-    expect(calls).toHaveLength(2);
-    const payload = bodyJson(requests[1]?.init);
+    expect(calls).toHaveLength(3);
+    const folderPayload = bodyJson(requests[1]?.init);
+    // Folder transport also uses the lowercase slug the server accepts.
+    expect(folderPayload["environment"]).toBe("sandbox");
+    expect(folderPayload["path"]).toBe("/integrations/t");
+    expect(folderPayload["name"]).toBe("asaas");
+    const payload = bodyJson(requests[2]?.init);
     // Transport body uses the lowercase slug the server accepts.
     expect(payload["environment"]).toBe("sandbox");
   });
@@ -169,6 +184,7 @@ describe("InfisicalSecretsAdapter.putSecret", () => {
   it("falls back to update on conflict (upsert, still one logical secret)", async () => {
     const { calls } = stubFetch([
       mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(200, { folder: { name: "asaas", path: "/integrations/tenant-1/asaas" } }),
       mockResponse(409, { message: "already exists" }),
       mockResponse(200, { secret: { secretKey: "ASAAS_API_KEY" } }),
     ]);
@@ -183,6 +199,7 @@ describe("InfisicalSecretsAdapter.putSecret", () => {
   it("falls back to update on 400 already-exists (v0.165.16 duplicate shape)", async () => {
     const { calls, requests } = stubFetch([
       mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(200, { folder: { name: "asaas", path: "/integrations/tenant-1/asaas" } }),
       mockResponse(400, { message: "Secret already exists with the provided key" }),
       mockResponse(200, { secret: { secretKey: "ASAAS_API_KEY" } }),
     ]);
@@ -200,6 +217,7 @@ describe("InfisicalSecretsAdapter.putSecret", () => {
   it("keeps other 400 create failures as SERVER (never masked as conflict)", async () => {
     stubFetch([
       mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(200, { folder: { name: "asaas", path: "/integrations/tenant-1/asaas" } }),
       mockResponse(400, { message: "environment is invalid" }),
     ]);
     const adapter = new InfisicalSecretsAdapter(OPTIONS);
@@ -212,7 +230,9 @@ describe("InfisicalSecretsAdapter.putSecret", () => {
   it("is idempotent for a stable request-id (same ref, no duplicate)", async () => {
     const { requests } = stubFetch([
       mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(200, { folder: { name: "asaas", path: "/integrations/tenant-1/asaas" } }),
       mockResponse(200, { secret: {} }),
+      mockResponse(200, { folder: { name: "asaas", path: "/integrations/tenant-1/asaas" } }),
       mockResponse(200, { secret: {} }),
     ]);
     const adapter = new InfisicalSecretsAdapter(OPTIONS);
@@ -254,6 +274,176 @@ describe("InfisicalSecretsAdapter.putSecret", () => {
     expect(err).toBeInstanceOf(SecretsError);
     expect((err as SecretsError).code).toBe("MALFORMED_REF");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("InfisicalSecretsAdapter.putSecret folder setup (idempotent, fail-closed)", () => {
+  const FOLDER_OK = { folder: { name: "asaas", path: "/integrations/tenant-1/asaas" } };
+  const REF = "infisical://sandbox/integrations/tenant-1/asaas/ASAAS_API_KEY";
+
+  it("duplicate folder (400) with confirmed readback proceeds to the secret write", async () => {
+    const { calls, requests } = stubFetch([
+      mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(400, { message: "Folder already exists" }),
+      // Infisical v0.165.16 non-recursive list rows have name/id/envId but no path fields.
+      mockResponse(200, { folders: [{ id: "folder-1", envId: "env-sandbox", name: "asaas", version: 1 }] }),
+      mockResponse(200, { secret: { secretKey: "ASAAS_API_KEY" } }),
+    ]);
+    const adapter = new InfisicalSecretsAdapter(OPTIONS);
+    const result = await adapter.putSecret({ ...TARGET, value: WRITE_VALUE });
+    expect(result).toEqual({ ref: REF, created: true });
+    // login + folder POST + folder GET readback + secret write.
+    expect(calls).toHaveLength(4);
+    expect(calls[1]).toContain("/api/v2/folders");
+    expect(calls[2]).toContain("/api/v2/folders?projectId=proj-123");
+    expect(calls[2]).toContain("path=%2Fintegrations%2Ftenant-1");
+    expect(calls[3]).toContain("/api/v3/secrets/raw/ASAAS_API_KEY");
+    const folderPost = bodyJson(requests[1]?.init);
+    expect(folderPost["projectId"]).toBe("proj-123");
+    expect(folderPost["environment"]).toBe("sandbox");
+    expect(folderPost["path"]).toBe("/integrations/tenant-1");
+    expect(folderPost["name"]).toBe("asaas");
+  });
+
+  it("duplicate folder without readback confirmation fails closed without a secret write", async () => {
+    const debugMessages: string[] = [];
+    const { calls } = stubFetch([
+      mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(400, { message: "Folder already exists, duplicate" }),
+      mockResponse(200, { folders: [{ id: "folder-other", envId: "env-sandbox", name: "other", version: 1 }] }),
+    ]);
+    const adapter = new InfisicalSecretsAdapter({
+      ...OPTIONS,
+      debug: (m) => debugMessages.push(m),
+    });
+    const err = await adapter.putSecret({ ...TARGET, value: WRITE_VALUE }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SecretsError);
+    expect((err as SecretsError).code).toBe("SERVER");
+    expect(calls.filter((c) => c.includes("/api/v3/secrets/raw/"))).toHaveLength(0);
+    expect((err as SecretsError).message).not.toContain(WRITE_VALUE);
+    expect((err as SecretsError).message).not.toContain("stub-token-1");
+    expect((err as SecretsError).message).not.toContain(REF);
+    for (const m of debugMessages) {
+      expect(m).not.toContain(WRITE_VALUE);
+      expect(m).not.toContain("stub-token-1");
+      expect(m).not.toContain(REF);
+    }
+  });
+
+  it("recursive or path-bearing readback shape is not accepted as direct-child confirmation", async () => {
+    const { calls } = stubFetch([
+      mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(400, { message: "Folder already exists" }),
+      mockResponse(200, {
+        folders: [{ id: "folder-foreign", envId: "env-sandbox", name: "asaas", relativePath: "/another-tenant/asaas" }],
+      }),
+    ]);
+    const adapter = new InfisicalSecretsAdapter(OPTIONS);
+    const err = await adapter.putSecret({ ...TARGET, value: WRITE_VALUE }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SecretsError);
+    expect((err as SecretsError).code).toBe("SERVER");
+    expect(calls.filter((call) => call.includes("/api/v3/secrets/raw/"))).toHaveLength(0);
+  });
+
+  it("non-duplicate folder 400 fails closed without a secret write (never masked)", async () => {
+    const { calls } = stubFetch([
+      mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(400, { message: "environment is invalid" }),
+    ]);
+    const adapter = new InfisicalSecretsAdapter(OPTIONS);
+    const err = await adapter.putSecret({ ...TARGET, value: WRITE_VALUE }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SecretsError);
+    expect((err as SecretsError).code).toBe("SERVER");
+    expect(calls.filter((c) => c.includes("/api/v3/secrets/raw/"))).toHaveLength(0);
+    expect((err as SecretsError).message).not.toContain(WRITE_VALUE);
+  });
+
+  it("unconfirmed POST success falls back to readback; readback miss fails closed", async () => {
+    const { calls } = stubFetch([
+      mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(200, { folder: { name: "unexpected", path: "/elsewhere" } }),
+      mockResponse(200, { folders: [] }),
+    ]);
+    const adapter = new InfisicalSecretsAdapter(OPTIONS);
+    const err = await adapter.putSecret({ ...TARGET, value: WRITE_VALUE }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SecretsError);
+    expect((err as SecretsError).code).toBe("SERVER");
+    expect(calls.filter((c) => c.includes("/api/v3/secrets/raw/"))).toHaveLength(0);
+  });
+
+  it("folder read transport failure fails closed; external retry converges after the race", async () => {
+    const timeout = new Error("timed out");
+    timeout.name = "TimeoutError";
+    const { calls } = stubFetch([
+      mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(400, { message: "Folder already exists" }),
+      timeout,
+      // External retry: the racy folder now exists and is confirmed.
+      mockResponse(400, { message: "Folder already exists" }),
+      mockResponse(200, { folders: [{ id: "folder-1", envId: "env-sandbox", name: "asaas", version: 1 }] }),
+      mockResponse(200, { secret: { secretKey: "ASAAS_API_KEY" } }),
+    ]);
+    const adapter = new InfisicalSecretsAdapter(OPTIONS);
+    const first = await adapter.putSecret({ ...TARGET, value: WRITE_VALUE }).catch((e: unknown) => e);
+    expect(first).toBeInstanceOf(SecretsError);
+    expect((first as SecretsError).code).toBe("TRANSPORT");
+    expect(calls.filter((c) => c.includes("/api/v3/secrets/raw/"))).toHaveLength(0);
+    const second = await adapter.putSecret({ ...TARGET, value: WRITE_VALUE });
+    expect(second).toEqual({ ref: REF, created: true });
+    expect(calls.filter((c) => c.includes("/api/v3/secrets/raw/"))).toHaveLength(1);
+  });
+
+  it("folder failure never leaks secret, token or ref in errors/logs", async () => {
+    const debugMessages: string[] = [];
+    const { calls } = stubFetch([
+      mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(500, { message: "down" }),
+    ]);
+    const adapter = new InfisicalSecretsAdapter({
+      ...OPTIONS,
+      debug: (m) => debugMessages.push(m),
+    });
+    const err = await adapter.putSecret({ ...TARGET, value: WRITE_VALUE }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SecretsError);
+    expect(calls.filter((c) => c.includes("/api/v3/secrets/raw/"))).toHaveLength(0);
+    const msg = (err as SecretsError).message;
+    expect(msg).not.toContain(WRITE_VALUE);
+    expect(msg).not.toContain("stub-token-1");
+    expect(msg).not.toContain(REF);
+    expect(msg).not.toContain("tenant-1");
+    for (const m of debugMessages) {
+      expect(m).not.toContain(WRITE_VALUE);
+      expect(m).not.toContain("stub-token-1");
+      expect(m).not.toContain(REF);
+    }
+  });
+
+  it("rejects traversal tenant ids for folder setup without any network call", async () => {
+    const { calls } = stubFetch([]);
+    const adapter = new InfisicalSecretsAdapter(OPTIONS);
+    const err = await adapter
+      .putSecret({ ...TARGET, tenantId: "..", value: WRITE_VALUE })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SecretsError);
+    expect((err as SecretsError).code).toBe("MALFORMED_REF");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("accepts the official non-recursive direct-child list shape scoped to the parent", async () => {
+    const { calls } = stubFetch([
+      mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(409, { message: "duplicate folder" }),
+      mockResponse(200, { folders: [{ id: "folder-1", envId: "env-sandbox", name: "asaas", version: 1 }] }),
+      mockResponse(200, { secret: { secretKey: "ASAAS_API_KEY" } }),
+    ]);
+    const adapter = new InfisicalSecretsAdapter(OPTIONS);
+    const result = await adapter.putSecret({ ...TARGET, value: WRITE_VALUE });
+    expect(result).toEqual({ ref: REF, created: true });
+    expect(calls.filter((c) => c.includes("/api/v3/secrets/raw/"))).toHaveLength(1);
+  });
+
+  it("uses the FOLDER_OK shape without leaking unrelated test state", async () => {
+    expect(FOLDER_OK.folder.path).toBe("/integrations/tenant-1/asaas");
   });
 });
 
@@ -344,7 +534,9 @@ describe("rotateSecret (orchestrated domain flow)", () => {
   it("stages, probes, cuts over and cleans the stage on success", async () => {
     const { adapter, calls } = queuedAdapter([
       mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(200, { folder: { name: "asaas", path: "/integrations/tenant-1/asaas" } }),
       mockResponse(200, { secret: {} }),
+      mockResponse(200, { folder: { name: "asaas", path: "/integrations/tenant-1/asaas" } }),
       mockResponse(200, { secret: {} }),
       mockResponse(200, {}),
     ]);
@@ -362,14 +554,15 @@ describe("rotateSecret (orchestrated domain flow)", () => {
     );
     expect(probedRef).toBe(result.stagedRef);
     const writes = calls.filter((c) => c.includes("/api/v3/secrets/raw/"));
-    // stage put + cutover put + stage delete = 3 secret calls (+1 login).
+    // stage put + cutover put + stage delete = 3 secret calls (+1 login +2 folder setups).
     expect(writes).toHaveLength(3);
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(6);
   });
 
   it("failed probe never cuts over: live ref preserved, stage cleaned", async () => {
     const { adapter, calls } = queuedAdapter([
       mockResponse(200, { accessToken: "stub-token-1", expiresIn: 7200 }),
+      mockResponse(200, { folder: { name: "asaas", path: "/integrations/tenant-1/asaas" } }),
       mockResponse(200, { secret: {} }),
       mockResponse(200, {}),
     ]);

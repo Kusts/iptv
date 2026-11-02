@@ -371,15 +371,74 @@ describe.skipIf(!hasDb)("Wave 6 Subscriptions + Fulfillment (requires TEST_DATAB
     }
     expect(requested.data.status).toBe("HUMAN_REQUIRED");
     expect(requested.data.subscriptionStatus).toBe("PENDING_ACTIVATION");
+    const operationBeforeResolve = await db
+      .selectFrom("provider.provider_operations")
+      .select(["status", "result_summary_json"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", requested.data.operationId)
+      .executeTakeFirstOrThrow();
+    expect(operationBeforeResolve.status).toBe("HUMAN_REQUIRED");
+    expect(
+      await db
+        .selectFrom("provider.provider_bindings")
+        .select(["id"])
+        .where("tenant_id", "=", tenantId)
+        .where("entity_type", "=", "subscription")
+        .where("entity_id", "=", subscriptionId)
+        .execute(),
+    ).toHaveLength(0);
 
-    const resolved = await bus.execute<{ status: string }>(actor(), "provider.resolve_operation", {
+    const missingExternalRef = await bus.execute(actor(), "provider.resolve_operation", {
       operationId: requested.data.operationId,
       outcome: "SUCCEEDED",
     });
-    if (!resolved.ok) {
-      throw new Error(`provider resolve failed: ${JSON.stringify(resolved)}`);
+    expect(missingExternalRef).toMatchObject({ ok: false, code: "precondition_failed" });
+
+    const unsafeExternalRef = await bus.execute(actor(), "provider.resolve_operation", {
+      operationId: requested.data.operationId,
+      outcome: "SUCCEEDED",
+      externalRef: "infisical://sandbox/p86-test-ref",
+    });
+    expect(unsafeExternalRef).toMatchObject({ ok: false, code: "precondition_failed" });
+    expect(JSON.stringify(unsafeExternalRef)).not.toContain("infisical://");
+
+    const remainsPending = await db
+      .selectFrom("subscription.subscriptions")
+      .select(["status"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", subscriptionId)
+      .executeTakeFirstOrThrow();
+    expect(remainsPending.status).toBe("PENDING_ACTIVATION");
+    const operationAfterRejectedResolves = await db
+      .selectFrom("provider.provider_operations")
+      .select(["status", "result_summary_json"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", requested.data.operationId)
+      .executeTakeFirstOrThrow();
+    expect(operationAfterRejectedResolves).toEqual(operationBeforeResolve);
+
+    const externalRefs = ["p86-test-cinevision-ref-123", "p86-test-cinevision-ref-456"] as const;
+    const [resolveA, resolveB] = await Promise.all([
+      bus.execute<{ status: string }>(actor(), "provider.resolve_operation", {
+        operationId: requested.data.operationId,
+        outcome: "SUCCEEDED",
+        externalRef: externalRefs[0],
+      }),
+      bus.execute<{ status: string }>(actor(), "provider.resolve_operation", {
+        operationId: requested.data.operationId,
+        outcome: "SUCCEEDED",
+        externalRef: externalRefs[1],
+      }),
+    ]);
+    expect(resolveA.ok).not.toBe(resolveB.ok);
+    const successfulResolve = resolveA.ok ? resolveA : resolveB;
+    const rejectedResolve = resolveA.ok ? resolveB : resolveA;
+    if (!successfulResolve.ok) {
+      throw new Error(`provider resolve failed: ${JSON.stringify(successfulResolve)}`);
     }
-    expect(resolved.data.status).toBe("SUCCEEDED");
+    expect(successfulResolve.data.status).toBe("SUCCEEDED");
+    expect(rejectedResolve).toMatchObject({ ok: false, code: "precondition_failed" });
+    const winningExternalRef = resolveA.ok ? externalRefs[0] : externalRefs[1];
 
     const active = await db
       .selectFrom("subscription.subscriptions")
@@ -427,14 +486,31 @@ describe.skipIf(!hasDb)("Wave 6 Subscriptions + Fulfillment (requires TEST_DATAB
 
     const bindings = await db
       .selectFrom("provider.provider_bindings")
-      .select(["id"])
+      .select(["id", "external_id"])
       .where("tenant_id", "=", tenantId)
       .where("entity_type", "=", "subscription")
       .where("entity_id", "=", subscriptionId)
       .execute();
-    // Manual handling has no provider-side external id yet, so no binding
-    // row is fabricated — the postcondition lives in provider_evidence.
-    expect(bindings).toHaveLength(0);
+    // The operator reference is stored on the operation and binds the exact
+    // subscription; no binding is fabricated before the manual resolution.
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]?.external_id).toBe(winningExternalRef);
+
+    const replay = await bus.execute(actor(), "provider.resolve_operation", {
+      operationId: requested.data.operationId,
+      outcome: "SUCCEEDED",
+      externalRef: winningExternalRef,
+    });
+    expect(replay).toMatchObject({ ok: false, code: "precondition_failed" });
+    expect(
+      await db
+        .selectFrom("provider.provider_bindings")
+        .select(["id"])
+        .where("tenant_id", "=", tenantId)
+        .where("entity_type", "=", "subscription")
+        .where("entity_id", "=", subscriptionId)
+        .execute(),
+    ).toHaveLength(1);
 
     // Credential notification: system-originated INTERNAL record, delivery
     // QUEUED behind the manual gateway — never a real secret.
