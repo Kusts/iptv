@@ -57,10 +57,17 @@ Incidente de segurança: um erro de comando anterior registrou prefixos
 parciais dos papéis `iptv_app` e `outbox_worker` (sem valores completos);
 usuário autorizou a rotação. Ambos foram rotacionados para valores novos e
 independentes, com os campos de URL do env remoto atualizados, auth TCP
-SCRAM verificada e API/worker recriados e saudáveis. Sem valores ou prefixos
-aqui; nenhuma credencial de produção tocada. Sessões de auth e linhas do
-usuário antigo removidas pelo reset autorizado do volume de teste; login do
-novo owner funciona; nenhuma credencial antiga usada.
+SCRAM verificada e API/worker recriados e saudáveis. Incidente adicional de
+edição: a primeira substituição alterou temporariamente a linha owner
+`DATABASE_URL` ao mirar `APP_DATABASE_URL`; detectado por diff e restaurado
+da memória em processo antes de qualquer restart de serviço/migration;
+verificação final do env mostrou só os campos pretendidos (URL APP e URL do
+worker) alterados; API/worker seguiram saudáveis após a rotação. Distinto da
+exposição anterior de prefixos parciais (já registrada, papéis rotacionados);
+não se alega que nenhum segredo jamais tenha alcançado logs. Sem valores ou
+prefixos aqui; nenhuma credencial de produção tocada. Sessões de auth e
+linhas do usuário antigo removidas pelo reset autorizado do volume de teste;
+login do novo owner funciona; nenhuma credencial antiga usada.
 
 Recuperação Infisical por admin/e-mail humano segue bloqueada
 (`emailConfigured=false`); `.env.staging` do host sem os quatro valores de
