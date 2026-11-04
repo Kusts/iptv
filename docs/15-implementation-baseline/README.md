@@ -1,6 +1,6 @@
 # Implementation Baseline v1.0.1
 
-> Status: **IMPLEMENTED THROUGH WAVE 17 (P0–P6 closure slices, stacked draft PRs #12–#24, unmerged)** — migrations 001–059 applied  
+> Status: **P0–P8 implementation slices integrated through PR #36; release closure still gated** — migrations through 060 on main at 2026-10-09; see `docs/16-pilot-closure/RELEASE-CLOSURE-STATUS.md` for current reconciliation
 > Baseline date: 2026-10-02  
 > Delivery record of truth: `CHANGELOG.md` (`## Unreleased`)  
 > Scope: consolidation of Modules 1–25 + planning closure + implementation delivery to Wave 16  

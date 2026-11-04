@@ -1,6 +1,6 @@
-# Pilot Closure — Wave 17 (execução)
+# Pilot Closure — Release closure
 
-> Status: **IN_EXECUTION — P0** (2026-10-07)
+> Status: **ENGINEERING BLOCKED** (2026-10-11; ver a matriz única em [`RELEASE-CLOSURE-STATUS.md`](RELEASE-CLOSURE-STATUS.md) e gaps deduplicados em [`RELEASE-CLOSURE-GAPS.md`](RELEASE-CLOSURE-GAPS.md))
 > SPEC de origem: `IPTV Pilot Closure SPEC v1` + `IPTV Pilot Closure PLAN v1`
 > (recebidos do operador nesta sessão; texto integral na proposta, não
 > duplicado aqui).
@@ -17,6 +17,24 @@
   (conf. 0.98); implementação em **fatias P0 primeiro** (conf. 0.97).
 - `jev_gate` (migration 051 + docs + drift): `confirm`, risco 2.02, não-produção.
   Autorização do operador: pedido explícito "inicie a implementação completa".
+
+## Snapshot de PRs — 2026-10-11 (nenhum merged)
+
+Estado verificado no GitHub em 2026-10-11 ~13:05 UTC; `main` segue em
+`2f181e8`. Nenhum release gate fechado e nenhuma readiness promovida por este
+snapshot. Estados de CI são pontuais no momento da verificação: verde de um
+HEAD não valida outro.
+
+| PR | HEAD | Base | CI | Observação |
+|---|---|---|---|---|
+| #37 | `34008b7` | `main` | **DIVERGENTE no mesmo HEAD**: run de push `38140003643` todos SUCCESS; run de check do PR `38140006569` com build job `114471743171` **FAILURE** — 23505 `pg_authid_rolname_index` na migration 050 (corrida de harness: tasks de teste concorrentes migrando bancos distintos do mesmo cluster; o advisory lock é por banco e não protege o papel cluster-global `outbox_worker`; demais jobs SUCCESS); `mergeStateStatus: UNSTABLE`; HEADs anteriores verdes: `7acbb10` (`38138230248`/`38138227415`) e `51c81ee` (`38091653864`/`38091650697`) | 6/6 threads resolvidos; sem aprovação humana distinta; sem merge; correção da causa-raiz (#49) ainda ausente de `main` e da árvore do #37 |
+| #38 | `d17540c` | `main` | verde runs `38093391830`/`38093388752` | dependências + audit fail-closed |
+| #39 | `26c905a` | `main` | verde runs `38092235210`/`38092231963` | honestidade de durabilidade; F12 segue BLOCKED (sem SDK/worker real) |
+| #41 | `044be93` | `main` | verde runs `38099608612`/`38099605875` | Vitest 4; ancestry inclui #38 pelo merge regular `b0e80d5` (CI valida #38→#41) |
+| #42 | `b5066d6` | `closure/security-vitest4-20261009` (#41) | **verde** runs `38141372169`/`38141369926` em todos os jobs (`build` jobs `114475764027`/`114475757743` SUCCESS; `outbox-050-role-guards`, `security-scans`, `adversarial` SUCCESS nos dois); `mergeStateStatus: CLEAN`; história contém merge regular `930ca44` do fix #49 (`6cb0a0f`); vermelho anterior de `a004c57` (`38107760190`/`38107758085`) histórico | ainda **não mergeado** e sem revisão humana distinta; pendentes: decisão de merge na ordem #38→#41→#42, gates DB-gated em PostgreSQL descartável (prova local no candidato: 20/20 tasks turbo, 1495 testes) e collector OTLP real do ambiente-alvo |
+| #45 | `c796e6c` | `main` | **verde** runs `38097097482`/`38097083822` | anti-framing web; Issue #44 (auth abuse, enumeração, IP/proxy/origin, rate limit) segue aberta |
+| #48 | `43d7821` | `main` | **verde** runs `38135069294`/`38135056127` | cobertura G3 Asaas **test-only**, sem chamadas de provider; focado 21/21 em PostgreSQL 17 fresco; **não integrada — G3 segue BLOCKED** |
+| #49 | `6cb0a0f` | `main` | **verde** runs `38135113763`/`38135100781` | corrige a causa-raiz da corrida de CI (`pnpm test --concurrency=1` + serialização em `packages/database`), sem migration/app code; **não integrada a `main`** — já levada ao branch do #42 por merge regular `930ca44` (ancestralidade verificada) |
 
 ## Fatias P0 (PRs `closure/p0-*`, um PLAN, sem PR gigante)
 
@@ -59,7 +77,7 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 
 | Slice | Escopo | Estado |
 |---|---|---|
-| `P3` integrações | Asaas software + stub customer; WAHA código/sintético; CINEVISION/MK/Infisical gates; Hatchet BLOCKED; register + `P3-INTEGRATIONS.md` + `evidence/p3-*/` | DONE sem live (tester PASS; lives = gates de operador: B1/B2, M1/M2, G07, Steps 3/6–9, F12) |
+| `P3` integrações | Asaas software + stub customer; WAHA código/sintético; CINEVISION/MK/Infisical gates; Hatchet BLOCKED; register + `P3-INTEGRATIONS.md` + `evidence/p3-*/` | Software slice DONE; live revalidado parcialmente: Asaas B1 PARTIAL (G3 reorder é blocker de engenharia — candidata test-only no PR #48, não integrada, G3 segue BLOCKED), WAHA M1 PARTIAL/M2 não executado (media/audio é blocker de engenharia); CINEVISION write, MK adapter/G07 e F12 continuam bloqueados |
 
 ## P4 status
 
@@ -72,7 +90,7 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 
 | Slice | Escopo | Estado |
 |---|---|---|
-| `P5` matriz G/F | `pilot-evidence.yaml` + gate + `P5-RELEASE-E2E.md` (33 PASS + G07/F12 BLOCKED operator) | DONE (tester PASS) |
+| `P5` matriz G/F | `pilot-evidence.yaml` + gate + `P5-RELEASE-E2E.md` (32 PASS + G01/G07/F12 BLOCKED; B2 software rerun done, integral gate open) | PARTIAL — software rerun verified; G01 journey proof and operator/integral gates remain |
 
 ## P6 status
 
@@ -91,7 +109,7 @@ P3 live → P5 E2E → P6 Ops → P7 rehearsal → P8 pilot
 
 | Slice | Escopo | Estado |
 |---|---|---|
-| `P8` wraps + runbook | context-builder/pipeline/commerce/crm-lookup wraps + rehearsal 7/7 + `P8-PILOT.md` | DONE código (tester PASS); OPERAÇÃO do piloto = ato do operador |
+| `P8` wraps + runbook | context-builder/pipeline/commerce/crm-lookup wraps + rehearsal 7/7 + `P8-PILOT.md` | Code slices DONE; critérios de entrada continuam desmarcados; staging rehearsal pós-candidato e gates de operador não concluídos |
 
 ## Artefatos finais (C9 + PLAN — acompanhar aqui)
 
