@@ -118,14 +118,37 @@ DNS ou mutação de produção; confirme o alvo e a autorização na tarefa atua
 
 - Cloudflare: `D:\projetos\cloudflare\.env`; token identificado pela variável
   `CLOUDFLARE_API_TOKEN`.
-- VPS: `D:\projetos\vps-hostinger\.env`; referências de conexão incluem
-  `VPS_IP`, `VPS_SSH_USER` e `VPS_SSH_KEY_PATH`. Prefira a chave SSH e o usuário
-  de menor privilégio; `VPS_ROOT_PASSWORD` existe como alternativa sensível e
-  só deve ser usado quando indispensável e explicitamente autorizado.
-- Token DNS restrito, quando a operação exigir DNS: `CF_DNS_API_TOKEN` na mesma
-  fonte VPS. Prefira-o ao token de conta mais amplo quando suficiente.
+- Não existe fonte genérica de conexão VPS autorizada para IPTV. `VPS_*` da
+  Hostinger está desativado/proibido (ver `## Staging Contabo`); sem fallback
+  por senha de root. Credenciais Contabo de env de outro projeto não são fonte
+  de IPTV, exceto acesso pontual autorizado pelo usuário após verificação de
+  identidade/marcador de caminho (rege a seção Staging Contabo).
+- Token DNS restrito, somente para tarefa DNS explícita: `CF_DNS_API_TOKEN`
+  (referência local, separada — não é fonte VPS). Prefira-o ao token de conta
+  mais amplo quando suficiente.
 - Leia somente a variável necessária para a tarefa, mantenha o valor no processo
   local e não o imprima, copie para este projeto ou exponha em logs.
+
+## Staging Contabo (único provedor ativo)
+
+- Hostinger VPS desativada (confirmado pelo usuário em 2026-11-02): Contabo é
+  o único provedor em uso para o staging IPTV.
+- Alvo canônico verificado em sessão SSH Contabo: `/home/deploy/iptv-staging`
+  (marcador atualizado para `main@76515c3` após smoke em 2026-11-03);
+  `/home/deploy/iptv` não existe nesse host.
+- O ponteiro local `VPS_*` refere-se à Hostinger desativada: obsoleto e
+  proibido para IPTV.
+- `CONTABO_VPS_*` pertence a outra configuração: usar somente para acesso
+  pontual explicitamente autorizado pelo usuário nesta tarefa, após checagem
+  de identidade — nunca como ponteiro durável de IPTV.
+- Nunca tocar serviços vizinhos (ai-memory, Infisical prod, traefik,
+  `synkroo-prod-*`).
+- Deploy executado em 2026-11-03: volume de teste resetado com autorização
+  explícita do usuário, fresh 67/67, stack API/web/outbox/túnel saudável com
+  smoke (health/ready e web 200, registro público 403, login do owner 200).
+- HOLD restante é integrações/segurança/entrega (Asaas, Infisical, CINEVISION)
+  — não mais drift de migrations (ver runbook de staging e
+  `docs/16-pilot-closure/MVP-OPERATIONAL-CLOSURE.md`).
 
 ## Limites operacionais
 

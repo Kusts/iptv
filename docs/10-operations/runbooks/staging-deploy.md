@@ -11,6 +11,20 @@
 > covered by tests.
 > Version: 1.0
 
+> HOLD OPERACIONAL — Contabo (atualizado 2026-11-03, sem valores secretos):
+> provisioning/deployment FRESH concluído no alvo
+> `/home/deploy/iptv-staging` (marcador `main@76515c3` após smoke);
+> `/home/deploy/iptv` não existe nesse host. `migrate` fresh com
+> `applied=67 skipped=0 total=67`; stack API/web/outbox/túnel saudável.
+> Os comandos históricos abaixo que citam `/home/deploy/iptv` referem-se à
+> árvore antiga e seguem marcados históricos, com caminhos a revalidar.
+>
+> HOLD restante é integrações/segurança/entrega — NÃO mais drift de hash:
+> Asaas `NOT_CONFIGURED` (webhook não assegurado), Infisical sem identidade
+> de máquina no `.env.staging` (sem leitura sintética, sem R2/backup key) e
+> CINEVISION sem ativação/readback. Sem re-provision adicional e sem wipe
+> fora do volume de teste já autorizado; vizinhos intocados.
+
 ## Scope and shape
 
 Single host, containers, staging data. One compose file
