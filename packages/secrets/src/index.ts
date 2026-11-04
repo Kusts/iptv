@@ -292,6 +292,11 @@ export class InfisicalSecretsAdapter implements SecretsWriterPort {
    * The ref is derived from the validated target — never from client input
    * — so callers cannot write outside
    * `infisical://<env>/integrations/<tenantId>/<provider>/<KEY>`.
+   * Before the secret write, the provider folder
+   * `/integrations/<tenantId>/<provider>` is created idempotently
+   * (`POST /api/v2/folders`; duplicate/race counts only with a readback
+   * that confirms the exact child in the exact parent). Folder setup is
+   * fail-closed: no secret bytes are sent when confirmation fails.
    * Infisical secrets are name-keyed, so put is idempotent by construction;
    * a stable `requestId` is forwarded as `X-Request-Id` for tracing.
    * Exactly one re-login + retry on 401 (same policy as reads); no blind
@@ -311,6 +316,10 @@ export class InfisicalSecretsAdapter implements SecretsWriterPort {
     // targets (unknown provider/key, bad tenant id or environment).
     const ref = buildIntegrationSecretRef(input);
     const parsed = parseSecretRef(ref);
+    // Re-prove the namespace from the validated ref and derive the folder
+    // ONLY from the allowlisted binding (never from raw input paths).
+    const binding = parseIntegrationSecretRef(ref);
+    await this.ensureIntegrationFolder(binding, ref);
 
     const create = (token: string): Promise<WriteOutcome> =>
       this.writeSecret(parsed, input.value, input.requestId, token, "create");
@@ -438,6 +447,147 @@ export class InfisicalSecretsAdapter implements SecretsWriterPort {
       return first;
     }
     return op(await this.accessToken(true));
+  }
+
+  /**
+   * Idempotent provider-folder setup for `putSecret` (fail-closed).
+   *
+   * Derives the folder ONLY from the allowlisted binding:
+   * parent `/integrations/<tenantId>`, child name `<provider>`. Exactly
+   * one re-login + retry on 401/403; any other ambiguity is resolved by a
+   * readback (`GET /api/v2/folders?path=<parent>`) that must confirm the
+   * exact child in the exact parent. Confirmation failures throw and the
+   * caller must NOT send secret bytes. Messages/logs carry only the
+   * environment + status (never body text, ref, value or token).
+   */
+  private async ensureIntegrationFolder(binding: IntegrationSecretBinding, ref: string): Promise<void> {
+    const first = await this.folderCall(binding, await this.accessToken(false));
+    if (first.status === "ready") {
+      this.debug?.(`infisical: folder ready (refHash=${hashSecretRef(ref)})`);
+      return;
+    }
+    if (first.status !== "unauthorized") {
+      throw first.error;
+    }
+    const second = await this.folderCall(binding, await this.accessToken(true));
+    if (second.status === "ready") {
+      this.debug?.(`infisical: folder ready (refHash=${hashSecretRef(ref)})`);
+      return;
+    }
+    if (second.status === "unauthorized") throw writeDenied(binding.environment);
+    throw second.error;
+  }
+
+  private async folderCall(binding: IntegrationSecretBinding, token: string): Promise<FolderOutcome> {
+    const parentPath = `/${SECRET_NAMESPACE_ROOT}/${binding.tenantId}`;
+    const folderName = binding.provider;
+    const targetPath = `${parentPath}/${binding.provider}`;
+    const environment = transportEnv(binding.environment);
+    const fail = (code: SecretsError["code"], detail: string): FolderOutcome => ({
+      status: "error",
+      error: new SecretsError(code, detail),
+    });
+
+    let res: Response;
+    try {
+      res = await this.fetchFn(`${this.siteUrl}/api/v2/folders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          projectId: this.projectId,
+          environment,
+          path: parentPath,
+          name: folderName,
+        }),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      return fail(
+        "TRANSPORT",
+        isTimeout(err) ? "infisical folder setup timed out" : "infisical folder setup transport error",
+      );
+    }
+    if (res.status === 401 || res.status === 403) {
+      return { status: "unauthorized" };
+    }
+    if (res.ok) {
+      let body: unknown = null;
+      try {
+        body = await res.json();
+      } catch {
+        body = null;
+      }
+      // POST success must still confirm the exact path; an unconfirmed
+      // success falls back to the readback instead of proceeding blind.
+      if (folderCreatePayloadConfirmsTarget(body, folderName, targetPath)) {
+        return { status: "ready" };
+      }
+      return this.confirmFolderReadback(parentPath, folderName, binding.environment, token);
+    }
+    if (res.status === 400 || res.status === 409) {
+      let body: unknown = null;
+      try {
+        body = await res.json();
+      } catch {
+        body = null;
+      }
+      // Only an explicit duplicate marker counts as "already exists";
+      // any other 400/409 stays a SERVER error (never masked).
+      if (!isDuplicateFolderBody(body)) {
+        return fail("SERVER", `infisical folder setup failed with status ${res.status}`);
+      }
+      return this.confirmFolderReadback(parentPath, folderName, binding.environment, token);
+    }
+    return fail("SERVER", `infisical folder setup failed with status ${res.status}`);
+  }
+
+  private async confirmFolderReadback(
+    parentPath: string,
+    folderName: string,
+    environment: string,
+    token: string,
+  ): Promise<FolderOutcome> {
+    const fail = (code: SecretsError["code"], detail: string): FolderOutcome => ({
+      status: "error",
+      error: new SecretsError(code, detail),
+    });
+    const url =
+      `${this.siteUrl}/api/v2/folders` +
+      `?projectId=${encodeURIComponent(this.projectId)}` +
+      `&environment=${encodeURIComponent(transportEnv(environment))}` +
+      `&path=${encodeURIComponent(parentPath)}`;
+    let res: Response;
+    try {
+      res = await this.fetchFn(url, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      return fail(
+        "TRANSPORT",
+        isTimeout(err) ? "infisical folder confirmation timed out" : "infisical folder confirmation transport error",
+      );
+    }
+    if (res.status === 401 || res.status === 403) {
+      return { status: "unauthorized" };
+    }
+    if (!res.ok) {
+      return fail("SERVER", `infisical folder confirmation failed with status ${res.status}`);
+    }
+    let body: unknown = null;
+    try {
+      body = await res.json();
+    } catch {
+      body = null;
+    }
+    if (folderListConfirmsTarget(body, folderName)) {
+      return { status: "ready" };
+    }
+    return fail(
+      "SERVER",
+      `infisical folder confirmation failed in environment ${JSON.stringify(environment)} (folder not confirmed)`,
+    );
   }
 
   private async writeSecret(
@@ -722,6 +872,94 @@ type DeleteOutcome =
   | { status: "ok" }
   | { status: "unauthorized" }
   | { status: "error"; error: SecretsError };
+
+type FolderOutcome =
+  | { status: "ready" }
+  | { status: "unauthorized" }
+  | { status: "error"; error: SecretsError };
+
+/**
+ * True when a folder-write failure body carries an explicit duplicate
+ * marker. Only these markers count as "already exists" — any other 400
+ * body stays a SERVER error (never masked as a conflict).
+ */
+function isDuplicateFolderBody(body: unknown): boolean {
+  if (body === null || body === undefined) return false;
+  let text: string;
+  try {
+    text = JSON.stringify(body).toLowerCase();
+  } catch {
+    return false;
+  }
+  return (
+    text.includes("already exists") ||
+    text.includes("already_exists") ||
+    text.includes("already-exists") ||
+    text.includes("duplicate")
+  );
+}
+
+interface FolderEntry {
+  name: unknown;
+  path: unknown;
+  relativePath: unknown;
+}
+
+function collectFolderEntries(value: unknown, out: FolderEntry[], depth: number): void {
+  if (depth > 4 || value === null || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectFolderEntries(item, out, depth + 1);
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record["name"] === "string") {
+    out.push({ name: record["name"], path: record["path"], relativePath: record["relativePath"] });
+  }
+  for (const key of ["folder", "folders", "data"]) {
+    if (record[key] !== undefined) collectFolderEntries(record[key], out, depth + 1);
+  }
+}
+
+/**
+ * Confirm the POST /api/v2/folders response names the exact created target.
+ * The v0.165.16 create response supplies the full path.
+ */
+function folderCreatePayloadConfirmsTarget(
+  body: unknown,
+  folderName: string,
+  targetPath: string,
+): boolean {
+  const entries: FolderEntry[] = [];
+  collectFolderEntries(body, entries, 0);
+  return entries.some((entry) => entry.name === folderName && entry.path === targetPath);
+}
+
+/**
+ * Confirm a direct child from GET /api/v2/folders with recursive omitted.
+ * Infisical v0.165.16 returns folder rows with id/envId/name but no path
+ * fields in this mode. The exact parent is guaranteed by the backend-derived
+ * query; path-bearing/recursive-shaped rows fail closed rather than being
+ * interpreted as belonging to the tenant.
+ */
+function folderListConfirmsTarget(body: unknown, folderName: string): boolean {
+  const folders = asRecordOrNull(body)?.["folders"];
+  if (!Array.isArray(folders)) return false;
+  const entries = folders.map(asRecordOrNull);
+  if (
+    entries.some(
+      (entry) =>
+        entry === null ||
+        typeof entry["id"] !== "string" ||
+        typeof entry["envId"] !== "string" ||
+        typeof entry["name"] !== "string" ||
+        Object.hasOwn(entry, "path") ||
+        Object.hasOwn(entry, "relativePath"),
+    )
+  ) {
+    return false;
+  }
+  return entries.some((entry) => entry?.["name"] === folderName);
+}
 
 /** FNV-1a (32-bit) hash for masked ref logging — never the ref itself. */
 function hashSecretRef(ref: string): string {

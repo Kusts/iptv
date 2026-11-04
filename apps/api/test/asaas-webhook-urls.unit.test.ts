@@ -215,7 +215,7 @@ describe("asaas probe urls (P85-V3FIX-FINALIZE)", () => {
     expect((init.headers as Record<string, string>)["access_token"]).toBe(API_KEY);
   });
 
-  it("fallback 404→customers usa URL de /v3 único e conecta", async () => {
+  it("404 na coleção de webhooks é incompatibilidade de contrato, não lista vazia", async () => {
     const fetchMock: ReturnType<typeof vi.fn> = vi.fn();
     fetchMock.mockImplementation(async (input: string | URL | Request) => {
       const url = String(input);
@@ -227,15 +227,11 @@ describe("asaas probe urls (P85-V3FIX-FINALIZE)", () => {
     installDoubles(fetchMock);
     const result = await handlersFor()(stubCtx(), { provider: "asaas", environment: "SANDBOX" });
     expect(result.ok).toBe(true);
-    expect(result.data.connection_status).toBe("CONNECTED_READ_ONLY");
-    expect(result.data.last_error_code).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const [firstUrl] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const [secondUrl] = fetchMock.mock.calls[1] as [string, RequestInit];
-    expect(firstUrl).toBe(`${ASAAS_HOSTS.SANDBOX}/webhooks?limit=1`);
-    expect(secondUrl).toBe(`${ASAAS_HOSTS.SANDBOX}/customers?limit=1`);
-    for (const url of [firstUrl, secondUrl]) {
-      expect(url).not.toContain("/v3/v3/");
-    }
+    expect(result.data.connection_status).toBe("TESTING");
+    expect(result.data.last_error_code).toBe("PROVIDER_CONTRACT_MISMATCH");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${ASAAS_HOSTS.SANDBOX}/webhooks?limit=1`);
+    expect(url).not.toContain("/v3/v3/");
   });
 });

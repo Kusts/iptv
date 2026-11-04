@@ -20,7 +20,7 @@ import { StatusPill } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { Card } from "./ui/Card";
 import { Dialog } from "./ui/Dialog";
-import { Field, Select, Textarea } from "./ui/Input";
+import { Field, Input, Select, Textarea } from "./ui/Input";
 import { EmptyState, ErrorState, LoadingSkeleton } from "./ui/States";
 import { Table } from "./ui/Table";
 import { useToast } from "./ui/Toast";
@@ -119,7 +119,7 @@ export function ProviderOperations(): React.JSX.Element {
             rows={operations}
           />
           {selectedId !== null ? (
-            <ProviderOperationDetailPanel id={selectedId} onChanged={reload} />
+            <ProviderOperationDetailPanel key={selectedId} id={selectedId} onChanged={reload} />
           ) : (
             <EmptyState title="Selecione uma operação" hint="O detalhe sanitizado e o log de tentativas aparecem ao lado." />
           )}
@@ -142,14 +142,20 @@ function ProviderOperationDetailPanel({
   const { push } = useToast();
   const [busy, setBusy] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [outcome, setOutcome] = useState<ProviderResolveOutcome>("FAILED");
+  const [outcome, setOutcome] = useState<ProviderResolveOutcome | "">("");
   const [note, setNote] = useState("");
+  const [externalRef, setExternalRef] = useState("");
 
   if (loading) return <LoadingSkeleton lines={4} />;
   if (error !== null) return <ErrorState message={error} onRetry={reload} />;
   if (data === null) return <EmptyState title="Operação não encontrada" hint="Ela pode ter sido removida deste tenant." />;
 
   const synthetic = isSyntheticProviderOperation(data);
+  const requiresExternalRef =
+    synthetic &&
+    data.action === "subscription.provision" &&
+    data.entityType === "subscription" &&
+    outcome === "SUCCEEDED";
   // SUCCEEDED/FAILED manuais só existem para adapters sintéticos; proveniência
   // real (`secret-required-v1`) é recusada pelo servidor PARA AMBOS — o efeito
   // só pode ser concluído por readback conclusivo do dispatcher. Sobra UNKNOWN,
@@ -175,19 +181,23 @@ function ProviderOperationDetailPanel({
   };
 
   const resolve = async (): Promise<void> => {
+    if (outcome === "") return;
+    const selectedOutcome: ProviderResolveOutcome = outcome;
     setBusy(true);
     try {
       await api.post(`/v1/provider/operations/${id}/resolve`, {
-        outcome,
+        outcome: selectedOutcome,
         ...(note.trim().length > 0 ? { note: note.trim() } : {}),
+        ...(requiresExternalRef && externalRef.trim().length > 0 ? { externalRef: externalRef.trim() } : {}),
       });
       push(
-        outcome === "UNKNOWN"
+        selectedOutcome === "UNKNOWN"
           ? "Operação mantida em verificação (efeito desconhecido)."
           : "Resolução registrada.",
       );
       setDialogOpen(false);
       setNote("");
+      setExternalRef("");
       afterChange();
     } catch (err) {
       push(userMessage(err));
@@ -246,7 +256,9 @@ function ProviderOperationDetailPanel({
           <Button
             disabled={busy}
             onClick={() => {
-              setOutcome(outcomes[0] ?? "FAILED");
+              setOutcome("");
+              setNote("");
+              setExternalRef("");
               setDialogOpen(true);
             }}
           >
@@ -258,9 +270,33 @@ function ProviderOperationDetailPanel({
           Você não tem a permissão provider.operation.write; reconciliação e resolução ficam indisponíveis.
         </p>
       )}
-      <Dialog title="Resolver operação" open={dialogOpen} onClose={() => setDialogOpen(false)}>
+      <Dialog
+        title="Resolver operação"
+        open={dialogOpen}
+        onClose={() => {
+          setDialogOpen(false);
+          setOutcome("");
+          setNote("");
+          setExternalRef("");
+        }}
+      >
+        {data.action === "subscription.provision" && data.entityType === "subscription" ? (
+          <p className="cc-muted">
+            Esta resolução é uma declaração manual do operador, não uma consulta ao fornecedor. Confirme a ativação
+            diretamente no painel CINEVISION antes de escolher SUCCEEDED.
+          </p>
+        ) : null}
         <Field label="Desfecho">
-          <Select value={outcome} onChange={(e) => setOutcome(e.target.value as ProviderResolveOutcome)}>
+          <Select
+            value={outcome}
+            onChange={(e) => {
+              setOutcome(e.target.value as ProviderResolveOutcome | "");
+              setExternalRef("");
+            }}
+          >
+            <option value="" disabled>
+              Selecione o desfecho
+            </option>
             {outcomes.map((o) => (
               <option key={o} value={o}>
                 {o}
@@ -274,12 +310,33 @@ function ProviderOperationDetailPanel({
             manter a operação em verificação (UNKNOWN).
           </p>
         ) : null}
+        {requiresExternalRef ? (
+          <>
+            <Field label="Referência externa CINEVISION (obrigatória)">
+              <Input
+                autoComplete="off"
+                autoFocus
+                aria-describedby="provider-operation-external-ref-help"
+                disabled={busy}
+                maxLength={128}
+                required
+                spellCheck={false}
+                value={externalRef}
+                onChange={(e) => setExternalRef(e.target.value)}
+              />
+            </Field>
+            <p id="provider-operation-external-ref-help" className="cc-muted">
+              ID/código informado pelo operador após conferir a ativação. O sistema não valida esse ID no fornecedor;
+              não inclua senhas ou tokens.
+            </p>
+          </>
+        ) : null}
         <Field label="Nota do operador (opcional)">
           <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} />
         </Field>
         <Button
           className="cc-u-mt-3"
-          disabled={busy}
+          disabled={busy || outcome === "" || (requiresExternalRef && externalRef.trim().length === 0)}
           onClick={() => {
             void resolve();
           }}

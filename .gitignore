@@ -6,6 +6,7 @@
 !deploy/staging/.env.staging.example
 !deploy/staging/.env.staging.worker.example
 !deploy/staging/.env.staging.outbox-worker.example
+!deploy/infisical/.env.infisical.example
 *.pem
 *.key
 *.p12

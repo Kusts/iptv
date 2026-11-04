@@ -1405,6 +1405,13 @@ describe("PF05-SECRETREF-05 (1/HIGH) manual resolve can never terminalize a secr
       expect(resolved.code).toBe("precondition_failed");
     }
 
+    const externalRefBypass = await bus.execute(actor(), "provider.resolve_operation", {
+      operationId,
+      outcome: "SUCCEEDED",
+      externalRef: "cinevision-customer-123",
+    });
+    expect(externalRefBypass).toMatchObject({ ok: false, code: "precondition_failed" });
+
     // A smuggled adapterVersion in request input never overrides the
     // persisted branch-derived provenance (zod strips it; the guard reads
     // only the stored row).
