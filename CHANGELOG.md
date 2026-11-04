@@ -195,6 +195,10 @@
 
 - docs: MK Ativador diferido para pós-MVP, G07 reclassificado DEFERRED_POST_MVP (ADR-0027, gate `test_pilot_evidence.py` estendido com enum + teste de ADR/reativação, 6/6 verde).
 
+- fix(providers): honest readback keying and timeout uncertainty in simulated seams (PROV-MK-CINE-01)
+
+- fix(security): per-rule AND gitleaks allowlist for triaged fixtures (G01, #40)
+
 - feat(providers): CINEVISION SIMULATED write seams with recovery (#51): typed write-operation envelope, lease/fencing plumbing (migration-045 shape), idempotency single-effect ledgers with operation/payload fingerprinting (divergent key reuse parks MANUAL as conflict, no new effect), honest timeout→UNKNOWN budget race with key reservation, readback + reconciliation hooks, explicit `simulated: true` on every result, audit prefix-only entries; API `provider-cinevision-simulated.ts` + browser-worker `cinevision/writes.ts`, `write-simulated.ts` — fixture skeletons and unit coverage only (incl. #51 session/crash/readback/replay scenarios as state models), no endpoints invented, no live calls, not wired into dispatcher/resolveOpsPort; SPEC `cinevision.md` extended. No certification, durability, or real-effect claim: live writes stay gated on operator vault credentials, observed per-operation contract, and capability certification.
 
 - docs(operations): capability status do Hatchet (`docs/10-operations/integrations-capability-status.md`) alinhada ao código do PR #39 — a linha ainda descrevia o SDK opcional como "optional dynamic import", mecanismo que o commit removeu. Agora registra a resolução de presença **síncrona** no construtor via `require.resolve` (só resolução — sem load de módulo, sem rede) e o fallback explícito de `createWorkflowAdapter` para `LocalWorkflowAdapter` (não-durável) quando token ou SDK estão ausentes. Documentação segue o código: nada de runtime/testes alterado; estado inalterado — F12 BLOCKED com dono operator (certificação W0-04), adapter construction-only com `enqueue` falhando fechado, nenhuma declaração de Hatchet configurado/certificado ou de durabilidade.
