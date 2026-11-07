@@ -1,7 +1,9 @@
-# ADR-0014 — Infisical for Production Secrets
+# ADR-0014 - Infisical for Production Secrets
 
-- Status: Accepted
-> Review: Auto-reviewed v0.13 — rechecked against stack baseline and current research.
+- Status: Superseded (2026-11-07) by STREAMMAX-SIMPLIFY-01 — runtime credentials
+  are AES-256-GCM ciphertext in PostgreSQL (`platform.secret_values`); Infisical
+  is no longer in the MVP runtime path. This ADR is kept as historical context.
+> Review: Auto-reviewed v0.13 - rechecked against stack baseline and current research.
 - Data: 2026-09-20
 
 ## Context

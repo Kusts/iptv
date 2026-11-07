@@ -32,7 +32,6 @@ import {
   runCinevisionCommand,
   type CommandArgs,
 } from "./operations/cinevisionCommand.js";
-import { buildWorkerSecretsPort } from "./secrets.js";
 
 /** DOM-selection attempts fail closed with an explicit code (never run). */
 export class DomRequestError extends Error {
@@ -263,9 +262,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  const secrets = buildWorkerSecretsPort(config);
   const browser = new PlaywrightBrowser(config);
-  const result = await runCinevisionCommand(config, { secrets, browser }, parsed.operation, parsed.args);
+  const result = await runCinevisionCommand(config, { browser }, parsed.operation, parsed.args);
   const line = `${formatResult(result)}\n`;
   if (result.status === "READ_CONFIRMED") {
     process.stdout.write(line);

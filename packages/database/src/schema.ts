@@ -15,6 +15,15 @@ export interface ControlTenantsTable {
   updated_at: Date;
 }
 
+/** Mirrors `platform.secret_values` (migration 068; encrypted ciphertext only). */
+export interface PlatformSecretValuesTable {
+  tenant_id: string;
+  secret_ref: string;
+  ciphertext: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export interface PlatformOutboxMessagesTable {  id: string;
   tenant_id: string;
   domain_event_id: string;
@@ -2030,6 +2039,7 @@ export interface Database {
   "control.auth_credentials": ControlAuthCredentialsTable;
   "control.auth_sessions": ControlAuthSessionsTable;
   "platform.audit_log": PlatformAuditLogTable;
+  "platform.secret_values": PlatformSecretValuesTable;
   "platform.outbound_attachments": PlatformOutboundAttachmentsTable;
   "platform.inbound_attachments": PlatformInboundAttachmentsTable;
   "platform.message_transcripts": PlatformMessageTranscriptsTable;

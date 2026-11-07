@@ -106,7 +106,6 @@ COPY --from=build /app/packages/database/dist ./packages/database/dist
 COPY --from=build /app/packages/domain/dist ./packages/domain/dist
 COPY --from=build /app/packages/observability/dist ./packages/observability/dist
 COPY --from=build /app/packages/secrets/dist ./packages/secrets/dist
-COPY --from=build /app/packages/workflows/dist ./packages/workflows/dist
 # Migrations travel with the image: the `migrate` job applies them, the API
 # only reads the schema. Append-only files, checksum-verified by the runner.
 COPY db/migrations ./db/migrations

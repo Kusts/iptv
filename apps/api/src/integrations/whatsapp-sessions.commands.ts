@@ -6,11 +6,11 @@ import type { CommandResult } from "@iptv/domain";
 import type { CommandBus, CommandHandlerContext } from "../commands/command-bus.js";
 import { kyselyTrxOf } from "../crm/wave2-store.js";
 import {
-  resolveSecretsWriterPort,
   buildIntegrationSecretRef,
   SecretsError,
   type SecretsWriterPort,
 } from "@iptv/secrets";
+import { createPostgresSecretsAdapter } from "./postgres-secrets.js";
 import { HttpWahaAdminPort, WahaAdminError, resolveWahaAdminPort } from "./waha-admin.port.js";
 import { currentGateway, GatewayUnknownError, type SendTextResult } from "../communications/messaging-gateway.js";
 import { bindSession } from "../communications/waha-sessions.js";
@@ -168,11 +168,11 @@ export function __resetWhatsappSessionTestDoubles(): void {
   testDoubles = null;
 }
 
-function resolveWriter(): SecretsWriterPort {
+function resolveWriter(ctx: CommandHandlerContext): SecretsWriterPort {
   if (testDoubles?.secretsWriter !== undefined) {
     return testDoubles.secretsWriter;
   }
-  return resolveSecretsWriterPort();
+  return createPostgresSecretsAdapter(requireTrx(ctx), ctx.tenantId);
 }
 
 /**
@@ -235,7 +235,7 @@ function throwWaha(mapped: WahaAdminError): HttpException | CommandResult<Whatsa
 async function resolveWebhookToken(
   ctx: CommandHandlerContext,
 ): Promise<{ token: string; ref: string }> {
-  const writer = resolveWriter();
+  const writer = resolveWriter(ctx);
   const target = {
     tenantId: ctx.tenantId,
     provider: "whatsapp" as const,

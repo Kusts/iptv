@@ -7,8 +7,7 @@
  *
  * SINGLE-BINDING OPERATOR SMOKE (not multi-tenant authZ): this CLI runs
  * with exactly one deployment binding (`BROWSER_WORKER_PROVIDER` must be
- * `CINEVISION`, tenant/account ids from env, exactly the three
- * `FIXED_SECRET_REFS`). It never accepts tenant/account identity from
+ * `CINEVISION`, tenant/account ids and login credentials from env). It never accepts tenant/account identity from
  * argv, never serves an HTTP API, and never trusts request-supplied ids.
  * A future API integration MUST resolve the provider binding from the
  * tenant/account id in its own DB — never from caller-supplied ids.
@@ -24,18 +23,6 @@ export type FixedOperation = typeof FIXED_OPERATION;
 export const BINDING_PROVIDER = "CINEVISION" as const;
 
 export type BindingProvider = typeof BINDING_PROVIDER;
-
-/**
- * Fixed CINEVISION secret refs the worker may resolve. Free-form refs are
- * never accepted — `resolveCredentials` calls `getSecret` only on these.
- */
-export const FIXED_SECRET_REFS = [
-  "infisical://dev/browser-worker/CINEVISION_URL",
-  "infisical://dev/browser-worker/CINEVISION_EMAIL",
-  "infisical://dev/browser-worker/CINEVISION_PASSWORD",
-] as const;
-
-export type FixedSecretRef = (typeof FIXED_SECRET_REFS)[number];
 
 /** Read-only identity probe path (same-origin GET only, absolute-built). */
 export const READ_IDENTITY_PATH = "/api/auth/me" as const;

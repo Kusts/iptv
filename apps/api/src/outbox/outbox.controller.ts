@@ -8,7 +8,8 @@ import { LegacyOutboxDrainDisabledError, OutboxDrainer, type DrainResult, type L
 /**
  * Platform-ops outbox drain (tenant-agnostic, platform-admin-only).
  * Tests and operators trigger delivery explicitly in Wave 1; scheduling
- * (Hatchet cron) arrives behind the same drainer later.
+ * Drain endpoints are platform-admin-only; the dedicated outbox worker is
+ * the durable path. External cron/transports arrive behind the same port.
  */
 @Controller("v1/admin/outbox")
 export class OutboxController {

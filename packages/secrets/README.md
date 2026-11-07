@@ -1,64 +1,86 @@
 # @iptv/secrets
 
-Secrets port (ADR-0014): domain tables store a `secret_ref` **string**, never a
-secret value. This package is the only place that turns a ref into a value —
-and the only place allowed to write tenant secrets (S1 self-service writer).
+Secrets port: domain tables store a `secret_ref` **string**, never a secret
+value. This package is the only place that turns a ref into a value — and the
+only place allowed to write tenant secrets (self-service writer).
+
+Runtime storage is **PostgreSQL**: one row per `(tenant, secret_ref)` in
+`platform.secret_values` holding AES-256-GCM ciphertext. There is no external
+secret manager in the MVP runtime path.
 
 ## What it is
 
-- `SecretsPort` — the read port (`name` + `getSecret(ref)`). Unchanged by the
-  writer facet so existing read-only implementations keep compiling.
+- `SecretsPort` — the read port (`name` + `getSecret(ref)`).
 - `SecretsWriterPort` — the writer facet (`extends SecretsPort`):
   `putSecret(input)` + `deleteSecret(ref)` under the backend-owned
   `integrations/<tenantId>/<provider>` namespace. Use `asSecretsWriter` to
-  narrow and `resolveSecretsWriterPort` for env-gated selection.
-- `rotateSecret(port, input)` — orchestrated domain function (not an opaque
-  port op): stage `<KEY>__next` → read-only `probe` → cutover live key →
-  best-effort stage cleanup. Any failure is fail-closed (probe rejection
-  throws `ROTATE_FAILED` with the live ref preserved; never mark connected).
-- `NoopSecretsPort` — the default. `getSecret`/`putSecret`/`deleteSecret`
-  throw a typed `SecretsError` with code `CONFIG`; it never returns a fake
-  value, so boot succeeds and secret consumption fails loudly.
-- `InfisicalSecretsAdapter` — env-gated Universal Auth login + raw secret
-  read AND write (create POST with PATCH-on-409 upsert, DELETE by ref)
-  against the self-hosted Infisical instance. Before `putSecret`, it idempotently
-  ensures the backend-derived provider folder under
-  `/integrations/<tenantId>/<provider>`; an existing/racing folder is accepted
-  only after an exact readback, and an unconfirmed folder fails closed before
-  secret bytes are sent.
-- `resolveSecretsPort(env)` — builds the Infisical adapter only when all four
-  `INFISICAL_*` connection vars are present; otherwise the Noop port. Never
-  throws for missing env (no boot crash).
+  narrow a read-only port.
+- `PostgresSecretsAdapter` — the runtime implementation. It composes a
+  `SecretRowStore` (the API supplies a Kysely store bound to the request's
+  tenant transaction) with the encryption key from the environment. The
+  adapter enforces ref validation, tenant isolation and ciphertext framing.
+- `rotateSecret(port, input)` — orchestrated domain function: stage
+  `<KEY>__next` → read-only `probe` → cutover live key → best-effort stage
+  cleanup. Any failure is fail-closed (probe rejection throws `ROTATE_FAILED`
+  with the live ref preserved).
+- `NoopSecretsPort` — fail-closed default for tests/unconfigured programs.
+  `getSecret`/`putSecret`/`deleteSecret` throw a typed `SecretsError(CONFIG)`;
+  it never returns a fake value.
 - `parseSecretRef(ref)` — the ref grammar, used to validate stored refs.
 - `buildIntegrationSecretRef(target)` / `parseIntegrationSecretRef(ref)` —
   the controlled namespace: refs are produced ONLY by the backend from
   validated `{ tenantId, provider, environment, key }` targets. Free-form
-  paths/keys are rejected with `MALFORMED_REF` before any network call.
+  paths/keys are rejected with `MALFORMED_REF` before any storage call.
+- `deriveIntegrationSecretRef(bindingRef, key)` — sibling key of an existing
+  binding ref (e.g. `CINEVISION_PASS`, `ASAAS_WEBHOOK_TOKEN`), preserving the
+  binding's scheme (`pgsecret://` or migrated `infisical://`), environment and
+  namespace. Scope always comes from the binding ref, never from the caller.
+  `putSecret(..., { refScheme })` keeps a legacy binding's write on that exact
+  ref; the default scheme stays `pgsecret://`.
+
+## Crypto
+
+- AES-256-GCM via `node:crypto`.
+- Payload: `v1.<iv>.<authTag>.<ciphertext>` (base64url, no padding).
+- Fresh 12-byte IV per encryption; 16-byte auth tag.
+- AAD binds the ciphertext to `(tenantId, ref)`: a row copied to another
+  tenant/ref fails authentication.
+- The single 256-bit key lives in the API process environment as
+  `SECRETS_ENCRYPTION_KEY` (base64, 32 bytes). It is never stored in the
+  database or Git and must be backed up separately from the PostgreSQL dump.
+- Decryption failure (wrong key, tampered row, wrong binding) throws
+  `SecretsError(SERVER)`; there is no plaintext fallback.
 
 ## Usage
 
 ```ts
-import { resolveSecretsPort, resolveSecretsWriterPort, rotateSecret } from "@iptv/secrets";
+import { PostgresSecretsAdapter, rotateSecret } from "@iptv/secrets";
 
-const secrets = resolveSecretsPort(); // env-gated selection
-const value = await secrets.getSecret("infisical://dev/browser-worker/CINEVISION_URL");
+// The API builds one adapter per request, bound to the tenant transaction:
+const secrets = new PostgresSecretsAdapter({
+  store: createSecretRowStore(trx),
+  tenantId: ctx.tenantId,
+  key: loadEncryptionKey(),
+});
+
+const value = await secrets.getSecret(ref);
 
 // Server-side provisioning (never in the browser): the ref is derived from
 // the validated target, never from client input.
-const writer = resolveSecretsWriterPort();
-const { ref } = await writer.putSecret({
+const { ref } = await secrets.putSecret({
   tenantId: "tenant-1",
   provider: "asaas",
-  environment: "sandbox",
+  environment: "SANDBOX",
   key: "ASAAS_API_KEY",
   value: "<key provided server-side>",
-  requestId: "req-stable-1", // optional idempotency key, forwarded as X-Request-Id
+  requestId: "req-stable-1",
 });
+
 // Rotation: stage → read-only probe → cutover → stage cleanup (fail-closed).
-await rotateSecret(writer, {
+await rotateSecret(secrets, {
   tenantId: "tenant-1",
   provider: "asaas",
-  environment: "sandbox",
+  environment: "SANDBOX",
   key: "ASAAS_API_KEY",
   value: "<candidate provided server-side>",
   probe: async (stagedRef) => {
@@ -67,24 +89,21 @@ await rotateSecret(writer, {
 });
 ```
 
-Consumers in this repo: `apps/api/src/provider/provider-secret-gate.ts`,
-`apps/api/src/provider/provider-dispatcher.service.ts` and
-`apps/api/src/fulfillment/fulfillment.commands.ts` (API side, `INFISICAL_*`)
-and `apps/browser-worker/src/secrets.ts` (worker side, its own
-`BROWSER_INFISICAL_*` identity). Both go through the same adapter; the worker
-never reads the API vars and the API never reads the worker vars.
-
 ## Ref format
 
 ```
-infisical://<environment>/<key>
-infisical://<environment>/<path...>/<key>
+pgsecret://<environment>/integrations/<tenantId>/<provider>/<KEY>
+infisical://<environment>/integrations/<tenantId>/<provider>/<KEY>   (legacy)
 ```
 
-- `<environment>` is the Infisical environment slug and is **authoritative for
-  the request** — the adapter's configured default is not consulted.
-- `<key>` is the secret name (last `/` segment); middle segments become the
-  secret path (`/browser-worker`).
+- New writes use `pgsecret://`. The legacy `infisical://` scheme stays
+  parse-compatible so rows migrated from the previous vault keep resolving by
+  their exact stored `secret_ref`.
+- `<environment>` is `SANDBOX` or `PRODUCTION` for tenant integrations.
+- Per-provider key allowlists: `asaas`: `ASAAS_API_KEY`,
+  `ASAAS_WEBHOOK_TOKEN`; `cinevision`: `CINEVISION_USER`, `CINEVISION_PASS`;
+  `whatsapp`: `WAHA_WEBHOOK_SECRET`. `<KEY>__next` is reserved for rotation
+  staging.
 - Anything else throws `SecretsError(MALFORMED_REF)`; `.`/`..` segments and
   empty segments are rejected.
 
@@ -92,46 +111,17 @@ infisical://<environment>/<path...>/<key>
 
 | Var | Required | Notes |
 | --- | --- | --- |
-| `INFISICAL_SITE_URL` | yes for the real adapter | Absolute `https://` URL. Plain `http://` only for `localhost`/`127.0.0.1` local dev; anything else is a `CONFIG` error. |
-| `INFISICAL_PROJECT_ID` | yes | Sent as `workspaceId`. |
-| `INFISICAL_CLIENT_ID` | yes | Universal Auth machine identity. |
-| `INFISICAL_CLIENT_SECRET` | yes | Universal Auth machine identity. |
-| `INFISICAL_ENVIRONMENT` | no (`development`) | Fallback only; refs carry their own environment. |
-
-The Browser Worker uses a separate `BROWSER_INFISICAL_SITE_URL` /
-`_PROJECT_ID` / `_CLIENT_ID` / `_CLIENT_SECRET` set resolved by
-`apps/browser-worker/src/config.ts` and passed explicitly to
-`InfisicalSecretsAdapter`.
+| `SECRETS_ENCRYPTION_KEY` | yes for runtime reads/writes | Base64 of exactly 32 random bytes. Absent = fail closed at use time (boot still succeeds). |
 
 ## Notes
 
-- Endpoints: `POST {site}/api/v1/auth/universal-auth/login` then
-  `GET {site}/api/v3/secrets/raw/{secretName}?workspaceId=…&environment=…&secretPath=…`.
-  Writes: `POST {site}/api/v3/secrets/raw/{secretName}` (create;
-  `PATCH` on 409 for upsert) and `DELETE` with the same query params.
-  Folder setup uses `POST /api/v2/folders` with a backend-derived parent/name
-  and confirms the exact child via `GET /api/v2/folders` after duplicate or
-  ambiguous results. The machine identity needs folder read/create on the
-  tenant parent and secret read/create/edit/delete on the allowlisted provider
-  path (read, configure, compensation and rotation); scope these grants to the
-  intended environment and namespace rather than the whole project.
-  The access token is cached in memory and refreshed 30s (or 10% of TTL)
-  before expiry; a 401 triggers exactly one re-login + retry (reads and
-  writes alike — no blind retries on 5xx/transport).
-- Error codes: `MALFORMED_REF`, `NOT_FOUND`, `UNAUTHORIZED`, `TRANSPORT`,
-  `CONFIG`, `ROTATE_FAILED` (probe rejected the rotation candidate; live ref
-  preserved), `SERVER`. Secret values and tokens are never logged, thrown
-  inside messages, or attached to telemetry; the debug sink receives
-  presence/length metadata plus the FNV-1a hash of the ref — never the value,
-  key, path or token.
-- Integration namespace: `infisical://<env>/integrations/<tenantId>/<provider>/<KEY>`
-  with per-provider key allowlists (`asaas`: `ASAAS_API_KEY`,
-  `ASAAS_WEBHOOK_TOKEN`; `cinevision`: `CINEVISION_USER`, `CINEVISION_PASS`;
-  `whatsapp`: `WAHA_WEBHOOK_SECRET`) and `<KEY>__next` reserved for rotation
-  staging. Anything else is rejected before any network call.
-- CINEVISION/MK Ativador credentials are stored **in Infisical** as refs; the
-  raw values stay in the operator's vault and never in this repo's `.env`.
-  Rationale and rollout: `docs/06-decisions/ADR-0014-infisical-secrets.md`.
-- Manual smoke against real credentials:
-  `node packages/secrets/scripts/infisical-smoke.mjs [SECRET_KEY] [ENVIRONMENT]`
-  prints only presence/length, never the value.
+- The Browser Worker never reads this store and never touches the database.
+  The API decrypts the tenant binding and passes `CINEVISION_EMAIL` +
+  `CINEVISION_PASSWORD` for that invocation; the panel URL is the non-secret
+  `CINEVISION_ALLOWED_ORIGIN`.
+- Secret values, key material and ciphertext are never logged, thrown inside
+  messages, or attached to telemetry.
+- One-time cutover from the previous vault:
+  `node packages/database/scripts/migrate-secrets-to-postgres.mjs` (dry run by
+  default; `--apply` writes). It reads legacy values, encrypts them with the
+  API key and upserts by the exact stored ref. It never deletes the old vault.

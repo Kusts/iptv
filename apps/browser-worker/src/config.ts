@@ -2,11 +2,11 @@
  * Worker config â€” fail-closed env resolution.
  *
  * SINGLE-BINDING operator smoke (see `constants.ts`): identity comes ONLY
- * from deployment env â€” `BROWSER_WORKER_PROVIDER` (must be exactly
+ * from deployment env — `BROWSER_WORKER_PROVIDER` (must be exactly
  * `CINEVISION`), `BROWSER_WORKER_TENANT_ID` /
- * `BROWSER_WORKER_PROVIDER_ACCOUNT_ID`, the three `FIXED_SECRET_REFS` and
- * the mandatory `CINEVISION_LOGIN_PATH`. Tenant/account ids are NEVER
- * accepted from argv (the CLI has no such flags) and no HTTP server
+ * `BROWSER_WORKER_PROVIDER_ACCOUNT_ID`, the validated origin, invocation
+ * credentials and the mandatory `CINEVISION_LOGIN_PATH`. Tenant/account ids
+ * are NEVER accepted from argv (the CLI has no such flags) and no HTTP server
  * exists in this package, so there is no request-supplied identity to
  * trust. `BROWSER_WORKER_ENABLED` must be exactly `"1"` or nothing
  * launches. Anything unconfigured or mismatched fails closed.
@@ -61,10 +61,6 @@ export interface WorkerConfig {
    * `submitLogin` refuses to click when it is absent.
    */
   loginPath: string;
-  infisicalSiteUrl: string;
-  infisicalProjectId: string;
-  infisicalClientId: string;
-  infisicalClientSecret: string;
   headless: boolean;
   /**
    * Opt-in browser channel (default-off). `undefined` = bundled Chromium
@@ -437,20 +433,6 @@ export function resolveWorkerConfig(
     if (err instanceof ConfigError) throw err;
     throw new ConfigError("CINEVISION_LOGIN_PATH must be a relative /api/... pathname");
   }
-  const infisicalSiteUrl = required(env, "BROWSER_INFISICAL_SITE_URL");
-  const infisicalProjectId = required(env, "BROWSER_INFISICAL_PROJECT_ID");
-  const infisicalClientId = required(env, "BROWSER_INFISICAL_CLIENT_ID");
-  const infisicalClientSecret = required(env, "BROWSER_INFISICAL_CLIENT_SECRET");
-  // Fail closed on the secret-manager identity too: absolute https URL.
-  try {
-    const site = new URL(infisicalSiteUrl);
-    if (site.protocol !== "https:") {
-      throw new ConfigError("BROWSER_INFISICAL_SITE_URL must use https://");
-    }
-  } catch (err) {
-    if (err instanceof ConfigError) throw err;
-    throw new ConfigError("BROWSER_INFISICAL_SITE_URL must be an absolute https:// url");
-  }
   const profileRoot = defaultProfileRoot(env, opts);
   // `exactOptionalPropertyTypes`: the key stays ABSENT when unconfigured
   // (bundled Chromium default) — never an explicit `undefined`.
@@ -462,10 +444,6 @@ export function resolveWorkerConfig(
     providerAccountId,
     allowedOrigin,
     loginPath,
-    infisicalSiteUrl,
-    infisicalProjectId,
-    infisicalClientId,
-    infisicalClientSecret,
     headless: env["BROWSER_WORKER_HEADLESS"] !== "0",
     ...channelOpts,
     challengeWaitSeconds: parseChallengeWaitSeconds(env["BROWSER_WORKER_CHALLENGE_WAIT_SECONDS"]),

@@ -18,6 +18,7 @@ import {
   decideCinevisionLeaseRecovery,
   decideCinevisionWriteReconcile,
   fingerprintCinevisionWriteInput,
+  CINEVISION_WRITE_SIMULATED_VERSION,
   validateCinevisionWriteInput,
   type CinevisionWriteInput,
 } from "../../src/providers/cinevision/writes.js";
@@ -41,6 +42,12 @@ function writeInput(overrides: Partial<CinevisionWriteInput> = {}): CinevisionWr
 }
 
 describe("cinevision write input validation", () => {
+  it("accepts pgsecret refs while the write adapter remains simulated-only", () => {
+    expect(validateCinevisionWriteInput(writeInput({ credentialRef: "pgsecret://tenant/account" }))).toBeNull();
+    expect(CINEVISION_WRITE_SIMULATED_VERSION).toBe("cinevision-write-simulated-v1");
+    expect(new InMemorySimulatedCinevisionWriteExternal()).toBeDefined();
+  });
+
   it("rejects credential values where a secret ref is required", () => {
     expect(validateCinevisionWriteInput(writeInput({ credentialRef: "raw-value" }))).toContain(
       "secret ref",
