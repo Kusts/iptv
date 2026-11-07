@@ -3,6 +3,17 @@
 Registro curto da entrega de simplificação (não é uma auditoria). Contrato
 canônico continua em `docs/15-implementation-baseline/`.
 
+## Estado
+
+- PR #123 — `feat/simplify-01-secrets-postgres`.
+- Correção de compatibilidade: commits `35eb6d6` (código/testes) e `dcd5833`
+  (teste de tamper determinístico, sem mudança de produto).
+- Engenharia encerrada: testes focados, `pnpm lint`, `pnpm typecheck`,
+  `pnpm build`, gates Python e review independente concluídos; CI do PR verde
+  em `dcd5833` (build, adversarial, security-scans, outbox-050-role-guards).
+- Cutover de staging: `CUTOVER_PENDING_OPERATOR` (nenhum deploy, merge ou
+  migração de produção executado).
+
 ## O que mudou
 
 - **Segredos de integração**: saíram do Infisical para PostgreSQL cifrado com
@@ -25,20 +36,83 @@ canônico continua em `docs/15-implementation-baseline/`.
   `SECRETS_ENCRYPTION_KEY`. Flags de drenagem legada continuam apenas como
   rollback documentado.
 
-## Cutover de credenciais (operador)
+## Correção de compatibilidade (referências legadas)
 
-1. Gere a chave uma vez: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
-2. Guarde `SECRETS_ENCRYPTION_KEY` fora do banco/Git e faça backup recuperável
-   do PostgreSQL **e** da chave (custódia separada).
-3. Com a identidade antiga ainda válida, rode o inventário e depois a cópia:
-   `node packages/database/scripts/migrate-secrets-to-postgres.mjs` (dry run)
-   e `... --apply`. O script só lê valores existentes e faz upsert pelo
-   `secret_ref` exato; não apaga o cofre.
-4. Valide no Control Center: salvar/ler credencial, reiniciar a API, testar
-   Asaas Sandbox sem cobrança, leitura CINEVISION e bloqueio cross-tenant.
-5. Restaure um backup isolado e confirme a descriptografia com a chave.
-6. Só então remova a identidade antiga do deploy. O cofre e seus backups não
-   são apagados por esta entrega.
+**Causa.** A migração preserva `provider.provider_accounts.secret_ref` e grava
+cada credencial pelo ref EXATO — incluindo as secundárias
+(`CINEVISION_PASS`, `ASAAS_WEBHOOK_TOKEN`) sob o mesmo esquema legado
+`infisical://SANDBOX/integrations/<tenant>/<provider>/<KEY>`. O código derivava
+essas secundárias sempre com `buildIntegrationSecretRef` (`pgsecret://`), então
+a leitura por ref exato falhava em um binding legado: CINEVISION encontrava o
+usuário e não a senha (`TESTING/INVALID_CREDENTIALS`); o `webhook_ensure` do
+Asaas não encontrava o token migrado e gerava outro.
+
+**Correção.** `deriveIntegrationSecretRef(bindingRef, key)`
+(`packages/secrets/src/refs.ts`) deriva a chave secundária do ref PRINCIPAL,
+preservando esquema, ambiente e prefixo exatos; o escopo vem sempre do binding
+validado, nunca do chamador. A escrita usa o próprio ref derivado (parseado de
+volta para o alvo), então leitura e escrita nunca divergem — inclusive quando o
+ref legado grafa o ambiente de forma diferente da coluna. `putSecret` aceita
+`refScheme` somente para `pgsecret://`/`infisical://`, mantendo allowlist de
+provider, validação de tenant e AAD; `rotateSecret` repassa o esquema. O default
+de configurações novas continua `pgsecret://`. Nenhum fallback entre tenants,
+providers ou ambientes foi introduzido.
+
+**Arquivos.**
+
+- `packages/secrets/src/refs.ts`, `index.ts`, `postgres-adapter.ts`,
+  `types.ts`, `writer.ts`.
+- `apps/api/src/integrations/integrations.commands.ts`.
+- Testes: `packages/secrets/test/refs.unit.test.ts`,
+  `packages/secrets/test/postgres-adapter.unit.test.ts`,
+  `apps/api/test/integrations-legacy-refs.integration.test.ts`,
+  `packages/database/test/migrate-secrets-to-postgres.integration.test.ts`.
+
+## Cutover de credenciais — procedimento único (staging Contabo)
+
+Status: `CUTOVER_PENDING_OPERATOR`. Executar apenas com autorização explícita
+para o ambiente e o SHA.
+
+### Pré-requisitos
+
+- Backup atual do PostgreSQL e verificação de integridade.
+- `SECRETS_ENCRYPTION_KEY` (32 bytes, base64) gerada e guardada fora do banco.
+- Cópia de recuperação da chave em custódia separada.
+- Identidade Infisical antiga temporariamente disponível para leitura.
+- Plano de rollback e inventário do estado atual das integrações.
+
+### Ordem operacional
+
+1. Confirmar o SHA autorizado.
+2. Executar o backup e verificar a integridade.
+3. Aplicar a migration 068 (one-shot `migrate`).
+4. Rodar o inventário/dry-run:
+   `node packages/database/scripts/migrate-secrets-to-postgres.mjs`.
+5. Se existirem bindings legados, executar o `--apply` autorizado.
+6. Confirmar todos os read-backs do script (ele falha com exit 1 e não promove o
+   cutover se qualquer leitura/decrypt falhar).
+7. Implantar API e componentes atualizados com a chave no ambiente.
+8. Validar Asaas Sandbox sem criar cobrança (teste read-only no Control Center).
+9. Validar CINEVISION via Browser Worker somente leitura autorizada.
+10. Confirmar persistência após reinício do processo.
+11. Confirmar outbox worker único e saudável.
+12. Executar restore isolado do backup e validar a descriptografia das
+    credenciais com a chave.
+13. Registrar o resultado (sem valores de segredo).
+
+Se não houver bindings legados, não forçar `--apply`: testar uma configuração
+nova pelo Control Center. Não reiniciar nem recriar o volume PostgreSQL; não
+executar cobrança real nem operação CINEVISION de escrita. O `--overwrite` não
+faz parte da operação padrão.
+
+### Rollback
+
+- Não excluir o banco e não sobrescrever segredos já migrados.
+- Não usar `--overwrite` automaticamente.
+- Preservar o Infisical e seus backups.
+- Restaurar a versão anterior pelo procedimento validado.
+- Preservar a chave de criptografia nova e os dados já cifrados para
+  recuperação; não fazer downgrade de schema presumindo migrations reversíveis.
 
 ## Antes → depois
 
@@ -52,20 +126,31 @@ canônico continua em `docs/15-implementation-baseline/`.
 
 ## Testes que sustentam a entrega
 
-- `packages/secrets`: criptografia (round-trip, AAD, tamper, versão, chave
-  inválida), adapter (isolamento cross-tenant, refs legados, rotação) — 20/20.
-- `apps/api`: `typecheck` + suíte completa (unitários) 909 pass / 488
-  DB-gated skipped; integração do segredo contra PostgreSQL em
-  `test/secrets-postgres.integration.test.ts` (cifra em repouso, persistência
-  após "restart", cross-tenant, chave errada, RLS).
-- `apps/browser-worker`: typecheck, lint, 263 testes e build sem Infisical.
-- `pnpm lint`, `pnpm typecheck`, `pnpm build` verdes; `pnpm test
-  --concurrency=1` 20/20 tasks; gates Python (docs/contracts/seed) verdes;
-  `gitleaks detect` (histórico) e `protect --staged` sem leaks.
+- `packages/secrets`: 27/27 (criptografia, adapter, refs/derivação, esquema
+  legado de escrita/rotação).
+- `apps/api` — suítes de integração afetadas 55/55:
+  `integrations-legacy-refs` (A: CINEVISION legado com usuário+senha; B: token
+  de webhook Asaas migrado reutilizado; B2: binding legado com ambiente em
+  caixa diferente gera um token e o reutiliza; C: configuração nova em
+  `pgsecret://` cifrada e legível; D: isolamento tenant/ambiente sem vazamento),
+  `integrations-webhook-ensure`, `integrations-cinevision-validate`,
+  `integrations-write`, `secrets-postgres`.
+- `packages/database` — script de migração 4/4 contra PostgreSQL real e
+  Infisical fake: dry-run sem escrita; refs legados exatos (primárias e
+  secundárias); nenhum overwrite por padrão; read-back de descriptografia;
+  falha de leitura → exit 1 (cutover bloqueado); nenhum valor no stdout/stderr;
+  nenhuma escrita/exclusão enviada ao cofre.
+- `pnpm lint`, `pnpm typecheck` e `pnpm build` verdes; `gitleaks protect
+  --staged` sem leaks; gates Python (`validate_docs`, contratos e seed) verdes.
+- CI do PR #123 verde em `dcd5833` (lint/typecheck/test/build no job `build`,
+  mais `adversarial`, `security-scans` e `outbox-050-role-guards`).
 
 ## Fora de escopo / pendências externas
 
 - Validação live em staging (deploy, cutover real, Asaas/CINEVISION) exige
-  autorização do ambiente e não é feita por este registro.
+  autorização do ambiente e não é feita por este registro:
+  `CUTOVER_PENDING_OPERATOR`.
+- A identidade Infisical antiga pode ser removida do runtime somente depois do
+  cutover validado; o cofre e seus backups não são apagados por esta entrega.
 - Funcionalidades SaaS (onboarding comercial, white-label, copilot completo)
   permanecem no roadmap; nada foi removido do banco/RLS.
