@@ -87,7 +87,10 @@ describe("AES-256-GCM payloads", () => {
     const payload = encryptSecret("value", KEY, AAD);
     const parts = payload.split(".");
     const data = parts[3] as string;
-    const tampered = `${parts[0]}.${parts[1]}.${parts[2]}.${data.slice(0, -1)}${data.endsWith("A") ? "B" : "A"}`;
+    // Flip the FIRST payload character: the final base64 char may carry only
+    // padding bits, which Node's decoder ignores (flaky non-tamper).
+    const flipped = data.startsWith("A") ? `B${data.slice(1)}` : `A${data.slice(1)}`;
+    const tampered = `${parts[0]}.${parts[1]}.${parts[2]}.${flipped}`;
     expect(codeOf((() => { try { decryptSecret(tampered, KEY, AAD); return null; } catch (e: unknown) { return e; } })())).toBe("SERVER");
   });
 
