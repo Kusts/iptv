@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NestFactory } from "@nestjs/core";
 import type { NestFastifyApplication } from "@nestjs/platform-fastify";
 import { createDb, applyMigrations } from "@iptv/database";
@@ -100,6 +100,35 @@ async function fakeFetch(input: string | URL | Request, init?: RequestInit): Pro
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+const DB_PERSIST_KEY = "s1c2-synthetic-dbpersist-004";
+const WRITER_SETUP_KEY = "s1c2-synthetic-writersetup-005";
+const DB_PREFLIGHT_KEY = "s1c2-synthetic-dbpreflight-006";
+
+/** Captures `integration.configure.failed` stdout JSON lines (safe-diagnostic assertions). */
+function captureConfigureFailures(): { lines: string[]; restore: () => void } {
+  const lines: string[] = [];
+  const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+    try {
+      const text =
+        typeof chunk === "string" ? chunk : Buffer.isBuffer(chunk) ? chunk.toString("utf8") : "";
+      for (const line of text.split("\n")) {
+        if (line.includes("integration.configure.failed")) {
+          lines.push(line);
+        }
+      }
+    } catch {
+      // Never fail the request under test on capture errors.
+    }
+    return true;
+  });
+  return {
+    lines,
+    restore: () => {
+      spy.mockRestore();
+    },
+  };
 }
 
 describe.skipIf(!hasDb)("integrations write/configure|test|disable (requires TEST_DATABASE_URL)", () => {
@@ -354,6 +383,7 @@ describe.skipIf(!hasDb)("integrations write/configure|test|disable (requires TES
       .executeTakeFirstOrThrow();
     const vaultSize = vault.store.size;
     vault.failPut = true;
+    const capture = captureConfigureFailures();
     try {
       const res = await inject({
         method: "POST",
@@ -363,8 +393,12 @@ describe.skipIf(!hasDb)("integrations write/configure|test|disable (requires TES
       });
       expect(res.statusCode).toBe(503);
       expect(res.json<{ code: string }>().code).toBe("VAULT_UNAVAILABLE");
+      const raw = JSON.stringify(res.json());
+      expect(raw).not.toContain("s1c2-synthetic-zzz999");
+      expect(raw).not.toContain("infisical");
     } finally {
       vault.failPut = false;
+      capture.restore();
     }
     const after = await db
       .selectFrom("provider.provider_accounts")
@@ -373,6 +407,196 @@ describe.skipIf(!hasDb)("integrations write/configure|test|disable (requires TES
       .executeTakeFirstOrThrow();
     expect(after).toEqual(before);
     expect(vault.store.size).toBe(vaultSize);
+    // Safe staging diagnostic: vault_put phase only, no secret/ref/raw error.
+    expect(capture.lines.length).toBeGreaterThan(0);
+    for (const line of capture.lines) {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      expect(parsed["msg"]).toBe("integration.configure.failed");
+      expect(parsed["provider"]).toBe("asaas");
+      expect(parsed["environment"]).toBe("SANDBOX");
+      expect(parsed["stage"]).toBe("vault_put");
+      expect(parsed["error_code"]).toBe("TRANSPORT");
+      expect(typeof parsed["correlation_id"]).toBe("string");
+      expect((parsed["correlation_id"] as string).length).toBeGreaterThan(0);
+      expect(typeof parsed["compensation_attempted_count"]).toBe("number");
+      expect(line).not.toContain("s1c2-synthetic-zzz999");
+      expect(line).not.toContain("infisical");
+      expect(line).not.toContain("fake vault");
+      expect(line).not.toContain(tenantA);
+    }
+  });
+
+  it("db persist failure after successful puts compensates and keeps 503 with db_persist diagnostic", async () => {
+    const vaultSize = vault.store.size;
+    const capture = captureConfigureFailures();
+    __setIntegrationTestDoubles({
+      secretsWriter: vault,
+      asaasFetch: fakeFetch as typeof fetch,
+      failDbPersist: true,
+    });
+    try {
+      const res = await inject({
+        method: "POST",
+        url: "/v1/integrations/asaas/configure",
+        token: tokenA,
+        payload: { environment: "PRODUCTION", secret: { apiKey: DB_PERSIST_KEY } },
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.json<{ code: string }>().code).toBe("VAULT_UNAVAILABLE");
+      const raw = JSON.stringify(res.json());
+      expect(raw).not.toContain(DB_PERSIST_KEY);
+      expect(raw).not.toContain("infisical");
+    } finally {
+      __setIntegrationTestDoubles({ secretsWriter: vault, asaasFetch: fakeFetch as typeof fetch });
+      capture.restore();
+    }
+    // No PRODUCTION row was persisted; the compensated vault ref is gone.
+    const rows = await db
+      .selectFrom("provider.provider_accounts")
+      .leftJoin("provider.providers", "provider.providers.id", "provider.provider_accounts.provider_id")
+      .select(["provider.provider_accounts.id", "provider.provider_accounts.secret_ref"])
+      .where("provider.provider_accounts.tenant_id", "=", tenantA)
+      .where("provider.providers.provider_key", "=", "asaas")
+      .where("provider.provider_accounts.environment", "=", "PRODUCTION")
+      .execute();
+    expect(rows).toHaveLength(0);
+    expect(vault.store.size).toBe(vaultSize);
+    for (const value of vault.store.values()) {
+      expect(value).not.toBe(DB_PERSIST_KEY);
+    }
+    // Safe staging diagnostic: db_persist phase only, no secret/ref/raw error.
+    expect(capture.lines.length).toBeGreaterThan(0);
+    for (const line of capture.lines) {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      expect(parsed["msg"]).toBe("integration.configure.failed");
+      expect(parsed["provider"]).toBe("asaas");
+      expect(parsed["environment"]).toBe("PRODUCTION");
+      expect(parsed["stage"]).toBe("db_persist");
+      expect(parsed["error_code"]).toBe("BINDING_PERSIST_FAILED");
+      expect(typeof parsed["correlation_id"]).toBe("string");
+      expect((parsed["correlation_id"] as string).length).toBeGreaterThan(0);
+      expect(parsed["compensation_attempted_count"]).toBe(1);
+      expect(line).not.toContain(DB_PERSIST_KEY);
+      expect(line).not.toContain("infisical");
+      expect(line).not.toContain("fake-test-db-persist-failure");
+      expect(line).not.toContain(tenantA);
+    }
+  });
+
+  it("db preflight failure logs db_preflight diagnostic and rethrows without side effects", async () => {
+    const vaultSize = vault.store.size;
+    const capture = captureConfigureFailures();
+    __setIntegrationTestDoubles({
+      secretsWriter: vault,
+      asaasFetch: fakeFetch as typeof fetch,
+      failDbPreflight: true,
+    });
+    try {
+      const res = await inject({
+        method: "POST",
+        url: "/v1/integrations/asaas/configure",
+        token: tokenA,
+        payload: { environment: "PRODUCTION", secret: { apiKey: DB_PREFLIGHT_KEY } },
+      });
+      // Rethrow inalterado: NÃO vira 503 VAULT_UNAVAILABLE (erro genérico → 500).
+      expect(res.statusCode).toBe(500);
+      expect(res.json<{ code?: string }>().code).not.toBe("VAULT_UNAVAILABLE");
+      const raw = JSON.stringify(res.json());
+      expect(raw).not.toContain(DB_PREFLIGHT_KEY);
+      expect(raw).not.toContain("infisical");
+    } finally {
+      __setIntegrationTestDoubles({ secretsWriter: vault, asaasFetch: fakeFetch as typeof fetch });
+      capture.restore();
+    }
+    // Nenhuma linha PRODUCTION persistida; nenhum put ocorreu (vault intocado).
+    const rows = await db
+      .selectFrom("provider.provider_accounts")
+      .leftJoin("provider.providers", "provider.providers.id", "provider.provider_accounts.provider_id")
+      .select(["provider.provider_accounts.id", "provider.provider_accounts.secret_ref"])
+      .where("provider.provider_accounts.tenant_id", "=", tenantA)
+      .where("provider.providers.provider_key", "=", "asaas")
+      .where("provider.provider_accounts.environment", "=", "PRODUCTION")
+      .execute();
+    expect(rows).toHaveLength(0);
+    expect(vault.store.size).toBe(vaultSize);
+    for (const value of vault.store.values()) {
+      expect(value).not.toBe(DB_PREFLIGHT_KEY);
+    }
+    // Diagnóstico seguro: db_preflight + BINDING_PREFLIGHT_FAILED, sem segredo/ref/raw error.
+    expect(capture.lines.length).toBeGreaterThan(0);
+    for (const line of capture.lines) {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      expect(parsed["msg"]).toBe("integration.configure.failed");
+      expect(parsed["provider"]).toBe("asaas");
+      expect(parsed["environment"]).toBe("PRODUCTION");
+      expect(parsed["stage"]).toBe("db_preflight");
+      expect(parsed["error_code"]).toBe("BINDING_PREFLIGHT_FAILED");
+      expect(typeof parsed["correlation_id"]).toBe("string");
+      expect((parsed["correlation_id"] as string).length).toBeGreaterThan(0);
+      expect(parsed["compensation_attempted_count"]).toBe(0);
+      expect(line).not.toContain(DB_PREFLIGHT_KEY);
+      expect(line).not.toContain("infisical");
+      expect(line).not.toContain("fake-test-db-preflight-failure");
+      expect(line).not.toContain(tenantA);
+    }
+  });
+
+  it("writer setup failure logs vault_setup diagnostic and rethrows without side effects", async () => {
+    const vaultSize = vault.store.size;
+    const capture = captureConfigureFailures();
+    __setIntegrationTestDoubles({
+      secretsWriter: vault,
+      asaasFetch: fakeFetch as typeof fetch,
+      failWriterSetup: true,
+    });
+    try {
+      const res = await inject({
+        method: "POST",
+        url: "/v1/integrations/asaas/configure",
+        token: tokenA,
+        payload: { environment: "PRODUCTION", secret: { apiKey: WRITER_SETUP_KEY } },
+      });
+      // Rethrow inalterado: NÃO vira 503 VAULT_UNAVAILABLE (erro genérico → 500).
+      expect(res.statusCode).toBe(500);
+      expect(res.json<{ code?: string }>().code).not.toBe("VAULT_UNAVAILABLE");
+      const raw = JSON.stringify(res.json());
+      expect(raw).not.toContain(WRITER_SETUP_KEY);
+      expect(raw).not.toContain("infisical");
+    } finally {
+      __setIntegrationTestDoubles({ secretsWriter: vault, asaasFetch: fakeFetch as typeof fetch });
+      capture.restore();
+    }
+    // Nenhuma linha PRODUCTION persistida; nenhum put ocorreu (vault intocado).
+    const rows = await db
+      .selectFrom("provider.provider_accounts")
+      .leftJoin("provider.providers", "provider.providers.id", "provider.provider_accounts.provider_id")
+      .select(["provider.provider_accounts.id", "provider.provider_accounts.secret_ref"])
+      .where("provider.provider_accounts.tenant_id", "=", tenantA)
+      .where("provider.providers.provider_key", "=", "asaas")
+      .where("provider.provider_accounts.environment", "=", "PRODUCTION")
+      .execute();
+    expect(rows).toHaveLength(0);
+    expect(vault.store.size).toBe(vaultSize);
+    for (const value of vault.store.values()) {
+      expect(value).not.toBe(WRITER_SETUP_KEY);
+    }
+    // Diagnóstico seguro: vault_setup + UNEXPECTED, sem segredo/ref/raw error.
+    expect(capture.lines.length).toBeGreaterThan(0);
+    for (const line of capture.lines) {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      expect(parsed["msg"]).toBe("integration.configure.failed");
+      expect(parsed["provider"]).toBe("asaas");
+      expect(parsed["environment"]).toBe("PRODUCTION");
+      expect(parsed["stage"]).toBe("vault_setup");
+      expect(parsed["error_code"]).toBe("UNEXPECTED");
+      expect(typeof parsed["correlation_id"]).toBe("string");
+      expect((parsed["correlation_id"] as string).length).toBeGreaterThan(0);
+      expect(parsed["compensation_attempted_count"]).toBe(0);
+      expect(line).not.toContain(WRITER_SETUP_KEY);
+      expect(line).not.toContain("infisical");
+      expect(line).not.toContain("fake-test-writer-setup-failure");
+      expect(line).not.toContain(tenantA);
+    }
   });
 
   it("idempotent configure replays on the same key and conflicts on reuse", async () => {

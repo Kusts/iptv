@@ -5,6 +5,7 @@ import { newId, now } from "@iptv/domain";
 import { parseIntegrationsPublicBaseUrl } from "@iptv/config";
 import type { CommandResult } from "@iptv/domain";
 import type { CommandBus, CommandHandlerContext } from "../commands/command-bus.js";
+import { emitLog } from "@iptv/observability";
 import { kyselyTrxOf } from "../crm/wave2-store.js";
 import {
   ASAAS_WEBHOOK_LIMIT,
@@ -93,6 +94,24 @@ interface IntegrationTestDoubles {
    * `undefined` = sem override, resolve o runner real.
    */
   cinevisionProbe?: CinevisionWorkerRunner;
+  /**
+   * Test seam: forces post-put `provider_accounts` persistence failure for
+   * `integration.configure` diagnostics (compensate + 503), without touching
+   * the vault path. `undefined`/`false` = sem override (produção persiste).
+   */
+  failDbPersist?: boolean;
+  /**
+   * Test seam: forces `db_preflight` failure for `integration.configure`
+   * diagnostics (log + rethrow, no compensation), without touching
+   * vault/DB semantics. `undefined`/`false` = sem override.
+   */
+  failDbPreflight?: boolean;
+  /**
+   * Test seam: forces `resolveWriter()` setup failure for
+   * `integration.configure` diagnostics (`vault_setup` + rethrow), without
+   * touching vault/DB semantics. `undefined`/`false` = sem override.
+   */
+  failWriterSetup?: boolean;
   /**
    * Override explícito da base pública (`null` simula ausente para o teste
    * de manual-mode; `undefined` = sem override, lê o env real).
@@ -307,6 +326,43 @@ function vaultUnavailable(): HttpException {
   );
 }
 
+/**
+ * Diagnóstico seguro de `integration.configure` (staging): distingue a fase
+ * de preflight do DB (`db_preflight`), de construção do writer
+ * (`vault_setup`), de escrita no vault (`vault_put`) e de persistência da
+ * linha (`db_persist`) com evento/attrs fixos. Nunca inclui segredo, ref,
+ * corpo, tenant id, `message` ou `stack` — só `correlation_id` do contexto,
+ * provider/environment allowlisted, stage fixo, categoria de erro fixa e
+ * contagem de refs compensadas. `db_preflight`/`vault_setup` só logam e
+ * relançam o erro inalterado (HTTP preservado); `vault_put`/`db_persist`
+ * mantêm compensação + 503.
+ */
+function emitConfigureFailure(input: {
+  correlationId: string;
+  provider: string;
+  environment: string;
+  stage: "db_preflight" | "vault_setup" | "vault_put" | "db_persist";
+  errorCode: string;
+  compensatedCount: number;
+}): void {
+  emitLog("warn", "integration.configure.failed", {
+    correlation_id: input.correlationId,
+    provider: input.provider,
+    environment: input.environment,
+    stage: input.stage,
+    error_code: input.errorCode,
+    compensation_attempted_count: input.compensatedCount,
+  });
+}
+
+/** Categoria de erro segura do vault (código allowlisted ou `UNEXPECTED`). */
+function vaultErrorCodeOf(err: unknown): string {
+  if (err instanceof SecretsError) {
+    return err.code;
+  }
+  return "UNEXPECTED";
+}
+
 function requireTrx(ctx: CommandHandlerContext) {
   const trx = kyselyTrxOf(ctx);
   if (trx === null) {
@@ -364,19 +420,44 @@ async function handleConfigure(
   ctx: CommandHandlerContext,
   input: ConfigureIntegrationInput,
 ): Promise<CommandResult<IntegrationBindingResult>> {
-  const trx = requireTrx(ctx);
-  const providerId = await ensureProviderId(trx, input.provider);
+  const ctxProvider = input.provider;
+  const ctxEnvironment = input.environment;
+  let trx: ReturnType<typeof requireTrx>;
+  let providerId: string;
+  let existing:
+    | { id: string; secret_ref: string; connection_status: string; version: number | string | bigint }
+    | undefined;
+  try {
+    if (testDoubles?.failDbPreflight === true) {
+      throw new Error("fake-test-db-preflight-failure");
+    }
+    trx = requireTrx(ctx);
+    providerId = await ensureProviderId(trx, input.provider);
 
-  const existing = await trx
-    .selectFrom("provider.provider_accounts")
-    .select(["id", "secret_ref", "connection_status", "version"])
-    .where("tenant_id", "=", ctx.tenantId)
-    .where("provider_id", "=", providerId)
-    .where("environment", "=", input.environment)
-    .where("connection_status", "<>", "DISABLED")
-    .orderBy("updated_at", "desc")
-    .forUpdate()
-    .executeTakeFirst();
+    existing = await trx
+      .selectFrom("provider.provider_accounts")
+      .select(["id", "secret_ref", "connection_status", "version"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("provider_id", "=", providerId)
+      .where("environment", "=", input.environment)
+      .where("connection_status", "<>", "DISABLED")
+      .orderBy("updated_at", "desc")
+      .forUpdate()
+      .executeTakeFirst();
+  } catch (err) {
+    // Preflight do DB (trx/provider/binding existente): só diagnostica com
+    // categoria fixa e relança inalterado (HTTP preservado, sem compensação —
+    // nada foi escrito no vault ainda).
+    emitConfigureFailure({
+      correlationId: ctx.correlationId,
+      provider: ctxProvider,
+      environment: ctxEnvironment,
+      stage: "db_preflight",
+      errorCode: "BINDING_PREFLIGHT_FAILED",
+      compensatedCount: 0,
+    });
+    throw err;
+  }
 
   if (existing !== undefined) {
     if (input.expectedVersion === undefined) {
@@ -405,7 +486,25 @@ async function handleConfigure(
           { key: "CINEVISION_PASS", value: input.secret.password as string },
         ];
 
-  const writer = resolveWriter();
+  let writer: SecretsWriterPort;
+  try {
+    if (testDoubles?.failWriterSetup === true) {
+      throw new Error("fake-test-writer-setup-failure");
+    }
+    writer = resolveWriter();
+  } catch (err) {
+    // Construção do writer: só diagnostica com categoria segura e relança
+    // inalterado (HTTP preservado, sem compensação — nenhum put ocorreu).
+    emitConfigureFailure({
+      correlationId: ctx.correlationId,
+      provider: ctxProvider,
+      environment: ctxEnvironment,
+      stage: "vault_setup",
+      errorCode: vaultErrorCodeOf(err),
+      compensatedCount: 0,
+    });
+    throw err;
+  }
   const refs: string[] = [];
   try {
     for (const target of targets) {
@@ -425,6 +524,14 @@ async function handleConfigure(
     for (const ref of refs) {
       await writer.deleteSecret(ref).catch(() => undefined);
     }
+    emitConfigureFailure({
+      correlationId: ctx.correlationId,
+      provider: input.provider,
+      environment: input.environment,
+      stage: "vault_put",
+      errorCode: vaultErrorCodeOf(err),
+      compensatedCount: refs.length,
+    });
     if (err instanceof SecretsError) {
       throw vaultUnavailable();
     }
@@ -434,6 +541,9 @@ async function handleConfigure(
   const primaryRef = refs[0] as string;
   const at = now();
   try {
+    if (testDoubles?.failDbPersist === true) {
+      throw new Error("fake-test-db-persist-failure");
+    }
     if (existing === undefined) {
       const id = newId();
       await trx
@@ -516,6 +626,14 @@ async function handleConfigure(
     for (const ref of refs) {
       await writer.deleteSecret(ref).catch(() => undefined);
     }
+    emitConfigureFailure({
+      correlationId: ctx.correlationId,
+      provider: input.provider,
+      environment: input.environment,
+      stage: "db_persist",
+      errorCode: "BINDING_PERSIST_FAILED",
+      compensatedCount: refs.length,
+    });
     throw vaultUnavailable();
   }
 }
