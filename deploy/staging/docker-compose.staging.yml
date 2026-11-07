@@ -112,13 +112,19 @@ services:
       # operator custody, outside the database and outside Git; back it up
       # separately from the PostgreSQL dump.
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY is required}
+      # CINEVISION browser worker runtime (spawned as child process of the API).
+      CINEVISION_WORKER_CLI: /app/apps/browser-worker/dist/cli.js
+      CINEVISION_WORKER_PROFILE_BASE: /data/cinevision-profiles
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     ports:
       - "127.0.0.1:3001:3001"
     networks:
       - internal
-    # Non-swarm resource ceilings (plain compose, not `deploy.resources`).
-    mem_limit: 768m
+    # Chromium (spawned by the API for CINEVISION reads) needs shared memory
+    # and a larger heap than the API alone. Keep the ceiling bounded.
+    mem_limit: 2g
     cpus: 1.0
+    shm_size: 1g
     healthcheck:
       # Readiness (not liveness): it proves the database answers too. The
       # image already declares this HEALTHCHECK; repeating it here keeps the
