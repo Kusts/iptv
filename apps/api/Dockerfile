@@ -27,7 +27,7 @@
 # pgbouncer service in docker-compose.yml). Refresh with:
 #   docker buildx imagetools inspect node:22-alpine
 
-ARG NODE_IMAGE=node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+ARG NODE_IMAGE=node:22-bookworm-slim
 
 # ---------------------------------------------------------------------------
 # base: pinned node + corepack-managed pnpm (never the distro `npm`).
@@ -73,8 +73,9 @@ RUN pnpm install --frozen-lockfile
 FROM deps AS build
 COPY tsconfig.base.json ./
 COPY apps/api apps/api
+COPY apps/browser-worker apps/browser-worker
 COPY packages packages
-RUN pnpm --filter @iptv/api... build
+RUN pnpm --filter @iptv/api... --filter @iptv/browser-worker... build
 
 # ---------------------------------------------------------------------------
 # runtime: prod-only deps for the api subset + the built output. No sources,
@@ -96,7 +97,7 @@ COPY packages/workflows/package.json packages/workflows/package.json
 # `--ignore-scripts`: no production dependency of the api graph ships a
 # required build/postinstall step (nestjs, fastify, kysely, pg, zod are pure
 # JS), and running install scripts as root during a build is a needless risk.
-RUN pnpm install --frozen-lockfile --prod --ignore-scripts --filter "@iptv/api..."
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts --filter "@iptv/api..." --filter "@iptv/browser-worker..."
 
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/packages/ai-runtime/dist ./packages/ai-runtime/dist
@@ -106,12 +107,25 @@ COPY --from=build /app/packages/database/dist ./packages/database/dist
 COPY --from=build /app/packages/domain/dist ./packages/domain/dist
 COPY --from=build /app/packages/observability/dist ./packages/observability/dist
 COPY --from=build /app/packages/secrets/dist ./packages/secrets/dist
+COPY --from=build /app/apps/browser-worker/dist ./apps/browser-worker/dist
 # Migrations travel with the image: the `migrate` job applies them, the API
 # only reads the schema. Append-only files, checksum-verified by the runner.
 COPY db/migrations ./db/migrations
 
 ENV MIGRATIONS_DIR=/app/db/migrations \
-    NODE_ENV=production
+    NODE_ENV=production \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    CINEVISION_WORKER_CLI=/app/apps/browser-worker/dist/cli.js
+
+# Install the Playwright Chromium runtime (bundled browser + OS deps) into the
+# image at build time. NOT at container startup: the browser must be present
+# before the API boots. `/ms-playwright` is readable by the non-root user.
+RUN pnpm --filter @iptv/browser-worker exec playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright
+
+# Writable profile root outside the repo checkout (config rejects profiles
+# inside the repo). Owned by the non-root runtime user.
+RUN mkdir -p /data/cinevision-profiles && chown -R node:node /data/cinevision-profiles
 # A repository `.npmrc` (none today) MUST be added to both COPY lines above
 # before it exists, otherwise `--frozen-lockfile` would install with different
 # settings than CI.
