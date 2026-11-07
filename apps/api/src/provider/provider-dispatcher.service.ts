@@ -2,7 +2,7 @@ import { Inject, Injectable, Optional } from "@nestjs/common";
 import { sql, type Kysely } from "kysely";
 import { withTenantTransaction, type Database } from "@iptv/database";
 import { newId } from "@iptv/domain";
-import { resolveSecretsPort, type SecretsPort } from "@iptv/secrets";
+import type { SecretsPort } from "@iptv/secrets";
 import type { CommandHandlerContext, DbPort } from "../commands/command-bus.js";
 import { kyselyTrxOf } from "../crm/wave2-store.js";
 import { applySecretPortOutcome, decideVerifyingTrialReconcile } from "./provider.commands.js";
@@ -26,6 +26,7 @@ import {
 } from "./provider-port.js";
 import {
   assertBrowserSecretReady,
+  secretsAvailable,
   buildDispatchPortPayload,
   decideTrialDispatchGate,
   isSecretRequiringPort,
@@ -1252,7 +1253,7 @@ export class ProviderDispatcherService {
     }
     const gate = assertBrowserSecretReady({
       secretRef: ref,
-      secretsPort: overrides.secretsPort ?? resolveSecretsPort(),
+      secretsConfigured: secretsAvailable(overrides.secretsPort),
     });
     if (!gate.ok) {
       return null;

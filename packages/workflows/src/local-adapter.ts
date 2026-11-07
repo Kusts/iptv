@@ -13,8 +13,8 @@ interface StoredTask {
  *
  * Handlers run on `tick()` (driven by the API scheduler loop); due tasks
  * are scanned in `runAt` order. Tasks persist IN MEMORY ONLY — a process
- * restart drops every queued task. This is NOT a durable workflow engine;
- * durable execution awaits Hatchet adoption after Wave-0 certification.
+ * restart drops every queued task. This is NOT a durable workflow engine:
+ * durable work belongs to the PostgreSQL-backed outbox worker.
  *
  * Failure isolation: one throwing handler is counted as failed and never
  * prevents the remaining due tasks in the same tick.

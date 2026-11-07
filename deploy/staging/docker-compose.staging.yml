@@ -7,16 +7,19 @@
 # tunnel terminates public TLS outside this file).
 #
 # Secrets: NONE live here. Values come from `.env.staging` (env_file, gitignored
-# — copy `deploy/staging/.env.staging.example`) and from Infisical `infisical://`
-# refs resolved at runtime (ADR-0014). Never add a literal credential here.
+# — copy `deploy/staging/.env.staging.example`). Integration credentials are
+# encrypted (AES-256-GCM) in PostgreSQL and configured through the Control
+# Center; the API's `SECRETS_ENCRYPTION_KEY` is a deployment secret kept
+# outside the database/Git. Never add a literal credential here.
 #
 # Deploy order (enforced by depends_on, do not reorder by hand):
 #   postgres (healthy) → migrate (one-shot, exit 0) → api (ready) → web
-#   browser-worker is opt-in (`--profile worker`) and runs on demand.
-#   outbox-worker is opt-in (`--profile outbox`) and starts ONLY after the
-#   legacy outbox drain is quiesced (see the rls-role-split-cutover runbook,
-#   "Worker process + legacy quiescence"); compose cannot enforce that gate,
-#   the operator procedure does.
+#   outbox-worker is the single permanent outbox publisher and starts after
+#   the API is healthy (the DB runtime mode must be WORKER; see the
+#   rls-role-split-cutover runbook). browser-worker is opt-in
+#   (`--profile worker`) and runs on demand.
+# Preconditions: `.env.staging` carries SECRETS_ENCRYPTION_KEY (32-byte base64)
+# and `.env.staging.outbox-worker` exists (its env_file is required at parse).
 #
 #   docker compose -f deploy/staging/docker-compose.staging.yml build
 #   docker compose -f deploy/staging/docker-compose.staging.yml up -d
@@ -105,6 +108,10 @@ services:
       # when it is unset, and a silent container is undebuggable. Set it in
       # .env.staging (info for staging).
       LOG_LEVEL: ${LOG_LEVEL:?LOG_LEVEL is required}
+      # Single 256-bit key for encrypted integration credentials. Keep it in
+      # operator custody, outside the database and outside Git; back it up
+      # separately from the PostgreSQL dump.
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY is required}
     ports:
       - "127.0.0.1:3001:3001"
     networks:
@@ -176,8 +183,8 @@ services:
     image: iptv-staging-browser-worker:local
     profiles: ["worker"]
     restart: "no"
-    # DEDICATED env file (NOT the API's .env.staging): BROWSER_WORKER_* /
-    # BROWSER_INFISICAL_* credentials must exist only in the worker process.
+    # DEDICATED env file (NOT the API's .env.staging): BROWSER_WORKER_* and the
+    # per-run CINEVISION_EMAIL/PASSWORD must exist only in the worker process.
     # Sharing one file would inject them into the API container's environment
     # too — secret sprawl with no operational benefit.
     env_file:
@@ -191,35 +198,29 @@ services:
     networks:
       - internal
 
-  # Dedicated platform outbox worker (migration 050 protocol), NOT a default
-  # service: opt-in profile, starts ONLY after the legacy outbox drain is
-  # quiesced — setting this up does not start it. Procedure:
+  # Dedicated platform outbox worker (migration 050 protocol) — the MVP's
+  # single durable outbox publisher. It is a PERMANENT service: the API's
+  # in-process legacy drainer must stay disabled/quiesced (DB runtime mode
+  # WORKER), and compose starts this worker after the API is healthy.
   #   1. Copy deploy/staging/.env.staging.outbox-worker.example to a LOCAL
-  #      .env.staging.outbox-worker (gitignored) and fill the four activation
+  #      .env.staging.outbox-worker (gitignored) and fill the activation
   #      values (OUTBOX_WORKER_ENABLED=1, OUTBOX_WORKER_ID,
-  #      OUTBOX_WORKER_DATABASE_URL as outbox_worker, OUTBOX_LEGACY_QUIESCED=1
-  #      only after GET /v1/admin/outbox/drain-state shows the legacy drain
-  #      disabled with inFlight 0 — a stopped scheduler alone is not proof).
+  #      OUTBOX_WORKER_DATABASE_URL as outbox_worker, OUTBOX_LEGACY_QUIESCED=1,
+  #      OUTBOX_LEGACY_DRAIN_ENABLED=0, OUTBOX_LEGACY_IN_FLIGHT=0).
   #   2. Set the role password once: ALTER ROLE outbox_worker PASSWORD '...'
   #      (migration 050 sets none; keep it in the operator secret path).
-  #   3. Boot rehearsal with zero claims, then a single bounded batch:
+  #   3. Rehearse once with zero claims before starting the loop:
   #        docker compose --env-file .env.staging \
-  #          -f deploy/staging/docker-compose.staging.yml --profile outbox \
+  #          -f deploy/staging/docker-compose.staging.yml \
   #          run --rm outbox-worker check
-  #        ... run --rm outbox-worker run --once
-  #   4. Start the loop only after the smoke passes:
-  #        docker compose --env-file .env.staging \
-  #          -f deploy/staging/docker-compose.staging.yml --profile outbox \
-  #          up -d outbox-worker
-  # The worker publishes through LocalTransport (structured-log delivery, same
-  # as the API drainer today); real transports arrive behind the same port.
+  # The worker publishes through LocalTransport (structured-log delivery);
+  # real transports arrive behind the same port.
   outbox-worker:
     build:
       context: ../..
       dockerfile: apps/outbox-worker/Dockerfile
     image: iptv-staging-outbox-worker:local
     container_name: iptv-staging-outbox-worker
-    profiles: ["outbox"]
     # Long-running claim loop: restart on transient crash (non-zero exit).
     # Fail-closed states (invalid config / gate denied → exit 2 not-ready)
     # also restart, which is intended: the operator stops the service
@@ -263,30 +264,10 @@ services:
       retries: 3
       start_period: 30s
 
-  # Transaction pooler, mirroring the dev docker-compose.yml service: opt-in
-  # profile only, never on the default path. Migrations and owner traffic stay
-  # DIRECT; only `iptv_app` DML may be pooled, and only after the step 4
-  # certification recorded in rls-role-split-cutover.md.
-  # Requires deploy/pgbouncer/pgbouncer.ini + a LOCAL userlist (gitignored,
-  # scram-sha-256 + plaintext dev-only entries — see that runbook).
-  #   docker compose -f deploy/staging/docker-compose.staging.yml \
-  #     --profile pooling up -d pgbouncer
-  pgbouncer:
-    image: edoburu/pgbouncer@sha256:4c1ca296ef525f108f5d3552cc337c0c09587cf8dae7f0067fd93349e47dc1cd
-    container_name: iptv-staging-pgbouncer
-    profiles: ["pooling"]
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ../pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
-      - ../pgbouncer/userlist.staging.txt:/etc/pgbouncer/userlist.txt:ro
-    # Loopback only; uncomment to reach it from the host (127.0.0.1:6432).
-    # ports:
-    #   - "127.0.0.1:6432:6432"
-    networks:
-      - internal
+  # PgBouncer is intentionally absent: it was never enabled and has no
+  # consumer in the MVP. Connections stay DIRECT (owner for migrations,
+  # `iptv_app` for tenant traffic). The historical config lives in
+  # deploy/pgbouncer/ and the rls-role-split-cutover runbook for reference.
 
 networks:
   # Single internal bridge. Nothing is published except the loopback-bound

@@ -20,7 +20,8 @@
 import { withSpan } from "@iptv/observability";
 import type { Transaction } from "kysely";
 import type { Database } from "@iptv/database";
-import { resolveSecretsPort, type SecretsPort } from "@iptv/secrets";
+import type { SecretsPort } from "@iptv/secrets";
+import { createPostgresSecretsAdapter } from "../integrations/postgres-secrets.js";
 
 export type AsaasEffect = "KNOWN_APPLIED" | "KNOWN_NOT_APPLIED" | "UNKNOWN";
 
@@ -1288,8 +1289,9 @@ export function resolveAsaasPort(name: "echo" | "real"): AsaasPort {
 //     DRAFT / TESTING / REAUTH_REQUIRED / DEGRADED / NOT_CONFIGURED rows are
 //     NOT eligible — they fall back to the legacy env adapter (compat), never
 //     to a half-provisioned key. DISABLED rows are never eligible.
-//  3. `getSecret(secret_ref)` from the vault (injected in tests, live via
-//     `resolveSecretsPort()` in production); vault down / secret missing with
+//  3. `getSecret(secret_ref)` from the PostgreSQL secrets store (injected in
+//     tests, live via the tenant transaction in production); store/key
+//     failure with
 //     a live binding present throws fail-closed — NEVER a silent echo
 //     fallback (echo happens ONLY when the legacy path was already echo).
 //  4. base URL comes from the fixed per-environment allowlist below — never
@@ -1392,16 +1394,17 @@ export async function resolveTenantAsaas(
   }
   const environment = String(binding.environment);
   const host = tenantHostFor(environment);
-  const secrets = options.secretsPort ?? resolveSecretsPort();
   // Fail-closed: a live binding with an unreadable credential must NEVER
-  // degrade into a silent echo/global-key fallback. The vault error is
+  // degrade into a silent echo/global-key fallback. The store error is
   // sanitized by the secrets port (never the value); wrap without the ref.
   let apiKey: string;
   try {
+    const secrets =
+      options.secretsPort ?? createPostgresSecretsAdapter(trx, tenantId);
     apiKey = await secrets.getSecret(binding.secret_ref);
   } catch {
     throw new Error(
-      `asaas tenant credential unavailable in environment ${JSON.stringify(environment)} (binding present, vault read failed; retry later)`,
+      `asaas tenant credential unavailable in environment ${JSON.stringify(environment)} (binding present, secret store read failed; retry later)`,
     );
   }
   if (typeof apiKey !== "string" || apiKey.length === 0) {

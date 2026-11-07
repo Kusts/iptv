@@ -24,7 +24,7 @@
  * All failure messages are generic on purpose: they never echo the ref,
  * key, path, environment or value.
  */
-import { parseSecretRef } from "@iptv/secrets";
+import { isSecretsConfigured, parseSecretRef } from "@iptv/secrets";
 import type { CommandHandlerContext } from "../commands/command-bus.js";
 import { kyselyTrxOf } from "../crm/wave2-store.js";
 import { trialMemoryOf } from "../trial/trial-store.js";
@@ -64,6 +64,18 @@ export function isSecretsPortConfigured(port: ConfiguredSecretsPort | null | und
   }
   const name = port.name.trim().toLowerCase();
   return name !== "" && name !== "noop";
+}
+
+/**
+ * Secret availability for the browser gate: an injected port wins (test
+ * seam), otherwise the runtime PostgreSQL adapter is available exactly when
+ * a valid `SECRETS_ENCRYPTION_KEY` is configured. Never touches storage.
+ */
+export function secretsAvailable(port: ConfiguredSecretsPort | null | undefined): boolean {
+  if (port !== null && port !== undefined) {
+    return isSecretsPortConfigured(port);
+  }
+  return isSecretsConfigured();
 }
 
 export type SecretRefValidationReason = "missing" | "placeholder" | "malformed";
@@ -137,7 +149,9 @@ export type BrowserGateFailureReason = SecretRefValidationReason | "secrets_port
  */
 export function assertBrowserSecretReady(input: {
   secretRef: unknown;
-  secretsPort: ConfiguredSecretsPort | null | undefined;
+  secretsPort?: ConfiguredSecretsPort | null | undefined;
+  /** Explicit availability (test seam); wins over `secretsPort` when set. */
+  secretsConfigured?: boolean;
 }): { ok: true; secretRef: string } | { ok: false; reason: BrowserGateFailureReason; message: string } {
   const checked = validateSecretRefFormat(input.secretRef);
   if (!checked.ok) {
@@ -161,7 +175,7 @@ export function assertBrowserSecretReady(input: {
       message: "browser operations require a configured provider secret (secret_ref is malformed)",
     };
   }
-  if (!isSecretsPortConfigured(input.secretsPort)) {
+  if (!(input.secretsConfigured ?? isSecretsPortConfigured(input.secretsPort))) {
     return {
       ok: false,
       reason: "secrets_port_unconfigured",

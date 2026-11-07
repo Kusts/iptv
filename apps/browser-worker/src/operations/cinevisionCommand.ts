@@ -62,7 +62,6 @@ import {
   type ReaderDeps,
 } from "../providers/cinevision/readers.js";
 import type { IdentityResult } from "../providers/cinevision/schemas.js";
-import type { SecretsPort } from "@iptv/secrets";
 import { ensureProfileDir, identityEquals } from "./shared.js";
 import type { ReadIdentityPage } from "./readIdentity.js";
 
@@ -91,7 +90,6 @@ export interface CinevisionCommandBrowser {
 }
 
 export interface CinevisionCommandDeps {
-  secrets: SecretsPort;
   browser: CinevisionCommandBrowser;
 }
 
@@ -837,7 +835,7 @@ async function runBounded(
 
   let credentials: SessionCredentials;
   try {
-    credentials = await resolveCredentials(deps.secrets);
+    credentials = await resolveCredentials(config.allowedOrigin);
   } catch (err) {
     void err;
     return done(outcome("HUMAN_REQUIRED", "SECRET_UNAVAILABLE"));

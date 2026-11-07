@@ -13,13 +13,14 @@ import {
   RealAsaasAdapter,
 } from "../billing/asaas-port.js";
 import {
-  resolveSecretsPort,
-  resolveSecretsWriterPort,
-  buildIntegrationSecretRef,
+  deriveIntegrationSecretRef,
+  parseIntegrationSecretRef,
+  secretRefSchemeOf,
   SecretsError,
   type SecretsPort,
   type SecretsWriterPort,
 } from "@iptv/secrets";
+import { createPostgresSecretsAdapter } from "./postgres-secrets.js";
 import {
   SpawnCinevisionWorkerRunner,
   type CinevisionProbeOutcome,
@@ -36,17 +37,18 @@ import {
  * `provider_account`, sem valores de segredo).
  *
  * Segredos server-side SEMPRE: o corpo aceita o VALOR uma vez; o writer
- * persiste no Infisical sob o namespace backend-owned
- * `infisical://<env>/integrations/<tenantId>/<provider>/<KEY>` (derivado de
- * contexto validado via `buildIntegrationSecretRef`, nunca do cliente) e a
- * linha guarda só `secret_ref`. NENHUMA resposta contém segredo.
+ * persiste cifrado em PostgreSQL (`platform.secret_values`) sob o namespace
+ * backend-owned `pgsecret://<env>/integrations/<tenantId>/<provider>/<KEY>`
+ * (derivado de contexto validado via `buildIntegrationSecretRef` e, para as
+ * chaves secundárias, `deriveIntegrationSecretRef` — nunca do
+ * cliente) e a linha guarda só `secret_ref`. NENHUMA resposta contém segredo.
  *
- * Ordem de escrita (configure): `putSecret` no vault PRIMEIRO, SÓ então
- * insert/update da linha. Falha do vault → 503 fail-closed, linha intocada;
- * falha do DB após o put → COMPENSAÇÃO (`deleteSecret` best-effort) + 503.
- * Rotação = configure com novo segredo + `expectedVersion` atual (sem
- * endpoint `rotate` dedicado em S1; `rotateSecret` orquestrado com canary
- * continua disponível no `@iptv/secrets` para S2+).
+ * Ordem de escrita (configure): `putSecret` e o insert/update da linha
+ * acontecem na MESMA transação do tenant — falha de qualquer lado faz
+ * rollback dos dois, sem compensação distribuída. Rotação = configure com
+ * novo segredo + `expectedVersion` atual (sem endpoint `rotate` dedicado em
+ * S1; `rotateSecret` orquestrado com canary continua disponível no
+ * `@iptv/secrets` para S2+).
  *
  * Probe Asaas (test): SOMENTE contra a allowlist fixa por environment
  * (`ASAAS_HOSTS`), NUNCA URL do cliente (o schema `strict()` rejeita
@@ -59,12 +61,12 @@ import {
  * valor ou header).
  *
  * CINEVISION (test): live read-only validation via per-tenant worker
- * spawn (S4A, #88) — resolves the binding + both secrets from the vault,
- * spawns `read-identity` + `list-servers` with per-invocation env, and maps
- * the worker envelope to `CONNECTED_READ_ONLY` (both reads confirmed) or
- * `TESTING` + sanitized code (auth-fail/challenge/timeout → distinct codes;
- * vault down → 503). NUNCA executa write; challenge/CAPTCHA/2FA →
- * HUMAN_REQUIRED sem bypass.
+ * spawn (S4A, #88) — resolves the binding + both secrets from the encrypted
+ * PostgreSQL store, spawns `read-identity` + `list-servers` with
+ * per-invocation env, and maps the worker envelope to
+ * `CONNECTED_READ_ONLY` (both reads confirmed) or `TESTING` + sanitized code
+ * (auth-fail/challenge/timeout → distinct codes; store/key failure → 503).
+ * NUNCA executa write; challenge/CAPTCHA/2FA → HUMAN_REQUIRED sem bypass.
  *
  * WhatsApp: 501 `CAPABILITY_UNCERTIFIED` ("disponível em S3") no controller,
  * antes do bus — sem criar linha, sem tocar no vault.
@@ -140,21 +142,21 @@ export function __resetIntegrationTestDoubles(): void {
   testDoubles = null;
 }
 
-function resolveWriter(): SecretsWriterPort {
+function resolveWriter(ctx: CommandHandlerContext): SecretsWriterPort {
   if (testDoubles?.secretsWriter !== undefined) {
     return testDoubles.secretsWriter;
   }
-  return resolveSecretsWriterPort();
+  return createPostgresSecretsAdapter(requireTrx(ctx), ctx.tenantId);
 }
 
-function resolveReader(): SecretsPort {
+function resolveReader(ctx: CommandHandlerContext): SecretsPort {
   if (testDoubles?.secretsReader !== undefined) {
     return testDoubles.secretsReader;
   }
   if (testDoubles?.secretsWriter !== undefined) {
     return testDoubles.secretsWriter;
   }
-  return resolveSecretsPort();
+  return createPostgresSecretsAdapter(requireTrx(ctx), ctx.tenantId);
 }
 
 function resolveFetch(): typeof fetch {
@@ -491,7 +493,7 @@ async function handleConfigure(
     if (testDoubles?.failWriterSetup === true) {
       throw new Error("fake-test-writer-setup-failure");
     }
-    writer = resolveWriter();
+    writer = resolveWriter(ctx);
   } catch (err) {
     // Construção do writer: só diagnostica com categoria segura e relança
     // inalterado (HTTP preservado, sem compensação — nenhum put ocorreu).
@@ -598,15 +600,16 @@ async function handleConfigure(
       .where("version", "=", Number(existing.version))
       .executeTakeFirst();
     if (Number(updated.numUpdatedRows ?? 0) < 1) {
-      // Perdeu a corrida: compensa o put órfão e devolve 409.
-      for (const ref of refs) {
-        await writer.deleteSecret(ref).catch(() => undefined);
-      }
-      return {
-        ok: false,
-        code: "precondition_failed",
-        message: `version conflict: binding ${existing.id} changed concurrently; retry against current state`,
-      };
+      // Perdeu a corrida: o put e o update vivem na MESMA transação, então
+      // lançar (em vez de retornar) faz rollback do put junto — nunca
+      // sobrescreve o segredo do vencedor. 409 preservado.
+      throw new HttpException(
+        {
+          code: "precondition_failed",
+          message: `version conflict: binding ${existing.id} changed concurrently; retry against current state`,
+        },
+        409,
+      );
     }
     return {
       ok: true,
@@ -620,7 +623,12 @@ async function handleConfigure(
         last_error_code: null,
       }),
     };
-  } catch {
+  } catch (err) {
+    // Um HttpException aqui é o conflito CAS acima: relança para o rollback
+    // preservar o segredo do vencedor (nunca vira 503 genérico).
+    if (err instanceof HttpException) {
+      throw err;
+    }
     // Insert/update falhou após o put: compensa e falha fechado (503), sem
     // marcar conectado e sem deixar segredo órfão.
     for (const ref of refs) {
@@ -731,7 +739,7 @@ async function handleTest(
     return { ok: false, code: "not_found", message: `no live ${input.provider} binding in this tenant` };
   }
 
-  const reader = resolveReader();
+  const reader = resolveReader(ctx);
   const at = now();
 
   // CINEVISION: live read-only validation via per-tenant worker spawn
@@ -746,13 +754,12 @@ async function handleTest(
     let password: string;
     try {
       username = await reader.getSecret(binding.secret_ref);
+      // Secondary key derived from the PRINCIPAL binding ref: a migrated
+      // `infisical://` binding keeps its password under the same scheme.
+      // Deriving `pgsecret://` unconditionally found the user but not the
+      // password (SIMPLIFY-01).
       password = await reader.getSecret(
-        buildIntegrationSecretRef({
-          tenantId: ctx.tenantId,
-          provider: "cinevision",
-          environment: binding.environment,
-          key: "CINEVISION_PASS",
-        }),
+        deriveIntegrationSecretRef(binding.secret_ref, "CINEVISION_PASS"),
       );
     } catch (err) {
       if (
@@ -1133,7 +1140,7 @@ async function handleWebhookEnsure(
   const webhookUrl = `${base}/v1/webhooks/asaas/${tenantKey}`;
 
   // 4. API key do vault (falha → 503, nada marcado, nenhum valor vaza).
-  const reader = resolveReader();
+  const reader = resolveReader(ctx);
   let apiKey: string;
   try {
     apiKey = await reader.getSecret(binding.secret_ref);
@@ -1172,16 +1179,26 @@ async function handleWebhookEnsure(
 
   // 6. authToken: reusa o válido existente (retry converge), senão gera + put
   //    no vault ANTES de chamar o Asaas. Falha do put → 503, nada marcado.
-  const writer = resolveWriter();
-  const webhookRefTarget = {
-    tenantId: ctx.tenantId,
-    provider: "asaas" as const,
-    environment: input.environment,
-    key: "ASAAS_WEBHOOK_TOKEN",
-  };
+  const writer = resolveWriter(ctx);
+  // Same rule as CINEVISION: the secondary key lives beside the principal
+  // binding ref, preserving a migrated `infisical://` scheme. The write target
+  // is parsed back from that exact ref (never rebuilt from `binding.environment`)
+  // so read and write always hit the SAME row, even when a legacy ref spells
+  // the environment differently from the DB column.
+  let webhookRef: string;
+  let webhookTarget: ReturnType<typeof parseIntegrationSecretRef>;
+  try {
+    webhookRef = deriveIntegrationSecretRef(binding.secret_ref, "ASAAS_WEBHOOK_TOKEN");
+    webhookTarget = parseIntegrationSecretRef(webhookRef);
+  } catch {
+    // A malformed/foreign principal ref is a vault configuration failure:
+    // fail closed like every other vault error, never a 500 with detail.
+    throw vaultUnavailable();
+  }
+  const webhookRefScheme = secretRefSchemeOf(webhookRef) ?? undefined;
   let authToken: string | null = null;
   try {
-    const current = await writer.getSecret(buildIntegrationSecretRef(webhookRefTarget));
+    const current = await writer.getSecret(webhookRef);
     if (isValidAuthToken(current)) {
       authToken = current;
     }
@@ -1196,7 +1213,15 @@ async function handleWebhookEnsure(
   if (authToken === null) {
     const fresh = generateAuthToken();
     try {
-      await writer.putSecret({ ...webhookRefTarget, value: fresh, requestId: ctx.commandId });
+      await writer.putSecret({
+        tenantId: webhookTarget.tenantId,
+        provider: webhookTarget.provider,
+        environment: webhookTarget.environment,
+        key: webhookTarget.key,
+        value: fresh,
+        requestId: ctx.commandId,
+        ...(webhookRefScheme === undefined ? {} : { refScheme: webhookRefScheme }),
+      });
     } catch (err) {
       if (err instanceof SecretsError) {
         throw vaultUnavailable();

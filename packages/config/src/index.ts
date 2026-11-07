@@ -31,22 +31,14 @@ const envSchema = z.object({
   // background work unless the operator asks for it.
   API_SCHEDULER_ENABLED: z.enum(["0", "1"]).default("0"),
   API_SCHEDULER_TICK_SECONDS: z.coerce.number().int().min(5).max(3600).default(60),
-  // W1-08 Hatchet adapter (Wave-0-gated): only read when set; absence
-  // means the local in-process adapter (explicitly non-durable).
-  HATCHET_API_TOKEN: z.string().min(1).optional(),
-  HATCHET_SERVER_URL: z.string().min(1).optional(),
   // W1-12 observability: OTLP export only when an endpoint is set;
   // otherwise the SDK stays unconstructed (zero-overhead noop path).
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().min(1).optional(),
   OTEL_SDK_DISABLED: z.enum(["true", "false"]).default("true"),
-  // MVP-INFISICAL-02 secrets adapter (ADR-0014): env-gated — absence means
-  // the Noop port (boot never crashes); all four connection vars must be
-  // present for the real adapter. ENVIRONMENT defaults to "development".
-  INFISICAL_SITE_URL: z.string().min(1).optional(),
-  INFISICAL_PROJECT_ID: z.string().min(1).optional(),
-  INFISICAL_CLIENT_ID: z.string().min(1).optional(),
-  INFISICAL_CLIENT_SECRET: z.string().min(1).optional(),
-  INFISICAL_ENVIRONMENT: z.string().min(1).default("development"),
+  // PostgreSQL-backed secrets (AES-256-GCM): the single 256-bit key lives
+  // only in the API process environment (base64, 32 bytes). Absent means
+  // secret reads/writes fail closed at use time; boot stays available.
+  SECRETS_ENCRYPTION_KEY: z.string().min(1).optional(),
   // Browser CORS allowlist (explicit origins only — never a wildcard).
   // Comma-separated `scheme://host[:port]` entries with no path/query/hash.
   // Unset means: local default (`http://localhost:3000`) outside
@@ -705,15 +697,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     API_SCHEDULER_ENABLED: env.API_SCHEDULER_ENABLED,
     API_SCHEDULER_TICK_SECONDS: env.API_SCHEDULER_TICK_SECONDS,
     AUTH_REGISTER_CLOSED: emptyToUndefined(env.AUTH_REGISTER_CLOSED),
-    HATCHET_API_TOKEN: emptyToUndefined(env.HATCHET_API_TOKEN),
-    HATCHET_SERVER_URL: emptyToUndefined(env.HATCHET_SERVER_URL),
     OTEL_EXPORTER_OTLP_ENDPOINT: env.OTEL_EXPORTER_OTLP_ENDPOINT,
     OTEL_SDK_DISABLED: env.OTEL_SDK_DISABLED,
-    INFISICAL_SITE_URL: emptyToUndefined(env.INFISICAL_SITE_URL),
-    INFISICAL_PROJECT_ID: emptyToUndefined(env.INFISICAL_PROJECT_ID),
-    INFISICAL_CLIENT_ID: emptyToUndefined(env.INFISICAL_CLIENT_ID),
-    INFISICAL_CLIENT_SECRET: emptyToUndefined(env.INFISICAL_CLIENT_SECRET),
-    INFISICAL_ENVIRONMENT: emptyToUndefined(env.INFISICAL_ENVIRONMENT),
+    SECRETS_ENCRYPTION_KEY: emptyToUndefined(env.SECRETS_ENCRYPTION_KEY),
     PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID: emptyToUndefined(env.PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID),
     INTEGRATIONS_PUBLIC_BASE_URL: emptyToUndefined(env.INTEGRATIONS_PUBLIC_BASE_URL),
     CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
@@ -723,6 +709,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
       .join("; ");
     throw new Error(`invalid environment configuration: ${details}`);
+  }
+  // Fail fast on a malformed secrets key: the adapter would otherwise only
+  // reject it at first use, after the API reported healthy. Absent stays
+  // allowed (secret reads/writes fail closed at use time).
+  if (parsed.data.SECRETS_ENCRYPTION_KEY !== undefined) {
+    const decoded = Buffer.from(parsed.data.SECRETS_ENCRYPTION_KEY, "base64");
+    if (decoded.length !== 32) {
+      throw new Error(
+        "invalid environment configuration: SECRETS_ENCRYPTION_KEY must decode to exactly 32 bytes",
+      );
+    }
   }
   let corsAllowedOrigins: string[];
   try {

@@ -53,12 +53,12 @@ directly at the point of use and is safe to leave unset.
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` outside production, `[]` (deny all) in production | Comma-separated exact `http(s)://host[:port]` origins. No wildcard, no path/query/hash. |
 | `API_SCHEDULER_ENABLED` | `0` | `1` arms the in-process scheduler loop (non-durable). |
 | `API_SCHEDULER_TICK_SECONDS` | `60` | Tick interval in seconds (5–3600). |
-| `HATCHET_API_TOKEN` / `HATCHET_SERVER_URL` | unset | Select the Hatchet workflow adapter (Wave-0-gated; falls back to local with a warning). |
+| `SECRETS_ENCRYPTION_KEY` | unset | Base64 of exactly 32 bytes; encrypts integration credentials in PostgreSQL. Absent = secret reads/writes fail closed. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Set (+ `OTEL_SDK_DISABLED=false`) to export OTLP-http telemetry. |
 | `OTEL_SDK_DISABLED` | `true` | `false` allows SDK construction when an endpoint is set. |
 | `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | unset | Future placeholders (interface boundary only, unused today). |
-| `INFISICAL_SITE_URL` / `INFISICAL_PROJECT_ID` / `INFISICAL_CLIENT_ID` / `INFISICAL_CLIENT_SECRET` | unset | Enable the real `@iptv/secrets` adapter; all four must be present or the Noop port is used. |
-| `INFISICAL_ENVIRONMENT` | `development` | Fallback environment; refs carry their own. |
+| `INFISICAL_SITE_URL` / `INFISICAL_PROJECT_ID` / `INFISICAL_CLIENT_ID` / `INFISICAL_CLIENT_SECRET` | unset | Legacy only (ADR-0014 superseded). The MVP runtime uses `SECRETS_ENCRYPTION_KEY` + `platform.secret_values`; these vars are not read by the API. |
+| `INFISICAL_ENVIRONMENT` | `development` | Legacy only; not read by the API. |
 | `PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID` | unset | UUID of the single disposable provider account real trial dispatches may use. |
 | `WAHA_BASE_URL` / `WAHA_API_KEY` | unset | Select the WAHA messaging gateway; otherwise `LocalEchoGateway`. S3a session onboarding also fails closed without both. |
 | `WAHA_SESSION` | `default` | Legacy lane only: fallback expected session name when the gateway is echo/dev or the tenant has no S3a binding. |
@@ -296,11 +296,10 @@ factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
   legacy drain cannot reclaim — re-arming legacy requires zero fenced rows or
   forward-fix via the worker. See `apps/outbox-worker/README.md` and the
   [RLS role split cutover](../../docs/10-operations/runbooks/rls-role-split-cutover.md).
-- **Workflow substrate** (`packages/workflows`, `WORKFLOW` provider):
-  `WorkflowPort` with `LocalWorkflowAdapter` default (in-memory, explicitly
-  **non-durable**) and `HatchetWorkflowAdapter` (env-gated via
-  `HATCHET_API_TOKEN`, optional SDK, Wave-0-gated — never default; missing
-  SDK/config falls back to local with a warning).
+- **Workflow substrate** (`packages/workflows`): `WorkflowPort` with
+  `LocalWorkflowAdapter` (in-memory, explicitly **non-durable**). Durable work
+  that must survive a restart belongs to the dedicated outbox worker; there is
+  no external workflow engine in the MVP runtime.
 - **Observability** (`packages/observability`, api-only default): `main.ts`
   calls `loadConfig()` first (production fail-fast) and then
   `initObservability()` inside try/catch; Fastify `onRequest`
