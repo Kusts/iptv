@@ -20,10 +20,23 @@
 > árvore antiga e seguem marcados históricos, com caminhos a revalidar.
 >
 > HOLD restante é integrações/segurança/entrega — NÃO mais drift de hash:
-> Asaas `NOT_CONFIGURED` (webhook não assegurado), Infisical sem identidade
-> de máquina no `.env.staging` (sem leitura sintética, sem R2/backup key) e
-> CINEVISION sem ativação/readback. Sem re-provision adicional e sem wipe
-> fora do volume de teste já autorizado; vizinhos intocados.
+> Asaas `NOT_CONFIGURED` (webhook não assegurado), CINEVISION sem
+> ativação/readback. Sem re-provision adicional e sem wipe fora do volume de
+> teste já autorizado; vizinhos intocados.
+>
+> SIMPLIFY-01 (2026-11-07): a partir desta revisão, credenciais de integração
+> vivem cifradas (AES-256-GCM) em PostgreSQL (`platform.secret_values`) e são
+> configuradas pelo Control Center. O caminho operacional usa `migrate` +
+> `outbox-worker` permanente; o passo de Infisical abaixo é LEGADO e só se
+> aplica ao rollback/cutover até o script
+> `packages/database/scripts/migrate-secrets-to-postgres.mjs` ser validado.
+> Preserve o cofre antigo durante a validação; não o apague.
+>
+> Pré-requisitos do compose atual: `.env.staging` com `SECRETS_ENCRYPTION_KEY`
+> (32 bytes base64, custódia separada) e `.env.staging.outbox-worker` presente
+> (o `env_file` é obrigatório no parse do compose). O `outbox-worker` sobe com
+> o `up` padrão; o modo de runtime no banco precisa ser `WORKER` antes de
+> confiar nele como único publicador.
 
 ## Scope and shape
 
@@ -157,12 +170,14 @@ database health are covered by
 [outbox backlog](outbox-workflow-backlog.md) and
 [database degraded](database-degraded.md).
 
-## Outbox worker activation (051 interlock, opt-in)
+## Outbox worker activation (051 interlock, permanent service)
 
-The dedicated worker (`--profile outbox`) is NEVER part of the default `up`.
-Fresh staging order (pós-050/051, corrigido 2026-10-17 — ver §12.4 do
-`P6-SECURITY.md`): `postgres → migrate 001–060 (owner, re-provision FRESH)
-→ api (as `iptv_app`, `LEGACY_OUTBOX_DRAIN_ENABLED=0`) → web`, then:
+The dedicated outbox worker is a PERMANENT compose service (no profile): the
+default `up` starts it after the API is healthy. The legacy in-process drainer
+must stay disabled/quiesced (`LEGACY_OUTBOX_DRAIN_ENABLED=0`, DB runtime mode
+`WORKER`). Fresh staging order (pós-050/051): `postgres → migrate 001–068
+(owner, re-provision FRESH) → api (as `iptv_app`,
+`LEGACY_OUTBOX_DRAIN_ENABLED=0`) → web → outbox-worker`, then:
 
 > Nota 2026-10-17: stacks com drift de migration (origem ≠ HEAD) seguem
 > re-provision FRESH (`down -v` + migrate total), nunca migração
@@ -225,14 +240,14 @@ curl.exe -i http://127.0.0.1:3001/v1/admin/outbox/drain-state
 #    (OUTBOX_LEGACY_DRAIN_ENABLED=0, OUTBOX_LEGACY_IN_FLIGHT=0) only now
 # 7. boot rehearsal with zero claims, then a single bounded batch
 docker compose --env-file deploy/staging/.env.staging `
-  -f deploy/staging/docker-compose.staging.yml --profile outbox `
+  -f deploy/staging/docker-compose.staging.yml `
   run --rm outbox-worker check
 docker compose --env-file deploy/staging/.env.staging `
-  -f deploy/staging/docker-compose.staging.yml --profile outbox `
+  -f deploy/staging/docker-compose.staging.yml `
   run --rm outbox-worker run --once
 # 8. start the loop only after the smoke passes
 docker compose --env-file deploy/staging/.env.staging `
-  -f deploy/staging/docker-compose.staging.yml --profile outbox `
+  -f deploy/staging/docker-compose.staging.yml `
   up -d outbox-worker
 ```
 
@@ -503,15 +518,10 @@ one.
 
 ## Optional profiles
 
-- **Pooler** (`--profile pooling`): mirrors the dev compose service. Migrations
-  and owner traffic stay DIRECT; only `iptv_app` DML may be pooled, and only
-  after the step 4 certification in
-  [RLS role split cutover](rls-role-split-cutover.md). Needs
-  `deploy/pgbouncer/pgbouncer.ini` plus a local, gitignored userlist
-  (`deploy/pgbouncer/userlist.staging.txt` on staging — same SCRAM-plaintext
-  rule as the dev `userlist.txt`). Certified 2026-10-08 on the 059 tree in
-  lane `iptv-cutover` (readiness + full A/B matrix through the pooler,
-  identical to direct): see `evidence/rls-cutover/report.md`.
+- **Pooler** (REMOVED by SIMPLIFY-01): the staging compose no longer ships a
+  PgBouncer service; it was never enabled and has no consumer. Migrations and
+  owner traffic stay DIRECT. The historical certification (2026-10-08) is kept
+  for reference in [RLS role split cutover](rls-role-split-cutover.md).
 - **Browser worker** (`--profile worker`): an on-demand operator smoke CLI, not
   a service.
   ```powershell
@@ -525,11 +535,11 @@ one.
   detection certified on a desktop browser. Prefer running the worker on the
   operator host (see [Browser drift challenge](browser-drift-challenge.md)) and
   treat this image as reproducible packaging plus a reviewed container boundary.
-- **Outbox worker** (`--profile outbox`): the dedicated platform outbox
+- **Outbox worker** (permanent, no profile): the dedicated platform outbox
   publisher (050 leased protocol under the 051 runtime interlock).
-  Long-running but NEVER default: see
-  "Outbox worker activation (051 interlock, opt-in)" above. `check` is the compose
-  healthcheck (zero claims); `run --once` is the staging smoke.
+  Long-running and part of the default `up` after the API is healthy: see
+  "Outbox worker activation (051 interlock, permanent service)" above. `check`
+  is the compose healthcheck (zero claims); `run --once` is the staging smoke.
 
 ## Known assumptions (confirmed by the first real `docker build` 2026-10-06)
 

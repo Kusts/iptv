@@ -4,7 +4,7 @@
  * SINGLE-BINDING operator smoke (see `constants.ts`): the tenant/account
  * binding comes from deployment env only. This operation never accepts
  * identity from argv/caller input, serves no HTTP API, and resolves
- * exactly the three `FIXED_SECRET_REFS`. A future API integration MUST
+ * invocation credentials supplied via the environment. A future API integration MUST
  * look the binding up by tenant/account id in its own DB instead of
  * trusting request-supplied ids.
  *
@@ -97,7 +97,6 @@ export interface BrowserOpenOptions {
 }
 
 export interface ReadIdentityDeps {
-  secrets: CinevisionCommandDeps["secrets"];
   browser: CinevisionCommandDeps["browser"];
 }
 

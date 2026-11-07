@@ -7,8 +7,9 @@
 # What the worker IS: a single-binding, read-only operator smoke CLI
 # (apps/browser-worker/README.md). It drives a real Chromium against the
 # CINEVISION panel, holds a per-binding profile directory with a `.lock`
-# sidecar, and resolves three secrets through its own Infisical identity
-# (`BROWSER_INFISICAL_*`). There is no HTTP server and no scheduler: it is run
+# sidecar, and receives its credentials per invocation
+# (`CINEVISION_EMAIL` / `CINEVISION_PASSWORD`); the panel URL is the non-secret
+# `CINEVISION_ALLOWED_ORIGIN`. There is no HTTP server and no scheduler: it is run
 # interactively, one subcommand at a time, and exits.
 #
 # What this image is NOT: a certified headless runner.
@@ -88,7 +89,6 @@ COPY packages/workflows/package.json packages/workflows/package.json
 RUN pnpm install --frozen-lockfile --prod --ignore-scripts --filter "@iptv/browser-worker..."
 
 COPY --from=build /app/apps/browser-worker/dist ./apps/browser-worker/dist
-COPY --from=build /app/packages/secrets/dist ./packages/secrets/dist
 
 # Profile directory: writable by the non-root uid, created as an empty dir so
 # the compose volume has the right ownership from the first run. Populated per

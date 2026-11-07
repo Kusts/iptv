@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { setTimeout as nodeSetTimeout } from "node:timers";
 import { describe, expect, it, vi } from "vitest";
 import type { WorkerConfig } from "../src/config.js";
-import { BINDING_PROVIDER, FIXED_SECRET_REFS } from "../src/constants.js";
+import { BINDING_PROVIDER } from "../src/constants.js";
 import { formatResult } from "../src/output.js";
 import { acquireProfileLock } from "../src/profileLock.js";
 import {
@@ -28,10 +28,10 @@ import {
   type InPageResult,
 } from "../src/providers/cinevision/api-client.js";
 import type { CinevisionOperation } from "../src/constants.js";
-import type { SecretsPort } from "@iptv/secrets";
 
 const ALLOWED = "https://panel.example.test";
-const SECRET_URL = "https://panel.example.test/";
+process.env["CINEVISION_EMAIL"] = "operator@example.test";
+process.env["CINEVISION_PASSWORD"] = "pw-never-emitted";
 const EMAIL = "operator@example.test";
 const TOKEN = "session-token-value";
 const PASSWORD = "pw-never-emitted";
@@ -44,10 +44,6 @@ function config(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
     providerAccountId: "acct-1",
     allowedOrigin: ALLOWED,
     loginPath: "/api/auth/login",
-    infisicalSiteUrl: "https://infisical.example.test",
-    infisicalProjectId: "proj-1",
-    infisicalClientId: "id-1",
-    infisicalClientSecret: "secret-1",
     headless: true,
     challengeWaitSeconds: 0,
     commandTimeoutMs: 60_000,
@@ -55,22 +51,6 @@ function config(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
     profileRoot: root,
     profileDir: join(root, "p-test"),
     ...overrides,
-  };
-}
-
-function fakeSecrets(): SecretsPort {
-  const values: Record<string, string> = {
-    [FIXED_SECRET_REFS[0]]: SECRET_URL,
-    [FIXED_SECRET_REFS[1]]: EMAIL,
-    [FIXED_SECRET_REFS[2]]: "pw-123",
-  };
-  return {
-    name: "fake",
-    getSecret: async (ref: string) => {
-      const value = values[ref];
-      if (value === undefined) throw new Error("not found");
-      return value;
-    },
   };
 }
 
@@ -246,7 +226,7 @@ async function run(
   calls: Calls,
   cfg: WorkerConfig = config(),
 ) {
-  return runCinevisionCommand(cfg, { secrets: fakeSecrets(), browser: fakeBrowser(script, calls) }, command, args);
+  return runCinevisionCommand(cfg, { browser: fakeBrowser(script, calls) }, command, args);
 }
 
 function newCalls(): Calls {
@@ -814,7 +794,7 @@ describe("error mapping (Fase-1 taxonomy → envelope codes)", () => {
     };
     const result = await runCinevisionCommand(
       config(),
-      { secrets: fakeSecrets(), browser: broken },
+      { browser: broken },
       "cinevision.listServers",
       {},
     );
@@ -849,7 +829,7 @@ describe("command budget (F2 cancellation)", () => {
       const cfg = config({ commandTimeoutMs: 200 });
       const resultPromise = runCinevisionCommand(
         cfg,
-        { secrets: fakeSecrets(), browser: hanging },
+        { browser: hanging },
         "cinevision.listServers",
         {},
       );
@@ -905,7 +885,7 @@ describe("command budget (F2 cancellation)", () => {
       const cfg = config({ commandTimeoutMs: 50 });
       const resultPromise = runCinevisionCommand(
         cfg,
-        { secrets: fakeSecrets(), browser: hanging },
+        { browser: hanging },
         "cinevision.listServers",
         {},
       );
@@ -972,7 +952,7 @@ describe("open cancellation (N2 ownership-safe acquisition)", () => {
       const cfg = config({ commandTimeoutMs: 50 });
       const resultPromise = runCinevisionCommand(
         cfg,
-        { secrets: fakeSecrets(), browser: pendingOpen },
+        { browser: pendingOpen },
         "cinevision.listServers",
         {},
       );
@@ -1022,7 +1002,7 @@ describe("output safety", () => {
     const line = formatResult(result);
     expect(line).not.toContain(TOKEN);
     expect(line).not.toContain(PASSWORD);
-    expect(line).not.toContain(SECRET_URL);
+
     expect(line).not.toContain(EMAIL);
   });
 });

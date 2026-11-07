@@ -25,7 +25,9 @@ describe("staging compose outbox-worker contract", () => {
     // is the loop. An explicit `command:` forcing --help would park the
     // container on usage output instead of draining.
     expect(block).not.toMatch(/command:\s*\[.*--help.*\]/);
-    expect(block).toContain('profiles: ["outbox"]');
+    // SIMPLIFY-01: the outbox worker is the MVP's permanent publisher, so it
+    // must NOT be gated behind an opt-in profile anymore.
+    expect(block).not.toMatch(/profiles:/);
     // SIGKILL grace must cover OUTBOX_WORKER_SHUTDOWN_TIMEOUT_MS (max 120s).
     expect(block).toMatch(/stop_grace_period:\s*130s/);
   });

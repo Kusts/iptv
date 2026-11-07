@@ -88,10 +88,12 @@ describe("cinevision probe unit (S4A)", () => {
     expect(env["BROWSER_WORKER_PROVIDER"]).toBe("CINEVISION");
     expect(env["BROWSER_WORKER_TENANT_ID"]).toBe(INPUT.tenantId);
     expect(env["BROWSER_WORKER_PROVIDER_ACCOUNT_ID"]).toBe(INPUT.providerAccountId);
-    // …identidade do worker herdada (deployment) e config não-secreta…
-    expect(env["BROWSER_INFISICAL_SITE_URL"]).toBe("https://worker-vault.example.test");
+    // …config não-secreta herdada…
     expect(env["LOCALAPPDATA"]).toBe("D:/tmp/bw-localappdata");
     expect(env["CINEVISION_ALLOWED_ORIGIN"]).toBe("https://panel.example.test");
+    // …mas nenhuma identidade de cofre (Infisical) entra no filho.
+    expect(env["BROWSER_INFISICAL_SITE_URL"]).toBeUndefined();
+    expect(env["BROWSER_INFISICAL_CLIENT_SECRET"]).toBeUndefined();
     // …mas segredos do pai (API/vault/asaas) NUNCA entram.
     const dumped = JSON.stringify(env);
     expect(dumped).not.toContain("parent-api-secret-never-inherited");

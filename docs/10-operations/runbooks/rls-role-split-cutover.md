@@ -1,5 +1,10 @@
 # Runbook — RLS Role Split Cutover (Steps 1–4 Executed on Disposable DBs)
 
+> SIMPLIFY-01 (2026-11-07): the staging compose no longer ships a PgBouncer
+> service (never enabled, no consumer; connections stay DIRECT). References to
+> `--profile pooling` below are HISTORICAL certification steps, not a current
+> deployment path.
+
 > Status: Steps 1 (role split) + 2 (`SET LOCAL` plumbing) shipped behind the
 > current connection string. Steps 3 (per-domain rollout crm/communication)
 > + 4 (cutover rehearsal + pooler cert) EXECUTED 2026-09-29 against disposable

@@ -309,7 +309,7 @@ describe.skipIf(!hasDb)("integrations write/configure|test|disable (requires TES
       .select(["secret_ref", "connection_status", "version"])
       .where("tenant_id", "=", tenantA)
       .executeTakeFirstOrThrow();
-    expect(row.secret_ref).toMatch(/^infisical:\/\//);
+    expect(row.secret_ref).toMatch(/^pgsecret:\/\//);
     expect(vault.store.get(row.secret_ref)).toBe(ASAAS_KEY_A);
   });
 

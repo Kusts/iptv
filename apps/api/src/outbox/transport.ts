@@ -3,7 +3,7 @@ import type { EventEnvelope } from "@iptv/domain";
 
 /**
  * Outbox transport port (W1-07). The drainer publishes claimed envelopes
- * through this interface; real transports (Hatchet, webhook) come later
+ * through this interface; real transports (webhook, broker) come later
  * behind the same port. The default is `LocalTransport`.
  */
 export interface TransportPort {

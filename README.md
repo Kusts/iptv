@@ -28,9 +28,8 @@ operations automated around a human-in-the-loop agent runtime.
 
 pnpm 10.15.0 · Turborepo · Node 22+ · TypeScript 5.9 · NestJS + Fastify ·
 Next.js (App Router) · Kysely · PostgreSQL 17 · Zod · Vitest · Playwright
-(browser worker) · OTel (optional, noop default) · Hatchet (optional, local
-in-memory default) · Infisical (secrets, ADR-0014) · Python 3 + PyYAML (doc
-gates).
+(browser worker) · OTel (optional, noop default) · PostgreSQL AES-256-GCM
+secrets · Python 3 + PyYAML (doc gates).
 
 ## Repository layout
 
@@ -44,12 +43,12 @@ packages/
   database/        Kysely bootstrap + migration runner (advisory lock + history table)
   config/          Zod-validated env (all keys optional with defaults; empty value = absent)
   auth/            auth/session primitives (custom adapter; BETTER_AUTH_* env)
-  secrets/         Infisical secrets port (universal auth; infisical:// refs)
+  secrets/         PostgreSQL AES-256-GCM secrets port (pgsecret:// refs)
   ai-runtime/      OpenAI-compatible model gateway + deterministic echo fallback
   observability/   OTel tracing/metrics (noop by default)
-  workflows/       Hatchet durable workflows adapter (optional)
+  workflows/       in-process workflow port (non-durable MVP default)
 db/                migrations (append-only, apply all in filename order), seeds, SQL integration tests
-deploy/            Infisical self-host stack, PgBouncer (opt-in compose profile)
+deploy/            staging compose (PgBouncer config retained but not a service)
 docs/              canonical documentation (authority map below)
 scripts/           validation and test scripts
 tests/contracts/   contract gates (Python)
@@ -140,10 +139,10 @@ Agents: read [`AGENTS.md`](AGENTS.md) before working in this repository.
 - CINEVISION and MK private operations through authenticated isolated
   Playwright workers;
 - Asaas official Sandbox → production canary;
-- provider credentials resolved at runtime via `infisical://` secret
-  references (ADR-0014) — never raw values in `.env`;
-- Hatchet durable workflows subject to certification, local in-memory mode by
-  default;
+- provider credentials stored encrypted (AES-256-GCM) in PostgreSQL and
+  configured through the Control Center — never raw values in `.env`;
+- one durable operational path: the dedicated outbox worker (the in-process
+  scheduler remains opt-in for due work);
 - OpenAI Agents SDK TypeScript as harness inside an owned Agent Runtime;
 - hierarchical reseller network: ancestor visibility, direct-child management
   only; resellers may become SaaS tenants and later SaaS resellers;

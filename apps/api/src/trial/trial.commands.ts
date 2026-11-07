@@ -6,9 +6,10 @@ import type {
   CommandHandlerContext,
 } from "../commands/command-bus.js";
 import { emitAndEnqueue, kyselyTrxOf, memoryStateOf } from "../crm/wave2-store.js";
-import { resolveSecretsPort, type SecretsPort } from "@iptv/secrets";
+import type { SecretsPort } from "@iptv/secrets";
 import {
   assertBrowserSecretReady,
+  secretsAvailable,
   decideTrialDispatchGate,
   findExistingTrialProviderAccountId,
   getProviderAccountSecretRef,
@@ -779,7 +780,7 @@ export interface TrialCommandDeps {
   /**
    * PF-05: SecretsPort used ONLY to verify configuration for
    * secret-requiring (future BROWSER) adapters. Never `getSecret`.
-   * Defaults to `resolveSecretsPort()` so echo/manual keep working.
+   * Defaults to `secretsAvailable()` so echo/manual keep working.
    */
   secretsPort?: SecretsPort;
   /** Test seam: override the tenant-scoped `secret_ref` loader. */
@@ -1377,7 +1378,7 @@ async function handleSecretBeginProvisioning(
   const secretRef = await loader(ctx, existingAccountId);
   const gate = assertBrowserSecretReady({
     secretRef,
-    secretsPort: deps.secretsPort ?? resolveSecretsPort(),
+    secretsConfigured: secretsAvailable(deps.secretsPort),
   });
   if (!gate.ok) {
     return { ok: false, code: "precondition_failed", message: gate.message };

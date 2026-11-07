@@ -53,7 +53,7 @@ export interface CinevisionWriteInput {
   entityId: string;
   /** Certified scalar fields only — no nested objects, no secrets. */
   fields: Record<string, string | number | boolean>;
-  /** `infisical://…` credential ref. Never a value. */
+  /** Secret reference (`pgsecret://`, legacy `infisical://`, or placeholder `wave4://`). Never a value. */
   credentialRef: string;
 }
 
@@ -143,7 +143,7 @@ const TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9._:=-]{0,127}$/;
 
 function isRefLike(value: string): boolean {
   const lowered = value.toLowerCase();
-  return lowered.includes("infisical://") || lowered.includes("wave4://");
+  return lowered.includes("pgsecret://") || lowered.includes("infisical://") || lowered.includes("wave4://");
 }
 
 export function validateCinevisionWriteInput(input: CinevisionWriteInput): string | null {

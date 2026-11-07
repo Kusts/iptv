@@ -1,60 +1,27 @@
-# @iptv/workflows — W1-08 worker substrate
+# @iptv/workflows
 
-`WorkflowPort` (`enqueue` / `registerHandler` / `tick`) with two substrates:
+In-process workflow port for short, non-durable tasks (expiry ticks,
+reminders). The MVP has exactly one substrate: `LocalWorkflowAdapter`.
 
-- **`LocalWorkflowAdapter` (default)** — in-process handlers + due-task scan
-  on `tick()`. Tasks live **in memory only**: a restart drops every queued
-  task. This is explicitly **NOT durable** and makes **no** durable-workflow
-  claim. Failure isolation: one throwing handler counts as failed and never
-  stops the rest of the tick.
-- **`HatchetWorkflowAdapter` (Wave-0-gated, never default)** — F12 vertical
-  slice over the published SDK `@hatchet-dev/typescript-sdk` (pinned
-  `1.37.0`, `optionalDependencies`, dynamic `import()` only). Lifecycle:
-  `registerHandler(name, fn, taskOptions?)` → `start()` (connect with
-  bounded retry, declare tasks, create + start worker in background) →
-  `enqueue()` → `cancel(runId)` → `stop()` (graceful, terminal).
-  `durable: true` is returned ONLY for a certified engine (`certified: true`
-  / `HATCHET_DURABLE_CERTIFIED=1`, asserting completed W0-04 durability
-  certification) AND after the engine accepts the trigger (a run id exists);
-  every other outcome throws fail-closed — including `enqueue()` on an
-  uncertified adapter, which throws BEFORE any trigger attempt so no run is
-  created that callers could mistake for durable. `tick()` stays a
-  compatibility no-op (the engine drives execution server-side).
-- **`createWorkflowAdapter(env, opts?)`** — Hatchet when a client token
-  resolves AND the SDK is installed; otherwise local with a logged warning.
-  Construction performs no network I/O.
+- `LocalWorkflowAdapter` — in-memory queue; tasks are lost on restart. This is
+  deliberately NOT a durable engine.
+- Financial/supplier operations and outbox publishing are NOT routed here.
+  The MVP's durable operational path is the dedicated outbox worker backed by
+  PostgreSQL (`platform.outbox_messages` + lease/claim protocol).
 
-Env (canonical, as read by the SDK `util/config-loader`):
+There is no external workflow engine (Hatchet or otherwise) in the standard
+MVP runtime. A future durable substrate can implement `WorkflowPort` without
+changing callers.
 
-- `HATCHET_CLIENT_TOKEN` (required for Hatchet; absent ⇒ local),
-- `HATCHET_CLIENT_HOST_PORT` / `HATCHET_CLIENT_API_URL` (endpoint),
-- `HATCHET_CLIENT_NAMESPACE` (optional).
-- `HATCHET_DURABLE_CERTIFIED=1`/`true` (operator-owned, only after W0-04
-  durability certification): opts factory-built adapters into certified
-  durable claims. Absent ⇒ uncertified ⇒ `enqueue()` throws fail-closed.
+## Usage
 
-Legacy compat (deprecated, warn-once, canonical wins): `HATCHET_API_TOKEN`
-⇒ token, `HATCHET_SERVER_URL` ⇒ API URL. Empty string counts as absent.
+```ts
+import { LocalWorkflowAdapter } from "@iptv/workflows";
 
-Execution policy per handler (`retries`, `executionTimeout`/`scheduleTimeout`
-as Go duration strings, `backoffMaxSeconds`) maps onto the SDK task
-declaration. Delayed `runAt` is NOT mapped yet: future-dated tasks are
-refused fail-closed instead of running early.
-
-Idempotency (at-least-once, never exactly-once): the caller
-`idempotencyKey` is propagated as run input `__dedupeKey` (visible to the
-handler for effect dedupe) and dedupes in-flight triggers per key within
-process lifetime; cross-restart effect dedupe stays with the domain
-handler's own idempotency/fencing. Payloads must not define the reserved
-keys `__task` / `__dedupeKey`.
-
-Tests (`vitest run`): local semantics + factory fallback
-(`workflows.unit.test.ts`); the durable slice against the in-process
-`FakeHatchetEngine` — happy path, crash/restart resume without repeating a
-recorded side effect, provider-unavailable retry/exhaustion, cancel,
-graceful shutdown, env wiring, and a conditional real-SDK wiring proof
-(`hatchet-durable.test.ts`). `FakeHatchetEngine` is importable from
-`./fake-hatchet.js` for tests and is explicitly test-only (never durable);
-it is NOT re-exported from the package index. Adapter-mechanics tests pass
-`certified: true` explicitly (test-only exercise, asserting no real
-durability and no W0-04 certification).
+const workflows = new LocalWorkflowAdapter();
+workflows.registerHandler("trial.expire_due", async (payload) => {
+  /* idempotent handler */
+});
+await workflows.enqueue({ name: "trial.expire_due", payload: { tenantId } });
+await workflows.tick();
+```

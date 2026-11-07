@@ -38,14 +38,13 @@ selector flags — args are numeric ids/pagination only, validated fail-closed.
   identify the deployment binding only. They come from env — never from
   argv (no such flags exist) — and no request-supplied ids are trusted
   because there is no server to receive them.
-- Secrets resolve only via the three `FIXED_SECRET_REFS`
-  (`CINEVISION_URL/EMAIL/PASSWORD`); `CINEVISION_LOGIN_PATH` (relative
+- `CINEVISION_ALLOWED_ORIGIN` is the non-secret panel URL. Supply
+  `CINEVISION_EMAIL` and `CINEVISION_PASSWORD` together for each invocation;
+  partial or missing credentials fail closed. The standalone CLI uses the
+  same environment variables. No Infisical resolution or database access is
+  performed by the worker. `CINEVISION_LOGIN_PATH` (relative
   `/api/...`, no query/fragment/traversal) pins the single allowed login
   POST. Without a configured binding the CLI fails closed (`CONFIG`).
-- The worker uses its **own** Infisical identity (`BROWSER_INFISICAL_*`) and
-  never reads the API `INFISICAL_*` vars (`src/secrets.ts`). It resolves
-  exactly those three refs through `@iptv/secrets`; a missing/empty value
-  throws `SECRET_UNAVAILABLE`, and no ref/URL/argv value is ever echoed.
 - A future API integration MUST resolve the provider binding from the
   tenant/account id in its own DB — never from caller-supplied ids.
   This CLI is an operator smoke probe, not multi-tenant authZ.
@@ -89,19 +88,13 @@ fail-closed paths), `1` on invalid invocation.
 | `BROWSER_WORKER_PROVIDER_ACCOUNT_ID` | yes | unset | deployment binding; id-charset validated |
 | `CINEVISION_ALLOWED_ORIGIN` | yes | unset | absolute `https://` origin, no path/query/hash |
 | `CINEVISION_LOGIN_PATH` | yes | unset | e.g. `/api/auth/login` (relative) |
-| `BROWSER_INFISICAL_SITE_URL` | yes | unset | worker's own secret identity; absolute `https://` |
-| `BROWSER_INFISICAL_PROJECT_ID` | yes | unset | worker's own secret identity |
-| `BROWSER_INFISICAL_CLIENT_ID` | yes | unset | worker's own secret identity |
-| `BROWSER_INFISICAL_CLIENT_SECRET` | yes | unset | worker's own secret identity |
+| `CINEVISION_EMAIL` | yes | unset | per-invocation login credential; pair with password |
+| `CINEVISION_PASSWORD` | yes | unset | per-invocation login credential; pair with email |
 | `BROWSER_WORKER_PROFILE_ROOT` | no | user container | restricted override (validated, host-namespace match) |
 | `BROWSER_WORKER_HEADLESS` | no | headless | `"0"` = headed |
 | `BROWSER_WORKER_CHALLENGE_WAIT_SECONDS` | no | `45` | bounded managed-challenge wait (0–300) |
 | `BROWSER_WORKER_COMMAND_TIMEOUT_MS` | no | `60000` | total per-command budget (clamped 5000–300000) |
 | `BROWSER_WORKER_LAUNCH_SETTLE_MS` | no | `3000` | launch-quiescence wait before releasing the profile lock (clamped 500–15000) |
-
-Refs resolved in the worker's Infisical project/environment (`dev`):
-`infisical://dev/browser-worker/CINEVISION_URL`,
-`.../CINEVISION_EMAIL`, `.../CINEVISION_PASSWORD`.
 
 Build/verify: `pnpm --filter @iptv/browser-worker build|typecheck|lint|test`.
 Runtime: `node --env-file-if-exists=.env apps/browser-worker/dist/cli.js <subcommand>`.

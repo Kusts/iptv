@@ -4,7 +4,7 @@ import type { EventEnvelope } from "@iptv/domain";
  * Transport port — the same seam shape as `apps/api/src/outbox/transport.ts`
  * (`TransportPort`/`LocalTransport` there), re-declared here WITHOUT Nest so
  * this standalone process has no framework dependency. A real transport
- * (Hatchet, webhook) plugs in behind this same port later.
+ * (webhook, broker) plugs in behind this same port later.
  */
 export interface TransportPort {
   readonly name: string;

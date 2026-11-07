@@ -23,10 +23,6 @@ function baseEnv(): NodeJS.ProcessEnv {
     BROWSER_WORKER_PROVIDER_ACCOUNT_ID: "acct-1",
     CINEVISION_ALLOWED_ORIGIN: "https://panel.example.test",
     CINEVISION_LOGIN_PATH: "/api/auth/login",
-    BROWSER_INFISICAL_SITE_URL: "https://infisical.example.test",
-    BROWSER_INFISICAL_PROJECT_ID: "proj-1",
-    BROWSER_INFISICAL_CLIENT_ID: "id-1",
-    BROWSER_INFISICAL_CLIENT_SECRET: "secret-1",
     LOCALAPPDATA: CONTAINER,
     BROWSER_WORKER_PROFILE_ROOT: `${CONTAINER}/iptv-test/profiles`,
   };
@@ -276,9 +272,7 @@ describe("config validation", () => {
   it("rejects bad tenant/account ids and missing identity", () => {
     const bad = { ...baseEnv(), BROWSER_WORKER_TENANT_ID: "../evil" };
     expect(() => resolveWorkerConfig(bad)).toThrowError();
-    const missing = { ...baseEnv() };
-    delete missing["BROWSER_INFISICAL_CLIENT_SECRET"];
-    expect(() => resolveWorkerConfig(missing)).toThrowError(/BROWSER_INFISICAL_CLIENT_SECRET/);
+    expect(resolveWorkerConfig(baseEnv())).toBeTruthy();
   });
 
   it("resolves a complete config", () => {

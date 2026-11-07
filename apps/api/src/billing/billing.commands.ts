@@ -70,7 +70,7 @@ export interface BillingCommandDeps {
    * Tenant-runtime seams (S2C, #86). When `asaasPort` is set it wins
    * (existing unit fakes keep working with zero DB reads); otherwise the
    * handlers resolve the port per tenant: `resolveAsaasPortForTenant` with
-   * the vault reader below (live `resolveSecretsPort()` when omitted) and
+   * the tenant-scoped PostgreSQL secrets reader below (live when omitted) and
    * the transport below (global fetch when omitted).
    */
   secretsPort?: SecretsPort;

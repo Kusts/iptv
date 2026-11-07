@@ -29,9 +29,12 @@ regexes = [
   '''^sk-abcdefgh12345678\.$''',
   '''^s1c1-secret-marker-must-never-leak$''',
   '''^s1c2-synthetic-asaas-key-bbb222$''',
+  '''^s1c2-synthetic-dbpersist-004$''',
   '''^s1c2-synthetic-zzz999$''',
   '''^cine-fixture-pass-001$''',
   '''^cine-fixture-pass-002$''',
+  '''^SELFTEST_SENTINEL_abc123$''',
+  '''^SELFTEST_SENTINEL_def456$''',
 ]
 paths = [
   '''^apps/api/test/billing-rls-rehearsal\.integration\.test\.ts$''',
@@ -44,4 +47,5 @@ paths = [
   '''^apps/api/test/integrations-read\.integration\.test\.ts$''',
   '''^apps/api/test/integrations-write\.integration\.test\.ts$''',
   '''^apps/web/test/cinevision-hub\.test\.tsx$''',
+  '''^scripts/infisical-backup\.sh$''',
 ]

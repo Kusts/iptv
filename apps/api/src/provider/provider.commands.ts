@@ -15,9 +15,10 @@ import {
   type ProviderOpsPort,
   type ProviderReadbackPort,
 } from "./provider-port.js";
-import { resolveSecretsPort, type SecretsPort } from "@iptv/secrets";
+import type { SecretsPort } from "@iptv/secrets";
 import {
   assertBrowserSecretReady,
+  secretsAvailable,
   decideTrialDispatchGate,
   findExistingTrialProviderAccountId,
   getProviderAccountSecretRef,
@@ -129,8 +130,9 @@ export interface ProviderCommandDeps {
   /**
    * PF-05: SecretsPort used ONLY to verify configuration (present + not
    * Noop) for secret-requiring (future BROWSER) adapters. The gate never
-   * calls `getSecret`. Defaults to `resolveSecretsPort()` (env-gated;
-   * Noop locally) so echo/manual keep working with no config.
+   * calls `getSecret`. Defaults to `secretsAvailable()` (PostgreSQL
+   * adapter available when `SECRETS_ENCRYPTION_KEY` is configured) so
+   * echo/manual keep working with no config.
    */
   secretsPort?: SecretsPort;
   /** Test seam: override the tenant-scoped `secret_ref` loader. */
@@ -320,7 +322,7 @@ async function handleSecretRequest(
   const secretRef = await loader(ctx, accountId);
   const gate = assertBrowserSecretReady({
     secretRef,
-    secretsPort: deps.secretsPort ?? resolveSecretsPort(),
+    secretsConfigured: secretsAvailable(deps.secretsPort),
   });
   if (!gate.ok) {
     return { ok: false, code: "precondition_failed", message: gate.message };
