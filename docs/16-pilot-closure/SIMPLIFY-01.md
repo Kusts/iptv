@@ -16,9 +16,11 @@ canônico continua em `docs/15-implementation-baseline/`.
   Worker disponível por profile, **sem Infisical no runtime**.
 - Cutover executado em 2026-11-07 com autorização explícita do operador; backup
   pré/pós-cutover e restore isolado verificados.
-- Pendência externa: smoke **CINEVISION read-only** — não existe credencial nem
-  binding no staging e a imagem do Browser Worker não inclui binário de
-  navegador (limitação documentada do packaging). Nada foi fabricado.
+- Pendência externa: leitura live **CINEVISION**. As credenciais foram
+  configuradas pelo Control Center e estão cifradas/decifráveis (4/4), mas a
+  leitura no provedor retorna `PROVIDER_UNAVAILABLE` porque a imagem da API não
+  inclui o CLI do browser-worker e não há binário de navegador. É limitação de
+  runtime, não falha de criptografia.
 
 ## O que mudou
 
@@ -153,11 +155,11 @@ faz parte da operação padrão.
 
 ## Fora de escopo / pendências externas
 
-- O smoke **CINEVISION read-only** segue pendente: não há binding/credencial no
-  staging e a imagem `iptv-staging-browser-worker:local` não traz binário de
-  navegador nem `playwright` (limitação explícita do Dockerfile). O Browser
-  Worker está disponível como packaging reproduzível; o probe live pertence ao
-  caminho certificado de desktop, sem escrita no fornecedor.
+- A leitura live **CINEVISION** segue pendente: o binding existe (`TESTING`,
+  `PRODUCTION`) e as 2 credenciais estão cifradas/decifráveis, mas a API não
+  acha o CLI `browser-worker/dist/cli.js` na própria imagem e não há navegador,
+  resultando em `PROVIDER_UNAVAILABLE`. Nenhuma escrita foi feita no fornecedor;
+  a leitura live pertence ao caminho certificado de desktop.
 - A identidade Infisical antiga saiu do runtime do StreamMax; a instância e os
   backups seguem preservados para rollback e **não** foram apagados.
 - Funcionalidades SaaS (onboarding comercial, white-label, copilot completo)
@@ -178,16 +180,22 @@ tocado e o volume `iptv-staging_pgdata` não foi recriado.
 - `--apply` (sem `--overwrite`): `migrated=2 existing=0 missing=0 failed=0`;
   linhas gravadas para `ASAAS_API_KEY` e `ASAAS_WEBHOOK_TOKEN`, formato
   `v1.<iv>.<tag>.<ciphertext>`, 1 tenant, 2 refs exatos.
-- Read-back de descriptografia: 2/2; com chave incorreta, 0/2 (falha esperada).
+- CINEVISION configurada depois, pelo Control Center, no esquema novo:
+  `pgsecret://PRODUCTION/integrations/<tenant>/cinevision/CINEVISION_USER`
+  (principal) + `CINEVISION_PASS` derivada; total final **4 linhas**
+  (2 Asaas + 2 CINEVISION), todas no formato `v1.*`.
+- Read-back de descriptografia: **4/4**; com chave incorreta, 0/4 (falha
+  esperada). Nenhum valor foi impresso.
 - RLS: `iptv_app` no tenant correto vê 2 linhas; com outro tenant, 0.
 
 ### Backups e recuperação
 
 - Pré-cutover `20261107-184156`: dump + globals + SHA256 + manifesto; restore
   isolado em cluster descartável (67 migrations, 1 tenant, 9 outbox).
-- Pós-cutover `20261107-190856`: 68 migrations, 2 `secret_values`; restore
-  isolado repetiu 68/2 e a descriptografia com a chave real (2/2); chave
-  incorreta falhou (0/2) → `CUTOVER_RECOVERY_PASS`.
+- Pós-cutover `20261107-190856` (2 linhas) e `20261107-195411` (4 linhas, já
+  com CINEVISION): 68 migrations; restore isolado repetiu 68/4 e a
+  descriptografia com a chave real (4/4); chave incorreta falhou (0/4)
+  → `CUTOVER_RECOVERY_PASS`.
 - Chave AES-256-GCM: 32 bytes em base64 canônica, custódia dupla em
   `/home/deploy/.streammax-secrets` e `/home/deploy/.streammax-custody` (0600),
   nunca impressa e fora do repositório e do dump.
@@ -198,10 +206,17 @@ tocado e o volume `iptv-staging_pgdata` não foi recriado.
   `DATABASE_URL` e `POSTGRES_PASSWORD` vazios no processo.
 - Web e outbox-worker recriados com as imagens novas; outbox único, runtime
   `WORKER` gen=3, 0 pendentes e 0 linhas `PUBLISHING` sem lease.
-- Asaas Sandbox: chave decifrada do PostgreSQL recebeu `GET /v3/customers?limit=1`
-  → HTTP 200 (read-only, sem cobrança); token de webhook preservado (SHA-256
-  confere com `billing.tenant_channels.webhook_secret_hash`) e a chave confere
-  com o valor legado.
+- Asaas Sandbox: `POST /v1/integrations/asaas/test` pelo Control Center
+  retornou `CONNECTED_READ_ONLY`; chamada direta read-only
+  (`GET /v3/customers?limit=1`) → HTTP 200, sem cobrança. Token de webhook
+  preservado (SHA-256 confere com `billing.tenant_channels.webhook_secret_hash`)
+  e a chave confere com o valor legado.
+- CINEVISION: `POST /v1/integrations/cinevision/configure` gravou
+  `CINEVISION_USER`/`CINEVISION_PASS` cifrados; `POST .../cinevision/test`
+  retornou `TESTING` + `PROVIDER_UNAVAILABLE` porque a API não encontra o CLI
+  do browser-worker na imagem e o navegador não existe (nenhum write
+  enviado). A separação exigida é clara: armazenamento/descriptografia OK,
+  leitura no provedor indisponível pelo runtime.
 - Persistência: restart da API → healthy, chave presente, sem Infisical,
   descriptografia 2/2 novamente.
 - Público: `staging-api` ready 200, `staging-web` 200, cadastro público 403
@@ -224,15 +239,16 @@ tocado e o volume `iptv-staging_pgdata` não foi recriado.
 | Main SHA | `e5ad924ae6045a42015c8884dd75f2175afec01c` |
 | Staging | `main@e5ad924` (5 serviços saudáveis) |
 | Migration 068 | PASS (`applied=1 skipped=67 total=68`) |
-| Credenciais migradas | 2 (`ASAAS_API_KEY`, `ASAAS_WEBHOOK_TOKEN`), sem valores |
-| Asaas Sandbox | PASS (read-only 200; token preservado) |
-| CINEVISION read-only | BLOCKED (credencial do operador pendente) |
+| Credenciais migradas | 2 legadas (`ASAAS_API_KEY`, `ASAAS_WEBHOOK_TOKEN`) + 2 CINEVISION via Control Center = 4 cifradas |
+| Asaas Sandbox | PASS (Control Center `CONNECTED_READ_ONLY`; read-only 200; token preservado) |
+| CINEVISION read-only | BLOCKED na leitura live (`PROVIDER_UNAVAILABLE`: runtime sem CLI/browser); credenciais cifradas e decifráveis 4/4 |
 | Browser Worker | PASS (imagem + CLI; profile `worker`) |
 | Outbox | PASS (único, `WORKER` gen=3, 0 pendentes) |
-| Backup/restore | PASS (pré e pós-cutover; chave real 2/2, incorreta 0/2) |
+| Backup/restore | PASS (pré e pós-cutover; chave real 4/4, incorreta 0/4) |
 | Infisical fora do runtime | SIM |
 
-Veredito: `SIMPLIFICATION_CUTOVER_BLOCKED` — dependência objetiva: probe
-CINEVISION read-only exige credencial configurada e um runtime com navegador
-(a imagem de staging é packaging, sem binário). Todos os demais critérios do
-cutover foram aprovados.
+Veredito: `SIMPLIFICATION_CUTOVER_BLOCKED` — dependência objetiva: leitura live
+CINEVISION exige runtime com o CLI do browser-worker e navegador (a imagem de
+staging é packaging sem binário), além do caminho certificado de desktop.
+Armazenamento, criptografia, migração, Asaas, outbox, backups e recuperação
+estão aprovados; não é falha de descriptografia.
