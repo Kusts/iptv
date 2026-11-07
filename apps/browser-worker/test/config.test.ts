@@ -272,7 +272,9 @@ describe("config validation", () => {
   it("rejects bad tenant/account ids and missing identity", () => {
     const bad = { ...baseEnv(), BROWSER_WORKER_TENANT_ID: "../evil" };
     expect(() => resolveWorkerConfig(bad)).toThrowError();
-    expect(resolveWorkerConfig(baseEnv())).toBeTruthy();
+    // Host-agnostic: baseEnv uses Windows path semantics, so pin them instead
+    // of depending on the machine running the suite (CI is Linux).
+    expect(resolveWorkerConfig(baseEnv(), { hostSemantics: "windows" })).toBeTruthy();
   });
 
   it("resolves a complete config", () => {
