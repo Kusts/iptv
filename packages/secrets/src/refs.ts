@@ -27,6 +27,11 @@ export const SECRETS_REF_SCHEME = "pgsecret://";
 /** Legacy scheme kept parse-compatible during the one-time data migration. */
 export const LEGACY_SECRETS_REF_SCHEME = "infisical://";
 
+/** The two ref schemes a binding may carry (current and migrated). */
+export type IntegrationRefScheme =
+  | typeof SECRETS_REF_SCHEME
+  | typeof LEGACY_SECRETS_REF_SCHEME;
+
 /** Root path segment of the controlled namespace. */
 export const SECRET_NAMESPACE_ROOT = "integrations";
 
@@ -137,12 +142,54 @@ function validateIntegrationTarget(target: IntegrationSecretTarget): { secretPat
 /**
  * Build the backend-owned ref for an integration secret:
  * `pgsecret://<environment>/integrations/<tenantId>/<provider>/<KEY>`.
- * Throws `SecretsError(MALFORMED_REF)` for anything outside the controlled
+ * `scheme` is selectable for the two binding schemes only: a legacy
+ * `infisical://` binding keeps writing its secondary keys beside the
+ * principal credential during the cutover. Throws
+ * `SecretsError(MALFORMED_REF)` for anything outside the controlled
  * namespace — before any storage call.
  */
-export function buildIntegrationSecretRef(target: IntegrationSecretTarget): string {
+export function buildIntegrationSecretRef(
+  target: IntegrationSecretTarget,
+  scheme: IntegrationRefScheme = SECRETS_REF_SCHEME,
+): string {
+  if (scheme !== SECRETS_REF_SCHEME && scheme !== LEGACY_SECRETS_REF_SCHEME) {
+    throw new SecretsError("MALFORMED_REF", "unknown secret ref scheme");
+  }
   const { secretPath } = validateIntegrationTarget(target);
-  return `${SECRETS_REF_SCHEME}${target.environment}${secretPath}/${target.key}`;
+  return `${scheme}${target.environment}${secretPath}/${target.key}`;
+}
+
+/** Scheme of a ref, or `null` when it is not a supported secret ref. */
+export function secretRefSchemeOf(ref: string): IntegrationRefScheme | null {
+  return typeof ref === "string" ? (schemeOf(ref)?.scheme as IntegrationRefScheme | undefined) ?? null : null;
+}
+
+/**
+ * Derive the backend-owned ref of a sibling key from the PRINCIPAL binding
+ * ref (`provider.provider_accounts.secret_ref`), preserving that ref's
+ * scheme, environment and namespace segments.
+ *
+ * A binding migrated from Infisical keeps `infisical://` while new
+ * configurations use `pgsecret://`; secondary keys (`CINEVISION_PASS`,
+ * `ASAAS_WEBHOOK_TOKEN`) must live under the SAME scheme as the principal
+ * credential, otherwise the exact-ref lookup misses the migrated row.
+ *
+ * Scope (tenant, provider, environment) always comes from the principal ref,
+ * never from the caller, so derivation cannot cross tenants, providers or
+ * environments. The derived key must still be allowlisted for the principal
+ * provider; anything else throws `SecretsError(MALFORMED_REF)`.
+ */
+export function deriveIntegrationSecretRef(bindingRef: string, key: string): string {
+  const binding = parseIntegrationSecretRef(bindingRef);
+  validateIntegrationTarget({
+    tenantId: binding.tenantId,
+    provider: binding.provider,
+    environment: binding.environment,
+    key,
+  });
+  // The key is always the last segment of a validated ref; swapping it keeps
+  // the scheme and the exact prefix the migration wrote.
+  return `${bindingRef.slice(0, bindingRef.lastIndexOf("/") + 1)}${key}`;
 }
 
 /**

@@ -81,8 +81,10 @@ export class PostgresSecretsAdapter implements SecretsWriterPort {
       throw new SecretsError("MALFORMED_REF", "request id must be a non-empty string when provided");
     }
     // Backend-derived ref only; throws before any write for out-of-namespace
-    // targets (unknown provider/key, bad tenant id or environment).
-    const ref = buildIntegrationSecretRef(input);
+    // targets (unknown provider/key, bad tenant id or environment). The scheme
+    // defaults to pgsecret; a legacy binding may keep writing beside its
+    // principal credential during the migration cutover.
+    const ref = buildIntegrationSecretRef(input, input.refScheme);
     const binding = parseIntegrationSecretRef(ref);
     if (binding.tenantId !== this.tenantId) {
       throw new SecretsError("MALFORMED_REF", "secret target is outside this tenant");

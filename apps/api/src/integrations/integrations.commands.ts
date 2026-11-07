@@ -13,7 +13,9 @@ import {
   RealAsaasAdapter,
 } from "../billing/asaas-port.js";
 import {
-  buildIntegrationSecretRef,
+  deriveIntegrationSecretRef,
+  parseIntegrationSecretRef,
+  secretRefSchemeOf,
   SecretsError,
   type SecretsPort,
   type SecretsWriterPort,
@@ -37,7 +39,8 @@ import {
  * Segredos server-side SEMPRE: o corpo aceita o VALOR uma vez; o writer
  * persiste cifrado em PostgreSQL (`platform.secret_values`) sob o namespace
  * backend-owned `pgsecret://<env>/integrations/<tenantId>/<provider>/<KEY>`
- * (derivado de contexto validado via `buildIntegrationSecretRef`, nunca do
+ * (derivado de contexto validado via `buildIntegrationSecretRef` e, para as
+ * chaves secundárias, `deriveIntegrationSecretRef` — nunca do
  * cliente) e a linha guarda só `secret_ref`. NENHUMA resposta contém segredo.
  *
  * Ordem de escrita (configure): `putSecret` e o insert/update da linha
@@ -751,13 +754,12 @@ async function handleTest(
     let password: string;
     try {
       username = await reader.getSecret(binding.secret_ref);
+      // Secondary key derived from the PRINCIPAL binding ref: a migrated
+      // `infisical://` binding keeps its password under the same scheme.
+      // Deriving `pgsecret://` unconditionally found the user but not the
+      // password (SIMPLIFY-01).
       password = await reader.getSecret(
-        buildIntegrationSecretRef({
-          tenantId: ctx.tenantId,
-          provider: "cinevision",
-          environment: binding.environment,
-          key: "CINEVISION_PASS",
-        }),
+        deriveIntegrationSecretRef(binding.secret_ref, "CINEVISION_PASS"),
       );
     } catch (err) {
       if (
@@ -1178,15 +1180,25 @@ async function handleWebhookEnsure(
   // 6. authToken: reusa o válido existente (retry converge), senão gera + put
   //    no vault ANTES de chamar o Asaas. Falha do put → 503, nada marcado.
   const writer = resolveWriter(ctx);
-  const webhookRefTarget = {
-    tenantId: ctx.tenantId,
-    provider: "asaas" as const,
-    environment: input.environment,
-    key: "ASAAS_WEBHOOK_TOKEN",
-  };
+  // Same rule as CINEVISION: the secondary key lives beside the principal
+  // binding ref, preserving a migrated `infisical://` scheme. The write target
+  // is parsed back from that exact ref (never rebuilt from `binding.environment`)
+  // so read and write always hit the SAME row, even when a legacy ref spells
+  // the environment differently from the DB column.
+  let webhookRef: string;
+  let webhookTarget: ReturnType<typeof parseIntegrationSecretRef>;
+  try {
+    webhookRef = deriveIntegrationSecretRef(binding.secret_ref, "ASAAS_WEBHOOK_TOKEN");
+    webhookTarget = parseIntegrationSecretRef(webhookRef);
+  } catch {
+    // A malformed/foreign principal ref is a vault configuration failure:
+    // fail closed like every other vault error, never a 500 with detail.
+    throw vaultUnavailable();
+  }
+  const webhookRefScheme = secretRefSchemeOf(webhookRef) ?? undefined;
   let authToken: string | null = null;
   try {
-    const current = await writer.getSecret(buildIntegrationSecretRef(webhookRefTarget));
+    const current = await writer.getSecret(webhookRef);
     if (isValidAuthToken(current)) {
       authToken = current;
     }
@@ -1201,7 +1213,15 @@ async function handleWebhookEnsure(
   if (authToken === null) {
     const fresh = generateAuthToken();
     try {
-      await writer.putSecret({ ...webhookRefTarget, value: fresh, requestId: ctx.commandId });
+      await writer.putSecret({
+        tenantId: webhookTarget.tenantId,
+        provider: webhookTarget.provider,
+        environment: webhookTarget.environment,
+        key: webhookTarget.key,
+        value: fresh,
+        requestId: ctx.commandId,
+        ...(webhookRefScheme === undefined ? {} : { refScheme: webhookRefScheme }),
+      });
     } catch (err) {
       if (err instanceof SecretsError) {
         throw vaultUnavailable();

@@ -32,9 +32,12 @@ export {
   SECRET_NAMESPACE_ROOT,
   SECRET_STAGED_SUFFIX,
   buildIntegrationSecretRef,
+  deriveIntegrationSecretRef,
   parseIntegrationSecretRef,
   parseSecretRef,
+  secretRefSchemeOf,
 } from "./refs.js";
+export type { IntegrationRefScheme } from "./refs.js";
 
 export type {
   IntegrationProvider,

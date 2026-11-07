@@ -87,9 +87,9 @@ export async function rotateSecret(
   if (typeof target.value !== "string" || target.value.length === 0) {
     throw new SecretsError("MALFORMED_REF", "secret value must be a non-empty string");
   }
-  const ref = buildIntegrationSecretRef(target);
+  const ref = buildIntegrationSecretRef(target, input.refScheme);
   const stagedKey = `${target.key}${SECRET_STAGED_SUFFIX}`;
-  const stagedRef = buildIntegrationSecretRef({ ...target, key: stagedKey });
+  const stagedRef = buildIntegrationSecretRef({ ...target, key: stagedKey }, input.refScheme);
   // 1. Stage the candidate.
   await port.putSecret({ ...target, key: stagedKey, value: target.value });
   // 2. Read-only canary.

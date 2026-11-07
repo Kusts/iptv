@@ -152,6 +152,56 @@ describe("PostgresSecretsAdapter", () => {
     expect(store.calls).toEqual([]);
   });
 
+  it("writes a legacy-scheme secondary key at the exact migrated ref", async () => {
+    const store = new MemoryStore();
+    const port = adapter(TENANT_A, store);
+    const ref = `infisical://SANDBOX/integrations/${TENANT_A}/asaas/ASAAS_WEBHOOK_TOKEN`;
+    const put = await port.putSecret({
+      tenantId: TENANT_A,
+      provider: "asaas",
+      environment: "SANDBOX",
+      key: "ASAAS_WEBHOOK_TOKEN",
+      value: "webhook-token-value",
+      refScheme: "infisical://",
+    });
+    expect(put.ref).toBe(ref);
+    await expect(port.getSecret(ref)).resolves.toBe("webhook-token-value");
+    // The current scheme stays the default for new configurations.
+    const fresh = await port.putSecret({
+      tenantId: TENANT_A,
+      provider: "asaas",
+      environment: "SANDBOX",
+      key: "ASAAS_API_KEY",
+      value: "api-key-value",
+    });
+    expect(fresh.ref.startsWith("pgsecret://")).toBe(true);
+  });
+
+  it("rotateSecret honors a legacy ref scheme end to end", async () => {
+    const store = new MemoryStore();
+    const port = adapter(TENANT_A, store);
+    const legacyLive = `infisical://SANDBOX/integrations/${TENANT_A}/asaas/ASAAS_API_KEY`;
+    const target = {
+      tenantId: TENANT_A,
+      provider: "asaas" as const,
+      environment: "SANDBOX",
+      key: "ASAAS_API_KEY",
+      value: "candidate",
+      refScheme: "infisical://" as const,
+    };
+    await port.putSecret({ ...target, value: "live" });
+    const result = await rotateSecret(port, {
+      ...target,
+      probe: async (stagedRef) => {
+        await expect(port.getSecret(stagedRef)).resolves.toBe("candidate");
+      },
+    });
+    expect(result.ref).toBe(legacyLive);
+    expect(result.stagedRef).toBe(`${legacyLive}__next`);
+    await expect(port.getSecret(legacyLive)).resolves.toBe("candidate");
+    await expect(port.getSecret(result.stagedRef)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
   it("delete is idempotent-aware (second delete is NOT_FOUND)", async () => {
     const store = new MemoryStore();
     const port = adapter(TENANT_A, store);

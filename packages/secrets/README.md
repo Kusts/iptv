@@ -31,6 +31,12 @@ secret manager in the MVP runtime path.
   the controlled namespace: refs are produced ONLY by the backend from
   validated `{ tenantId, provider, environment, key }` targets. Free-form
   paths/keys are rejected with `MALFORMED_REF` before any storage call.
+- `deriveIntegrationSecretRef(bindingRef, key)` — sibling key of an existing
+  binding ref (e.g. `CINEVISION_PASS`, `ASAAS_WEBHOOK_TOKEN`), preserving the
+  binding's scheme (`pgsecret://` or migrated `infisical://`), environment and
+  namespace. Scope always comes from the binding ref, never from the caller.
+  `putSecret(..., { refScheme })` keeps a legacy binding's write on that exact
+  ref; the default scheme stays `pgsecret://`.
 
 ## Crypto
 

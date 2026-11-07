@@ -1,5 +1,7 @@
 /** Shared secrets port types (no storage, crypto or transport code). */
 
+import type { IntegrationRefScheme } from "./refs.js";
+
 export interface SecretsPort {
   readonly name: string;
   /** Resolve a `secret_ref` to its value. Rejects with `SecretsError`. */
@@ -40,6 +42,13 @@ export interface PutSecretInput extends IntegrationSecretTarget {
   value: string;
   /** Stable idempotency key for tracing/audit; never a secret. */
   requestId?: string;
+  /**
+   * Ref scheme to write under. Defaults to the current `pgsecret://`; a
+   * legacy binding's secondary key passes `infisical://` so read and write
+   * stay on the same exact ref during the cutover. The target (tenant,
+   * provider, environment, key) is still validated by the same allowlist.
+   */
+  refScheme?: IntegrationRefScheme;
 }
 
 /** Result of `putSecret`: the backend-owned ref plus whether it was created. */
