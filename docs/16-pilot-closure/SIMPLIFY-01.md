@@ -5,14 +5,20 @@ canônico continua em `docs/15-implementation-baseline/`.
 
 ## Estado
 
-- PR #123 — `feat/simplify-01-secrets-postgres`.
-- Correção de compatibilidade: commits `35eb6d6` (código/testes) e `dcd5833`
-  (teste de tamper determinístico, sem mudança de produto).
-- Engenharia encerrada: testes focados, `pnpm lint`, `pnpm typecheck`,
-  `pnpm build`, gates Python e review independente concluídos; CI do PR verde
-  em `dcd5833` (build, adversarial, security-scans, outbox-050-role-guards).
-- Cutover de staging: `CUTOVER_PENDING_OPERATOR` (nenhum deploy, merge ou
-  migração de produção executado).
+- PR #123 — `feat/simplify-01-secrets-postgres`, **merged** em `main` pelo merge
+  commit `e5ad924` (base `f634126`).
+- HEAD aprovado nos testes: `ece76e38201f6e21e00abaa68ca38a1b4225fb0b`.
+- CI do PR (`run 42399295814`) e CI de `main` (`run 42403430079`) **verdes** nos
+  quatro checks obrigatórios: `build`, `outbox-050-role-guards`,
+  `security-scans`, `adversarial`.
+- Staging Contabo (`/home/deploy/iptv-staging`): **`main@e5ad924`** implantado,
+  cinco serviços saudáveis (postgres, api, web, tunnel, outbox-worker), Browser
+  Worker disponível por profile, **sem Infisical no runtime**.
+- Cutover executado em 2026-11-07 com autorização explícita do operador; backup
+  pré/pós-cutover e restore isolado verificados.
+- Pendência externa: smoke **CINEVISION read-only** — não existe credencial nem
+  binding no staging e a imagem do Browser Worker não inclui binário de
+  navegador (limitação documentada do packaging). Nada foi fabricado.
 
 ## O que mudou
 
@@ -70,8 +76,8 @@ providers ou ambientes foi introduzido.
 
 ## Cutover de credenciais — procedimento único (staging Contabo)
 
-Status: `CUTOVER_PENDING_OPERATOR`. Executar apenas com autorização explícita
-para o ambiente e o SHA.
+Status: `CUTOVER_EXECUTED` em 2026-11-07 (staging Contabo, `main@e5ad924`).
+A ordem abaixo foi cumprida; resultados em "Cutover executado".
 
 ### Pré-requisitos
 
@@ -147,10 +153,86 @@ faz parte da operação padrão.
 
 ## Fora de escopo / pendências externas
 
-- Validação live em staging (deploy, cutover real, Asaas/CINEVISION) exige
-  autorização do ambiente e não é feita por este registro:
-  `CUTOVER_PENDING_OPERATOR`.
-- A identidade Infisical antiga pode ser removida do runtime somente depois do
-  cutover validado; o cofre e seus backups não são apagados por esta entrega.
+- O smoke **CINEVISION read-only** segue pendente: não há binding/credencial no
+  staging e a imagem `iptv-staging-browser-worker:local` não traz binário de
+  navegador nem `playwright` (limitação explícita do Dockerfile). O Browser
+  Worker está disponível como packaging reproduzível; o probe live pertence ao
+  caminho certificado de desktop, sem escrita no fornecedor.
+- A identidade Infisical antiga saiu do runtime do StreamMax; a instância e os
+  backups seguem preservados para rollback e **não** foram apagados.
 - Funcionalidades SaaS (onboarding comercial, white-label, copilot completo)
   permanecem no roadmap; nada foi removido do banco/RLS.
+
+## Cutover executado (2026-11-07, staging Contabo)
+
+Alvo `vmi3630510`, diretório `/home/deploy/iptv-staging`, projeto Compose
+`iptv-staging`, Docker context local (`default`). Nenhum projeto vizinho foi
+tocado e o volume `iptv-staging_pgdata` não foi recriado.
+
+### Dados
+
+- Migration `068`: `applied=1 skipped=67 total=68`; `platform.secret_values`
+  criada com RLS habilitada, 1 policy e 4 grants para `iptv_app`.
+- Dry-run: 1 binding live (`StreamMax / asaas / SANDBOX / CONNECTED_READ_ONLY`);
+  2 credenciais planejadas, 0 ausentes, 0 falhas.
+- `--apply` (sem `--overwrite`): `migrated=2 existing=0 missing=0 failed=0`;
+  linhas gravadas para `ASAAS_API_KEY` e `ASAAS_WEBHOOK_TOKEN`, formato
+  `v1.<iv>.<tag>.<ciphertext>`, 1 tenant, 2 refs exatos.
+- Read-back de descriptografia: 2/2; com chave incorreta, 0/2 (falha esperada).
+- RLS: `iptv_app` no tenant correto vê 2 linhas; com outro tenant, 0.
+
+### Backups e recuperação
+
+- Pré-cutover `20261107-184156`: dump + globals + SHA256 + manifesto; restore
+  isolado em cluster descartável (67 migrations, 1 tenant, 9 outbox).
+- Pós-cutover `20261107-190856`: 68 migrations, 2 `secret_values`; restore
+  isolado repetiu 68/2 e a descriptografia com a chave real (2/2); chave
+  incorreta falhou (0/2) → `CUTOVER_RECOVERY_PASS`.
+- Chave AES-256-GCM: 32 bytes em base64 canônica, custódia dupla em
+  `/home/deploy/.streammax-secrets` e `/home/deploy/.streammax-custody` (0600),
+  nunca impressa e fora do repositório e do dump.
+
+### Runtime
+
+- API recriada com `SECRETS_ENCRYPTION_KEY`; `INFISICAL_*` = 0, `HATCHET*` = 0,
+  `DATABASE_URL` e `POSTGRES_PASSWORD` vazios no processo.
+- Web e outbox-worker recriados com as imagens novas; outbox único, runtime
+  `WORKER` gen=3, 0 pendentes e 0 linhas `PUBLISHING` sem lease.
+- Asaas Sandbox: chave decifrada do PostgreSQL recebeu `GET /v3/customers?limit=1`
+  → HTTP 200 (read-only, sem cobrança); token de webhook preservado (SHA-256
+  confere com `billing.tenant_channels.webhook_secret_hash`) e a chave confere
+  com o valor legado.
+- Persistência: restart da API → healthy, chave presente, sem Infisical,
+  descriptografia 2/2 novamente.
+- Público: `staging-api` ready 200, `staging-web` 200, cadastro público 403
+  (local e via túnel). Infisical, Postgres, Redis e containers vizinhos
+  preservados; Hatchet/PgBouncer ausentes.
+
+### Artefatos de rollback no host
+
+- `/home/deploy/backup/staging-pre-cutover-20261107-185258` (patch 19 MB,
+  status, HEAD e tar de 2,9 MB da árvore antiga).
+- `/home/deploy/backup/staging-env-20261107-185354` (`.env.staging` anterior e
+  `.env.staging.outbox-worker` anterior).
+- Imagens `:pre-mvp-oc-01-76515c3` mantidas para retorno.
+
+## Entrega final
+
+| Item | Resultado |
+|---|---|
+| PR #123 | MERGED (`e5ad924`) |
+| Main SHA | `e5ad924ae6045a42015c8884dd75f2175afec01c` |
+| Staging | `main@e5ad924` (5 serviços saudáveis) |
+| Migration 068 | PASS (`applied=1 skipped=67 total=68`) |
+| Credenciais migradas | 2 (`ASAAS_API_KEY`, `ASAAS_WEBHOOK_TOKEN`), sem valores |
+| Asaas Sandbox | PASS (read-only 200; token preservado) |
+| CINEVISION read-only | BLOCKED (credencial do operador pendente) |
+| Browser Worker | PASS (imagem + CLI; profile `worker`) |
+| Outbox | PASS (único, `WORKER` gen=3, 0 pendentes) |
+| Backup/restore | PASS (pré e pós-cutover; chave real 2/2, incorreta 0/2) |
+| Infisical fora do runtime | SIM |
+
+Veredito: `SIMPLIFICATION_CUTOVER_BLOCKED` — dependência objetiva: probe
+CINEVISION read-only exige credencial configurada e um runtime com navegador
+(a imagem de staging é packaging, sem binário). Todos os demais critérios do
+cutover foram aprovados.
