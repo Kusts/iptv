@@ -36,9 +36,7 @@ import {
   ensureFulfillmentProviderAccount,
   getCatalogPlan,
   getSubscription,
-  getSubscriptionByOrder,
   insertProviderEvidence,
-  listSubscriptions,
   upsertSubscriptionBinding,
 } from "../subscription/subscription-store.js";
 
@@ -873,21 +871,25 @@ function handleActivatePendingSettledOrdersFactory(deps: FulfillmentCommandDeps)
     const requested: string[] = [];
 
     // Phase 1 — SETTLED NEW_SUBSCRIPTION orders without a linked subscription.
+    // Filter in SQL (not in-loop) so already-processed orders never starve
+    // newer eligible ones when they dominate the head of the scan.
     const orders = await trx
-      .selectFrom("commerce.orders")
-      .select(["id"])
-      .where("tenant_id", "=", ctx.tenantId)
-      .where("status", "=", "SETTLED")
-      .where("order_type", "=", "NEW_SUBSCRIPTION")
-      .orderBy("created_at", "asc")
+      .selectFrom("commerce.orders as o")
+      .leftJoin("subscription.subscriptions as s", (join) =>
+        join
+          .onRef("s.originating_order_id", "=", "o.id")
+          .on("s.tenant_id", "=", ctx.tenantId),
+      )
+      .select(["o.id"])
+      .where("o.tenant_id", "=", ctx.tenantId)
+      .where("o.status", "=", "SETTLED")
+      .where("o.order_type", "=", "NEW_SUBSCRIPTION")
+      .where("s.id", "is", null)
+      .orderBy("o.created_at", "asc")
       .limit(limit)
       .execute();
     for (const row of orders) {
       const orderId = row.id as string;
-      const existing = await getSubscriptionByOrder(ctx, orderId);
-      if (existing !== null) {
-        continue;
-      }
       try {
         const result = await handleActivateFromOrder(ctx, { orderId });
         if (result.ok && result.data.already === false) {
@@ -899,16 +901,28 @@ function handleActivatePendingSettledOrdersFactory(deps: FulfillmentCommandDeps)
     }
 
     // Phase 2 — PENDING_ACTIVATION subscriptions without an initial fulfillment op.
-    const subs = await listSubscriptions(ctx, { status: "PENDING_ACTIVATION", limit });
-    for (const sub of subs) {
-      const latest = await latestProviderOperationForEntity(ctx, "subscription", sub.id);
-      if (latest !== null) {
-        continue;
-      }
+    // Same SQL-level exclusion: subscriptions that already carry any provider
+    // operation must not consume the scan budget ahead of pending ones.
+    const subs = await trx
+      .selectFrom("subscription.subscriptions as sub")
+      .leftJoin("provider.provider_operations as op", (join) =>
+        join
+          .onRef("op.entity_id", "=", "sub.id")
+          .on("op.tenant_id", "=", ctx.tenantId)
+          .on("op.entity_type", "=", "subscription"),
+      )
+      .select(["sub.id"])
+      .where("sub.tenant_id", "=", ctx.tenantId)
+      .where("sub.status", "=", "PENDING_ACTIVATION")
+      .where("op.id", "is", null)
+      .orderBy("sub.created_at", "asc")
+      .limit(limit)
+      .execute();
+    for (const row of subs) {
       try {
-        const result = await executeFulfillmentRequest(ctx, { subscriptionId: sub.id }, deps);
+        const result = await executeFulfillmentRequest(ctx, { subscriptionId: row.id as string }, deps);
         if (result.ok) {
-          requested.push(sub.id);
+          requested.push(row.id as string);
         }
       } catch {
         // continue
