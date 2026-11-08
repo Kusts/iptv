@@ -146,7 +146,7 @@ describe("sigma HTTP create + confirm (Cenário A path)", () => {
           expect(call.init?.headers).toMatchObject({ authorization: "Bearer tok-123" });
           return { status: 201, body: { data: { id: "cust-9", server_id: "srv-1", package_id: "pkg-1", status: "ACTIVE" } } };
         }
-        if (call.url === `${SIGMA_BASE_URL}/customers/cust-9`) return { status: 200, body: { data: { id: "cust-9" } } };
+        if (call.url === `${SIGMA_BASE_URL}/customers/cust-9`) return { status: 200, body: { data: { id: "cust-9", server_id: "srv-1", package_id: "pkg-1", status: "ACTIVE", expires_at: "2027-01-01T00:00:00Z" } } };
         return { status: 500, body: { message: "unexpected" } };
       }),
     );
@@ -160,8 +160,8 @@ describe("sigma HTTP create + confirm (Cenário A path)", () => {
     const adapter = new SigmaHttpAdapter(
       async () => "tok",
       fakeJson(calls, (call) => {
-        if (call.url === `${SIGMA_BASE_URL}/customers`) return { status: 201, body: { data: { id: "c1" } } };
-        return { status: 200, body: { data: { id: "c1" } } };
+        if (call.url === `${SIGMA_BASE_URL}/customers`) return { status: 201, body: { data: { id: "c1", server_id: "srv-1", package_id: "pkg-1", status: "ACTIVE" } } };
+        return { status: 200, body: { data: { id: "c1", server_id: "srv-1", package_id: "pkg-1", status: "ACTIVE" } } };
       }),
     );
     await adapter.requestOperation(req());
@@ -193,8 +193,10 @@ describe("sigma HTTP renew (Cenário B path)", () => {
     const adapter = new SigmaHttpAdapter(
       async () => "tok",
       fakeJson(calls, (call) => {
-        if (call.url === `${SIGMA_BASE_URL}/customers/cust-9/renew`) return { status: 200, body: { data: { id: "cust-9", expires_at: "2027-01-01T00:00:00Z" } } };
-        if (call.url === `${SIGMA_BASE_URL}/customers/cust-9`) return { status: 200, body: { data: { id: "cust-9" } } };
+        if (call.url === `${SIGMA_BASE_URL}/customers/cust-9/renew`) return { status: 200, body: { data: { id: "cust-9" } } };
+        if (call.url === `${SIGMA_BASE_URL}/customers/cust-9`) {
+          return { status: 200, body: { data: { id: "cust-9", server_id: "srv-1", package_id: "pkg-1", expires_at: calls.filter((c) => c.url.endsWith("/renew")).length ? "2027-01-01T00:00:00Z" : "2026-01-01T00:00:00Z" } } };
+        }
         return { status: 500, body: {} };
       }),
     );
@@ -202,9 +204,9 @@ describe("sigma HTTP renew (Cenário B path)", () => {
       req({ action: "subscription.renew", payload: { sigma_customer_id: "cust-9" } }),
     );
     expect(result).toMatchObject({ outcome: "SUCCEEDED", externalRef: "cust-9" });
-    expect(calls.map((c) => c.url)).toEqual([`${SIGMA_BASE_URL}/customers/cust-9/renew`, `${SIGMA_BASE_URL}/customers/cust-9`]);
-    expect(calls[0]?.init?.method).toBe("POST");
-    expect(calls[0]?.init?.body).toBeUndefined();
+      expect(calls.map((c) => c.url)).toEqual([`${SIGMA_BASE_URL}/customers/cust-9`, `${SIGMA_BASE_URL}/customers/cust-9/renew`, `${SIGMA_BASE_URL}/customers/cust-9`]);
+      expect(calls[1]?.init?.method).toBe("POST");
+      expect(calls[1]?.init?.body).toBeUndefined();
   });
 
   it("provision with existing binding id also renews (fulfillment renew path)", async () => {
@@ -213,14 +215,17 @@ describe("sigma HTTP renew (Cenário B path)", () => {
       async () => "tok",
       fakeJson(calls, (call) => {
         if (call.url.endsWith("/renew")) return { status: 200, body: { data: { id: "cust-9" } } };
-        return { status: 200, body: { data: { id: "cust-9" } } };
+        if (call.url === `${SIGMA_BASE_URL}/customers/cust-9`) {
+          return { status: 200, body: { data: { id: "cust-9", server_id: "srv-1", package_id: "pkg-1", expires_at: calls.some((c) => c.url.endsWith("/renew")) ? "2027-06-01T00:00:00Z" : "2026-06-01T00:00:00Z" } } };
+        }
+        return { status: 500, body: {} };
       }),
     );
     const result = await adapter.requestOperation(
       req({ payload: { server_id: "srv-1", package_id: "pkg-1", sigma_customer_id: "cust-9" } }),
     );
     expect(result.outcome).toBe("SUCCEEDED");
-    expect(calls[0]?.url).toBe(`${SIGMA_BASE_URL}/customers/cust-9/renew`);
+    expect(calls.map((c) => c.url)).toEqual([`${SIGMA_BASE_URL}/customers/cust-9`, `${SIGMA_BASE_URL}/customers/cust-9/renew`, `${SIGMA_BASE_URL}/customers/cust-9`]);
   });
 });
 

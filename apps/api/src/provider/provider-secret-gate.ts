@@ -703,7 +703,19 @@ export interface ProjectedSecretPortResult {
   outcome: string;
   safeDetail: string;
   safeExternalRef: string | null;
+  safeExpiresBefore: string | null;
   externalRefInvalid: boolean;
+}
+
+function safeIsoDateTime(raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.trim().length === 0 || raw.length > 64) {
+    return null;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(raw)) {
+    return null;
+  }
+  const time = Date.parse(raw);
+  return Number.isFinite(time) ? raw : null;
 }
 
 /**
@@ -718,11 +730,13 @@ export function projectSecretPortResult(input: {
   outcome: string;
   detail: string;
   externalRef: string | null;
+  expiresBefore?: string | null;
 }): ProjectedSecretPortResult {
   const safeDetail = SAFE_PORT_DETAIL[input.outcome] ?? "secret-required operation completed";
+  const safeExpiresBefore = safeIsoDateTime(input.expiresBefore);
   const raw = input.externalRef;
   if (raw === null) {
-    return { outcome: input.outcome, safeDetail, safeExternalRef: null, externalRefInvalid: false };
+    return { outcome: input.outcome, safeDetail, safeExternalRef: null, safeExpiresBefore, externalRefInvalid: false };
   }
   const invalid =
     typeof raw !== "string" ||
@@ -734,7 +748,7 @@ export function projectSecretPortResult(input: {
     isSuspiciousKey(raw) ||
     containsRefValue(raw);
   if (invalid) {
-    return { outcome: input.outcome, safeDetail, safeExternalRef: null, externalRefInvalid: true };
+    return { outcome: input.outcome, safeDetail, safeExternalRef: null, safeExpiresBefore, externalRefInvalid: true };
   }
-  return { outcome: input.outcome, safeDetail, safeExternalRef: raw, externalRefInvalid: false };
+  return { outcome: input.outcome, safeDetail, safeExternalRef: raw, safeExpiresBefore, externalRefInvalid: false };
 }

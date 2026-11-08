@@ -22,6 +22,7 @@ import {
   selectedAdapterNameFromEnv,
   type ProviderOpsPort,
 } from "../provider/provider-port.js";
+import { resolveTenantSigmaPortFromEnv } from "../provider/provider-sigma.js";
 import {
   UniqueViolationError,
   countProviderOperationsForEntity,
@@ -215,7 +216,9 @@ async function executeFulfillmentRequest(
       injectedSecretPort ??
       (deps.opsPort !== undefined && deps.opsPort.name === adapterName
         ? deps.opsPort
-        : resolveOpsPort(adapterName));
+        : adapterName === "sigma"
+          ? resolveTenantSigmaPortFromEnv({ tenantId: ctx.tenantId, trx: kyselyTrxOf(ctx), overrideSecretsPort: deps.secretsPort ?? null })
+          : resolveOpsPort(adapterName));
     const secretRequired = isSecretRequiringPort(port);
     // Capability UNAVAILABLE wins over injection: no account creation, no
     // operation, no port call; the subscription stays PENDING_ACTIVATION.
@@ -425,7 +428,7 @@ export interface SubscriptionProvisionOutcomeInput {
   operationId: string;
   subscriptionId: string;
   providerAccountId: string;
-  raw: { outcome: string; detail: string; externalRef: string | null };
+  raw: { outcome: string; detail: string; externalRef: string | null; expiresBefore?: string | null };
 }
 
 export interface SubscriptionProvisionOutcome {
@@ -445,7 +448,15 @@ export interface SubscriptionProvisionOutcome {
  * behavior is unchanged.
  */
 export interface SubscriptionProvisionFence {
-  claimedBy: string;
+  claimedBy?: string;
+  /**
+   * Reconcile CAS (FASE5-FIX3-R4 shape): when set, the status predicate
+   * becomes `status = <expected>` (e.g. `VERIFYING`) and the `claimed_by`
+   * predicate applies only when `claimedBy` is also set. Dispatch passes
+   * `{ claimedBy }` (QUEUED/RUNNING); reconcile passes
+   * `{ expectedStatus: "VERIFYING" }` (no claim).
+   */
+  expectedStatus?: string;
 }
 
 async function fencedSubscriptionOutcomeUpdate(
@@ -465,7 +476,7 @@ async function fencedSubscriptionOutcomeUpdate(
   if (trx === null) {
     return true;
   }
-  const updated = await trx
+  let query = trx
     .updateTable("provider.provider_operations")
     .set({
       status: patch.status,
@@ -479,10 +490,15 @@ async function fencedSubscriptionOutcomeUpdate(
       lease_expires_at: null,
     })
     .where("tenant_id", "=", ctx.tenantId)
-    .where("id", "=", operationId)
-    .where("claimed_by", "=", fence.claimedBy)
-    .where("status", "in", ["QUEUED", "RUNNING"])
-    .executeTakeFirst();
+    .where("id", "=", operationId);
+  if (fence.claimedBy !== undefined) {
+    query = query.where("claimed_by", "=", fence.claimedBy);
+  }
+  query =
+    fence.expectedStatus !== undefined
+      ? query.where("status", "=", fence.expectedStatus)
+      : query.where("status", "in", ["QUEUED", "RUNNING"]);
+  const updated = await query.executeTakeFirst();
   return Number(updated.numUpdatedRows ?? 0) >= 1;
 }
 
@@ -515,12 +531,15 @@ export async function applySubscriptionProvisionOutcome(
   const projected = projectSecretPortResult(input.raw);
   const effectiveOutcome =
     projected.externalRefInvalid && projected.outcome === "SUCCEEDED" ? "UNKNOWN" : projected.outcome;
+  const sigmaSummary = (base: Record<string, unknown>): Record<string, unknown> =>
+    projected.safeExpiresBefore !== null ? { ...base, sigma_expires_before: projected.safeExpiresBefore } : base;
   if (effectiveOutcome === "SUCCEEDED") {
     const claimed = await writeTerminal({
       status: "SUCCEEDED",
       effectCertainty: "KNOWN_APPLIED",
-      resultSummary:
+      resultSummary: sigmaSummary(
         projected.safeExternalRef !== null ? { external_ref: projected.safeExternalRef } : {},
+      ),
       completed: true,
     });
     if (!claimed) {
@@ -563,8 +582,9 @@ export async function applySubscriptionProvisionOutcome(
     return { status: "FAILED", subscriptionStatus: "PENDING_ACTIVATION", effectCertainty: "KNOWN_NOT_APPLIED" };
   }
   if (effectiveOutcome === "UNKNOWN") {
-    const unknownSummary =
-      projected.safeExternalRef !== null ? { external_ref: projected.safeExternalRef } : {};
+    const unknownSummary = sigmaSummary(
+      projected.safeExternalRef !== null ? { external_ref: projected.safeExternalRef } : {},
+    );
     const claimed = await writeTerminal({
       status: "VERIFYING",
       effectCertainty: "UNKNOWN",
@@ -745,7 +765,7 @@ async function executeSecretFulfillmentRequest(
     operationId: operation.id,
     subscriptionId: subscription.id,
     providerAccountId: accountId,
-    raw: { outcome: raw.outcome, detail: raw.detail, externalRef: raw.externalRef },
+    raw: { outcome: raw.outcome, detail: raw.detail, externalRef: raw.externalRef, expiresBefore: raw.expiresBefore ?? null },
   });
   if (applied === null) {
     throw new Error("fulfillment outcome applier lost its own inline row");

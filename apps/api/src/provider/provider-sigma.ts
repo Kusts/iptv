@@ -1,5 +1,5 @@
 /**
- * Sigma Reseller API adapter (CINEVISION M2M).
+ * Sigma Reseller adapter (CINEVISION M2M).
  *
  * Minimal HTTP adapter reusing ProviderOpsPort/dispatcher/fulfillment.
  * Fixed base URL per official OpenAPI; Bearer token resolved per call via
@@ -7,19 +7,25 @@
  * via deriveIntegrationSecretRef at the caller — never logged, persisted or
  * emitted). No new microservice/queue/DB/auth/vault/dispatcher.
  *
- * Writes confirm with GET before SUCCEEDED. Timeout/5xx/429 -> UNKNOWN
+ * Writes confirm with GET before SUCCEEDED. Create requires matching id,
+ * server_id, package_id and ACTIVE status; renew captures expires_at before
+ * the POST and requires a strictly later expires_at afterwards. Timeout/5xx/429 -> UNKNOWN
  * (never FAILED, never auto-resend); 429 detail carries Retry-After seconds
  * without replaying the mutation. The SigmaReseller token never reaches
  * detail/externalRef. A confirm-GET failure after a created/renewed effect
  * returns UNKNOWN with externalRef set so reconciliation can re-read by id.
- * Readback is a stub (INCONCLUSIVE) until live-certified.
+ * The readback resolves the same postconditions with GET only — never POST —
+ * and stays inconclusive without complete evidence.
  *
  * Modes: live = SIGMA_MODE=live + configured SecretsPort -> SigmaHttpAdapter.
  * Anything else -> SigmaUnconfiguredAdapter (MANUAL, never a simulated
  * SUCCEEDED). Simulated outcomes (SigmaSimulatedAdapter) are injected
  * directly by tests only — never selected via env in production.
  */
-import { deriveIntegrationSecretRef, type SecretsPort } from "@iptv/secrets";
+import { deriveIntegrationSecretRef, isSecretsConfigured, type SecretsPort } from "@iptv/secrets";
+import { withTenantTransaction, type Database } from "@iptv/database";
+import type { Kysely, Transaction } from "kysely";
+import { tryCreatePostgresSecretsAdapter } from "../integrations/postgres-secrets.js";
 import type { AdapterResult, ProviderOperationRequest, ProviderOpsPort, ProviderReadbackPort, ReadbackQuery, ReadbackResult } from "./provider-port.js";
 
 export const SIGMA_BASE_URL = "https://cinevision.panelbr.site/api/reseller-api/v1" as const;
@@ -45,6 +51,35 @@ function idOf(value: unknown): string | null {
   const item = record(root["data"] ?? root);
   const id = item["id"] ?? item["customer_id"] ?? root["id"] ?? root["customer_id"];
   return typeof id === "string" || typeof id === "number" ? String(id) : null;
+}
+
+export interface SigmaCustomer {
+  id: string | null;
+  server_id: string | null;
+  package_id: string | null;
+  status: string | null;
+  expires_at: string | null;
+  username: string | null;
+}
+
+function stringField(item: Record<string, unknown>, key: string): string | null {
+  const value = item[key];
+  return typeof value === "string" || typeof value === "number" ? String(value) : null;
+}
+
+export function getCustomerParsed(body: unknown): SigmaCustomer {
+  const root = record(body);
+  const item = record(root["data"] ?? root);
+  return {
+    id: idOf(item), server_id: stringField(item, "server_id"), package_id: stringField(item, "package_id"),
+    status: stringField(item, "status"), expires_at: stringField(item, "expires_at"), username: stringField(item, "username"),
+  };
+}
+
+function validDate(value: string | null): number | null {
+  if (value === null) return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : null;
 }
 
 function errorFromBody(body: unknown): string | null {
@@ -116,8 +151,10 @@ export class SigmaHttpAdapter implements ProviderOpsPort {
     } catch {
       return { outcome: "MANUAL", detail: "sigma: credential unavailable", externalRef: null };
     }
+    let customerId: string | null = null;
+    let expiresBefore: string | null = null;
     try {
-      const customerId =
+      customerId =
         typeof input.payload["sigma_customer_id"] === "string" && (input.payload["sigma_customer_id"] as string).trim().length > 0
           ? (input.payload["sigma_customer_id"] as string)
           : null;
@@ -139,6 +176,11 @@ export class SigmaHttpAdapter implements ProviderOpsPort {
       let response: Response;
       // OpenAPI: POST /customers/{id}/renew declares no requestBody.
       if (isRenew && customerId !== null) {
+        const before = await this.request(`/customers/${encodeURIComponent(customerId)}`, token);
+        if (!before.ok) return { outcome: "UNKNOWN", detail: "sigma: pre-renew readback inconclusive", externalRef: customerId };
+        const previous = getCustomerParsed(await before.json());
+        if (previous.id !== customerId || previous.expires_at === null) return { outcome: "UNKNOWN", detail: "sigma: pre-renew state inconclusive", externalRef: customerId };
+        expiresBefore = previous.expires_at;
         response = await this.request(`/customers/${encodeURIComponent(customerId)}/renew`, token, { method: "POST" });
       } else if (isRenew && customerId === null) {
         return { outcome: "MANUAL", detail: "sigma: renewal requires sigma_customer_id", externalRef: null };
@@ -153,7 +195,9 @@ export class SigmaHttpAdapter implements ProviderOpsPort {
         if (typeof username === "string" && username.trim().length > 0) {
           body["username"] = username.trim();
         } else {
-          body["username"] = `sm-${input.entityId.slice(0, 8)}`;
+          // Full entityId: the UUIDv7 prefix alone (slice 0,8) collides for
+          // subscriptions created in the same timestamp window (see AGENTS.md).
+          body["username"] = `sm-${input.entityId}`;
         }
         for (const key of ["name", "email", "telegram", "whatsapp", "note", "connections"]) {
           if (input.payload[key] !== undefined) body[key] = input.payload[key];
@@ -165,7 +209,8 @@ export class SigmaHttpAdapter implements ProviderOpsPort {
         return {
           outcome: "UNKNOWN",
           detail: `sigma: throttled; verify before retry${retryAfter !== null ? ` (retry-after ${retryAfter}s)` : ""}`,
-          externalRef: null,
+          externalRef: isRenew && customerId !== null ? customerId : null,
+          ...(isRenew && expiresBefore !== null ? { expiresBefore } : {}),
         };
       }
       if (response.status === 401) return { outcome: "MANUAL", detail: "sigma: unauthorized; token must be rotated", externalRef: null };
@@ -185,7 +230,7 @@ export class SigmaHttpAdapter implements ProviderOpsPort {
             ? (input.payload["username"] as string).trim()
             : typeof input.payload["server_id"] === "undefined"
               ? null
-              : `sm-${input.entityId.slice(0, 8)}`;
+              : `sm-${input.entityId}`;
         if (username === null || username.length < 3) {
           return { outcome: "MANUAL", detail: "sigma: conflict requires operator", externalRef: null };
         }
@@ -212,7 +257,7 @@ export class SigmaHttpAdapter implements ProviderOpsPort {
       }
       if (response.status === 422) return { outcome: "FAILED", detail: "sigma: validation failed", externalRef: null };
       if (response.status === 404) return { outcome: "FAILED", detail: "sigma: customer not found", externalRef: null };
-      if (response.status >= 500) return { outcome: "UNKNOWN", detail: "sigma: response uncertain; verify before retry", externalRef: null };
+      if (response.status >= 500) return { outcome: "UNKNOWN", detail: "sigma: response uncertain; verify before retry", externalRef: isRenew && customerId !== null ? customerId : null, ...(isRenew && expiresBefore !== null ? { expiresBefore } : {}) };
       if (!response.ok) return { outcome: "FAILED", detail: "sigma: request rejected", externalRef: null };
       const result = record(await response.json());
       const returnedId = idOf(result["data"] ?? result);
@@ -224,23 +269,63 @@ export class SigmaHttpAdapter implements ProviderOpsPort {
         // re-read it by id instead of creating a duplicate client.
         return { outcome: "UNKNOWN", detail: "sigma: readback inconclusive; verify by id", externalRef: id };
       }
-      return { outcome: "SUCCEEDED", detail: "sigma: customer verified", externalRef: id };
+      const customer = getCustomerParsed(await verify.json());
+      const expectedServer = typeof input.payload["server_id"] === "string" ? input.payload["server_id"] : null;
+      const expectedPackage = typeof input.payload["package_id"] === "string" ? input.payload["package_id"] : null;
+      const valid = customer.id === id && (!isCreate || (customer.status === "ACTIVE" && customer.server_id === expectedServer && customer.package_id === expectedPackage));
+      if (!valid) return { outcome: "UNKNOWN", detail: "sigma: customer postcondition not proven", externalRef: id, ...(expiresBefore !== null ? { expiresBefore } : {}) };
+      if (isRenew && (validDate(expiresBefore) === null || validDate(customer.expires_at) === null || validDate(customer.expires_at)! <= validDate(expiresBefore)!)) {
+        return { outcome: "UNKNOWN", detail: "sigma: renewal postcondition not proven", externalRef: id, expiresBefore };
+      }
+      return { outcome: "SUCCEEDED", detail: "sigma: customer verified", externalRef: id, ...(expiresBefore !== null ? { expiresBefore } : {}) };
     } catch {
-      return { outcome: "UNKNOWN", detail: "sigma: response uncertain; verify before retry", externalRef: null };
+      return { outcome: "UNKNOWN", detail: "sigma: response uncertain; verify before retry", externalRef: customerId, ...(expiresBefore !== null ? { expiresBefore } : {}) };
     }
   }
 }
 
-/** Readback for uncertain ops: GET only, never re-executes. Stub returns INCONCLUSIVE until live-certified. */
+/** Readback for uncertain ops: GET only, never re-executes. */
 export class SigmaReadback implements ProviderReadbackPort {
   constructor(
     private readonly _resolveToken: SigmaTokenResolver,
     private readonly _fetcher: FetchLike = fetch,
   ) {}
   async verify(query: ReadbackQuery): Promise<ReadbackResult> {
-    void this._resolveToken;
-    void this._fetcher;
-    return { effectApplied: false, evidence: `sigma:INCONCLUSIVE:${query.operationId}`, conclusive: false };
+    if (!query.secretRef) return { effectApplied: false, evidence: `sigma:INCONCLUSIVE:${query.operationId}`, conclusive: false };
+    try {
+      const token = await this._resolveToken(query.secretRef);
+      const payload = query.payload ?? {};
+      const fallbackUsername = `sm-${query.entityId ?? query.operationId}`;
+      const externalId = query.externalRef ?? (typeof payload["username"] === "string" ? payload["username"] : null) ?? fallbackUsername;
+      const path = query.externalRef !== null ? `/customers/${encodeURIComponent(externalId)}` : `/customers/by-username/${encodeURIComponent(externalId)}`;
+      const response = await this._fetcher(`${SIGMA_BASE_URL}${path}`, { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
+      if (!response.ok) return { effectApplied: false, evidence: `sigma:INCONCLUSIVE:${query.operationId}`, conclusive: false };
+      const customer = getCustomerParsed(await response.json());
+      const hasServer = typeof payload["server_id"] === "string";
+      const hasPackage = typeof payload["package_id"] === "string";
+      if (customer.id === null) return { effectApplied: false, evidence: `sigma:INCONCLUSIVE:${query.operationId}`, conclusive: false };
+      if ((hasServer || hasPackage) && (customer.server_id !== payload["server_id"] || customer.package_id !== payload["package_id"])) {
+        return { effectApplied: false, evidence: `sigma:INCONCLUSIVE:${query.operationId}`, conclusive: false };
+      }
+      if (query.action === "subscription.provision" && query.externalRef === null && customer.status !== "ACTIVE") {
+        return { effectApplied: false, evidence: `sigma:INCONCLUSIVE:${query.operationId}`, conclusive: false };
+      }
+      // Fulfillment persists a renew as `subscription.provision` +
+      // `sigma_customer_id`, so renew proof (strictly later expires_at)
+      // applies to both the explicit renew action and that shape. Without
+      // a valid expiresBefore the GET only proves existence — never an
+      // extension — and stays inconclusive (converges HUMAN_REQUIRED).
+      const isRenewShape =
+        query.action === "subscription.renew" ||
+        (typeof payload["sigma_customer_id"] === "string" && (payload["sigma_customer_id"] as string).trim().length > 0);
+      if (isRenewShape || query.expiresBefore !== null) {
+        const before = validDate(query.expiresBefore ?? null), after = validDate(customer.expires_at);
+        if (before === null || after === null || after <= before) return { effectApplied: false, evidence: `sigma:INCONCLUSIVE:${query.operationId}`, conclusive: false };
+      }
+      return { effectApplied: true, evidence: `sigma:APPLIED:${query.operationId}`, conclusive: true, externalRef: customer.id };
+    } catch {
+      return { effectApplied: false, evidence: `sigma:INCONCLUSIVE:${query.operationId}`, conclusive: false };
+    }
   }
 }
 
@@ -288,10 +373,114 @@ export class SigmaUnconfiguredAdapter implements ProviderOpsPort {
   }
 }
 
-export function resolveSigmaPortFromEnv(secretsPort?: SecretsPort | null): ProviderOpsPort {
+export function resolveSigmaPortFromEnv(secretsPort?: SecretsPort | null, fetchFn?: FetchLike): ProviderOpsPort {
   const live = process.env["SIGMA_MODE"] === "live";
   if (!live || secretsPort == null || secretsPort.name.toLowerCase() === "noop") {
     return new SigmaUnconfiguredAdapter();
   }
-  return new SigmaHttpAdapter(defaultSigmaTokenResolver(secretsPort));
+  return new SigmaHttpAdapter(defaultSigmaTokenResolver(secretsPort), fetchFn ?? (globalThis.fetch as FetchLike));
+}
+
+/**
+ * Tenant-scoped factory: resolves the Sigma token through the shared
+ * Postgres-encrypted vault, isolated by tenant. No new vault, no token
+ * storage outside the existing mechanism.
+ */
+export function createTenantSigmaPorts(): {
+  secretsPort: (tenantId: string, executor?: Kysely<Database> | Transaction<Database>) => SecretsPort | null;
+  readback: (tenantId: string, executor?: Kysely<Database> | Transaction<Database>, fetchFn?: FetchLike) => ProviderReadbackPort | null;
+} {
+  return {
+    secretsPort: (tenantId, executor) => {
+      if (!isSecretsConfigured()) {
+        return null;
+      }
+      if (executor !== undefined) {
+        return tryCreatePostgresSecretsAdapter(executor, tenantId);
+      }
+      return null;
+    },
+    readback: (tenantId, executor, fetchFn) => {
+      const port = createTenantScopedSecretsPort(executor, tenantId);
+      if (port === null) return null;
+      return new SigmaReadback(defaultSigmaTokenResolver(port), fetchFn ?? (globalThis.fetch as FetchLike));
+    },
+  };
+}
+
+function createTenantScopedSecretsPort(
+  executor: Kysely<Database> | Transaction<Database> | undefined,
+  tenantId: string,
+): SecretsPort | null {
+  if (!isSecretsConfigured() || executor === undefined) {
+    return null;
+  }
+  return tryCreatePostgresSecretsAdapter(executor, tenantId);
+}
+
+/** Resolves the Sigma ops port for one tenant through the shared encrypted vault. No token storage outside the existing mechanism. */
+export function resolveTenantSigmaPortFromEnv(input: {
+  tenantId: string;
+  db?: Kysely<Database> | null;
+  trx?: Transaction<Database> | null;
+  overrideSecretsPort?: SecretsPort | null;
+  fetchFn?: FetchLike;
+}): ProviderOpsPort {
+  const secretsPort = input.overrideSecretsPort ?? (
+    input.trx != null
+      ? createTenantScopedSecretsPort(input.trx, input.tenantId)
+      : input.db != null
+        ? createDbBackedSecretPort(input.db, input.tenantId)
+        : null
+  );
+  return resolveSigmaPortFromEnv(secretsPort, input.fetchFn);
+}
+
+function createDbBackedSecretPort(db: Kysely<Database>, tenantId: string): SecretsPort | null {
+  if (!isSecretsConfigured()) {
+    return null;
+  }
+  return {
+    name: "postgres",
+    getSecret: async (ref: string) => {
+      const port = createTenantScopedSecretsPort(db, tenantId);
+      if (port === null) throw new Error("sigma secret store unavailable");
+      // The store itself enforces tenant isolation; wrapping in the tenant
+      // transaction also satisfies the RLS `tenant_isolation` policy on
+      // `platform.secret_values` for the `iptv_app` connection.
+      return withTenantTransaction(db, tenantId, async (trx) => {
+        const tenantPort = tryCreatePostgresSecretsAdapter(trx, tenantId);
+        if (tenantPort === null) throw new Error("sigma secret store unavailable");
+        return tenantPort.getSecret(ref);
+      });
+    },
+  };
+}
+
+/** Resolves the Sigma readback for one tenant through the shared encrypted vault; live only with SIGMA_MODE=live + configured vault, else the fail-closed stub. */
+export function resolveTenantSigmaReadbackFromEnv(input: {
+  tenantId: string;
+  db?: Kysely<Database> | null;
+  trx?: Transaction<Database> | null;
+  overrideSecretsPort?: SecretsPort | null;
+  fetchFn?: FetchLike;
+}): ProviderReadbackPort {
+  const live = process.env["SIGMA_MODE"] === "live";
+  const secretsPort = input.overrideSecretsPort ?? (
+    input.trx != null
+      ? createTenantScopedSecretsPort(input.trx, input.tenantId)
+      : input.db != null
+        ? createDbBackedSecretPort(input.db, input.tenantId)
+        : null
+  );
+  if (!live || secretsPort == null || secretsPort.name.toLowerCase() === "noop") {
+    return {
+      verify: async (query: ReadbackQuery) => ({
+        effectApplied: false,
+        evidence: `sigma:INCONCLUSIVE:${query.operationId}`,
+        conclusive: false,
+      }),
+    };
+  }
+  return new SigmaReadback(defaultSigmaTokenResolver(secretsPort), input.fetchFn ?? (globalThis.fetch as FetchLike));
 }

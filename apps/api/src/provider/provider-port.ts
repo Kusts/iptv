@@ -43,6 +43,7 @@ export interface AdapterResult {
   outcome: AdapterOutcome;
   detail: string;
   externalRef: string | null;
+  expiresBefore?: string | null;
 }
 
 export interface ProviderOpsPort {
@@ -224,6 +225,11 @@ export interface ReadbackQuery {
    */
   adapter?: string | null;
   adapterVersion?: string | null;
+  payload?: Record<string, unknown> | null;
+  providerAccountId?: string;
+  entityId?: string;
+  expiresBefore?: string | null;
+  secretRef?: string | null;
 }
 
 export interface ReadbackResult {
@@ -236,6 +242,14 @@ export interface ReadbackResult {
    * be coerced to applied/not-applied.
    */
   conclusive: boolean;
+  /**
+   * Sigma reconcile anchor: the customer id the readback observed when it
+   * resolved via `by-username` (no prior external_ref). Callers may persist
+   * it as the conclusive `external_ref` so the subscription applier can
+   * bind without inventing an id. Optional for backwards compatibility
+   * (stub/trial readbacks omit it).
+   */
+  externalRef?: string | null;
 }
 
 export interface ProviderReadbackPort {
@@ -367,4 +381,8 @@ export function raceGenericReadback(
 /**
  * Sigma Reseller adapter entry. provider-sigma imports this module with
  * `import type` only, so the value import above creates no runtime cycle.
+ * Live wiring resolves the token through the tenant-scoped `SecretsPort`
+ * configured by the caller (`resolveTenantSigmaPortFromEnv` in provider-sigma);
+ * without one the fail-closed `SigmaUnconfiguredAdapter` is returned and no
+ * HTTP is ever attempted.
  */
