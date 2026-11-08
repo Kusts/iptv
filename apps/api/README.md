@@ -270,7 +270,7 @@ factories), `api-cors.ts`, `request-id.ts`, `observability-hook.ts`,
   Each tick runs the worker-eligible `*_due` commands per tenant found by a
   platform-level due-scan (`trial.expire_due`, `order.expire_due`,
   `charge.expire_due`, `renewal.reminders_due`, `renewal.expire_overdue_due`,
-  `subscription.expire_cycles_due`, `fulfillment.retry_due` — commands stay
+  `subscription.expire_cycles_due`, `subscription.activate_pending_settled_orders`,\n  `fulfillment.retry_due` — commands stay
   tenant-scoped), drains deferred webhook rows
   (`WahaWebhookService.drainPending`, `AsaasWebhookService.drainPending`,
   limit 25 each), then drains the outbox (limit 25) so one tick converges.

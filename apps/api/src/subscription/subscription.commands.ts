@@ -151,7 +151,7 @@ async function derivePendingEntitlements(
   }
 }
 
-async function handleActivateFromOrder(
+export async function handleActivateFromOrder(
   ctx: CommandHandlerContext,
   input: ActivateFromOrderInput,
 ): Promise<CommandResult<{ id: string; status: string; already: boolean }>> {

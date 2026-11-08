@@ -55,6 +55,7 @@ const WORKER_COMMANDS = [
   "renewal.reminders_due",
   "renewal.expire_overdue_due",
   "subscription.expire_cycles_due",
+  "subscription.activate_pending_settled_orders",
   "fulfillment.retry_due",
 ] as const;
 

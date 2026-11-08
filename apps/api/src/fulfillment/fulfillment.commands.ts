@@ -31,7 +31,7 @@ import {
   latestProviderOperationForEntity,
   updateProviderOperation,
 } from "../trial/trial-store.js";
-import { activateSubscriptionInternal, openFulfillmentFailureReview } from "../subscription/subscription.commands.js";
+import { activateSubscriptionInternal, handleActivateFromOrder, openFulfillmentFailureReview } from "../subscription/subscription.commands.js";
 import {
   ensureFulfillmentProviderAccount,
   getCatalogPlan,
@@ -71,6 +71,11 @@ export const retryDueInput = z.object({
   echoOutcome: z.enum(["success", "failed", "unknown", "drift"]).optional(),
 });
 export type RetryDueInput = z.infer<typeof retryDueInput>;
+
+export const activatePendingSettledOrdersInput = z.object({
+  limit: z.number().int().min(1).max(1000).default(100),
+});
+export type ActivatePendingSettledOrdersInput = z.infer<typeof activatePendingSettledOrdersInput>;
 
 export interface FulfillmentCommandDeps {
   opsPort?: ProviderOpsPort;
@@ -852,6 +857,82 @@ function handleRetryDueFactory(deps: FulfillmentCommandDeps) {
   };
 }
 
+function handleActivatePendingSettledOrdersFactory(deps: FulfillmentCommandDeps) {
+  return async (
+    ctx: CommandHandlerContext,
+    input: ActivatePendingSettledOrdersInput,
+  ): Promise<CommandResult<{ activated: string[]; requested: string[] }>> => {
+    const trx = kyselyTrxOf(ctx);
+    if (trx === null) {
+      throw new Error("activate pending settled orders requires a database transaction");
+    }
+    const limit = input.limit ?? 100;
+    const activated: string[] = [];
+    const requested: string[] = [];
+
+    // Phase 1 — SETTLED NEW_SUBSCRIPTION orders without a linked subscription.
+    // Filter in SQL (not in-loop) so already-processed orders never starve
+    // newer eligible ones when they dominate the head of the scan.
+    const orders = await trx
+      .selectFrom("commerce.orders as o")
+      .leftJoin("subscription.subscriptions as s", (join) =>
+        join
+          .onRef("s.originating_order_id", "=", "o.id")
+          .on("s.tenant_id", "=", ctx.tenantId),
+      )
+      .select(["o.id"])
+      .where("o.tenant_id", "=", ctx.tenantId)
+      .where("o.status", "=", "SETTLED")
+      .where("o.order_type", "=", "NEW_SUBSCRIPTION")
+      .where("s.id", "is", null)
+      .orderBy("o.created_at", "asc")
+      .limit(limit)
+      .execute();
+    for (const row of orders) {
+      const orderId = row.id as string;
+      try {
+        const result = await handleActivateFromOrder(ctx, { orderId });
+        if (result.ok && result.data.already === false) {
+          activated.push(result.data.id);
+        }
+      } catch {
+        // not eligible (no PLAN line, etc.) — skip
+      }
+    }
+
+    // Phase 2 — PENDING_ACTIVATION subscriptions without an initial fulfillment op.
+    // Same SQL-level exclusion: subscriptions that already carry any provider
+    // operation must not consume the scan budget ahead of pending ones.
+    const subs = await trx
+      .selectFrom("subscription.subscriptions as sub")
+      .leftJoin("provider.provider_operations as op", (join) =>
+        join
+          .onRef("op.entity_id", "=", "sub.id")
+          .on("op.tenant_id", "=", ctx.tenantId)
+          .on("op.entity_type", "=", "subscription"),
+      )
+      .select(["sub.id"])
+      .where("sub.tenant_id", "=", ctx.tenantId)
+      .where("sub.status", "=", "PENDING_ACTIVATION")
+      .where("op.id", "is", null)
+      .orderBy("sub.created_at", "asc")
+      .limit(limit)
+      .execute();
+    for (const row of subs) {
+      try {
+        const result = await executeFulfillmentRequest(ctx, { subscriptionId: row.id as string }, deps);
+        if (result.ok) {
+          requested.push(row.id as string);
+        }
+      } catch {
+        // continue
+      }
+    }
+
+    return { ok: true, data: { activated, requested } };
+  };
+}
+
 export function registerFulfillmentCommands(bus: CommandBus, deps: FulfillmentCommandDeps = {}): void {
   bus.register<
     RequestFulfillmentInput,
@@ -871,6 +952,14 @@ export function registerFulfillmentCommands(bus: CommandBus, deps: FulfillmentCo
     auditResource: "provider_operation",
     input: retryDueInput,
     handler: handleRetryDueFactory(deps),
+  });
+  bus.register<ActivatePendingSettledOrdersInput, { activated: string[]; requested: string[] }>({
+    name: "subscription.activate_pending_settled_orders",
+    permission: "subscription.write",
+    auditAction: "subscription.activate_pending_settled_orders",
+    auditResource: "subscription",
+    input: activatePendingSettledOrdersInput,
+    handler: handleActivatePendingSettledOrdersFactory(deps),
   });
 }
 
