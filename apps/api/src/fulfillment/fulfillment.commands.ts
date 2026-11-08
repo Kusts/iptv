@@ -31,12 +31,14 @@ import {
   latestProviderOperationForEntity,
   updateProviderOperation,
 } from "../trial/trial-store.js";
-import { activateSubscriptionInternal, openFulfillmentFailureReview } from "../subscription/subscription.commands.js";
+import { activateSubscriptionInternal, handleActivateFromOrder, openFulfillmentFailureReview } from "../subscription/subscription.commands.js";
 import {
   ensureFulfillmentProviderAccount,
   getCatalogPlan,
   getSubscription,
+  getSubscriptionByOrder,
   insertProviderEvidence,
+  listSubscriptions,
   upsertSubscriptionBinding,
 } from "../subscription/subscription-store.js";
 
@@ -71,6 +73,11 @@ export const retryDueInput = z.object({
   echoOutcome: z.enum(["success", "failed", "unknown", "drift"]).optional(),
 });
 export type RetryDueInput = z.infer<typeof retryDueInput>;
+
+export const activatePendingSettledOrdersInput = z.object({
+  limit: z.number().int().min(1).max(1000).default(100),
+});
+export type ActivatePendingSettledOrdersInput = z.infer<typeof activatePendingSettledOrdersInput>;
 
 export interface FulfillmentCommandDeps {
   opsPort?: ProviderOpsPort;
@@ -852,6 +859,66 @@ function handleRetryDueFactory(deps: FulfillmentCommandDeps) {
   };
 }
 
+function handleActivatePendingSettledOrdersFactory(deps: FulfillmentCommandDeps) {
+  return async (
+    ctx: CommandHandlerContext,
+    input: ActivatePendingSettledOrdersInput,
+  ): Promise<CommandResult<{ activated: string[]; requested: string[] }>> => {
+    const trx = kyselyTrxOf(ctx);
+    if (trx === null) {
+      throw new Error("activate pending settled orders requires a database transaction");
+    }
+    const limit = input.limit ?? 100;
+    const activated: string[] = [];
+    const requested: string[] = [];
+
+    // Phase 1 — SETTLED NEW_SUBSCRIPTION orders without a linked subscription.
+    const orders = await trx
+      .selectFrom("commerce.orders")
+      .select(["id"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("status", "=", "SETTLED")
+      .where("order_type", "=", "NEW_SUBSCRIPTION")
+      .orderBy("created_at", "asc")
+      .limit(limit)
+      .execute();
+    for (const row of orders) {
+      const orderId = row.id as string;
+      const existing = await getSubscriptionByOrder(ctx, orderId);
+      if (existing !== null) {
+        continue;
+      }
+      try {
+        const result = await handleActivateFromOrder(ctx, { orderId });
+        if (result.ok && result.data.already === false) {
+          activated.push(result.data.id);
+        }
+      } catch {
+        // not eligible (no PLAN line, etc.) — skip
+      }
+    }
+
+    // Phase 2 — PENDING_ACTIVATION subscriptions without an initial fulfillment op.
+    const subs = await listSubscriptions(ctx, { status: "PENDING_ACTIVATION", limit });
+    for (const sub of subs) {
+      const latest = await latestProviderOperationForEntity(ctx, "subscription", sub.id);
+      if (latest !== null) {
+        continue;
+      }
+      try {
+        const result = await executeFulfillmentRequest(ctx, { subscriptionId: sub.id }, deps);
+        if (result.ok) {
+          requested.push(sub.id);
+        }
+      } catch {
+        // continue
+      }
+    }
+
+    return { ok: true, data: { activated, requested } };
+  };
+}
+
 export function registerFulfillmentCommands(bus: CommandBus, deps: FulfillmentCommandDeps = {}): void {
   bus.register<
     RequestFulfillmentInput,
@@ -871,6 +938,14 @@ export function registerFulfillmentCommands(bus: CommandBus, deps: FulfillmentCo
     auditResource: "provider_operation",
     input: retryDueInput,
     handler: handleRetryDueFactory(deps),
+  });
+  bus.register<ActivatePendingSettledOrdersInput, { activated: string[]; requested: string[] }>({
+    name: "subscription.activate_pending_settled_orders",
+    permission: "subscription.write",
+    auditAction: "subscription.activate_pending_settled_orders",
+    auditResource: "subscription",
+    input: activatePendingSettledOrdersInput,
+    handler: handleActivatePendingSettledOrdersFactory(deps),
   });
 }
 
