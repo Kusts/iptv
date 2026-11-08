@@ -118,6 +118,8 @@ services:
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     ports:
       - "127.0.0.1:3001:3001"
+    volumes:
+      - cinevision_api_profiles:/data/cinevision-profiles
     networks:
       - internal
     # Chromium (spawned by the API for CINEVISION reads) needs shared memory
@@ -285,3 +287,4 @@ networks:
 volumes:
   pgdata:
   worker_profile:
+  cinevision_api_profiles:
