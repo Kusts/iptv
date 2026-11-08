@@ -1203,7 +1203,7 @@ export class ProviderDispatcherService {
       return overrides.opsPort;
     }
     const recorded = op.requestedPayload["adapter"];
-    if (recorded === "echo" || recorded === "manual") {
+    if (recorded === "echo" || recorded === "manual" || recorded === "sigma") {
       return resolveOpsPort(recorded);
     }
     return resolveOpsPort(adapterNameFromEnv());

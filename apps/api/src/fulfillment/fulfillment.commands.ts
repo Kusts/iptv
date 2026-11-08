@@ -16,10 +16,10 @@ import {
 } from "../provider/provider-secret-gate.js";
 import {
   SECRET_REQUIRED_ADAPTER_VERSION,
-  adapterNameFromEnv,
   applyCapabilityGate,
   providerDispatchModeFromEnv,
   resolveOpsPort,
+  selectedAdapterNameFromEnv,
   type ProviderOpsPort,
 } from "../provider/provider-port.js";
 import {
@@ -59,14 +59,14 @@ import {
 
 export const requestFulfillmentInput = z.object({
   subscriptionId: z.string().uuid(),
-  adapter: z.enum(["echo", "manual"]).optional(),
+  adapter: z.enum(["echo", "manual", "sigma"]).optional(),
   echoOutcome: z.enum(["success", "failed", "unknown", "drift"]).optional(),
 });
 export type RequestFulfillmentInput = z.infer<typeof requestFulfillmentInput>;
 
 export const retryDueInput = z.object({
   limit: z.number().int().min(1).max(1000).default(100),
-  adapter: z.enum(["echo", "manual"]).optional(),
+  adapter: z.enum(["echo", "manual", "sigma"]).optional(),
   echoOutcome: z.enum(["success", "failed", "unknown", "drift"]).optional(),
 });
 export type RetryDueInput = z.infer<typeof retryDueInput>;
@@ -133,6 +133,42 @@ async function findExistingFulfillmentProviderAccountId(
   return existing?.id ?? null;
 }
 
+/** Sigma catalog binding: plan metadata wins; internal plan ids are never assumed equal to Sigma ids. */
+function sigmaIdsFromPlan(plan: { metadata: Record<string, unknown> }): {
+  serverId: string | null;
+  packageId: string | null;
+} {
+  const serverId = plan.metadata["sigma_server_id"] ?? plan.metadata["server_id"];
+  const packageId = plan.metadata["sigma_package_id"] ?? plan.metadata["package_id"];
+  return {
+    serverId: typeof serverId === "string" && serverId.trim().length > 0 ? serverId : null,
+    packageId: typeof packageId === "string" && packageId.trim().length > 0 ? packageId : null,
+  };
+}
+
+/** Existing provider external id (renew path): binding wins, never creates a duplicate client. */
+async function findSubscriptionExternalId(
+  ctx: CommandHandlerContext,
+  providerAccountId: string,
+  subscriptionId: string,
+): Promise<string | null> {
+  const trx = kyselyTrxOf(ctx);
+  if (trx === null) {
+    return null;
+  }
+  const row = await trx
+    .selectFrom("provider.provider_bindings")
+    .select(["external_id"])
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("provider_account_id", "=", providerAccountId)
+    .where("entity_type", "=", "subscription")
+    .where("entity_id", "=", subscriptionId)
+    .where("status", "=", "ACTIVE")
+    .executeTakeFirst();
+  const externalId = (row as { external_id: unknown } | undefined)?.external_id;
+  return typeof externalId === "string" && externalId.trim().length > 0 ? externalId : null;
+}
+
 async function executeFulfillmentRequest(
   ctx: CommandHandlerContext,
   input: RequestFulfillmentInput,
@@ -167,9 +203,8 @@ async function executeFulfillmentRequest(
     if (plan === null) {
       return { ok: false, code: "not_found", message: "catalog plan not found in this tenant" };
     }
-    const fallback: "echo" | "manual" =
-      deps.opsPort !== undefined ? (deps.opsPort.name === "echo" ? "echo" : "manual") : adapterNameFromEnv();
-    const requested: "echo" | "manual" = input.adapter ?? fallback;
+    const fallback = deps.opsPort?.name === "sigma" ? "sigma" : deps.opsPort !== undefined ? (deps.opsPort.name === "echo" ? "echo" : "manual") : selectedAdapterNameFromEnv();
+    const requested = input.adapter ?? fallback;
     const capability = await ctx.tx.getCapability("provider.cinevision");
     const { name: adapterName, note: capabilityNote } = applyCapabilityGate(requested, capability);
     // PF-05: an injected secret-requiring (future BROWSER) port bypasses the
@@ -178,7 +213,7 @@ async function executeFulfillmentRequest(
       deps.opsPort !== undefined && isSecretRequiringPort(deps.opsPort) ? deps.opsPort : null;
     const port =
       injectedSecretPort ??
-      (deps.opsPort !== undefined && (deps.opsPort.name === "echo") === (adapterName === "echo")
+      (deps.opsPort !== undefined && deps.opsPort.name === adapterName
         ? deps.opsPort
         : resolveOpsPort(adapterName));
     const secretRequired = isSecretRequiringPort(port);
@@ -215,6 +250,8 @@ async function executeFulfillmentRequest(
         requestedPayload: {
           plan_id: plan.id,
           plan_key: plan.planKey,
+          ...(sigmaIdsFromPlan(plan).serverId !== null ? { server_id: sigmaIdsFromPlan(plan).serverId } : {}),
+          ...(sigmaIdsFromPlan(plan).packageId !== null ? { package_id: sigmaIdsFromPlan(plan).packageId } : {}),
           customer_id: subscription.customerId,
           adapter: effectiveAdapter,
           capability: capabilityNote,
@@ -526,10 +563,12 @@ export async function applySubscriptionProvisionOutcome(
     return { status: "FAILED", subscriptionStatus: "PENDING_ACTIVATION", effectCertainty: "KNOWN_NOT_APPLIED" };
   }
   if (effectiveOutcome === "UNKNOWN") {
+    const unknownSummary =
+      projected.safeExternalRef !== null ? { external_ref: projected.safeExternalRef } : {};
     const claimed = await writeTerminal({
       status: "VERIFYING",
       effectCertainty: "UNKNOWN",
-      resultSummary: {},
+      resultSummary: unknownSummary,
       completed: false,
     });
     if (!claimed) {
@@ -564,7 +603,7 @@ async function executeSecretFulfillmentRequest(
   deps: FulfillmentCommandDeps,
   resolved: {
     subscription: { id: string; customerId: string };
-    plan: { id: string; planKey: string };
+    plan: { id: string; planKey: string; metadata: Record<string, unknown> };
     port: ProviderOpsPort;
     capabilityNote: string;
     effectiveAdapter: string;
@@ -591,6 +630,8 @@ async function executeSecretFulfillmentRequest(
     return { ok: false, code: "precondition_failed", message: gate.message };
   }
   const accountId = existingAccountId;
+  const sigmaIds = sigmaIdsFromPlan(plan);
+  const existingExternalId = await findSubscriptionExternalId(ctx, accountId, subscription.id);
   const attemptIndex = (await countProviderOperationsForEntity(ctx, "subscription", subscription.id)) + 1;
   const idempotencyKey = `subscription-provision:${subscription.id}:${attemptIndex}`;
   let operation;
@@ -604,6 +645,9 @@ async function executeSecretFulfillmentRequest(
       requestedPayload: {
         plan_id: plan.id,
         plan_key: plan.planKey,
+        ...(sigmaIds.serverId !== null ? { server_id: sigmaIds.serverId } : {}),
+        ...(sigmaIds.packageId !== null ? { package_id: sigmaIds.packageId } : {}),
+        ...(existingExternalId !== null ? { sigma_customer_id: existingExternalId } : {}),
         customer_id: subscription.customerId,
         adapter: effectiveAdapter,
         capability: capabilityNote,
@@ -660,8 +704,17 @@ async function executeSecretFulfillmentRequest(
       idempotencyKey,
       // CV-DSP-02-FIX F1: shared projection with the dispatcher — the port
       // frontier carries only certified fields (domain metadata such as
-      // `customer_id` stays on the persisted operation row).
-      payload: buildSubscriptionProvisionExternalPayload({ plan_id: plan.id, plan_key: plan.planKey }),
+      // `customer_id` stays on the persisted operation row). For Sigma the
+      // frontier additionally carries server_id/package_id from plan
+      // metadata and sigma_customer_id from the existing binding (renew
+      // path) — never the internal plan ids as Sigma ids.
+      payload: buildSubscriptionProvisionExternalPayload({
+        plan_id: plan.id,
+        plan_key: plan.planKey,
+        ...(sigmaIds.serverId !== null ? { server_id: sigmaIds.serverId } : {}),
+        ...(sigmaIds.packageId !== null ? { package_id: sigmaIds.packageId } : {}),
+        ...(existingExternalId !== null ? { sigma_customer_id: existingExternalId } : {}),
+      }),
       correlationId: ctx.correlationId,
       secretRef: gate.secretRef,
     });

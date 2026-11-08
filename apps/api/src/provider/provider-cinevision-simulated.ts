@@ -37,7 +37,12 @@ export type SimulatedWriteBehavior =
   | "failure"
   | "unknown"
   | "timeout"
-  | "no_authz";
+  | "no_authz"
+  | "exists"
+  | "credits"
+  | "permission"
+  | "unavailable"
+  | "uth";
 
 export interface SimulatedWriteAuditEntry {
   kind: "cinevision";
@@ -129,6 +134,15 @@ function behaviorResult(
         externalRef: null,
         simulated: true,
       };
+    case "credits":
+      return { outcome: "FAILED", detail: "cinevision: insufficient credits (SIMULATED)", externalRef: null, simulated: true };
+    case "permission":
+      return { outcome: "MANUAL", detail: "cinevision: permission required (SIMULATED)", externalRef: null, simulated: true };
+    case "unavailable":
+    case "uth":
+      return { outcome: "UNKNOWN", detail: "cinevision: verify before retry (SIMULATED)", externalRef: null, simulated: true };
+    case "exists":
+      return { outcome: "SUCCEEDED", detail: "cinevision: existing customer verified (SIMULATED)", externalRef: `cinevision-sim-${input.entityType}-${input.entityId}`, simulated: true };
   }
 }
 

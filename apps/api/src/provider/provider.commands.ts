@@ -8,10 +8,10 @@ import { emitAndEnqueue, kyselyTrxOf } from "../crm/wave2-store.js";
 import {
   StubProviderReadback,
   SECRET_REQUIRED_ADAPTER_VERSION,
-  adapterNameFromEnv,
   applyCapabilityGate,
   providerDispatchModeFromEnv,
   resolveOpsPort,
+  selectedAdapterNameFromEnv,
   type ProviderOpsPort,
   type ProviderReadbackPort,
 } from "./provider-port.js";
@@ -105,7 +105,7 @@ export const requestOperationInput = z.object({
   entityId: z.string().uuid(),
   idempotencyKey: z.string().trim().min(1).max(200),
   payload: z.record(z.string(), z.unknown()).default({}),
-  adapter: z.enum(["echo", "manual"]).optional(),
+  adapter: z.enum(["echo", "manual", "sigma"]).optional(),
   echoOutcome: z.enum(["success", "failed", "unknown"]).optional(),
 });
 
@@ -740,6 +740,10 @@ export async function applySecretPortOutcome(
     return { status: "FAILED", effectCertainty: "KNOWN_NOT_APPLIED" };
   }
   if (effectiveOutcome === "UNKNOWN") {
+    // Preserve a valid external ref (e.g. Sigma created customer but
+    // confirm GET failed) so reconciliation can re-read by id.
+    const unknownSummary =
+      projected.safeExternalRef !== null ? { external_ref: projected.safeExternalRef } : {};
     if (fence !== undefined && kyselyTrxOf(ctx) !== null) {
       const claimed = await fencedSecretOutcomeUpdate(
         ctx,
@@ -749,7 +753,7 @@ export async function applySecretPortOutcome(
           status: "VERIFYING",
           effectCertainty: "UNKNOWN",
           executionChannel: "MANUAL",
-          resultSummary: {},
+          resultSummary: unknownSummary,
           started: true,
           completed: false,
         },
@@ -764,7 +768,7 @@ export async function applySecretPortOutcome(
       status: "VERIFYING",
       effectCertainty: "UNKNOWN",
       executionChannel: "MANUAL",
-      resultSummary: {},
+      resultSummary: unknownSummary,
       started: true,
     });
     await insertProviderAttempt(ctx, { operationId: input.operationId, status: "VERIFYING", errorCode: "EFFECT_UNKNOWN" });
@@ -806,13 +810,11 @@ function handleRequestFactory(deps: ProviderCommandDeps) {
     ctx: CommandHandlerContext,
     input: RequestOperationInput,
   ): Promise<CommandResult<{ id: string; status: string; effectCertainty: string }>> => {
-    const fallback: "echo" | "manual" =
+    const fallback =
       deps.opsPort !== undefined
-        ? deps.opsPort.name === "echo"
-          ? "echo"
-          : "manual"
-        : adapterNameFromEnv();
-    const requested: "echo" | "manual" = input.adapter ?? fallback;
+        ? deps.opsPort.name === "sigma" ? "sigma" : deps.opsPort.name === "echo" ? "echo" : "manual"
+        : selectedAdapterNameFromEnv();
+    const requested = input.adapter ?? fallback;
     const capability = await ctx.tx.getCapability("provider.cinevision");
     const { name: adapterName, note: capabilityNote } = applyCapabilityGate(requested, capability);
     // PF-05: an injected secret-requiring (future BROWSER) port bypasses the
@@ -822,7 +824,7 @@ function handleRequestFactory(deps: ProviderCommandDeps) {
       deps.opsPort !== undefined && isSecretRequiringPort(deps.opsPort) ? deps.opsPort : null;
     const port =
       injectedSecretPort ??
-      (deps.opsPort !== undefined && (deps.opsPort.name === "echo") === (adapterName === "echo")
+      (deps.opsPort !== undefined && deps.opsPort.name === adapterName
         ? deps.opsPort
         : resolveOpsPort(adapterName));
     const secretRequired = isSecretRequiringPort(port);

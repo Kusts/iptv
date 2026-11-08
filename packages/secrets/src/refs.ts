@@ -46,7 +46,7 @@ export const SECRET_STAGED_SUFFIX = "__next";
 /** Exact secret keys each provider may store (no free-form keys). */
 const INTEGRATION_SECRET_KEYS: Record<IntegrationProvider, readonly string[]> = {
   asaas: ["ASAAS_API_KEY", "ASAAS_WEBHOOK_TOKEN"],
-  cinevision: ["CINEVISION_USER", "CINEVISION_PASS"],
+  cinevision: ["CINEVISION_USER", "CINEVISION_PASS", "CINEVISION_RESELLER_API_TOKEN"],
   whatsapp: ["WAHA_WEBHOOK_SECRET"],
 };
 
