@@ -222,12 +222,13 @@ export function stripSecretKeysFromPayload(payload: Record<string, unknown>): Re
  * phase (Fase 7+). No surface added here releases `subscription.provision`
  * beyond what the global row already governs.
  */
-export const SECRET_REQUIRED_ALLOWED_ACTIONS = ["trial.provision", "subscription.provision"] as const;
+export const SECRET_REQUIRED_ALLOWED_ACTIONS = ["trial.provision", "subscription.provision", "subscription.renew"] as const;
 export type SecretRequiredAction = (typeof SECRET_REQUIRED_ALLOWED_ACTIONS)[number];
 
 const SECRET_REQUIRED_ENTITY: Record<SecretRequiredAction, string> = {
   "trial.provision": "trial",
   "subscription.provision": "subscription",
+  "subscription.renew": "subscription",
 };
 
 /** Normalized suspicious key fragments (casing/separator-insensitive). */
@@ -373,14 +374,16 @@ function isFiniteNumber(value: unknown): value is number {
 /**
  * Restrictive contract for the secret-required path.
  *
- * - `action` must be exactly `trial.provision` or `subscription.provision`
- *   (case-sensitive; no aliases), with the matching `entityType`.
+ * - `action` must be exactly `trial.provision`, `subscription.provision` or
+ *   `subscription.renew` (case-sensitive; no aliases), with the matching
+ *   `entityType`.
  * - `payload` is projected by allowlist and rejected on ANY unknown key,
  *   ANY nested object/array, ANY suspicious key at any depth, or ANY
  *   ref-like string value. Allowed shapes mirror what the internal
  *   trial/fulfillment callers actually send:
  *   - `trial.provision`: `{ duration_minutes?: number, adult_content_enabled?: boolean }`
- *   - `subscription.provision`: `{ plan_id?: string, plan_key?: string }`
+ *   - `subscription.provision`: `{ plan_id?: string, plan_key?: string, server_id?: string, package_id?: string, sigma_customer_id?: string, username?: string }`
+ *   - `subscription.renew`: `{ sigma_customer_id: string, server_id?: string, package_id?: string, plan_id?: string, plan_key?: string }`
  */
 export function validateSecretRequestShape(input: {
   action: string;
@@ -388,7 +391,7 @@ export function validateSecretRequestShape(input: {
   payload: Record<string, unknown>;
 }): { ok: true; projectedPayload: Record<string, unknown> } | { ok: false; message: string } {
   const action = input.action;
-  if (action !== "trial.provision" && action !== "subscription.provision") {
+  if (action !== "trial.provision" && action !== "subscription.provision" && action !== "subscription.renew") {
     return { ok: false, message: SECRET_REQUEST_REJECTED_MESSAGE };
   }
   if (input.entityType !== SECRET_REQUIRED_ENTITY[action]) {
@@ -420,7 +423,7 @@ export function validateSecretRequestShape(input: {
     return { ok: true, projectedPayload: projected };
   }
   for (const [key, value] of Object.entries(input.payload)) {
-    if (key === "plan_id" || key === "plan_key") {
+    if (["plan_id", "plan_key", "server_id", "package_id", "sigma_customer_id", "username"].includes(key)) {
       if (typeof value !== "string" || value.trim().length === 0 || value.length > 200) {
         return { ok: false, message: SECRET_REQUEST_REJECTED_MESSAGE };
       }
@@ -467,6 +470,17 @@ export function buildSubscriptionProvisionExternalPayload(
   if (source["plan_key"] !== undefined) {
     out["plan_key"] = source["plan_key"];
   }
+  for (const key of ["server_id", "package_id", "sigma_customer_id", "username"]) {
+    if (source[key] !== undefined) out[key] = source[key];
+  }
+  return out;
+}
+
+export function buildSubscriptionRenewExternalPayload(source: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of ["plan_id", "plan_key", "server_id", "package_id", "sigma_customer_id", "username"]) {
+    if (source[key] !== undefined) out[key] = source[key];
+  }
   return out;
 }
 
@@ -489,6 +503,9 @@ export function buildDispatchPortPayload(
   }
   if (action === "subscription.provision") {
     return buildSubscriptionProvisionExternalPayload(rest);
+  }
+  if (action === "subscription.renew") {
+    return buildSubscriptionRenewExternalPayload(rest);
   }
   return stripSecretKeysFromPayload(rest);
 }
@@ -686,7 +703,19 @@ export interface ProjectedSecretPortResult {
   outcome: string;
   safeDetail: string;
   safeExternalRef: string | null;
+  safeExpiresBefore: string | null;
   externalRefInvalid: boolean;
+}
+
+function safeIsoDateTime(raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.trim().length === 0 || raw.length > 64) {
+    return null;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(raw)) {
+    return null;
+  }
+  const time = Date.parse(raw);
+  return Number.isFinite(time) ? raw : null;
 }
 
 /**
@@ -701,11 +730,13 @@ export function projectSecretPortResult(input: {
   outcome: string;
   detail: string;
   externalRef: string | null;
+  expiresBefore?: string | null;
 }): ProjectedSecretPortResult {
   const safeDetail = SAFE_PORT_DETAIL[input.outcome] ?? "secret-required operation completed";
+  const safeExpiresBefore = safeIsoDateTime(input.expiresBefore);
   const raw = input.externalRef;
   if (raw === null) {
-    return { outcome: input.outcome, safeDetail, safeExternalRef: null, externalRefInvalid: false };
+    return { outcome: input.outcome, safeDetail, safeExternalRef: null, safeExpiresBefore, externalRefInvalid: false };
   }
   const invalid =
     typeof raw !== "string" ||
@@ -717,7 +748,7 @@ export function projectSecretPortResult(input: {
     isSuspiciousKey(raw) ||
     containsRefValue(raw);
   if (invalid) {
-    return { outcome: input.outcome, safeDetail, safeExternalRef: null, externalRefInvalid: true };
+    return { outcome: input.outcome, safeDetail, safeExternalRef: null, safeExpiresBefore, externalRefInvalid: true };
   }
-  return { outcome: input.outcome, safeDetail, safeExternalRef: raw, externalRefInvalid: false };
+  return { outcome: input.outcome, safeDetail, safeExternalRef: raw, safeExpiresBefore, externalRefInvalid: false };
 }

@@ -8,11 +8,16 @@
  * - `ManualProviderOpsAdapter`: parks the operation in `HUMAN_REQUIRED`;
  *   a provider operator resolves it later via `provider.resolve_operation`.
  *
- * Selection: `PROVIDER_OPS_ADAPTER=echo|manual` (default `manual`); a
+ * Selection: `PROVIDER_OPS_ADAPTER=echo|manual|sigma` (default `manual`); a
  * per-command `adapter` input overrides the env for that call (test seam).
  * When the `provider.cinevision` capability row exists and is UNAVAILABLE,
  * callers force MANUAL regardless of the requested adapter.
+ * `sigma` resolves via `resolveSigmaPortFromEnv`: fail-closed unconfigured
+ * (MANUAL) by default; live HTTP only with SIGMA_MODE=live plus an injected
+ * SecretsPort (see provider-sigma.ts).
  */
+
+import { resolveSigmaPortFromEnv } from "./provider-sigma.js";
 
 export interface ProviderOperationRequest {
   tenantId: string;
@@ -38,6 +43,7 @@ export interface AdapterResult {
   outcome: AdapterOutcome;
   detail: string;
   externalRef: string | null;
+  expiresBefore?: string | null;
 }
 
 export interface ProviderOpsPort {
@@ -99,8 +105,15 @@ export class ManualProviderOpsAdapter implements ProviderOpsPort {
   }
 }
 
+export type ProviderAdapterName = "echo" | "manual" | "sigma";
+
 export function adapterNameFromEnv(): "echo" | "manual" {
   return process.env["PROVIDER_OPS_ADAPTER"] === "echo" ? "echo" : "manual";
+}
+
+export function selectedAdapterNameFromEnv(): ProviderAdapterName {
+  const value = process.env["PROVIDER_OPS_ADAPTER"];
+  return value === "echo" || value === "sigma" ? value : "manual";
 }
 
 /**
@@ -149,8 +162,15 @@ export function providerDispatchLeaseMsFromEnv(env: NodeJS.ProcessEnv = process.
   return Math.min(Math.floor(raw), 3_600_000);
 }
 
-export function resolveOpsPort(name: "echo" | "manual"): ProviderOpsPort {
-  return name === "echo" ? new EchoProviderOpsAdapter() : new ManualProviderOpsAdapter();
+export function resolveOpsPort(name: ProviderAdapterName): ProviderOpsPort {
+  if (name === "echo") return new EchoProviderOpsAdapter();
+  if (name === "sigma") {
+    // Fail-closed without a SecretsPort: unconfigured MANUAL, no network.
+    // Live HTTP requires SIGMA_MODE=live + injected SecretsPort via
+    // resolveSigmaPortFromEnv / dispatcher overrides (see provider-sigma.ts).
+    return resolveSigmaPortFromEnv();
+  }
+  return new ManualProviderOpsAdapter();
 }
 
 export interface CapabilityGate {
@@ -165,9 +185,9 @@ export interface CapabilityGate {
  * state is recorded as provenance.
  */
 export function applyCapabilityGate(
-  requested: "echo" | "manual",
+  requested: ProviderAdapterName,
   capability: CapabilityGate | null,
-): { name: "echo" | "manual"; note: string } {
+): { name: ProviderAdapterName; note: string } {
   if (capability === null) {
     return { name: requested, note: "capability_not_catalogued" };
   }
@@ -205,6 +225,11 @@ export interface ReadbackQuery {
    */
   adapter?: string | null;
   adapterVersion?: string | null;
+  payload?: Record<string, unknown> | null;
+  providerAccountId?: string;
+  entityId?: string;
+  expiresBefore?: string | null;
+  secretRef?: string | null;
 }
 
 export interface ReadbackResult {
@@ -217,6 +242,14 @@ export interface ReadbackResult {
    * be coerced to applied/not-applied.
    */
   conclusive: boolean;
+  /**
+   * Sigma reconcile anchor: the customer id the readback observed when it
+   * resolved via `by-username` (no prior external_ref). Callers may persist
+   * it as the conclusive `external_ref` so the subscription applier can
+   * bind without inventing an id. Optional for backwards compatibility
+   * (stub/trial readbacks omit it).
+   */
+  externalRef?: string | null;
 }
 
 export interface ProviderReadbackPort {
@@ -345,3 +378,11 @@ export function raceGenericReadback(
       );
   });
 }
+/**
+ * Sigma Reseller adapter entry. provider-sigma imports this module with
+ * `import type` only, so the value import above creates no runtime cycle.
+ * Live wiring resolves the token through the tenant-scoped `SecretsPort`
+ * configured by the caller (`resolveTenantSigmaPortFromEnv` in provider-sigma);
+ * without one the fail-closed `SigmaUnconfiguredAdapter` is returned and no
+ * HTTP is ever attempted.
+ */

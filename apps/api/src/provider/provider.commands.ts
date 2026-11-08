@@ -8,10 +8,10 @@ import { emitAndEnqueue, kyselyTrxOf } from "../crm/wave2-store.js";
 import {
   StubProviderReadback,
   SECRET_REQUIRED_ADAPTER_VERSION,
-  adapterNameFromEnv,
   applyCapabilityGate,
   providerDispatchModeFromEnv,
   resolveOpsPort,
+  selectedAdapterNameFromEnv,
   type ProviderOpsPort,
   type ProviderReadbackPort,
 } from "./provider-port.js";
@@ -57,6 +57,7 @@ import {
   type TrialReadbackResult,
 } from "../trial/trial-readback.js";
 import { resumeLinkedSubscription } from "../subscription/subscription.commands.js";
+import { resolveTenantSigmaPortFromEnv } from "./provider-sigma.js";
 
 /**
  * Wave 4 Provider Operation commands (owning context for ProviderOperation).
@@ -105,7 +106,7 @@ export const requestOperationInput = z.object({
   entityId: z.string().uuid(),
   idempotencyKey: z.string().trim().min(1).max(200),
   payload: z.record(z.string(), z.unknown()).default({}),
-  adapter: z.enum(["echo", "manual"]).optional(),
+  adapter: z.enum(["echo", "manual", "sigma"]).optional(),
   echoOutcome: z.enum(["success", "failed", "unknown"]).optional(),
 });
 
@@ -487,7 +488,7 @@ async function handleSecretRequest(
     action: input.action,
     entityType: input.entityType,
     entityId: input.entityId,
-    raw: { outcome: raw.outcome, detail: raw.detail, externalRef: raw.externalRef },
+    raw: { outcome: raw.outcome, detail: raw.detail, externalRef: raw.externalRef, expiresBefore: raw.expiresBefore ?? null },
   });
   if (applied === null) {
     throw new Error("secret outcome applier lost its own inline row");
@@ -520,7 +521,7 @@ export interface SecretPortOutcomeInput {
   action: string;
   entityType: string;
   entityId: string;
-  raw: { outcome: string; detail: string; externalRef: string | null };
+  raw: { outcome: string; detail: string; externalRef: string | null; expiresBefore?: string | null };
   /**
    * FASE5-S6 (SPEC §25): the already-obtained READ_CUSTOMER readback for a
    * secret-required `trial.provision` SUCCEEDED, resolved by the caller
@@ -646,6 +647,8 @@ export async function applySecretPortOutcome(
   const projected = projectSecretPortResult(input.raw);
   const effectiveOutcome =
     projected.externalRefInvalid && projected.outcome === "SUCCEEDED" ? "UNKNOWN" : projected.outcome;
+  const sigmaSummary = (base: Record<string, unknown>): Record<string, unknown> =>
+    projected.safeExpiresBefore !== null ? { ...base, sigma_expires_before: projected.safeExpiresBefore } : base;
   if (effectiveOutcome === "SUCCEEDED") {
     if (fence !== undefined && kyselyTrxOf(ctx) !== null) {
       const claimed = await fencedSecretOutcomeUpdate(
@@ -656,8 +659,9 @@ export async function applySecretPortOutcome(
           status: "SUCCEEDED",
           effectCertainty: "KNOWN_APPLIED",
           executionChannel: "MANUAL",
-          resultSummary:
+          resultSummary: sigmaSummary(
             projected.safeExternalRef !== null ? { external_ref: projected.safeExternalRef } : {},
+          ),
           started: true,
           completed: true,
         },
@@ -678,8 +682,9 @@ export async function applySecretPortOutcome(
       status: "SUCCEEDED",
       effectCertainty: "KNOWN_APPLIED",
       executionChannel: "MANUAL",
-      resultSummary:
+      resultSummary: sigmaSummary(
         projected.safeExternalRef !== null ? { external_ref: projected.safeExternalRef } : {},
+      ),
       started: true,
       completed: true,
     });
@@ -740,6 +745,11 @@ export async function applySecretPortOutcome(
     return { status: "FAILED", effectCertainty: "KNOWN_NOT_APPLIED" };
   }
   if (effectiveOutcome === "UNKNOWN") {
+    // Preserve a valid external ref (e.g. Sigma created customer but
+    // confirm GET failed) so reconciliation can re-read by id.
+    const unknownSummary = sigmaSummary(
+      projected.safeExternalRef !== null ? { external_ref: projected.safeExternalRef } : {},
+    );
     if (fence !== undefined && kyselyTrxOf(ctx) !== null) {
       const claimed = await fencedSecretOutcomeUpdate(
         ctx,
@@ -749,7 +759,7 @@ export async function applySecretPortOutcome(
           status: "VERIFYING",
           effectCertainty: "UNKNOWN",
           executionChannel: "MANUAL",
-          resultSummary: {},
+          resultSummary: unknownSummary,
           started: true,
           completed: false,
         },
@@ -764,7 +774,7 @@ export async function applySecretPortOutcome(
       status: "VERIFYING",
       effectCertainty: "UNKNOWN",
       executionChannel: "MANUAL",
-      resultSummary: {},
+      resultSummary: unknownSummary,
       started: true,
     });
     await insertProviderAttempt(ctx, { operationId: input.operationId, status: "VERIFYING", errorCode: "EFFECT_UNKNOWN" });
@@ -806,13 +816,11 @@ function handleRequestFactory(deps: ProviderCommandDeps) {
     ctx: CommandHandlerContext,
     input: RequestOperationInput,
   ): Promise<CommandResult<{ id: string; status: string; effectCertainty: string }>> => {
-    const fallback: "echo" | "manual" =
+    const fallback =
       deps.opsPort !== undefined
-        ? deps.opsPort.name === "echo"
-          ? "echo"
-          : "manual"
-        : adapterNameFromEnv();
-    const requested: "echo" | "manual" = input.adapter ?? fallback;
+        ? deps.opsPort.name === "sigma" ? "sigma" : deps.opsPort.name === "echo" ? "echo" : "manual"
+        : selectedAdapterNameFromEnv();
+    const requested = input.adapter ?? fallback;
     const capability = await ctx.tx.getCapability("provider.cinevision");
     const { name: adapterName, note: capabilityNote } = applyCapabilityGate(requested, capability);
     // PF-05: an injected secret-requiring (future BROWSER) port bypasses the
@@ -822,9 +830,11 @@ function handleRequestFactory(deps: ProviderCommandDeps) {
       deps.opsPort !== undefined && isSecretRequiringPort(deps.opsPort) ? deps.opsPort : null;
     const port =
       injectedSecretPort ??
-      (deps.opsPort !== undefined && (deps.opsPort.name === "echo") === (adapterName === "echo")
+      (deps.opsPort !== undefined && deps.opsPort.name === adapterName
         ? deps.opsPort
-        : resolveOpsPort(adapterName));
+        : adapterName === "sigma"
+          ? resolveTenantSigmaPortFromEnv({ tenantId: ctx.tenantId, trx: kyselyTrxOf(ctx), overrideSecretsPort: deps.secretsPort ?? null })
+          : resolveOpsPort(adapterName));
     const secretRequired = isSecretRequiringPort(port);
     // Capability UNAVAILABLE wins over injection: never call the port and
     // never create a REQUESTED operation on the secret-required path.
@@ -1277,18 +1287,38 @@ export function decideVerifyingTrialReconcile(
     return { kind: "converge-human-required" };
   }
   if (!observed.effectApplied) {
-    // FIX4-N5: no identity anchor → the readback cannot be tied to THIS
-    // operation's external effect; "not applied" is not proof. Converge to
-    // HUMAN_REQUIRED - never an automatic re-arm for a second real write.
-    if (anchor.externalRef === null) {
-      return { kind: "converge-human-required" };
-    }
-    return { kind: "fail-not-applied" };
+    return anchor.externalRef === null ? { kind: "converge-human-required" } : { kind: "fail-not-applied" };
   }
   if (trialReadback === null || trialReadback.conclusive !== true || trialReadback.customer === null) {
     return { kind: "converge-human-required" };
   }
   return { kind: "gate-succeeded", trialReadback };
+}
+
+/**
+ * Sigma subscription reconcile decision (pure): inconclusive -> converge
+ * HUMAN_REQUIRED, conclusive NOT_APPLIED with anchor -> FAILED, without
+ * anchor -> converge (never auto re-arm a second write), APPLIED -> gate
+ * (subscription applier owns binding/activation). Mirrors the trial shape
+ * without the second readback gate (SigmaReadback already proves the
+ * postcondition with GET only).
+ */
+export type VerifyingSubscriptionReconcileDecision =
+  | { kind: "converge-human-required" }
+  | { kind: "fail-not-applied" }
+  | { kind: "gate-succeeded" };
+
+export function decideVerifyingSubscriptionReconcile(
+  observed: { conclusive: boolean; effectApplied: boolean },
+  anchor: { externalRef: string | null },
+): VerifyingSubscriptionReconcileDecision {
+  if (observed.conclusive !== true) {
+    return { kind: "converge-human-required" };
+  }
+  if (!observed.effectApplied) {
+    return anchor.externalRef === null ? { kind: "converge-human-required" } : { kind: "fail-not-applied" };
+  }
+  return { kind: "gate-succeeded" };
 }
 
 function handleReconcileFactory(deps: ProviderCommandDeps) {
@@ -1340,8 +1370,9 @@ function handleReconcileFactory(deps: ProviderCommandDeps) {
     // convenience); other secret-required actions keep their existing path.
     if (
       isSecretRequiredRow(operation) &&
-      operation.action === "trial.provision" &&
-      operation.entityType === "trial"
+      ((operation.action === "trial.provision" && operation.entityType === "trial") ||
+        operation.action === "subscription.provision" ||
+        operation.action === "subscription.renew")
     ) {
       return {
         ok: true,

@@ -5,7 +5,7 @@ import { newId } from "@iptv/domain";
 import type { SecretsPort } from "@iptv/secrets";
 import type { CommandHandlerContext, DbPort } from "../commands/command-bus.js";
 import { kyselyTrxOf } from "../crm/wave2-store.js";
-import { applySecretPortOutcome, decideVerifyingTrialReconcile } from "./provider.commands.js";
+import { applySecretPortOutcome, decideVerifyingSubscriptionReconcile, decideVerifyingTrialReconcile } from "./provider.commands.js";
 import { applyTrialProvisionOutcome } from "../trial/trial.commands.js";
 import { applySubscriptionProvisionOutcome } from "../fulfillment/fulfillment.commands.js";
 import { applyAppLicensePurchaseOutcome } from "../inventory/license.commands.js";
@@ -39,6 +39,7 @@ import {
   insertProviderAttempt,
 } from "../trial/trial-store.js";
 import { StubTrialReadback, raceTrialReadback, trialReadbackTimeoutMsFromEnv, type TrialReadbackPort, type TrialReadbackResult } from "../trial/trial-readback.js";
+import { resolveTenantSigmaPortFromEnv, resolveTenantSigmaReadbackFromEnv } from "./provider-sigma.js";
 
 /**
  * Durable post-commit provider dispatch (CV-DSP-01, migration 045;
@@ -130,6 +131,15 @@ export interface ProviderDispatcherOverrides {
    * as the sibling budgets).
    */
   genericReadbackTimeoutMs?: number;
+  /** Optional fetch injection for Sigma (test seam; global fetch in production). */
+  sigmaFetch?: typeof fetch;
+  /**
+   * Tenant-scoped SecretsPort factory for Sigma live resolution. Production
+   * default builds the Postgres port from the dispatcher pool without a
+   * transaction and wraps reads in `withTenantTransaction` for RLS. Tests
+   * inject a fake port or fetch and never touch the vault.
+   */
+  createSigmaSecretsPort?: (tenantId: string) => SecretsPort | null;
   /**
    * FASE5-S6 (SPEC §25) test seam: readback port consulted after a
    * secret-required `trial.provision` SUCCEEDED, BEFORE the Phase-3 fenced
@@ -345,6 +355,7 @@ export function racePortCall(
 const DISPATCH_APPLIERS: Record<string, "trial" | "subscription" | "license" | "provider"> = {
   "trial.provision": "trial",
   "subscription.provision": "subscription",
+  "subscription.renew": "subscription",
   "app_license.purchase": "license",
 };
 
@@ -655,12 +666,15 @@ export class ProviderDispatcherService {
       tenantId: string;
       providerAccountId: string;
       entityId: string;
+      action: string | null;
+      entityType: string | null;
       requestedPayload: unknown;
       adapterVersion: string | null;
       resultSummary: unknown;
     }>`
       SELECT o_operation_id AS id, o_tenant_id AS "tenantId",
         o_provider_account_id AS "providerAccountId", o_entity_id AS "entityId",
+        o_action AS "action", o_entity_type AS "entityType",
         o_requested_payload AS "requestedPayload",
         o_adapter_version AS "adapterVersion",
         o_result_summary AS "resultSummary"
@@ -675,17 +689,135 @@ export class ProviderDispatcherService {
     const trialReadbackTimeoutMs = overrides.trialReadbackTimeoutMs ?? trialReadbackTimeoutMsFromEnv();
     for (const row of candidates.rows) {
       summary.checked += 1;
-      // ---- Phase A (NO transaction): bounded observations. --------------
-      // Both awaits sit OUTSIDE any `withTransaction` callback — no DB
-      // transaction is held open during provider I/O (reviewer invariant) —
-      // and BOTH carry a finite budget (SPEC §35): a hanging generic
-      // verify resolves to inconclusive instead of wedging the scheduler
-      // tick or the admin drain.
       const requestedPayload = asRecord(row.requestedPayload);
       const resultSummary = asRecord(row.resultSummary);
       const externalRef = typeof resultSummary["external_ref"] === "string"
         ? (resultSummary["external_ref"] as string)
         : null;
+      const expiresBefore = typeof resultSummary["sigma_expires_before"] === "string"
+        ? (resultSummary["sigma_expires_before"] as string)
+        : null;
+      const rowAction = typeof row.action === "string" && row.action.length > 0 ? row.action : "trial.provision";
+      const rowEntityType = typeof row.entityType === "string" && row.entityType.length > 0 ? row.entityType : "trial";
+      const isSubscription = (rowAction === "subscription.provision" || rowAction === "subscription.renew") && rowEntityType === "subscription";
+      if (isSubscription) {
+        // ---- Phase A (NO transaction): Sigma GET-only readback. ----
+        let reconcileSecretRef: string | null = null;
+        try {
+          if (overrides.loadSecretRef !== undefined) {
+            reconcileSecretRef = await overrides.loadSecretRef(row.tenantId, row.providerAccountId);
+          } else {
+            const loaded = await withTenantTransaction(db, row.tenantId, (trx) =>
+              trx
+                .selectFrom("provider.provider_accounts")
+                .select(["secret_ref"])
+                .where("tenant_id", "=", row.tenantId)
+                .where("id", "=", row.providerAccountId)
+                .executeTakeFirst(),
+            );
+            const candidate = (loaded as { secret_ref: unknown } | undefined)?.secret_ref;
+            reconcileSecretRef = typeof candidate === "string" ? candidate : null;
+          }
+        } catch {
+          reconcileSecretRef = null;
+        }
+        if (validateSecretRefFormat(reconcileSecretRef).ok !== true) {
+          reconcileSecretRef = null;
+        }
+        const overrideSecrets = overrides.createSigmaSecretsPort?.(row.tenantId) ?? overrides.secretsPort ?? null;
+        const sigmaReadback = overrides.readbackPort ?? resolveTenantSigmaReadbackFromEnv({
+          tenantId: row.tenantId,
+          db,
+          overrideSecretsPort: overrideSecrets,
+          fetchFn: overrides.sigmaFetch as never,
+        });
+        const portPayload = buildDispatchPortPayload(rowAction, requestedPayload);
+        const observed = (await raceGenericReadback(
+          sigmaReadback,
+          {
+            tenantId: row.tenantId,
+            operationId: row.id,
+            action: rowAction,
+            externalRef,
+            adapter: recordedAdapterOf(requestedPayload),
+            adapterVersion: row.adapterVersion,
+            payload: portPayload,
+            providerAccountId: row.providerAccountId,
+            entityId: row.entityId,
+            expiresBefore,
+            secretRef: reconcileSecretRef,
+          },
+          genericReadbackTimeoutMs,
+        )) ?? { effectApplied: false, evidence: "reconcile:readback-inconclusive", conclusive: false };
+        const decision = decideVerifyingSubscriptionReconcile(observed, { externalRef });
+        const conclusiveRef = observed.externalRef ?? externalRef;
+        const outcome = await commandDb
+          .withTransaction(row.tenantId, async (tx) => {
+            const ctx: CommandHandlerContext = {
+              actor: dispatcherActor(row.tenantId),
+              tenantId: row.tenantId,
+              commandId: newId(),
+              correlationId: newId(),
+              causationId: null,
+              tx,
+            };
+            const fence = { expectedStatus: "VERIFYING" };
+            if (decision.kind === "converge-human-required") {
+              const converged = await applySubscriptionProvisionOutcome(
+                ctx,
+                {
+                  operationId: row.id,
+                  subscriptionId: row.entityId,
+                  providerAccountId: row.providerAccountId,
+                  raw: { outcome: "MANUAL", detail: "reconcile: inconclusive sigma readback", externalRef: null },
+                },
+                fence,
+              );
+              return converged?.status ?? null;
+            }
+            if (decision.kind === "fail-not-applied") {
+              const failed = await applySubscriptionProvisionOutcome(
+                ctx,
+                {
+                  operationId: row.id,
+                  subscriptionId: row.entityId,
+                  providerAccountId: row.providerAccountId,
+                  raw: { outcome: "FAILED", detail: "reconcile: conclusive readback", externalRef: null },
+                },
+                fence,
+              );
+              return failed?.status ?? null;
+            }
+            const gated = await applySubscriptionProvisionOutcome(
+              ctx,
+              {
+                operationId: row.id,
+                subscriptionId: row.entityId,
+                providerAccountId: row.providerAccountId,
+                raw: { outcome: "SUCCEEDED", detail: "reconcile: conclusive readback", externalRef: conclusiveRef, expiresBefore },
+              },
+              fence,
+            );
+            return gated?.status ?? null;
+          })
+          .catch(() => null);
+        if (outcome === null) {
+          summary.skipped += 1;
+          continue;
+        }
+        summary.operationIds.push(row.id);
+        if (outcome === "SUCCEEDED") {
+          summary.succeeded += 1;
+        } else if (outcome === "FAILED") {
+          summary.failed += 1;
+        } else if (outcome === "VERIFYING") {
+          summary.verifying += 1;
+        } else {
+          summary.humanRequired += 1;
+        }
+        continue;
+      }
+      // ---- Phase A (NO transaction): bounded trial observations. ----
       const observed = (await raceGenericReadback(
         genericReadback,
         {
@@ -1068,6 +1200,7 @@ export class ProviderDispatcherService {
           outcome: call.result.outcome,
           detail: call.result.detail,
           externalRef: call.result.externalRef,
+          expiresBefore: call.result.expiresBefore ?? null,
         };
         const fence = { claimedBy: claimToken };
         // CV-DSP-02: closed action→applier registry. Each domain applier is
@@ -1203,10 +1336,22 @@ export class ProviderDispatcherService {
       return overrides.opsPort;
     }
     const recorded = op.requestedPayload["adapter"];
-    if (recorded === "echo" || recorded === "manual") {
-      return resolveOpsPort(recorded);
+    const effective = recorded === "echo" || recorded === "manual" || recorded === "sigma" ? recorded : adapterNameFromEnv();
+    if (effective !== "sigma") {
+      return resolveOpsPort(effective);
     }
-    return resolveOpsPort(adapterNameFromEnv());
+    // Sigma live resolution: tenant-scoped vault port (shared Postgres
+    // encrypted store, no new vault). Overrides win for tests; production
+    // builds from the dispatcher pool without a transaction (each getSecret
+    // runs in its own tenant transaction for RLS). Without SIGMA_MODE=live +
+    // a configured vault this stays fail-closed MANUAL (never an HTTP call).
+    const overrideSecrets = overrides.createSigmaSecretsPort?.(op.tenantId) ?? overrides.secretsPort ?? null;
+    return resolveTenantSigmaPortFromEnv({
+      tenantId: op.tenantId,
+      db: this.db,
+      overrideSecretsPort: overrideSecrets,
+      fetchFn: overrides.sigmaFetch as never,
+    });
   }
 
   /**

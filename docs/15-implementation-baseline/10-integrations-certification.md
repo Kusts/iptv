@@ -59,6 +59,10 @@ Unblock paths (any one, then re-run the read-identity probe): operator re-runs t
 
 Writes (W0-10) remain rejected regardless of this read gate: durable post-commit dispatch and certified conclusive readback are prerequisites, and neither exists.
 
+### Sigma Reseller API (2026-11-08; caminho principal de produção)
+
+O Browser Worker (Chromium/Playwright) deixa de ser o caminho principal de produção para ativar assinaturas: a Sigma Reseller API (CINEVISION M2M, base `https://cinevision.panelbr.site/api/reseller-api/v1`, OpenAPI oficial) cobre criação/renovação/consultas via `ProviderOpsPort`, dispatcher durável e fulfillment existentes. O worker permanece no repositório desativado como caminho operacional padrão, sem exclusão de código, volumes ou imagens de staging — a remoção definitiva de Chromium/recursos ocorrerá só após a integração Sigma funcionar em teste real. O adaptador real (`sigma` + `SIGMA_MODE=live`) exige o token M2M `CINEVISION_RESELLER_API_TOKEN` no cofre PostgreSQL criptografado (ref derivada do binding do tenant) e o readback live certificado; sem token/integração ativa, o modo é simulado (sem rede, resultados identificados como simulados) e a ativação nunca é declarada sem confirmação da API.
+
 ### 2026-10-01 — runtime hardening baseline (HISTÓRICO — snapshot datado, NÃO é o estado atual do runtime)
 
 > Leitura correta desta seção: ela registra o que era verdade **naquele dia** e é mantida como trilha histórica do gate. Para o estado vigente do runtime leia as seções datadas posteriores (2026-10-02 e a atualização 2026-10-05) e o SPEC/PLAN `cinevision-runtime-hardening.md` — que registram o dispatcher durável (Fase 3) e o caminho real de `CREATE_TRIAL` (Fase 5) entregues em software depois deste baseline. Em particular, a frase "durable post-commit dispatch still does not exist" abaixo descreve o baseline de 2026-10-01 e **foi superada**: o dispatcher durável existe em código e testes, mas continua **não executado contra o painel real**, e a certificação live permanece pendente em todos os gates (Steps 1-6 e campos de evidência abaixo). Nada aqui foi promovido a certificado.

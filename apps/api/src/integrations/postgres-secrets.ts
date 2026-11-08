@@ -20,3 +20,23 @@ export function createPostgresSecretsAdapter(
     key: loadEncryptionKey(),
   });
 }
+
+/**
+ * SecretsPort already bound to the caller's tenant context *without*
+ * calling `getSecret`. Reuses `createPostgresSecretsAdapter`; the caller
+ * owns binding the adapter to the correct transaction/pool. Returns null
+ * when `SECRETS_ENCRYPTION_KEY` is unavailable so callers can distinguish
+ * "no vault" from "vault present" without throwing. Tenant isolation is
+ * inherited from the underlying store (tenant_id + RLS), so a port created
+ * for tenant A can never read tenant B's secret.
+ */
+export function tryCreatePostgresSecretsAdapter(
+  executor: SecretStoreExecutor,
+  tenantId: string,
+): PostgresSecretsAdapter | null {
+  try {
+    return createPostgresSecretsAdapter(executor, tenantId);
+  } catch {
+    return null;
+  }
+}
