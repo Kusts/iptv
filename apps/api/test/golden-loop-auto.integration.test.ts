@@ -58,6 +58,7 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
   let createSucceeds = true;
   let confirmSucceeds = true;
   let renewExpiresAfter = "2027-06-01T00:00:00Z";
+  let reconcileEnabled = true;
 
   function fakeFetch(): typeof fetch {
     return (async (url: string, init?: RequestInit) => {
@@ -136,10 +137,12 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
     drainOnce: (budget: number) => realDispatcher.drainOnce(budget, dispatcherOverrides()),
     recoverOnce: (budget: number) => realDispatcher.recoverOnce(budget, dispatcherOverrides()),
     reconcileOnce: (budget: number) =>
-      realDispatcher.reconcileOnce(budget, {
-        ...dispatcherOverrides(),
-        readbackPort: new SigmaReadback(tokenResolver, fakeFetch()),
-      }),
+      reconcileEnabled
+        ? realDispatcher.reconcileOnce(budget, {
+            ...dispatcherOverrides(),
+            readbackPort: new SigmaReadback(tokenResolver, fakeFetch()),
+          })
+        : Promise.resolve({ checked: 0, succeeded: 0, failed: 0, verifying: 0, humanRequired: 0, skipped: 0, operationIds: [] }),
   }) as ProviderDispatcherService;
 
   const noopOutbox = { drain: async () => ({ claimed: 0, published: 0, failed: 0, eventIds: [] as string[] }), waitForQuiescence: async () => {} };
@@ -365,6 +368,52 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
     return subscriptionId;
   }
 
+  async function seedActiveProcessedSubscription(input: {
+    tenantId: string;
+    customerId: string;
+    planId: string;
+    originatingOrderId: string;
+  }): Promise<string> {
+    const subscriptionId = newId();
+    const start = new Date();
+    await db
+      .insertInto("subscription.subscriptions")
+      .values({
+        id: subscriptionId,
+        tenant_id: input.tenantId,
+        customer_id: input.customerId,
+        plan_id: input.planId,
+        originating_order_id: input.originatingOrderId,
+        status: "ACTIVE",
+        started_at: start,
+        current_period_start: start,
+        current_period_end: new Date(start.getTime() + 30 * 86_400_000),
+        cancel_at_period_end: false,
+        cancelled_at: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+    await db
+      .insertInto("subscription.subscription_cycles")
+      .values({
+        id: newId(),
+        tenant_id: input.tenantId,
+        subscription_id: subscriptionId,
+        cycle_no: 1,
+        starts_at: start,
+        ends_at: new Date(start.getTime() + 30 * 86_400_000),
+        renewal_order_id: null,
+        status: "ACTIVE",
+        base_revenue_minor: "3000",
+        base_provider_cost_minor: null,
+        currency: "BRL",
+        created_at: new Date(),
+      })
+      .execute();
+    return subscriptionId;
+  }
+
   async function getSubStatus(tenantId: string, id: string): Promise<string> {
     const row = await db
       .selectFrom("subscription.subscriptions")
@@ -491,6 +540,7 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
     createSucceeds = true;
     confirmSucceeds = true;
     renewExpiresAfter = "2027-06-01T00:00:00Z";
+    reconcileEnabled = true;
   });
 
   afterAll(async () => {
@@ -508,7 +558,11 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
     const { personId, customerId } = await seedPersonCustomer(tenantId, "sel100");
     const { planId } = await seedPlan(tenantId);
 
-    // 101 already-processed SETTLED orders (each has a linked subscription).
+    // 101 already-processed SETTLED orders, each linked to an ACTIVE (fully
+    // processed) subscription with no provider operation. This proves phase 1
+    // SQL filtering (LEFT JOIN ... where subscription is null) selects the
+    // eligible order even with >100 processed orders ahead, while avoiding
+    // fulfillment/dispatch backlog that would compete with other scenarios.
     const base = Date.now() - 200_000;
     for (let i = 0; i < 101; i += 1) {
       const orderId = await seedSettledOrder({
@@ -518,7 +572,7 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
         planId,
         createdAt: new Date(base + i),
       });
-      await seedPendingActivationSubscription({ tenantId, customerId, planId, originatingOrderId: orderId });
+      await seedActiveProcessedSubscription({ tenantId, customerId, planId, originatingOrderId: orderId });
     }
     // One eligible order AFTER the processed block.
     const eligibleOrderId = await seedSettledOrder({
@@ -538,7 +592,9 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
       .where("originating_order_id", "=", eligibleOrderId)
       .executeTakeFirst();
     expect(sub).toBeDefined();
-    expect(sub?.status).toBe("PENDING_ACTIVATION");
+    // Selected and moved forward by the scheduler (activation/fulfillment may
+    // also complete within the same tick).
+    expect(["PENDING_ACTIVATION", "ACTIVE"]).toContain(sub?.status);
   }, 180_000);
 
   it("2-5) SETTLED -> PENDING_ACTIVATION -> fulfillment automático sigma -> ACTIVE com entrega fictícia e vínculo externo", async () => {
@@ -556,11 +612,6 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
       .where("tenant_id", "=", tenantId)
       .where("originating_order_id", "=", orderId)
       .executeTakeFirstOrThrow();
-    if (sub.status !== "ACTIVE") {
-      const ops = await db.selectFrom("provider.provider_operations").select(["id", "status", "effect_certainty", "adapter_version", "requested_payload_json", "result_summary_json"]).where("tenant_id", "=", tenantId).where("entity_type", "=", "subscription").where("entity_id", "=", sub.id).execute();
-      const posts = calls.filter((c) => c.init?.method === "POST").length;
-      throw new Error(`DIAG 2-5: sub=${sub.status} ops=${JSON.stringify(ops)} posts=${posts} tick=${JSON.stringify(tick)}`);
-    }
     expect(sub.status).toBe("ACTIVE");
 
     const ops = await getOpsForEntity(tenantId, sub.id);
@@ -614,11 +665,6 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
       .where("entity_type", "=", "subscription")
       .where("entity_id", "=", sub.id)
       .execute();
-    if (bindings.length !== 1) {
-      const ops = await db.selectFrom("provider.provider_operations").select(["id", "status", "effect_certainty", "adapter_version", "result_summary_json"]).where("tenant_id", "=", tenantId).where("entity_type", "=", "subscription").where("entity_id", "=", sub.id).execute();
-      const subRow = await db.selectFrom("subscription.subscriptions").select(["status"]).where("tenant_id", "=", tenantId).where("id", "=", sub.id).executeTakeFirst();
-      throw new Error(`DIAG 6: bindings=${bindings.length} sub=${subRow?.status} ops=${JSON.stringify(ops)} postsAfterFirst=${postsAfterFirst} postsNow=${calls.filter((c) => c.init?.method === "POST").length}`);
-    }
     expect(bindings).toHaveLength(1);
     expect(calls.filter((c) => c.url === `${SIGMA_BASE_URL}/customers` && c.init?.method === "POST").length).toBe(postsAfterFirst);
   }, 180_000);
@@ -644,7 +690,12 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
     const { planId } = await seedPlan(tenantId);
     const orderId = await seedSettledOrder({ tenantId, personId, customerId, planId });
 
-    confirmSucceeds = false; // confirm GET fails -> VERIFYING
+    // Tick 1 (reconcile paused): confirm GET fails during dispatch, so the
+    // adapter returns UNKNOWN with external ref and the op becomes VERIFYING.
+    // Pausing reconcile lets us observe VERIFYING via SchedulerService.tick()
+    // without the same-tick safe convergence hiding the intermediate state.
+    confirmSucceeds = false;
+    reconcileEnabled = false;
     await scheduler.tick();
 
     const sub = await db
@@ -654,21 +705,31 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
       .where("originating_order_id", "=", orderId)
       .executeTakeFirstOrThrow();
     expect(sub.status).toBe("PENDING_ACTIVATION");
-    const ops = await db.selectFrom("provider.provider_operations").select(["id", "status", "effect_certainty", "adapter_version", "requested_payload_json", "result_summary_json"]).where("tenant_id", "=", tenantId).where("entity_type", "=", "subscription").where("entity_id", "=", sub.id).execute();
+    const ops = await db
+      .selectFrom("provider.provider_operations")
+      .select(["id", "status", "effect_certainty"])
+      .where("tenant_id", "=", tenantId)
+      .where("entity_type", "=", "subscription")
+      .where("entity_id", "=", sub.id)
+      .execute();
     expect(ops).toHaveLength(1);
-    const posts = calls.filter((c) => c.init?.method === "POST").length;
-    if (ops[0]?.status !== "VERIFYING") {
-      throw new Error(`DIAG 8: op=${JSON.stringify(ops[0])} posts=${posts} calls=${JSON.stringify(calls.map((c) => ({ u: c.url, m: c.init?.method })))}`);
-    }
     expect(ops[0]?.status).toBe("VERIFYING");
-    expect(posts).toBe(1); // create POST happened once; no resend
+    expect(ops[0]?.effect_certainty).toBe("UNKNOWN");
+    const postsAfterVerify = calls.filter((c) => c.init?.method === "POST").length;
+    expect(postsAfterVerify).toBe(1); // create POST happened once; no resend
 
+    // Tick 2 (reconcile active, readback confirms): GET-only reconciliation
+    // converges to ACTIVE without resending POST and without undue activation
+    // in tick 1.
     confirmSucceeds = true;
-    await scheduler.tick(); // reconcile path runs GET-only
+    reconcileEnabled = true;
+    await scheduler.tick();
+
     expect(await getSubStatus(tenantId, sub.id)).toBe("ACTIVE");
-    const reconcilePosts = calls.filter((c) => c.init?.method === "POST").length;
-    expect(reconcilePosts).toBe(1); // still no POST resend
-    const getCalls = calls.filter((c) => c.url.includes("/customers/cust-gla-1") && (!c.init?.method || c.init.method === "GET"));
+    expect(calls.filter((c) => c.init?.method === "POST").length).toBe(1);
+    const getCalls = calls.filter(
+      (c) => c.url.includes("/customers/cust-gla-1") && (c.init?.method === undefined || c.init.method === "GET"),
+    );
     expect(getCalls.length).toBeGreaterThanOrEqual(1);
     expect((await getBinding(tenantId, accountId, sub.id))?.external_id).toBe("cust-gla-1");
   }, 180_000);
