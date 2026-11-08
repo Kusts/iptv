@@ -556,6 +556,11 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
       .where("tenant_id", "=", tenantId)
       .where("originating_order_id", "=", orderId)
       .executeTakeFirstOrThrow();
+    if (sub.status !== "ACTIVE") {
+      const ops = await db.selectFrom("provider.provider_operations").select(["id", "status", "effect_certainty", "adapter_version", "requested_payload_json", "result_summary_json"]).where("tenant_id", "=", tenantId).where("entity_type", "=", "subscription").where("entity_id", "=", sub.id).execute();
+      const posts = calls.filter((c) => c.init?.method === "POST").length;
+      throw new Error(`DIAG 2-5: sub=${sub.status} ops=${JSON.stringify(ops)} posts=${posts} tick=${JSON.stringify(tick)}`);
+    }
     expect(sub.status).toBe("ACTIVE");
 
     const ops = await getOpsForEntity(tenantId, sub.id);
@@ -609,6 +614,11 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
       .where("entity_type", "=", "subscription")
       .where("entity_id", "=", sub.id)
       .execute();
+    if (bindings.length !== 1) {
+      const ops = await db.selectFrom("provider.provider_operations").select(["id", "status", "effect_certainty", "adapter_version", "result_summary_json"]).where("tenant_id", "=", tenantId).where("entity_type", "=", "subscription").where("entity_id", "=", sub.id).execute();
+      const subRow = await db.selectFrom("subscription.subscriptions").select(["status"]).where("tenant_id", "=", tenantId).where("id", "=", sub.id).executeTakeFirst();
+      throw new Error(`DIAG 6: bindings=${bindings.length} sub=${subRow?.status} ops=${JSON.stringify(ops)} postsAfterFirst=${postsAfterFirst} postsNow=${calls.filter((c) => c.init?.method === "POST").length}`);
+    }
     expect(bindings).toHaveLength(1);
     expect(calls.filter((c) => c.url === `${SIGMA_BASE_URL}/customers` && c.init?.method === "POST").length).toBe(postsAfterFirst);
   }, 180_000);
@@ -644,10 +654,13 @@ describe.skipIf(!hasDb)("Golden Loop AUTO E2E via SchedulerService.tick (require
       .where("originating_order_id", "=", orderId)
       .executeTakeFirstOrThrow();
     expect(sub.status).toBe("PENDING_ACTIVATION");
-    const ops = await getOpsForEntity(tenantId, sub.id);
+    const ops = await db.selectFrom("provider.provider_operations").select(["id", "status", "effect_certainty", "adapter_version", "requested_payload_json", "result_summary_json"]).where("tenant_id", "=", tenantId).where("entity_type", "=", "subscription").where("entity_id", "=", sub.id).execute();
     expect(ops).toHaveLength(1);
-    expect(ops[0]?.status).toBe("VERIFYING");
     const posts = calls.filter((c) => c.init?.method === "POST").length;
+    if (ops[0]?.status !== "VERIFYING") {
+      throw new Error(`DIAG 8: op=${JSON.stringify(ops[0])} posts=${posts} calls=${JSON.stringify(calls.map((c) => ({ u: c.url, m: c.init?.method })))}`);
+    }
+    expect(ops[0]?.status).toBe("VERIFYING");
     expect(posts).toBe(1); // create POST happened once; no resend
 
     confirmSucceeds = true;
