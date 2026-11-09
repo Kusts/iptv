@@ -153,4 +153,30 @@ describe("FulfillmentPage", () => {
     expect(screen.queryByText("Sem operação de fulfillment")).toBeNull();
     expect(screen.queryByRole("button", { name: "Solicitar provisionamento" })).toBeNull();
   });
+
+  it("exibe mensagem HUMAN_REQUIRED genérica, sem presumir configuração de ambiente", async () => {
+    const seen = { posts: [] as { url: string; body?: unknown }[] };
+    sessionMocks(
+      ["subscription.read"],
+      {
+        "/v1/subscriptions?status=PENDING_ACTIVATION": { subscriptions: [] },
+        "/v1/fulfillment/subscriptions/00000000-0000-4000-8000-000000000999": {
+          operationId: "op-1",
+          action: "subscription.provision",
+          status: "HUMAN_REQUIRED",
+          effectCertainty: "UNKNOWN",
+          requestedAt: new Date().toISOString(),
+        },
+      },
+      seen,
+    );
+    window.history.pushState({}, "", "/fulfillment?subscriptionId=00000000-0000-4000-8000-000000000999");
+
+    renderPage(<FulfillmentPage />);
+    await waitFor(() => expect(screen.getByText(/Ação manual necessária:/)).toBeTruthy());
+    expect(screen.getByText(/esta operação aguarda intervenção do operador \(HUMAN_REQUIRED\)/)).toBeTruthy();
+    expect(screen.queryByText(/Sigma live desativada no staging/)).toBeNull();
+    expect(screen.queryByText(/integração Sigma live desativada/)).toBeNull();
+    window.history.pushState({}, "", "/fulfillment");
+  });
 });

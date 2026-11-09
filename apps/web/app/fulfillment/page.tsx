@@ -187,9 +187,8 @@ function FulfillmentPanel({
           {data.status === "HUMAN_REQUIRED" ? (
             <div className="cc-card cc-u-mt-2 cc-u-p-3">
               <p>
-                <strong>Ação manual necessária:</strong> a ativação no fornecedor depende de intervenção do
-                operador (integração Sigma live desativada ou modo manual). A assinatura permanece pendente até
-                a operação ser concluída no fornecedor.
+                <strong>Ação manual necessária:</strong> esta operação aguarda intervenção do operador
+                (HUMAN_REQUIRED). A assinatura permanece pendente até a operação ser concluída no fornecedor.
               </p>
             </div>
           ) : null}

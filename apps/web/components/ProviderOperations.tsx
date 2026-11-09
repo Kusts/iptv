@@ -230,9 +230,9 @@ function ProviderOperationDetailPanel({
       {data.status === "HUMAN_REQUIRED" ? (
         <div className="cc-card cc-u-mt-2 cc-u-p-3">
           <p>
-            <strong>Ação manual necessária:</strong> esta operação aguarda intervenção do operador. Em staging,
-            a integração Sigma live permanece desativada (modo manual). Acompanhe a ativação e, quando aplicável,
-            resolva a operação após confirmar o estado no fornecedor.
+            <strong>Ação manual necessária:</strong> esta operação aguarda intervenção do operador
+            (HUMAN_REQUIRED). Acompanhe a ativação e, quando aplicável, resolva a operação após confirmar o estado
+            no fornecedor.
           </p>
         </div>
       ) : null}

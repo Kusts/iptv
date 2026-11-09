@@ -403,4 +403,53 @@ describe("OrdersPage", () => {
     expect((quoteCall?.body as any)?.items?.[0]?.sellableId).toBe(catalogPlan.id);
     expect(quoteCall?.headers?.["idempotency-key"]).toBeTruthy();
   });
+
+  it("exibe assinatura vinculada com deep links para assinatura e ativação", async () => {
+    const seen = { posts: [] };
+    const linkedSubId = "00000000-0000-4000-8000-000000000777";
+    sessionMocks(
+      ["billing.read"],
+      {
+        "/v1/orders/00000000-0000-4000-8000-000000000101": {
+          order: sampleOrder,
+          items: sampleItems,
+          subscriptions: [{ id: linkedSubId, status: "PENDING_ACTIVATION" }],
+        },
+        "/v1/orders": {
+          orders: [sampleOrder],
+        },
+      },
+      seen,
+    );
+
+    renderPage(<OrdersPage />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Detalhe" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Detalhe" }));
+    await waitFor(() => expect(screen.getByText("Assinatura vinculada")).toBeTruthy());
+    expect(screen.getByRole("link", { name: "Ver assinatura" }).getAttribute("href")).toBe(`/subscriptions?id=${linkedSubId}`);
+    expect(screen.getByRole("link", { name: "Ver ativação" }).getAttribute("href")).toBe(`/fulfillment?subscriptionId=${linkedSubId}`);
+  });
+
+  it("seleciona pedido automaticamente via deep link ?id=", async () => {
+    const seen = { posts: [] };
+    window.history.pushState({}, "", "/orders?id=00000000-0000-4000-8000-000000000101");
+    sessionMocks(
+      ["billing.read"],
+      {
+        "/v1/orders/00000000-0000-4000-8000-000000000101": {
+          order: sampleOrder,
+          items: sampleItems,
+        },
+        "/v1/orders": {
+          orders: [sampleOrder],
+        },
+      },
+      seen,
+    );
+
+    renderPage(<OrdersPage />);
+    await waitFor(() => expect(screen.getByText("Detalhe do pedido")).toBeTruthy());
+    expect(screen.getByText(sampleOrder.id)).toBeTruthy();
+    window.history.pushState({}, "", "/orders");
+  });
 });

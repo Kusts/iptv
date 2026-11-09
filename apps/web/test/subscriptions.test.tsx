@@ -128,6 +128,9 @@ describe("SubscriptionsPage", () => {
     expect(screen.getByText(sampleSubscription.id)).toBeTruthy();
     expect(screen.getByText("max_connections")).toBeTruthy();
     expect(screen.getByText(/Pedido de origem:/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: /00000000…/ }).getAttribute("href")).toBe(
+      `/orders?id=${sampleSubscription.originatingOrderId}`,
+    );
   });
 
   it("para assinatura PENDING_ACTIVATION, exibe aviso e link para /fulfillment", async () => {
@@ -211,5 +214,23 @@ describe("SubscriptionsPage", () => {
     expect(screen.queryByRole("button", { name: "Cancelar no fim do período" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Retomar" })).toBeNull();
     expect(screen.getByText(/Você não tem a permissão subscription.write/)).toBeTruthy();
+  });
+
+  it("seleciona assinatura automaticamente via deep link ?id=", async () => {
+    const seen = { posts: [] as { url: string; body?: unknown }[] };
+    window.history.pushState({}, "", "/subscriptions?id=00000000-0000-4000-8000-000000000555");
+    sessionMocks(
+      ["subscription.read"],
+      {
+        "/v1/subscriptions/00000000-0000-4000-8000-000000000555": sampleSubscription,
+        "/v1/subscriptions": { subscriptions: [sampleSubscription] },
+      },
+      seen,
+    );
+
+    renderPage(<SubscriptionsPage />);
+    await waitFor(() => expect(screen.getByText("Detalhe da assinatura")).toBeTruthy());
+    expect(screen.getByText(sampleSubscription.id)).toBeTruthy();
+    window.history.pushState({}, "", "/subscriptions");
   });
 });
