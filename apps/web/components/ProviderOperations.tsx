@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import {
   api,
   userMessage,
@@ -219,6 +220,22 @@ function ProviderOperationDetailPanel({
           entidade: {data.entityType} / <span className="cc-mono">{data.entityId}</span>
         </span>
       </div>
+      {data.entityType === "subscription" ? (
+        <p className="cc-muted cc-u-mt-1">
+          <Link href={`/fulfillment?subscriptionId=${data.entityId}`}>Ver ativação (fulfillment)</Link>
+          {" · "}
+          <Link href="/subscriptions">Ver assinaturas</Link>
+        </p>
+      ) : null}
+      {data.status === "HUMAN_REQUIRED" ? (
+        <div className="cc-card cc-u-mt-2 cc-u-p-3">
+          <p>
+            <strong>Ação manual necessária:</strong> esta operação aguarda intervenção do operador. Em staging,
+            a integração Sigma live permanece desativada (modo manual). Acompanhe a ativação e, quando aplicável,
+            resolva a operação após confirmar o estado no fornecedor.
+          </p>
+        </div>
+      ) : null}
       <div className="cc-row">
         <span className="cc-muted">
           adapter: <span className="cc-mono">{data.adapterVersion ?? "—"}</span> · canal:{" "}

@@ -173,7 +173,23 @@ export class CommerceController {
         .where("tenant_id", "=", tenant.id)
         .where("order_id", "=", id)
         .execute();
-      return { order, items };
+      const subscriptions = await trx
+        .selectFrom("subscription.subscriptions")
+        .select(["id", "status", "plan_id", "originating_order_id"])
+        .where("tenant_id", "=", tenant.id)
+        .where("originating_order_id", "=", id)
+        .orderBy("created_at", "desc")
+        .execute();
+      return {
+        order,
+        items,
+        subscriptions: subscriptions.map((s) => ({
+          id: s.id,
+          status: s.status,
+          planId: s.plan_id,
+          originatingOrderId: s.originating_order_id,
+        })),
+      };
     });
   }
 

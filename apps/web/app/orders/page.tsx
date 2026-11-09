@@ -475,7 +475,24 @@ function OrderDetailPanel({
           ))}
         </ul>
       )}
-      {hasAnyAction || createdCharge || createdSubscription ? (
+      {data.subscriptions && data.subscriptions.length > 0 ? (
+        <div className="cc-card cc-u-mt-3 cc-u-p-3">
+          <h4>Assinatura vinculada</h4>
+          <ul>
+            {data.subscriptions.map((s) => (
+              <li key={s.id} className="cc-u-mb-2">
+                <span className="cc-mono">{s.id.slice(0, 8)}…</span> <StatusPill status={s.status} />{" "}
+                <Link href="/subscriptions">Ver assinatura</Link>
+                {" · "}
+                <Link href={`/fulfillment?subscriptionId=${s.id}`}>Ver ativação</Link>
+                {" · "}
+                <Link href={`/provider-operations`}>Operações do fornecedor</Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {hasAnyAction || createdCharge || createdSubscription || (data.subscriptions && data.subscriptions.length > 0) ? (
         <div className="cc-u-mt-4">
           <h4>Ações do pedido</h4>
           <div className="cc-row">
@@ -499,7 +516,7 @@ function OrderDetailPanel({
                 {busy ? "Gerando cobrança…" : "Gerar nova cobrança"}
               </Button>
             ) : null}
-            {canWriteSubscription && o.status === "SETTLED" ? (
+            {canWriteSubscription && o.status === "SETTLED" && !(data.subscriptions && data.subscriptions.length > 0) && !createdSubscription ? (
               <Button disabled={busy} onClick={() => void createSubscription()}>
                 {busy ? "Criando assinatura…" : "Criar assinatura"}
               </Button>
