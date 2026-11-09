@@ -463,6 +463,13 @@ export interface CatalogPlan {
   currency: string;
 }
 
+export interface OrderLinkedSubscription {
+  id: string;
+  status: string;
+  planId: string;
+  originatingOrderId: string | null;
+}
+
 export interface OrderDetail {
   order: {
     id: string;
@@ -495,6 +502,7 @@ export interface OrderDetail {
     gross_minor: string | number;
     net_minor: string | number;
   }[];
+  subscriptions?: OrderLinkedSubscription[];
 }
 
 export interface TicketRow {

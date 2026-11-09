@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Shell } from "../../components/Shell";
 import { PermissionGate } from "../../components/RevenueOps";
@@ -23,6 +23,14 @@ const WRITE_PERMISSION = "subscription.write";
 export default function SubscriptionsPage(): React.JSX.Element {
   const { data, error, loading, reload, refresh } = useApi<{ subscriptions: SubscriptionRow[] }>("/v1/subscriptions");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get("id") ?? params.get("subscriptionId");
+    if (fromQuery !== null && fromQuery.length > 0) {
+      setSelectedId(fromQuery);
+    }
+  }, []);
 
   return (
     <Shell>
@@ -122,7 +130,7 @@ function SubscriptionDetailPanel({ id, onMutated }: { id: string; onMutated?: ()
       ) : null}
       {data.originatingOrderId ? (
         <p className="cc-muted cc-u-mt-2">
-          Pedido de origem: <Link href="/orders"><span className="cc-mono">{data.originatingOrderId.slice(0, 8)}…</span></Link>
+          Pedido de origem: <Link href={`/orders?id=${data.originatingOrderId}`}><span className="cc-mono">{data.originatingOrderId.slice(0, 8)}…</span></Link>
         </p>
       ) : null}
       <p className="cc-muted cc-u-mt-1">

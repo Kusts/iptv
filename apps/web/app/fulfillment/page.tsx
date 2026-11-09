@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Shell } from "../../components/Shell";
 import { ConfirmAction, PermissionGate, useRevenueCommand } from "../../components/RevenueOps";
 import { Button } from "../../components/ui/Button";
@@ -29,6 +30,17 @@ interface FulfillmentStatus {
 export default function FulfillmentPage(): React.JSX.Element {
   const [subscriptionId, setSubscriptionId] = useState("");
   const [query, setQuery] = useState<string | null>(null);
+
+  // Deep link: /fulfillment?subscriptionId=<id> (ou ?id=<id>) permite navegar
+  // a partir de pedidos, assinaturas e operações de provider.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get("subscriptionId") ?? params.get("id");
+    if (fromQuery !== null && fromQuery.length > 0) {
+      setSubscriptionId(fromQuery);
+      setQuery(fromQuery);
+    }
+  }, []);
 
   const pendingQuery = useApi<{ subscriptions: SubscriptionRow[] }>(
     "/v1/subscriptions?status=PENDING_ACTIVATION",
@@ -172,8 +184,18 @@ function FulfillmentPanel({
             <span className="cc-muted">certeza: {data.effectCertainty}</span>
           </div>
           <p className="cc-muted">Solicitada em {formatDateTime(data.requestedAt)}</p>
-          <p className="cc-muted">
-            Resolução e reconciliação da operação resultante ficam na superfície de Operações de Provider.
+          {data.status === "HUMAN_REQUIRED" ? (
+            <div className="cc-card cc-u-mt-2 cc-u-p-3">
+              <p>
+                <strong>Ação manual necessária:</strong> esta operação aguarda intervenção do operador
+                (HUMAN_REQUIRED). A assinatura permanece pendente até a operação ser concluída no fornecedor.
+              </p>
+            </div>
+          ) : null}
+          <p className="cc-muted cc-u-mt-2">
+            <Link href={`/provider-operations?id=${data.operationId}`}>Abrir operação do fornecedor</Link>
+            {" · "}
+            <Link href={`/subscriptions`}>Ver assinaturas</Link>
           </p>
           {canWrite ? (
             <div className="cc-row cc-u-mt-3">
