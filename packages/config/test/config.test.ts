@@ -21,6 +21,23 @@ describe("loadConfig", () => {
     expect(cfg.NODE_ENV).toBe("production");
   });
 
+  it("validates optional WAHA media wiring and exposes diagnostics", () => {
+    expect(loadConfig({}).wahaBaseUrl).toBeUndefined();
+    expect(loadConfig({ WAHA_BASE_URL: "https://waha.example.com", WAHA_API_KEY: "key" })).toMatchObject({
+      wahaBaseUrl: "https://waha.example.com",
+      wahaApiKey: "key",
+    });
+    expect(() => loadConfig({ WAHA_BASE_URL: "https://waha.example.com" })).toThrow(
+      /WAHA_BASE_URL and WAHA_API_KEY must be configured together/,
+    );
+    expect(() => loadConfig({ WAHA_API_KEY: "key" })).toThrow(
+      /WAHA_BASE_URL and WAHA_API_KEY must be configured together/,
+    );
+    for (const url of ["not-a-url", "ftp://waha.example.com", "http://localhost:3000", "https://127.0.0.1"]) {
+      expect(() => loadConfig({ WAHA_BASE_URL: url, WAHA_API_KEY: "key" })).toThrow(/WAHA_BASE_URL must be/);
+    }
+  });
+
   it("rejects the dev auth secret in production", () => {
     expect(() =>
       loadConfig({

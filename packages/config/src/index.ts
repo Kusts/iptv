@@ -57,11 +57,16 @@ const envSchema = z.object({
   // (fail-closed per command: `WEBHOOK_BASE_URL_NOT_CONFIGURED` + manual
   // mode) — never a client-supplied host.
   INTEGRATIONS_PUBLIC_BASE_URL: z.string().min(1).optional(),
+  WAHA_BASE_URL: z.string().min(1).optional(),
+  WAHA_API_KEY: z.string().min(1).optional(),
 });
 
 export type AppConfig = Omit<z.infer<typeof envSchema>, "CORS_ALLOWED_ORIGINS"> & {
   /** Explicit browser CORS allowlist (origin strings, never a wildcard). */
   CORS_ALLOWED_ORIGINS: string[];
+  /** Validated WAHA media endpoint and credential for startup diagnostics. */
+  wahaBaseUrl: string | undefined;
+  wahaApiKey: string | undefined;
 };
 
 /** Local web default so `localhost:3000` → API works out of the box. */
@@ -702,6 +707,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     SECRETS_ENCRYPTION_KEY: emptyToUndefined(env.SECRETS_ENCRYPTION_KEY),
     PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID: emptyToUndefined(env.PROVIDER_TRIAL_DISPOSABLE_ACCOUNT_ID),
     INTEGRATIONS_PUBLIC_BASE_URL: emptyToUndefined(env.INTEGRATIONS_PUBLIC_BASE_URL),
+    WAHA_BASE_URL: emptyToUndefined(env.WAHA_BASE_URL),
+    WAHA_API_KEY: emptyToUndefined(env.WAHA_API_KEY),
     CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
   });
   if (!parsed.success) {
@@ -709,6 +716,29 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
       .join("; ");
     throw new Error(`invalid environment configuration: ${details}`);
+  }
+  const wahaBaseUrl = parsed.data.WAHA_BASE_URL;
+  const wahaApiKey = parsed.data.WAHA_API_KEY;
+  if ((wahaBaseUrl === undefined) !== (wahaApiKey === undefined)) {
+    throw new Error("invalid environment configuration: WAHA_BASE_URL and WAHA_API_KEY must be configured together (or both omitted)");
+  }
+  if (wahaBaseUrl !== undefined) {
+    let url: URL;
+    try {
+      url = new URL(wahaBaseUrl);
+    } catch {
+      throw new Error("invalid environment configuration: WAHA_BASE_URL must be an absolute http(s) URL without credentials, path, query or fragment, and must not target loopback");
+    }
+    const host = url.hostname.toLowerCase();
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.username !== "" || url.password !== "" ||
+      (url.pathname !== "/" && url.pathname !== "") || url.search !== "" || url.hash !== "" ||
+      host === "localhost" || host === "::1" || host === "[::1]" ||
+      /^127(?:\.\d{1,3}){3}$/.test(host) || host === "0.0.0.0"
+    ) {
+      throw new Error("invalid environment configuration: WAHA_BASE_URL must be an absolute http(s) URL without credentials, path, query or fragment, and must not target loopback");
+    }
   }
   // Fail fast on a malformed secrets key: the adapter would otherwise only
   // reject it at first use, after the API reported healthy. Absent stays
@@ -778,5 +808,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ...parsed.data,
     CORS_ALLOWED_ORIGINS: corsAllowedOrigins,
     INTEGRATIONS_PUBLIC_BASE_URL: integrationsPublicBaseUrl ?? undefined,
+    wahaBaseUrl,
+    wahaApiKey,
   };
 }

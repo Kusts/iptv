@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultWahaMediaPort, wahaMediaPortFromEnv } from "../src/communications/waha-media.js";
 import { WahaMediaPortProvider } from "../src/communications/waha-media.provider.js";
 
@@ -137,6 +137,38 @@ describe("wahaMediaPortFromEnv", () => {
 });
 
 describe("WahaMediaPortProvider", () => {
+  it("logs structured disabled status and reason without exposing credentials", () => {
+    delete process.env["WAHA_BASE_URL"];
+    delete process.env["WAHA_API_KEY"];
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      WahaMediaPortProvider.useFactory();
+      expect(info).toHaveBeenCalledWith(JSON.stringify({
+        event: "waha_media_configuration",
+        enabled: false,
+        reason: "not_configured",
+      }));
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("logs misconfiguration when only one setting is present", () => {
+    process.env["WAHA_BASE_URL"] = "https://waha.test";
+    delete process.env["WAHA_API_KEY"];
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      WahaMediaPortProvider.useFactory();
+      expect(info).toHaveBeenCalledWith(JSON.stringify({
+        event: "waha_media_configuration",
+        enabled: false,
+        reason: "api_key_missing",
+      }));
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it("resolves fail-closed without env (zero fetch, identical to the default)", async () => {
     delete process.env["WAHA_BASE_URL"];
     delete process.env["WAHA_API_KEY"];

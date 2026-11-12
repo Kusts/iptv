@@ -2,6 +2,13 @@
 
 ## Unreleased - Added
 
+- docs(waha): atualiza catálogo WhatsApp para registrar envio/ingestão de mídia e documentos, transcrição Groq STT e readback de attachments como IMPLEMENTED/software-verified; limites e binding anotados sem certificação nem fechamento dos gates M1/M2.
+
+- fix(provider): alinhar contrato/validação de `externalRef` em `provider.resolve_operation` (OpenAPI + Zod + runtime/UI) e política de `SUCCEEDED` sem referência nos caminhos de adapter/dispatcher: `externalRef` passa a ser aceito apenas em `SUCCEEDED` com padrão restrito; em `subscription.provision` sem referência válida o provisioning estaciona em `VERIFYING` em vez de concluir/ativar sem vínculo. Testes focados 102/102 + typecheck/lint verdes; gates Python verdes.
+
+- test(api): regressão de read-model de conversas em `crm-comms.integration.test.ts` (tenant criador vê a conversa; tenant divergente vê `[]`/404) + health-check de WAHA media em `waha-media.provider.ts` com log estruturado (`waha_media_configuration`) e testes 12/12. Typecheck/lint verdes. Validação com PostgreSQL descartável (Contabo) — 9/9 testes de integração verdes.
+
+
 - fix(web): MVP-02 — renovações passam a habilitar o comando somente com pedido `RENEWAL` já `SETTLED`; a jornada confirmou estado e diálogo sem reenviar renovação. O fluxo de suporte foi exercitado em desktop, tablet e mobile; o shell agora troca a sidebar fixa por drawer acessível até 900px, reorganiza topbar/conteúdo e elimina overflow horizontal global. Validação final: web focado 14/14, suíte web 277/277, typecheck e detector Impeccable sem achados; Playwright em 390/768/1280px sem overflow, drawer fecha por Escape/rota e tickets terminaram `RESOLVED` com tentativa `SUCCEEDED`. A integração de Renovação passou 16/16 na execução completa (1289,93 s); a execução focada com limite de 60 s expirou, e a causa da lentidão permanece indeterminada.
 
 - feat(web,api): STREAMMAX-UX-01 — melhora a jornada do operador pedido pago → assinatura → fulfillment → operação do fornecedor: detalhe do pedido expõe assinaturas vinculadas (`originating_order_id`) com links para `/subscriptions` e `/fulfillment`; `/fulfillment` aceita deep link `?subscriptionId=`/`?id=`, exibe explicação clara para `HUMAN_REQUIRED` e link direto para `/provider-operations?id=`; `/provider-operations` exibe links de navegação para ativação/assinatura quando a entidade é subscription e mensagem compreensível para `HUMAN_REQUIRED`. Sem alteração do Golden Loop, sem novos serviços/dashboards/design system. Validação de navegador autenticado não realizada nesta sessão (bloqueio de acesso) — PASS de UX no navegador pendente.

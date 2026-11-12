@@ -530,6 +530,18 @@ describe("CV-DSP-01 shared outcome applier (one source of truth)", () => {
     expect(applied).toEqual({ status: "VERIFYING", effectCertainty: "UNKNOWN" });
   });
 
+  it("subscription fulfillment SUCCEEDED without a ref remains VERIFYING", async () => {
+    const { operationId, trialId, ctx } = await setupOp();
+    const applied = await applySecretPortOutcome(ctx, {
+      operationId,
+      action: "subscription.provision",
+      entityType: "subscription",
+      entityId: trialId,
+      raw: { outcome: "SUCCEEDED", detail: "x", externalRef: null },
+    });
+    expect(applied).toEqual({ status: "VERIFYING", effectCertainty: "UNKNOWN" });
+  });
+
   it("FAILED maps to KNOWN_NOT_APPLIED with the failed event", async () => {
     const { db, operationId, trialId, ctx } = await setupOp();
     const applied = await applySecretPortOutcome(ctx, {

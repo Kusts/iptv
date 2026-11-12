@@ -1241,6 +1241,37 @@ paths:
                 $ref: '#/components/schemas/Message'
         '409':
           $ref: '#/components/responses/TenantContextConflict'
+  /v1/communications/attachments/{ref}:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags:
+      - Communications
+      operationId: getCommunicationAttachment
+      summary: Retrieve a tenant-scoped communication attachment
+      description: Returns stored inbound or outbound attachment bytes for the authenticated tenant.
+      parameters:
+      - name: ref
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Attachment bytes
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TenantContextConflict'
   /v1/communications/conversations/{id}/messages:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -5414,7 +5445,10 @@ components:
           - UNKNOWN
           description: >
             UNKNOWN parks the operation in VERIFYING for readback. SUCCEEDED/FAILED are
-            refused for secret-required operations (409).
+            refused for secret-required operations (409). externalRef is accepted only
+            with SUCCEEDED; it is forbidden with FAILED or UNKNOWN. SUCCEEDED for
+            manual subscription.provision requires externalRef; other operations may
+            succeed without one.
         note:
           type: string
           minLength: 1
@@ -5426,9 +5460,9 @@ components:
           maxLength: 128
           pattern: '^[A-Za-z0-9][A-Za-z0-9._:=-]{0,127}$'
           description: >
-            Required only for SUCCEEDED on a manual subscription.provision. An
-            operator-reported identifier, not verified by the provider API; never
-            a URL, secret, password, or token.
+            Required only for SUCCEEDED on a manual subscription.provision; forbidden
+            for FAILED/UNKNOWN. An operator-reported identifier, not verified by the
+            provider API; never a URL, secret, password, or token.
     ResolveProviderOperationResponse:
       type: object
       required:

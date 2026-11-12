@@ -2,6 +2,8 @@
 
 > Status: FINAL v1.0 implementation direction; capability certification still required.
 
+Media/audio software path is implemented: outbound media/document send, inbound media ingest, Groq STT transcription and tenant-scoped attachment readback (`GET /v1/communications/attachments/:ref`). This is software-verified only; operator gates M1/M2 remain pending and no capability is promoted to CERTIFIED here.
+
 ## Decision
 
 WAHA is the primary gateway behind the owned `MessagingGateway`. GOWS is the preferred engine pending Wave 0 certification. The domain must remain compatible with replacement adapters and a future official Meta Cloud API adapter.

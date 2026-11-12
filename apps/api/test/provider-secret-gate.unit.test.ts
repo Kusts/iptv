@@ -30,6 +30,21 @@ import type { CommandHandlerContext } from "../src/commands/command-bus.js";
 import { MemoryDb } from "./fakes/memory-fakes.js";
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
+
+describe("provider resolve externalRef input contract", () => {
+  const operationId = "11111111-1111-4111-8111-111111111111";
+
+  it("accepts only restricted refs on SUCCEEDED and rejects refs on non-success outcomes", () => {
+    expect(resolveOperationInput.safeParse({ operationId, outcome: "SUCCEEDED", externalRef: "cust-1" }).success).toBe(true);
+    for (const externalRef of ["https://provider/item", "has space", ""]) {
+      expect(resolveOperationInput.safeParse({ operationId, outcome: "SUCCEEDED", externalRef }).success).toBe(false);
+    }
+    for (const outcome of ["FAILED", "UNKNOWN"] as const) {
+      expect(resolveOperationInput.safeParse({ operationId, outcome, externalRef: "cust-1" }).success).toBe(false);
+    }
+    expect(resolveOperationInput.safeParse({ operationId, outcome: "UNKNOWN" }).success).toBe(true);
+  });
+});
 const VALID_REF = "infisical://production/BROWSER_WORKER_KEY";
 
 const PERMISSIONS = ["trial.write", "provider.operation.write", "crm.person.read", "crm.lead.write"];

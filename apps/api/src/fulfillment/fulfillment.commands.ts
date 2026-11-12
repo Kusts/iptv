@@ -535,7 +535,10 @@ export async function applySubscriptionProvisionOutcome(
   }
   const projected = projectSecretPortResult(input.raw);
   const effectiveOutcome =
-    projected.externalRefInvalid && projected.outcome === "SUCCEEDED" ? "UNKNOWN" : projected.outcome;
+    projected.outcome === "SUCCEEDED" &&
+    (projected.externalRefInvalid || projected.safeExternalRef === null)
+      ? "UNKNOWN"
+      : projected.outcome;
   const sigmaSummary = (base: Record<string, unknown>): Record<string, unknown> =>
     projected.safeExpiresBefore !== null ? { ...base, sigma_expires_before: projected.safeExpiresBefore } : base;
   if (effectiveOutcome === "SUCCEEDED") {

@@ -1,4 +1,4 @@
-import { wahaMediaPortFromEnv, type WahaMediaPort } from "./waha-media.js";
+import { normalizePublicBaseOrigin, wahaMediaPortFromEnv, type WahaMediaPort } from "./waha-media.js";
 
 /**
  * `WAHA_MEDIA_PORT` provider (EXEC-WAHA-MEDIA-WIRING-20261020).
@@ -15,5 +15,24 @@ import { wahaMediaPortFromEnv, type WahaMediaPort } from "./waha-media.js";
  */
 export const WahaMediaPortProvider = {
   provide: "WAHA_MEDIA_PORT",
-  useFactory: (): WahaMediaPort => wahaMediaPortFromEnv(),
+  useFactory: (): WahaMediaPort => {
+    const baseUrl = process.env["WAHA_BASE_URL"];
+    const apiKey = process.env["WAHA_API_KEY"];
+    let reason: string | null = null;
+    if ((!baseUrl || baseUrl.trim() === "") && (!apiKey || apiKey.trim() === "")) {
+      reason = "not_configured";
+    } else if (!baseUrl || baseUrl.trim() === "") {
+      reason = "base_url_missing";
+    } else if (!apiKey || apiKey.trim() === "") {
+      reason = "api_key_missing";
+    } else {
+      if (normalizePublicBaseOrigin(baseUrl) === null) reason = "base_url_invalid";
+    }
+    console.info(JSON.stringify({
+      event: "waha_media_configuration",
+      enabled: reason === null,
+      ...(reason === null ? {} : { reason }),
+    }));
+    return wahaMediaPortFromEnv();
+  },
 };

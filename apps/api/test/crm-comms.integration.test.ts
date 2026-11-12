@@ -523,6 +523,13 @@ describe.skipIf(!hasDb)("Wave 2 CRM + Communications (requires TEST_DATABASE_URL
     });
     const conversationId = conv.json<{ id: string }>().id;
 
+    // The creating tenant can read its conversation through the read-model list.
+    const ownList = await inject({ method: "GET", url: "/v1/communications/conversations", token });
+    expect(ownList.statusCode).toBe(200);
+    expect(ownList.json<{ conversations: Array<{ id: string }> }>().conversations).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: conversationId })]),
+    );
+
     // start_manual opens in HUMAN_CONTROL; release returns to AI.
     const release = await inject({
       method: "POST",

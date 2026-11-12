@@ -117,7 +117,11 @@ export const resolveOperationInput = z.object({
   outcome: z.enum(["SUCCEEDED", "FAILED", "UNKNOWN"]),
   note: z.string().trim().min(1).max(500).optional(),
   /** Operator-reported provider identity for manual fulfillment; never a readback proof. */
-  externalRef: z.string().min(1).max(128).optional(),
+  externalRef: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:=-]{0,127}$/).optional(),
+}).superRefine((input, ctx) => {
+  if (input.externalRef !== undefined && (input.outcome !== "SUCCEEDED")) {
+    ctx.addIssue({ code: "custom", path: ["externalRef"], message: "externalRef is only accepted for successful subscription fulfillment" });
+  }
 });
 
 export type ResolveOperationInput = z.infer<typeof resolveOperationInput>;
@@ -645,8 +649,14 @@ export async function applySecretPortOutcome(
     return { status: applied.status, effectCertainty: applied.effectCertainty };
   }
   const projected = projectSecretPortResult(input.raw);
+  // Subscription fulfillment cannot be considered applied without a valid
+  // provider binding. Other provider operations retain ref-optional success.
+  const requiresExternalRef = input.action === "subscription.provision" && input.entityType === "subscription";
   const effectiveOutcome =
-    projected.externalRefInvalid && projected.outcome === "SUCCEEDED" ? "UNKNOWN" : projected.outcome;
+    projected.outcome === "SUCCEEDED" &&
+    (projected.externalRefInvalid || (requiresExternalRef && projected.safeExternalRef === null))
+      ? "UNKNOWN"
+      : projected.outcome;
   const sigmaSummary = (base: Record<string, unknown>): Record<string, unknown> =>
     projected.safeExpiresBefore !== null ? { ...base, sigma_expires_before: projected.safeExpiresBefore } : base;
   if (effectiveOutcome === "SUCCEEDED") {

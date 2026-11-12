@@ -8,6 +8,7 @@ import {
   Post,
   Query,
   Req,
+  Res,
   UseGuards,
 } from "@nestjs/common";
 import type { Kysely } from "kysely";
@@ -16,12 +17,15 @@ import { withTenantTransaction } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
+import type { FastifyReply } from "fastify";
 import { AuthGuard } from "../auth/auth.guard.js";
 import { RequirePermission, PermissionsGuard } from "../auth/permissions.guard.js";
 import { AuthRateLimit } from "../auth/rate-limit.js";
 import { RateLimitGuard } from "../auth/rate-limit.guard.js";
 import { CommandBus, commandActorFromRequestParts } from "../commands/command-bus.js";
 import type { CommandActor } from "@iptv/domain";
+import { currentOutboundAttachmentStore } from "./waha-outbound-attachments.js";
+import { currentInboundAttachmentStore } from "./waha-inbound-attachments.js";
 
 function actorFromRequest(req: FastifyRequest): CommandActor {
   const auth = req.auth as NonNullable<FastifyRequest["auth"]>;
@@ -304,6 +308,27 @@ export class CommunicationsController {
       },
     );
     return send(result);
+  }
+
+  @Get("attachments/:ref")
+  @UseGuards(AuthGuard, PermissionsGuard)
+  @RequirePermission("conversation.reply")
+  async readAttachment(
+    @Param("ref") ref: string,
+    @Req() req: FastifyRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<FastifyReply> {
+    const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
+    const record = (await currentOutboundAttachmentStore().resolve(tenant.id, ref))
+      ?? (await currentInboundAttachmentStore().resolve(tenant.id, ref));
+    if (record === null) {
+      throw new HttpException({ code: "NOT_FOUND", message: "attachment not found" }, 404);
+    }
+    const filename = (record.fileName ?? "attachment").replace(/[\r\n"\\]/g, "_");
+    return reply
+      .header("Content-Type", record.mimeType)
+      .header("Content-Disposition", `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(record.fileName ?? "attachment")}`)
+      .send(Buffer.from(record.bytes));
   }
 
   @Post("conversations/:id/send-media")
