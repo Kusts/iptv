@@ -399,7 +399,7 @@ describe.skipIf(!hasDb)("Wave 6 Subscriptions + Fulfillment (requires TEST_DATAB
       outcome: "SUCCEEDED",
       externalRef: "infisical://sandbox/p86-test-ref",
     });
-    expect(unsafeExternalRef).toMatchObject({ ok: false, code: "precondition_failed" });
+    expect(unsafeExternalRef).toMatchObject({ ok: false, code: "validation_failed" });
     expect(JSON.stringify(unsafeExternalRef)).not.toContain("infisical://");
 
     const remainsPending = await db

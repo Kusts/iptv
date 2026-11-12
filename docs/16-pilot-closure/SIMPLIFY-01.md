@@ -32,6 +32,10 @@ canônico continua em `docs/15-implementation-baseline/`.
 
 ## O que mudou
 
+### Atualização 2026-11-12 (issue #130)
+
+- Bloqueio antigo de packaging CINEVISION (imagem sem CLI/browser) superado pelo PR #124 (CINEVISION-BROWSER-RUNTIME): a imagem da API agora inclui o CLI compilado do Browser Worker e Chromium. A certificação live CINEVISION segue pendente; não houve promoção de gate.
+
 - **Segredos de integração**: saíram do Infisical para PostgreSQL cifrado com
   AES-256-GCM (`platform.secret_values`, migration 068). Uma linha por
   `(tenant_id, secret_ref)`; a chave de 256 bits fica só no ambiente da API

@@ -2,6 +2,15 @@
 
 ## Unreleased - Added
 
+- docs(mvp): atualiza o status do StreamMax para `main@7d27472`, registra o CI
+  43233580447 verde e a issue #131 fechada após alinhar o teste a
+  `validation_failed`; registra a inspeção somente leitura do staging
+  detached/sujo em `b46cec7`, sem deploy. Mantém os quatro status de gate; não
+  afirma renewal E2E autenticado, ativação/readback de provedor ou certificação
+  live. A correção de armazenamento de segredos preserva backup PostgreSQL,
+  restore isolado, leitura sintética e custódia separada da chave, conforme a
+  implementação do PR #123.
+
 - docs(waha): atualiza catálogo WhatsApp para registrar envio/ingestão de mídia e documentos, transcrição Groq STT e readback de attachments como IMPLEMENTED/software-verified; limites e binding anotados sem certificação nem fechamento dos gates M1/M2.
 
 - fix(provider): alinhar contrato/validação de `externalRef` em `provider.resolve_operation` (OpenAPI + Zod + runtime/UI) e política de `SUCCEEDED` sem referência nos caminhos de adapter/dispatcher: `externalRef` passa a ser aceito apenas em `SUCCEEDED` com padrão restrito; em `subscription.provision` sem referência válida o provisioning estaciona em `VERIFYING` em vez de concluir/ativar sem vínculo. Testes focados 102/102 + typecheck/lint verdes; gates Python verdes.

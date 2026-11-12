@@ -1,50 +1,66 @@
-# StreamMax — estado atual do MVP (12/11/2026)
+# StreamMax — estado do MVP (12/11/2026)
 
-> **Snapshot de engenharia e evidências, não um certificado de release.**
-> Código consultado: `main@7e273314d97da7fa415121eda8aacbba9f506132`.
-> A consulta foi feita pelo GitHub, sem acesso direto ao runtime Contabo nesta revisão.
-> Verificações de staging descritas abaixo são as últimas reportadas pelo operador/OpenCode; não foram repetidas aqui.
-> Este arquivo atualiza a leitura do projeto sem apagar os relatórios históricos.
+> **Snapshot de engenharia e evidências; não é certificado de release.** Código
+> consultado: `main@7d27472`. A inspeção do staging foi somente leitura;
+> o checkout observado permanece detached e sujo. Esta atualização não fez
+> deploy nem alterou dados, credenciais ou serviços.
 
-## Qual MVP estamos medindo?
+## Escopo
 
-- **`MVP_STREAMMAX_OPERATIONAL`:** operação interna single-tenant (cliente, pedido, PIX, assinatura, ativação manual supervisionada, renovação, suporte e recuperação). Requisitos e quatro gates em [01-product-and-mvp.md](../15-implementation-baseline/01-product-and-mvp.md).
-- **`MVP-PILOT`:** escopo canônico mais amplo, com integrações certificadas, jornadas e demais capacidades obrigatórias. **Não declarado pronto.**
-- **`MVP-SAAS`:** adiciona onboarding e cobrança de tenants externos, operação assistida e requisitos comerciais. **Não declarado pronto.**
-- **`STREAMMAX_GOLDEN_LOOP_STAGING_READY` e `STREAMMAX_OPERATOR_UX_PASS`** são marcos **parciais**, não substituem nenhum desses gates. [DoD canônico](../15-implementation-baseline/15-definition-of-done.md).
+- **`MVP_STREAMMAX_OPERATIONAL`:** operação interna single-tenant de cliente,
+  pedido, cobrança, assinatura, ativação manual supervisionada, renovação,
+  suporte e recuperação. Os critérios e quatro gates estão no
+  [baseline](../15-implementation-baseline/01-product-and-mvp.md).
+- **`MVP-PILOT`** e **`MVP-SAAS`** permanecem escopos distintos e não são declarados
+  prontos. `STREAMMAX_GOLDEN_LOOP_STAGING_READY` e
+  `STREAMMAX_OPERATOR_UX_PASS` são marcos parciais; não substituem gates.
 
-## Evidências recentes
+## Evidências atuais e limites
 
-| Área | O que foi comprovado | Limite da evidência |
+| Área | Evidência observada | Limite |
 | --- | --- | --- |
-| Venda → assinatura → fulfillment | PR [#128](https://github.com/Kusts/iptv/pull/128): scheduler automático e E2E sintético para pedido `SETTLED` → assinatura `PENDING_ACTIVATION` → operação do fornecedor, idempotência, reconciliação e isolamento. Staging reportado saudável em `main@c79160c`. | No staging, adapter `manual` manteve operação `HUMAN_REQUIRED`. Não comprova serviço ativado no fornecedor real. |
-| Navegação do operador | PR [#129](https://github.com/Kusts/iptv/pull/129) mesclado; deploy de API/web no staging reportado em `main@b46cec7`. OpenCode reportou jornada autenticada desktop (1280×800) e mobile (390×844), com pedido, assinatura, fulfillment e operação `HUMAN_REQUIRED`; `STREAMMAX_OPERATOR_UX_PASS` registrado. | Evidência operacional reportada pela ponte; esta revisão não inspecionou screenshots nem repetiu sessão. |
-| Renovação e suporte | Commit [`b6a06a8`](https://github.com/Kusts/iptv/commit/b6a06a8e688c6757b019e1e09d393bc866031696): correções em `/renewals`, suporte e shell responsivo. Registro da entrega informa web 277/277, integração de renovação 16/16 e tickets `RESOLVED` com tentativa `SUCCEEDED`; CI 4/4. | A prova de UI de renovação validou estado/diálogo; **não** comprovou no navegador uma nova renovação liquidada concluída ponta a ponta. A execução focada de integração expirou em 60 s; a execução completa levou ~1290 s. |
-| Asaas | [E2E Sandbox de 04/11](../../evidence/pilot-asaas-e2e-20261104/report.md): PIX sintético, webhook, `SETTLED`/`PAID`/`CONFIRMED` sem duplicata. Control Center retornou `CONNECTED_READ_ONLY` em 07/11. | Não significa cobrança real, refund de produção ou certificação de todo o ciclo. |
-| WhatsApp/WAHA | Código de sessões por tenant, QR e painel está na `main`. Commit [`7e273314`](https://github.com/Kusts/iptv/commit/7e273314d97da7fa415121eda8aacbba9f506132) registra mídia/transcrição/readback **software-verified** e teste isolado de read-model de conversas 9/9. | Certificação completa M1/M2 e operação do canal devem ser conferidas por capacidade; implementação não equivale a certificação live. |
-| Sigma / CINEVISION | PR [#127](https://github.com/Kusts/iptv/pull/127) adicionou adapter M2M Sigma com chamadas simuladas, readback e tratamento de efeito desconhecido; PR #128 conectou o fluxo automático. Browser Worker na imagem da API pelo PR [#124](https://github.com/Kusts/iptv/pull/124). | `SIGMA_MODE=live`/token e contratação não habilitados nos últimos relatos; **ativação real e readback externo não comprovados**. Fallback manual continua esperado. |
-| Segredos e recuperação | PR [#123](https://github.com/Kusts/iptv/pull/123): segredos em PostgreSQL com AES-256-GCM (migration 068); [SIMPLIFY-01](SIMPLIFY-01.md) registra descriptografia 4/4 e restore isolado em 07/11. | Não classificar o runtime atual como dependente de Infisical. Não inferir segurança operacional completa de um teste de restore. |
-| Versão e implantação | A `main` avançou de `b46cec7` para `b6a06a8` e `7e273314` em 12/11. | A última **implantação staging comprovada nos relatos** era `b46cec7`; não há prova nesta revisão de deploy dos commits de 12/11. |
+| Main, CI e issue #131 | `main@7d27472`; CI [run 43233580447](https://github.com/Kusts/iptv/actions/runs/43233580447) verde nos quatro checks: `build`, `adversarial`, `security-scans` e `outbox-050-role-guards`. Issue [#131](https://github.com/Kusts/iptv/issues/131) fechada após alinhar a expectativa do teste a `validation_failed`, mantendo a validação estrita de `externalRef`. | CI verde valida esse HEAD e seus checks, não certifica o MVP ou os gates operacionais. A execução local focada de integração expirou por timeout; isso é inconclusivo, não falha de código. |
+| Staging Contabo | Leitura somente em `/home/deploy/iptv-staging`: checkout detached em `b46cec7`, com alterações locais em Compose, marcador, backups e um arquivo de teste. API health/ready `200`, web `200`, histórico de migrations `69/69` até `069`; uma operação de provedor `HUMAN_REQUIRED`; outbox `WORKER`, geração `3`. `SIGMA_MODE` não está live. O delta `b46cec7..7d27472` não contém migrations. | O estado local sujo foi preservado e não recebeu deploy. Health, readiness e migrations não comprovam jornada autenticada de renovação, ativação/readback do provedor nem certificação live. |
+| Venda, assinatura e fulfillment | PR [#128](https://github.com/Kusts/iptv/pull/128) adicionou o ciclo sintético automatizado, idempotência, reconciliação e isolamento; o registro de staging mantém a operação manual em `HUMAN_REQUIRED`. | Não comprova serviço ativado no provedor real. |
+| UX do operador | PR [#129](https://github.com/Kusts/iptv/pull/129) e relato de staging em `b46cec7` registram navegação autenticada de pedido, assinatura, fulfillment e operação manual. | É evidência reportada de UX; não comprova renewal E2E autenticado no navegador. |
+| Renovação e suporte | A entrega de `b6a06a8` registrou web `277/277`, integração de renovação `16/16` na execução completa e tickets `RESOLVED` com tentativa `SUCCEEDED`. | A execução focada expirou por timeout local. Não há evidência de uma nova renovação autenticada e liquidada ponta a ponta no navegador. |
+| Asaas | [E2E Sandbox de 04/11](../../evidence/pilot-asaas-e2e-20261104/report.md) registrou PIX sintético, webhook e estados `SETTLED/PAID/CONFIRMED` sem duplicata; Control Center informou `CONNECTED_READ_ONLY` em 07/11. | Evidência Sandbox histórica; não comprova cobrança real, refund de produção nem certificação do ciclo completo. |
+| WhatsApp/WAHA | A `main` inclui sessões por tenant e os recursos de mídia, transcrição e readback software-verified registrados em `7e273314`. | Implementação/teste de software não equivalem à certificação live M1/M2 ou operação atual do canal. |
+| Sigma / CINEVISION | PR [#127](https://github.com/Kusts/iptv/pull/127) adicionou adapter Sigma com chamadas simuladas; PR [#124](https://github.com/Kusts/iptv/pull/124) incluiu CLI/Chromium no runtime da API. | `SIGMA_MODE` não está live. Não foram comprovadas ativação de serviço no provedor nem leitura independente posterior. |
+| Segredos e recuperação | PR [#123](https://github.com/Kusts/iptv/pull/123) e migration `068` implementaram segredos em PostgreSQL cifrados com AES-256-GCM; veja [SIMPLIFY-01](SIMPLIFY-01.md). | O baseline mantém backup PostgreSQL cifrado/verificável, restore isolado, leitura sintética e custódia separada de `SECRETS_ENCRYPTION_KEY`. A mudança de cofre não remove os critérios de segurança e recuperação nem, por si só, prova o gate operacional atual. |
 
-## Pendências objetivas para fechamento
+## Status dos quatro gates
 
-1. **Renovação operacional E2E:** comprovar com dados **descartáveis** uma assinatura ativa → cotação → pedido de renovação liquidado por simulador → renovação → novo ciclo e validade preservada, mais ticket associado ao mesmo cliente. Reutilizar testes e Playwright existentes; não repetir suíte inteira sem motivo. A validação visual de suporte já reportada deve ser reaproveitada.
-2. **Entrega do serviço:** o adapter Sigma existe, mas a ativação no fornecedor e readback independente seguem sem certificação. Manter `HUMAN_REQUIRED`/modo manual até autorização e recursos legítimos de teste. Não contratar ou executar operação externa automaticamente.
-3. **Readiness do HEAD (bloqueio confirmado):** os dois checks `build` da `main@7e273314` **falharam** no teste `subscription-fulfillment.integration.test.ts:402`: o caso de `externalRef` inseguro esperava `precondition_failed`, mas a validação mais estrita agora responde `validation_failed` (1 falha, 1451 testes aprovados, 1 ignorado). Os demais jobs (`security-scans`, `adversarial`, `outbox-050-role-guards`) passaram. Revisar contrato/assertion, executar o teste focado e recuperar CI verde **antes** de qualquer promoção. Verificar também a revisão efetivamente implantada.
-4. **Backlog versus código:** issues [#86](https://github.com/Kusts/iptv/issues/86), [#87](https://github.com/Kusts/iptv/issues/87), [#88](https://github.com/Kusts/iptv/issues/88), [#89](https://github.com/Kusts/iptv/issues/89) continuam abertas apesar de implementações do hub e onboarding. Conferir cada critério com evidência antes de fechar ou reescrever; não criar tickets duplicados.
-5. **Higiene documental/repo:** `RELEASE-CLOSURE-STATUS.md`/`RELEASE-CLOSURE-GAPS.md` são snapshots datados de outubro; o fechamento operacional de 03/11 e `SIMPLIFY-01` de 07/11 são históricos. Os arquivos `staging-compose-current.yml` e `staging-compose-target-6134a64.yml` foram adicionados à raiz em 12/11 (o segundo está vazio); avaliar se são artefatos temporários antes de qualquer limpeza. As issues [#44](https://github.com/Kusts/iptv/issues/44), [#51](https://github.com/Kusts/iptv/issues/51) e [#74](https://github.com/Kusts/iptv/issues/74) exigem triagem pelo código/evidência atual, sem assumir resolução nem bloqueio automático.
+Os estados abaixo são preservados conforme o registro de fechamento de 03/11;
+esta atualização não promove nem reclassifica gates. Evidências de CI e smoke
+não substituem os critérios completos do [baseline](../15-implementation-baseline/01-product-and-mvp.md).
 
-## Leitura dos gates (não é reclassificação formal)
+| Gate | Status preservado | Leitura desta atualização |
+| --- | --- | --- |
+| `MVP_CODE_INTEGRATED` | `BLOCKED_EXTERNAL` | CI da main está verde, mas o staging continua em checkout detached/sujo de `b46cec7`; não foi alinhado nem recebeu o HEAD atual. |
+| `MVP_OPERATIONAL_SECURITY` | `BLOCKED_EXTERNAL` | PR #123 corrige o armazenamento de segredos; a evidência desta revisão não reatesta o processo completo de segurança e recuperação exigido. |
+| `MVP_SERVICE_DELIVERY` | `BLOCKED_EXTERNAL` | A única operação observada no staging continua `HUMAN_REQUIRED`; sem ativação real e readback independente. |
+| `MVP_RENEWAL_AND_OPERATIONS` | `PASS` | Status do fechamento controlado de 03/11 mantido. Isso não afirma renewal E2E autenticado no navegador nesta revisão. |
 
-- **`MVP_CODE_INTEGRATED`:** código evoluiu, mas o gate da **revisão mais nova** não pode ser promovido com base no smoke de um commit anterior.
-- **`MVP_OPERATIONAL_SECURITY`:** há prova de migração de segredos, restore e reversão da autenticação temporária; a conformidade integral do gate atual não foi reatestada nesta auditoria.
-- **`MVP_SERVICE_DELIVERY`:** sem ativação real de recurso de teste nem readback independente; **bloqueio externo permanece**.
-- **`MVP_RENEWAL_AND_OPERATIONS`:** `PASS` controlado no fechamento de 03/11; testes adicionais e suporte visual em 12/11 ampliam evidência, mas a jornada completa de renovação no browser permanece sem prova.
+## Pendências de evidência
 
-**Veredito:** núcleo técnico operacional avançado; **`MVP_STREAMMAX_OPERATIONAL` ainda não encerrado**, `MVP-PILOT` e `MVP-SAAS` não promovidos. A próxima fatia menor é a prova operacional de renovação/suporte em PostgreSQL isolado, usando Docker remoto **somente com autorização** e removendo o recurso descartável ao final.
+1. Comprovar renewal E2E autenticado com dados descartáveis: assinatura ativa,
+   pedido de renovação liquidado por simulador, novo ciclo/validade sem
+   duplicata e suporte associado ao mesmo cliente.
+2. Manter ativação manual supervisionada até haver autorização e recurso de
+   teste legítimo para ativação Sigma/CINEVISION e readback independente.
+3. Preservar o checkout staging sujo; qualquer atualização futura deve partir
+   de revisão explícita do estado e respeitar o procedimento de deploy autorizado.
+4. Triar backlog e artefatos temporários com evidência atual, sem inferir
+   resolução ou remover arquivos a partir deste snapshot.
+
+**Veredito:** o núcleo técnico evoluiu e o CI da `main@7d27472` está verde, mas
+`MVP_STREAMMAX_OPERATIONAL` não está encerrado; `MVP-PILOT` e `MVP-SAAS` não foram
+promovidos. Não há aqui claim de renewal E2E autenticado, ativação/readback de
+provedor ou certificação live.
 
 ## Fontes e autoridade
 
-- Contratos: [MVP canônico](../15-implementation-baseline/01-product-and-mvp.md), [Definition of Done](../15-implementation-baseline/15-definition-of-done.md), [capabilities por integração](../10-operations/integrations-capability-status.md).
-- Histórico: [fechamento de 03/11](MVP-OPERATIONAL-CLOSURE.md), [simplificação](SIMPLIFY-01.md), [CHANGELOG](../../CHANGELOG.md), PRs/commits ligados acima.
-- Este documento é **estado de evidência datado**, não ADR, não alteração automática de capability/runtime, nem autorização para deploy, pagamento ou ativação.
+- Critérios: [MVP canônico](../15-implementation-baseline/01-product-and-mvp.md), [Definition of Done](../15-implementation-baseline/15-definition-of-done.md) e [capabilities por integração](../10-operations/integrations-capability-status.md).
+- Histórico: [fechamento de 03/11](MVP-OPERATIONAL-CLOSURE.md), [simplificação](SIMPLIFY-01.md), [CHANGELOG](../../CHANGELOG.md), PRs/commits e run vinculados acima.
+- Este é um snapshot datado de evidência, não ADR, alteração automática de capability/runtime ou autorização para deploy, pagamento ou ativação.
