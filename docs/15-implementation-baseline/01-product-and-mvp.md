@@ -47,11 +47,13 @@ atestação manual sozinha nunca é PASS):
 - `MVP_OPERATIONAL_SECURITY` — trocar credenciais temporárias de operador
   comprometidas via recuperação suportada/externa aprovada; invalidar sessões
   antigas; antigas falham/novas funcionam; remover privilégios admin
-  temporários; backup criptografado e verificável do PostgreSQL com teste de
-  restore isolado e leitura sintética de segredo; `SECRETS_ENCRYPTION_KEY`
-  mantida fora do banco/dump e sob custódia separada. Sem edição direta de
-  hash. Os critérios de recuperação e integridade permanecem; o runtime do
-  MVP não exige Infisical (simplificação PR #123, migration 068).
+  temporários; backup externo, criptografado e verificável do PostgreSQL, com
+  chave de backup independente das chaves de runtime, restore isolado e
+  leitura sintética de segredo. `SECRETS_ENCRYPTION_KEY` e
+  `BETTER_AUTH_SECRET` ficam fora do banco/dump e sob custódia separada. Não
+  editar hashes diretamente; os critérios de recuperação e integridade
+  permanecem. O runtime do MVP usa segredos PostgreSQL cifrados conforme PR
+  #123 (migration 068), sem exigir Infisical.
 - `MVP_SERVICE_DELIVERY` — reutilizar o rehearsal P8.5 existente, verificar o
   estado atual de pedido/cobrança/pagamento/assinatura/fulfillment; sem
   pagamento duplicado; ativar somente via recurso de teste CINEVISION

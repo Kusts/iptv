@@ -7,9 +7,9 @@
   `validation_failed`; registra a inspeção somente leitura do staging
   detached/sujo em `b46cec7`, sem deploy. Mantém os quatro status de gate; não
   afirma renewal E2E autenticado, ativação/readback de provedor ou certificação
-  live. A correção de armazenamento de segredos preserva backup PostgreSQL,
-  restore isolado, leitura sintética e custódia separada da chave, conforme a
-  implementação do PR #123.
+  live. A correção de armazenamento de segredos acompanha o PR #123 e mantém
+  os critérios de backup externo PostgreSQL, chave de backup independente,
+  restore isolado, leitura sintética e custódia separada das chaves de runtime.
 
 - docs(waha): atualiza catálogo WhatsApp para registrar envio/ingestão de mídia e documentos, transcrição Groq STT e readback de attachments como IMPLEMENTED/software-verified; limites e binding anotados sem certificação nem fechamento dos gates M1/M2.
 
