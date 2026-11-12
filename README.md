@@ -3,11 +3,12 @@
 Multi-tenant IPTV SaaS: sales, fulfillment, billing, renewal and support
 operations automated around a human-in-the-loop agent runtime.
 
-> **Status: in active development.** Implementation baseline v1.0.1 is the
-> canonical contract; Waves 1–16 plus W0 CINEVISION runtime hardening
-> (Fases 0–5, migration 046) are implemented and covered by the test suite.
-> `CHANGELOG.md` is the authoritative delivery record — this README describes
-> the repository as it is today, not a wave-by-wave history.
+> **Status: in active development; MVP not released.** The v1.0.1
+> implementation baseline remains the canonical contract. For the current,
+> evidence-qualified StreamMax MVP snapshot (2026-11-12), see
+> [STREAMMAX-MVP-STATUS-2026-11-12](docs/16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-12.md).
+> `CHANGELOG.md` records deliveries; implemented code, staging smoke and live
+> certification are separate claims.
 
 ## What this is
 
