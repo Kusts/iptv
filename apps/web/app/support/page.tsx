@@ -68,6 +68,40 @@ export default function SupportPage(): React.JSX.Element {
 const WRITE_PERMISSION = "support.ticket.write";
 const CRM_PERSON_READ_PERMISSION = "crm.person.read";
 
+/**
+ * Espelho do mapa de transições de `apps/api/src/support/support-policy.ts`.
+ * O web é hard-boundary (nunca importa código de servidor), então a UI
+ * replica a política apenas para habilitar/desabilitar controles — a API
+ * continua sendo a autoridade que valida e aplica a transição.
+ */
+const TICKET_TRANSITIONS: Record<string, readonly string[]> = {
+  NEW: ["TRIAGING", "CANCELLED"],
+  TRIAGING: ["IN_PROGRESS", "CANCELLED"],
+  IN_PROGRESS: ["WAITING_CUSTOMER", "WAITING_INTERNAL", "WAITING_PROVIDER", "RESOLVED", "CANCELLED"],
+  WAITING_CUSTOMER: ["IN_PROGRESS", "RESOLVED", "CANCELLED"],
+  WAITING_INTERNAL: ["IN_PROGRESS", "RESOLVED", "CANCELLED"],
+  WAITING_PROVIDER: ["IN_PROGRESS", "RESOLVED", "CANCELLED"],
+  RESOLVED: ["CLOSED", "IN_PROGRESS"],
+  CLOSED: ["IN_PROGRESS"],
+  CANCELLED: [],
+};
+
+/** Resultados que liberam a resolução (SPEC 07 §7: solved → RESOLVED). */
+const UNLOCKING_ATTEMPT_OUTCOMES = ["SUCCEEDED", "PARTIAL"];
+const SOLUTION_ATTEMPT_OUTCOMES = ["SUCCEEDED", "PARTIAL", "FAILED", "INCONCLUSIVE"] as const;
+
+const TICKET_STATUS_LABELS: Record<string, string> = {
+  NEW: "Novo",
+  TRIAGING: "Triagem",
+  IN_PROGRESS: "Em andamento",
+  WAITING_CUSTOMER: "Aguardando cliente",
+  WAITING_INTERNAL: "Aguardando interno",
+  WAITING_PROVIDER: "Aguardando provedor",
+  RESOLVED: "Resolvido",
+  CLOSED: "Fechado",
+  CANCELLED: "Cancelado",
+};
+
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 interface PersonOption {
@@ -227,15 +261,16 @@ function TicketDetailPanel({ id }: { id: string }): React.JSX.Element {
   const { data, error, loading, reload } = useApi<TicketDetail>(`/v1/tickets/${id}`);
   const { push } = useToast();
   const [outcome, setOutcome] = useState("SUCCEEDED");
+  const [procedureKey, setProcedureKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  const resolve = async (): Promise<void> => {
+  const runAction = async (action: () => Promise<unknown>, successMessage: string): Promise<void> => {
     setBusy(true);
     setMsg(null);
     try {
-      await api.post(`/v1/tickets/${id}/resolve`, { outcome });
-      push("Ticket resolvido.");
+      await action();
+      push(successMessage);
       reload();
     } catch (err) {
       setMsg(userMessage(err));
@@ -248,6 +283,11 @@ function TicketDetailPanel({ id }: { id: string }): React.JSX.Element {
   if (error !== null) return <ErrorState message={error} onRetry={reload} />;
   if (data === null) return <EmptyState title="Ticket não encontrado" />;
   const t = data.ticket;
+  const nextStatuses = TICKET_TRANSITIONS[t.status] ?? [];
+  const transitionStatuses = nextStatuses.filter((status) => status !== "RESOLVED");
+  const hasUnlockingAttempt = data.attempts.some((a) => UNLOCKING_ATTEMPT_OUTCOMES.includes(a.outcome));
+  const canResolve = nextStatuses.includes("RESOLVED") && hasUnlockingAttempt;
+
   return (
     <Card title="Detalhe do ticket">
       <p>{t.summary}</p>
@@ -256,6 +296,30 @@ function TicketDetailPanel({ id }: { id: string }): React.JSX.Element {
         <span className="cc-muted">{t.priority} · {t.category}</span>
         <span className="cc-muted">Criado em {formatDateTime(t.createdAt)}</span>
       </div>
+
+      <h4>Transições</h4>
+      {nextStatuses.length === 0 ? (
+        <p className="cc-muted">Status {TICKET_STATUS_LABELS[t.status] ?? t.status} não tem transições disponíveis.</p>
+      ) : (
+        <div className="cc-row">
+          {transitionStatuses.map((to) => (
+            <Button
+              key={to}
+              variant="secondary"
+              disabled={busy}
+              onClick={() =>
+                void runAction(
+                  () => api.post(`/v1/tickets/${id}/transition`, { toStatus: to }),
+                  `Ticket movido para ${TICKET_STATUS_LABELS[to] ?? to}.`,
+                )
+              }
+            >
+              {TICKET_STATUS_LABELS[to] ?? to}
+            </Button>
+          ))}
+        </div>
+      )}
+
       <h4>Tentativas de solução ({data.attempts.length})</h4>
       {data.attempts.length === 0 ? (
         <p className="cc-muted">Nenhuma tentativa registrada. A resolução exige uma tentativa com resultado SUCCEEDED ou PARTIAL.</p>
@@ -264,21 +328,67 @@ function TicketDetailPanel({ id }: { id: string }): React.JSX.Element {
           {data.attempts.map((a) => (
             <li key={a.id}>
               #{a.attemptNo} <StatusPill status={a.outcome} /> <span className="cc-muted">{a.actorType}</span>
+              {a.procedureKey !== null ? <span className="cc-muted"> · {a.procedureKey}</span> : null}
             </li>
           ))}
         </ul>
       )}
-      <h4>Resolver</h4>
-      <div className="cc-form">
-        <Field label="Resultado da solução">
+      <div className="cc-form cc-u-mt-2">
+        <Field label="Procedimento (chave)">
+          <Input
+            value={procedureKey}
+            onChange={(e) => setProcedureKey(e.target.value)}
+            disabled={busy}
+            placeholder="ex.: restart-app"
+          />
+        </Field>
+        <Field label="Resultado da tentativa">
           <Select value={outcome} onChange={(e) => setOutcome(e.target.value)} disabled={busy}>
-            <option value="SUCCEEDED">SUCCEEDED — funcionou</option>
-            <option value="PARTIAL">PARTIAL — funcionou em parte</option>
-            <option value="FAILED">FAILED — não funcionou</option>
-            <option value="INCONCLUSIVE">INCONCLUSIVE — inconclusivo</option>
+            {SOLUTION_ATTEMPT_OUTCOMES.map((o) => (
+              <option key={o} value={o}>
+                {o}
+              </option>
+            ))}
           </Select>
         </Field>
-        <Button disabled={busy} onClick={() => void resolve()}>
+        <Button
+          variant="secondary"
+          disabled={busy || procedureKey.trim().length === 0}
+          onClick={() =>
+            void runAction(
+              () =>
+                api.post(`/v1/tickets/${id}/attempts`, {
+                  procedureKey: procedureKey.trim(),
+                  outcome,
+                }),
+              "Tentativa de solução registrada.",
+            )
+          }
+        >
+          Registrar tentativa
+        </Button>
+      </div>
+
+      <h4>Resolver</h4>
+      <div className="cc-form">
+        <p className="cc-muted">
+          {canResolve
+            ? "Resolução habilitada: o ticket está em atendimento e há tentativa com SUCCEEDED/PARTIAL."
+            : hasUnlockingAttempt
+              ? t.status === "TRIAGING"
+                ? "Mova o ticket de Triagem para Em andamento para habilitar a resolução."
+                : "O ticket precisa estar em atendimento (IN_PROGRESS/WAITING_*) para resolver."
+              : "Registre uma tentativa com resultado SUCCEEDED ou PARTIAL para habilitar a resolução."}
+        </p>
+        <Button
+          disabled={busy || !canResolve}
+          onClick={() =>
+            void runAction(
+              () => api.post(`/v1/tickets/${id}/resolve`, { outcome: "SUCCEEDED" }),
+              "Ticket resolvido.",
+            )
+          }
+        >
           {busy ? "Resolvendo…" : "Resolver ticket"}
         </Button>
         {msg ? <p className="cc-muted">{msg}</p> : null}

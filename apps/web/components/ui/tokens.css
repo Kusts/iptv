@@ -148,7 +148,7 @@ body.cc-body {
 /* --- Layout Principal --- */
 .cc-shell {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 260px minmax(0, 1fr);
   min-height: 100vh;
   background: var(--cc-bg);
 }
@@ -330,6 +330,7 @@ body.cc-body {
   gap: 1.25rem;
   max-width: 1380px;
   width: 100%;
+  min-width: 0;
 }
 
 .cc-content h1 {
@@ -1161,3 +1162,215 @@ body.cc-body {
   border-top: 1px solid var(--cc-border-subtle);
 }
 
+/* --- Responsive application shell --- */
+.cc-mobile-nav-toggle,
+.cc-mobile-nav-backdrop {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .cc-shell {
+    display: block;
+    min-width: 0;
+  }
+
+  .cc-sidebar {
+    position: fixed;
+    z-index: 1001;
+    inset: 0 auto 0 0;
+    width: min(84vw, 320px);
+    max-width: calc(100vw - 2rem);
+    height: 100vh;
+    height: 100dvh;
+    transform: translateX(-105%);
+    visibility: hidden;
+    box-shadow: var(--cc-shadow-lg);
+    transition: transform 180ms ease, visibility 180ms linear;
+  }
+
+  .cc-sidebar-open {
+    transform: translateX(0);
+    visibility: visible;
+  }
+
+  .cc-sidebar a {
+    min-height: 44px;
+  }
+
+  .cc-mobile-nav-backdrop {
+    display: block;
+    position: fixed;
+    z-index: 1000;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: rgba(3, 7, 18, 0.62);
+    cursor: pointer;
+  }
+
+  .cc-main {
+    width: 100%;
+    min-width: 0;
+    min-height: 100vh;
+  }
+
+  .cc-topbar {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    min-width: 0;
+  }
+
+  .cc-mobile-nav-toggle {
+    display: inline-flex;
+    grid-column: 1;
+    grid-row: 1;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .cc-topbar-tenant {
+    grid-column: 2;
+    grid-row: 1;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    gap: 0.35rem;
+    padding: 0.25rem 0.5rem;
+  }
+
+  .cc-topbar-tenant-label {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 6rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #tenant-switcher {
+    flex: 1 1 0;
+    width: auto;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .cc-topbar > .cc-u-flex-1 {
+    display: none;
+  }
+
+  .cc-topbar-theme-toggle {
+    grid-column: 3;
+    grid-row: 1;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+  }
+
+  .cc-topbar-user {
+    grid-column: 1 / 3;
+    grid-row: 2;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .cc-topbar-user .cc-muted {
+    max-width: calc(100vw - 124px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cc-topbar-logout {
+    grid-column: 3;
+    grid-row: 2;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+  }
+
+  .cc-topbar-logout span {
+    display: none;
+  }
+
+  .cc-field-error {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+
+  .cc-content {
+    width: 100%;
+    max-width: none;
+    padding: 1rem 0.75rem max(2rem, env(safe-area-inset-bottom));
+    gap: 1rem;
+  }
+
+  .cc-content > *,
+  .cc-grid-2 > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .cc-card {
+    min-width: 0;
+    padding: 1rem;
+  }
+
+  .cc-table-wrap {
+    max-width: 100%;
+  }
+
+  .cc-toasts {
+    right: 0.75rem;
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    left: 0.75rem;
+    align-items: stretch;
+  }
+
+  .cc-toast {
+    max-width: 100%;
+  }
+
+  .cc-dialog-backdrop {
+    padding: 0.75rem;
+  }
+
+  .cc-dialog {
+    max-height: calc(100dvh - 1.5rem);
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 680px) {
+  .cc-grid-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cc-kpi-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  }
+
+  .cc-topbar-tenant-label {
+    max-width: 5rem;
+    font-size: 0.72rem;
+  }
+
+  .cc-content h1 {
+    font-size: 1.4rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-sidebar {
+    transition: none;
+  }
+}

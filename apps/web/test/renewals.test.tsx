@@ -211,6 +211,129 @@ describe("RenewalsPage", () => {
     expect(seen.posts.some((p) => p.url.includes("/v1/renewals/expire-overdue-due"))).toBe(true);
   });
 
+  it("renovar envia o orderId do pedido de renovação liquidado (subscription.renew exige { orderId })", async () => {
+    const seen = { posts: [] as { url: string; body?: unknown }[] };
+    sessionMocks(
+      ["subscription.read", "subscription.write"],
+      {
+        "/v1/subscriptions": { subscriptions: [] },
+        "/v1/renewals?subscriptionId=sub-renew-ok": {
+          orders: [
+            {
+              id: "ro-settled-1",
+              orderType: "RENEWAL",
+              status: "SETTLED",
+              currency: "BRL",
+              netAmountMinor: "3990",
+              cycle: { id: "cy-1", cycleNo: 1 },
+              createdAt: "2026-10-01T00:00:00Z",
+              settledAt: "2026-10-01T00:01:00Z",
+            },
+          ],
+        },
+        "/v1/recovery-tasks?subscriptionId=sub-renew-ok": {
+          tasks: [],
+        },
+      },
+      seen,
+    );
+
+    renderPage(<RenewalsPage />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Renovações" })).toBeTruthy());
+    fireEvent.change(screen.getByPlaceholderText("UUID da assinatura"), {
+      target: { value: "sub-renew-ok" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar renovações" }));
+
+    await waitFor(() => expect(screen.getByText("R$ 39,90")).toBeTruthy());
+    const renewButton = screen.getByRole("button", { name: "Renovar" }) as HTMLButtonElement;
+    expect(renewButton.disabled).toBe(false);
+    fireEvent.click(renewButton);
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.getAttribute("aria-label")).toBe("Renovar assinatura");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Renovar" }));
+
+    await waitFor(() => expect(screen.getByText("Comando de renovação enviado.")).toBeTruthy());
+    expect(seen.posts.some((p) => p.url.includes("/v1/renewals/renew") && (p.body as any)?.orderId === "ro-settled-1")).toBe(true);
+  });
+
+  it("renovar fica desabilitado sem pedido de renovação liquidado", async () => {
+    const seen = { posts: [] as { url: string; body?: unknown }[] };
+    sessionMocks(
+      ["subscription.read", "subscription.write"],
+      {
+        "/v1/subscriptions": { subscriptions: [] },
+        "/v1/renewals?subscriptionId=sub-renew-none": {
+          orders: [
+            {
+              id: "ro-open-1",
+              orderType: "RENEWAL",
+              status: "AWAITING_PAYMENT",
+              currency: "BRL",
+              netAmountMinor: "3990",
+              cycle: { id: "cy-1", cycleNo: 1 },
+              createdAt: "2026-10-01T00:00:00Z",
+              settledAt: null,
+            },
+          ],
+        },
+        "/v1/recovery-tasks?subscriptionId=sub-renew-none": {
+          tasks: [],
+        },
+      },
+      seen,
+    );
+
+    renderPage(<RenewalsPage />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Renovações" })).toBeTruthy());
+    fireEvent.change(screen.getByPlaceholderText("UUID da assinatura"), {
+      target: { value: "sub-renew-none" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar renovações" }));
+
+    await waitFor(() => expect(screen.getByText("R$ 39,90")).toBeTruthy());
+    const renewButton = screen.getByRole("button", { name: "Renovar" }) as HTMLButtonElement;
+    expect(renewButton.disabled).toBe(true);
+  });
+
+  it("renovar fica desabilitado quando o pedido liquidado não está vinculado a um ciclo", async () => {
+    const seen = { posts: [] as { url: string; body?: unknown }[] };
+    sessionMocks(
+      ["subscription.read", "subscription.write"],
+      {
+        "/v1/subscriptions": { subscriptions: [] },
+        "/v1/renewals?subscriptionId=sub-renew-unlinked": {
+          orders: [
+            {
+              id: "ro-unlinked-1",
+              orderType: "RENEWAL",
+              status: "SETTLED",
+              currency: "BRL",
+              netAmountMinor: "3990",
+              cycle: null,
+              createdAt: "2026-10-01T00:00:00Z",
+              settledAt: "2026-10-01T00:01:00Z",
+            },
+          ],
+        },
+        "/v1/recovery-tasks?subscriptionId=sub-renew-unlinked": { tasks: [] },
+      },
+      seen,
+    );
+
+    renderPage(<RenewalsPage />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Renovações" })).toBeTruthy());
+    fireEvent.change(screen.getByPlaceholderText("UUID da assinatura"), {
+      target: { value: "sub-renew-unlinked" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Consultar renovações" }));
+
+    await waitFor(() => expect(screen.getByText("R$ 39,90")).toBeTruthy());
+    const renewButton = screen.getByRole("button", { name: "Renovar" }) as HTMLButtonElement;
+    expect(renewButton.disabled).toBe(true);
+    expect(seen.posts.some((post) => post.url.includes("/v1/renewals/renew"))).toBe(false);
+  });
+
   it("exibe tarefas de recuperação (winback) e permite resolver com confirmação", async () => {
     const seen = { posts: [] as { url: string; body?: unknown }[] };
     sessionMocks(

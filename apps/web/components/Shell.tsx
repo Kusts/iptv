@@ -27,7 +27,9 @@ import {
   Sun,
   Moon,
   LogOut,
+  Menu,
   Radio,
+  X,
 } from "lucide-react";
 import { useAuth } from "../lib/auth";
 import { ApiError } from "../lib/api";
@@ -106,10 +108,23 @@ export function Shell({ children }: { children: React.ReactNode }): React.JSX.El
   const router = useRouter();
   const [switching, setSwitching] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
     if (!loading && token === null) router.replace("/login");
   }, [loading, token, router]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        setMobileNavOpen(false);
+        document.getElementById("mobile-nav-toggle")?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mobileNavOpen]);
 
   if (loading) return <main className="cc-content"><p>Carregando sessão…</p></main>;
   if (token === null) return <main className="cc-content"><p>Redirecionando para o login…</p></main>;
@@ -144,7 +159,27 @@ export function Shell({ children }: { children: React.ReactNode }): React.JSX.El
 
   return (
     <div className="cc-shell">
-      <nav className="cc-sidebar" aria-label="Navegação principal">
+      {mobileNavOpen ? (
+        <button
+          type="button"
+          className="cc-mobile-nav-backdrop"
+          aria-label="Fechar navegação principal"
+          onClick={() => {
+            setMobileNavOpen(false);
+            document.getElementById("mobile-nav-toggle")?.focus();
+          }}
+        />
+      ) : null}
+      <nav
+        id="primary-navigation"
+        className={`cc-sidebar${mobileNavOpen ? " cc-sidebar-open" : ""}`}
+        aria-label="Navegação principal"
+        onTransitionEnd={(event) => {
+          if (mobileNavOpen && event.target === event.currentTarget && event.propertyName === "transform") {
+            document.querySelector<HTMLAnchorElement>("#primary-navigation a")?.focus();
+          }
+        }}
+      >
         <div className="cc-sidebar-brand">
           <div className="cc-brand-title">
             <Radio className="cc-nav-icon cc-brand-icon" />
@@ -165,6 +200,10 @@ export function Shell({ children }: { children: React.ReactNode }): React.JSX.El
                     key={item.href}
                     href={item.href}
                     aria-current={isActive ? "page" : undefined}
+                    onClick={() => {
+                      setMobileNavOpen(false);
+                      document.getElementById("mobile-nav-toggle")?.focus();
+                    }}
                   >
                     <Icon className="cc-nav-icon" />
                     <span>{item.label}</span>
@@ -178,6 +217,28 @@ export function Shell({ children }: { children: React.ReactNode }): React.JSX.El
 
       <div className="cc-main">
         <header className="cc-topbar">
+          <Button
+            id="mobile-nav-toggle"
+            variant="secondary"
+            className="cc-mobile-nav-toggle"
+            aria-label={mobileNavOpen ? "Fechar navegação principal" : "Abrir navegação principal"}
+            aria-controls="primary-navigation"
+            aria-expanded={mobileNavOpen}
+            onClick={() => {
+              const opening = !mobileNavOpen;
+              setMobileNavOpen(opening);
+              if (
+                opening &&
+                typeof window.matchMedia === "function" &&
+                window.matchMedia("(prefers-reduced-motion: reduce)").matches
+              ) {
+                window.setTimeout(() => document.querySelector<HTMLAnchorElement>("#primary-navigation a")?.focus(), 0);
+              }
+            }}
+          >
+            {mobileNavOpen ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
+          </Button>
+
           <div className="cc-topbar-tenant">
             <label className="cc-topbar-tenant-label" htmlFor="tenant-switcher">
               Tenant: {activeName}
@@ -204,6 +265,7 @@ export function Shell({ children }: { children: React.ReactNode }): React.JSX.El
 
           <Button
             variant="secondary"
+            className="cc-topbar-theme-toggle"
             onClick={toggleTheme}
             aria-label="Alternar tema claro e escuro"
             title={theme === "dark" ? "Mudar para modo claro" : "Mudar para modo escuro"}
@@ -216,7 +278,7 @@ export function Shell({ children }: { children: React.ReactNode }): React.JSX.El
             <span className="cc-muted">{user?.email}</span>
           </div>
 
-          <Button variant="secondary" onClick={() => void onLogout()}>
+          <Button variant="secondary" className="cc-topbar-logout" aria-label="Sair" onClick={() => void onLogout()}>
             <LogOut size={14} />
             <span>Sair</span>
           </Button>

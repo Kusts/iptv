@@ -1,0 +1,287 @@
+# Staging deployment (single host, containerized).
+#
+# Conventions mirror deploy/infisical/docker-compose.infisical.yml: images are
+# digest-pinned, every long-running service is `restart: unless-stopped` with a
+# healthcheck, ordering is expressed through `depends_on` conditions, and
+# exposure is minimal (everything binds to 127.0.0.1; a reverse proxy /
+# tunnel terminates public TLS outside this file).
+#
+# Secrets: NONE live here. Values come from `.env.staging` (env_file, gitignored
+# — copy `deploy/staging/.env.staging.example`). Integration credentials are
+# encrypted (AES-256-GCM) in PostgreSQL and configured through the Control
+# Center; the API's `SECRETS_ENCRYPTION_KEY` is a deployment secret kept
+# outside the database/Git. Never add a literal credential here.
+#
+# Deploy order (enforced by depends_on, do not reorder by hand):
+#   postgres (healthy) → migrate (one-shot, exit 0) → api (ready) → web
+#   outbox-worker is the single permanent outbox publisher and starts after
+#   the API is healthy (the DB runtime mode must be WORKER; see the
+#   rls-role-split-cutover runbook). browser-worker is opt-in
+#   (`--profile worker`) and runs on demand.
+# Preconditions: `.env.staging` carries SECRETS_ENCRYPTION_KEY (32-byte base64)
+# and `.env.staging.outbox-worker` exists (its env_file is required at parse).
+#
+#   docker compose -f deploy/staging/docker-compose.staging.yml build
+#   docker compose -f deploy/staging/docker-compose.staging.yml up -d
+#
+# Runbook: docs/10-operations/runbooks/staging-deploy.md
+services:
+  postgres:
+    # Digest pinned (observed 2026-10-05); refresh with
+    # `docker buildx imagetools inspect postgres:17-alpine`.
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    container_name: iptv-staging-postgres
+    restart: unless-stopped
+    environment:
+      # Local placeholders only: the real credentials come from .env.staging
+      # (POSTGRES_* are read by the postgres entrypoint itself).
+      POSTGRES_DB: ${POSTGRES_DB:-iptv}
+      POSTGRES_USER: ${POSTGRES_USER:-iptv_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Internal by default: no published port. Uncomment only for psql access
+    # from the host, bound to loopback.
+    # ports:
+    #   - "127.0.0.1:5433:5432"
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # One-shot migration job. MUST complete (exit 0) before the API starts.
+  # DATABASE_URL below is the OWNER connection string, always: migrations need
+  # DDL rights and must not go through the application role or a pooler. NEVER
+  # point this at APP_DATABASE_URL (see the rls-role-split-cutover runbook);
+  # the CLI additionally refuses to run as `iptv_app`.
+  # There is intentionally NO restart policy here: a failed migration must stop
+  # the rollout, not retry silently against a half-migrated schema.
+  migrate:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    image: iptv-staging-migrate:local
+    container_name: iptv-staging-migrate
+    restart: "no"
+    # Explicit: without it the service inherits the api image's CMD
+    # (`node apps/api/dist/main.js`) and would BOOT THE API instead of
+    # migrating — and never exit, hanging `service_completed_successfully`.
+    # `packages/database/dist` ships in the api runtime image.
+    command: ["node", "packages/database/dist/bin/iptv-migrate.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Owner credentials, injected from .env.staging (never from APP_*).
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL (owner) is required}
+      MIGRATIONS_DIR: /app/db/migrations
+    networks:
+      - internal
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    image: iptv-staging-api:local
+    container_name: iptv-staging-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env.staging
+    environment:
+      # Fail-closed production guard boundary (`assertNoPrivilegedDatabaseEnv`):
+      # this file also carries the OWNER connection for interpolation + the
+      # migrate job, but the owner string and owner password must NEVER reach
+      # the API process. Blank counts as absent, so unset them explicitly here
+      # (environment wins over env_file). Do NOT remove these lines.
+      DATABASE_URL: ""
+      POSTGRES_PASSWORD: ""
+      # LOG_LEVEL has NO default on purpose: the Fastify logger stays disabled
+      # when it is unset, and a silent container is undebuggable. Set it in
+      # .env.staging (info for staging).
+      LOG_LEVEL: ${LOG_LEVEL:?LOG_LEVEL is required}
+      # Single 256-bit key for encrypted integration credentials. Keep it in
+      # operator custody, outside the database and outside Git; back it up
+      # separately from the PostgreSQL dump.
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY is required}
+      # CINEVISION browser worker runtime (spawned as child process of the API).
+      CINEVISION_WORKER_CLI: /app/apps/browser-worker/dist/cli.js
+      CINEVISION_WORKER_PROFILE_BASE: /data/cinevision-profiles
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+    ports:
+      - "127.0.0.1:3001:3001"
+    networks:
+      - internal
+    # Chromium (spawned by the API for CINEVISION reads) needs shared memory
+    # and a larger heap than the API alone. Keep the ceiling bounded.
+    mem_limit: 2g
+    cpus: 1.0
+    shm_size: 1g
+    healthcheck:
+      # Readiness (not liveness): it proves the database answers too. The
+      # image already declares this HEALTHCHECK; repeating it here keeps the
+      # probe visible next to the resource limits.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/v1/health/ready').then(function(r){if(!r.ok)process.exit(1)}).catch(function(){process.exit(1)})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+      # NEXT_PUBLIC_* is inlined at BUILD time: rebuilding the image is the
+      # only way to change the browser-visible API URL.
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-}
+    image: iptv-staging-web:local
+    container_name: iptv-staging-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - internal
+    mem_limit: 512m
+    cpus: 0.5
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: iptv-staging-tunnel
+    restart: unless-stopped
+    # Host network: the tunnel's origins are the compose loopback services
+    # (127.0.0.1:3001 api / 127.0.0.1:3000 web). TLS terminates at the
+    # Cloudflare edge; this container only egresses.
+    network_mode: host
+    command: tunnel --no-autoupdate run
+    environment:
+      # Zero Trust short-lived-ish token (rotatable at the edge); the
+      # remote-managed ingress lives in the Cloudflare config, not here.
+      # Host-only secret: env_file interpolation, never in Git/PR/log/ticket.
+      - TUNNEL_TOKEN=${IPTV_STAGING_TUNNEL_TOKEN:-}
+
+  # Operator smoke CLI, NOT a service: opt-in profile, run on demand, exits.
+  #   docker compose -f deploy/staging/docker-compose.staging.yml \
+  #     --profile worker run --rm browser-worker read-credit-balance
+  #
+  # LIMITATIONS (honest, do not paper over them): the image ships no browser
+  # binary (no `playwright install`), and headed Chromium needs a display. The
+  # provider-drift/challenge detection was certified against a desktop
+  # browser, so headless Chromium in a container is a NEW, uncertified
+  # execution environment. Treat this image as reproducible packaging and a
+  # reviewed container boundary, not as the certified runtime path — see
+  # apps/browser-worker/Dockerfile and docs/10-operations/runbooks/browser-drift-challenge.md.
+  browser-worker:
+    build:
+      context: ../..
+      dockerfile: apps/browser-worker/Dockerfile
+    image: iptv-staging-browser-worker:local
+    profiles: ["worker"]
+    restart: "no"
+    # DEDICATED env file (NOT the API's .env.staging): BROWSER_WORKER_* and the
+    # per-run CINEVISION_EMAIL/PASSWORD must exist only in the worker process.
+    # Sharing one file would inject them into the API container's environment
+    # too — secret sprawl with no operational benefit.
+    env_file:
+      - .env.staging.worker
+    environment:
+      # Profile dir lives on the volume below so it can be inspected between
+      # runs; it is per-binding state and must never be committed.
+      BROWSER_WORKER_PROFILE_ROOT: /app/profile
+    volumes:
+      - worker_profile:/app/profile
+    networks:
+      - internal
+
+  # Dedicated platform outbox worker (migration 050 protocol) — the MVP's
+  # single durable outbox publisher. It is a PERMANENT service: the API's
+  # in-process legacy drainer must stay disabled/quiesced (DB runtime mode
+  # WORKER), and compose starts this worker after the API is healthy.
+  #   1. Copy deploy/staging/.env.staging.outbox-worker.example to a LOCAL
+  #      .env.staging.outbox-worker (gitignored) and fill the activation
+  #      values (OUTBOX_WORKER_ENABLED=1, OUTBOX_WORKER_ID,
+  #      OUTBOX_WORKER_DATABASE_URL as outbox_worker, OUTBOX_LEGACY_QUIESCED=1,
+  #      OUTBOX_LEGACY_DRAIN_ENABLED=0, OUTBOX_LEGACY_IN_FLIGHT=0).
+  #   2. Set the role password once: ALTER ROLE outbox_worker PASSWORD '...'
+  #      (migration 050 sets none; keep it in the operator secret path).
+  #   3. Rehearse once with zero claims before starting the loop:
+  #        docker compose --env-file .env.staging \
+  #          -f deploy/staging/docker-compose.staging.yml \
+  #          run --rm outbox-worker check
+  # The worker publishes through LocalTransport (structured-log delivery);
+  # real transports arrive behind the same port.
+  outbox-worker:
+    build:
+      context: ../..
+      dockerfile: apps/outbox-worker/Dockerfile
+    image: iptv-staging-outbox-worker:local
+    container_name: iptv-staging-outbox-worker
+    # Long-running claim loop: restart on transient crash (non-zero exit).
+    # Fail-closed states (invalid config / gate denied → exit 2 not-ready)
+    # also restart, which is intended: the operator stops the service
+    # manually once logs/health show a config or quiescence problem.
+    restart: unless-stopped
+    # SIGKILL grace covers OUTBOX_WORKER_SHUTDOWN_TIMEOUT_MS (max 120s):
+    # clean exit stays immediate; grace only delays the SIGKILL.
+    stop_grace_period: 130s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      api:
+        condition: service_healthy
+    # DEDICATED env file (NOT the API's .env.staging): the outbox_worker
+    # credential must exist only in the worker process. Sharing one file
+    # would inject it into the API container — secret sprawl with no benefit.
+    # The compose-level env_file below is the LOCAL filled copy, gitignored.
+    env_file:
+      - .env.staging.outbox-worker
+    environment:
+      # Belt and braces with the worker's own parse-time guard: the owner and
+      # app-role strings must NEVER reach this process (blank counts as
+      # absent, so unset them explicitly here — environment wins over
+      # env_file). Do NOT remove these lines.
+      DATABASE_URL: ""
+      APP_DATABASE_URL: ""
+      POSTGRES_PASSWORD: ""
+    networks:
+      - internal
+    mem_limit: 256m
+    cpus: 0.5
+    healthcheck:
+      # Readiness rehearsal with ZERO claims (config → connect → role →
+      # activation). Unhealthy here means "configured active but cannot
+      # claim" — exactly the not-ready state the runbook gates on.
+      test: ["CMD-SHELL", "node apps/outbox-worker/dist/cli.js check"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # PgBouncer is intentionally absent: it was never enabled and has no
+  # consumer in the MVP. Connections stay DIRECT (owner for migrations,
+  # `iptv_app` for tenant traffic). The historical config lives in
+  # deploy/pgbouncer/ and the rls-role-split-cutover runbook for reference.
+
+networks:
+  # Single internal bridge. Nothing is published except the loopback-bound
+  # api/web ports above, so a compromised container cannot be reached from
+  # outside the host. Put a reverse proxy / tunnel in front for public traffic.
+  internal:
+    driver: bridge
+
+volumes:
+  pgdata:
+  worker_profile:

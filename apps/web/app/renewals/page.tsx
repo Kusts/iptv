@@ -138,6 +138,12 @@ function RenewalOrdersPanel({ subscriptionId }: { subscriptionId: string }): Rea
   const canWrite = hasPermission(WRITE_PERMISSION);
 
   const orders = data?.orders ?? [];
+  // `subscription.renew` renews a SETTLED RENEWAL order (input `{ orderId }`);
+  // the orders list comes newest-first, so the first SETTLED entry is the
+  // eligible one. Without it, renewing would fail server-side — the button
+  // stays disabled instead of sending a guaranteed 400.
+  const settledRenewalOrder =
+    orders.find((o) => o.orderType === "RENEWAL" && o.status === "SETTLED" && o.cycle !== null) ?? null;
 
   const command = (path: string, title: string, label: string, body: unknown): void => {
     setDialog({ path, title, label, body });
@@ -190,7 +196,19 @@ function RenewalOrdersPanel({ subscriptionId }: { subscriptionId: string }): Rea
             <Button variant="secondary" disabled={busy} onClick={() => command("/v1/renewals/quote", "Cotar renovação", "Cotar", { subscriptionId })}>
               Cotar
             </Button>
-            <Button variant="secondary" disabled={busy} onClick={() => command("/v1/renewals/renew", "Renovar assinatura", "Renovar", { subscriptionId })}>
+            <Button
+              variant="secondary"
+              disabled={busy || settledRenewalOrder === null}
+              title={
+                settledRenewalOrder === null
+                  ? "Nenhum pedido de renovação liquidado para renovar"
+                  : "Renovar com o pedido liquidado mais recente"
+              }
+              onClick={() =>
+                settledRenewalOrder !== null &&
+                command("/v1/renewals/renew", "Renovar assinatura", "Renovar", { orderId: settledRenewalOrder.id })
+              }
+            >
               Renovar
             </Button>
             <Button variant="secondary" disabled={busy} onClick={() => command("/v1/renewals/trust-renew", "Renovação de confiança", "Trust renew", { subscriptionId })}>
