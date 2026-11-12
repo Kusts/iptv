@@ -1,5 +1,7 @@
 # Pilot Closure — Release closure
 
+> Estado atual consolidado (2026-11-12): [`STREAMMAX-MVP-STATUS-2026-11-12.md`](STREAMMAX-MVP-STATUS-2026-11-12.md). Este índice e os relatórios anteriores permanecem como histórico.
+
 > Status: **ENGINEERING BLOCKED** (2026-10-11; ver a matriz única em [`RELEASE-CLOSURE-STATUS.md`](RELEASE-CLOSURE-STATUS.md) e gaps deduplicados em [`RELEASE-CLOSURE-GAPS.md`](RELEASE-CLOSURE-GAPS.md))
 > SPEC de origem: `IPTV Pilot Closure SPEC v1` + `IPTV Pilot Closure PLAN v1`
 > (recebidos do operador nesta sessão; texto integral na proposta, não

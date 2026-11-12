@@ -9,6 +9,8 @@ operations automated around a human-in-the-loop agent runtime.
 > `CHANGELOG.md` is the authoritative delivery record — this README describes
 > the repository as it is today, not a wave-by-wave history.
 
+> Estado atual do MVP StreamMax (2026-11-12): `docs/16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-12.md`. Relatórios anteriores permanecem como histórico.
+
 ## What this is
 
 - TypeScript monorepo (`pnpm` + Turborepo): a **modular monolith** API, a
