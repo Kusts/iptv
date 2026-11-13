@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- docs(mvp): adiciona plano de finalização operacional de 13/11, atualiza os pontos de entrada (README, AGENTS, índices), corrige o caminho atual de segredos PostgreSQL/outbox e distingue snapshots históricos de outubro das evidências/staging atuais. Sem alteração de runtime, credenciais ou deploy.
+
 - docs(ops): corrige o snapshot StreamMax e os pré-requisitos do runbook de staging após revisão do debugger: distingue o `base_revision=7d27472` da tarefa E2E r4 do conteúdo atual da branch de docs, registra que o delta também inclui configuração funcional de deploy/staging (Compose e exemplos de env, sem código de runtime, migrations ou imagens) e que a r4 construiu seus próprios inputs de Compose/env sem fazer parse/testar essas mudanças posteriores; no `staging-deploy.md`, torna o Infisical condicional ao caminho LEGADO de rollback/cutover (default PostgreSQL/Control Center) e exige `CINEVISION_ALLOWED_ORIGIN`/`CINEVISION_LOGIN_PATH` em `.env.staging` com os três `env_file` de parse (`.env.staging`, `.env.staging.worker`, `.env.staging.outbox-worker`), mantendo o `outbox-worker` excluído até o passo 8 de ativação.
 
 - docs(ops): marca a seção de ativação do Infisical em `staging-deploy.md` como LEGADO (retida só para rollback/cutover até a validação de `migrate-secrets-to-postgres.mjs`) e deixa explícito no título e na prosa que ela não é o caminho atual de ativação do staging, que usa credenciais cifradas em PostgreSQL/Control Center; demais procedimentos e gates inalterados.
