@@ -2,13 +2,17 @@
 
 > **Snapshot de engenharia e evidências; não é certificado de release.** Código
 > de runtime consultado: `main@7d27472`, que é o `base_revision` registrado para
-> a execução descartável `iptv-renewal-browser-e2e-20261112-r4`. O snapshot é
-> publicado a partir da branch `docs/streammax-mvp-status-20261112` (`0e0378e`),
-> cujo delta sobre `main@7d27472` é somente de documentação. A inspeção do
-> staging foi somente leitura; o checkout observado permanece detached e sujo.
-> Esta atualização não fez deploy nem alterou dados, credenciais ou serviços. A
-> execução E2E de renovação de 12/11 ocorreu apenas em stack descartável
-> isolado, sem tocar o staging.
+> a execução descartável `iptv-renewal-browser-e2e-20261112-r4`. Esse é o baseline
+> da tarefa E2E: a execução r4 construiu seus próprios inputs de Compose e de env
+> e não fez parse nem testou as mudanças posteriores de Compose do staging. O
+> snapshot publicado reflete o conteúdo atual da branch
+> `docs/streammax-mvp-status-20261112`; o delta dessa branch sobre `main@7d27472`
+> não é somente de documentação: inclui também configuração funcional de
+> deploy/staging (Compose e exemplos de env), sem alteração de código de runtime,
+> migrations ou imagens. A inspeção do staging foi somente leitura; o checkout
+> observado permanece detached e sujo. Esta atualização não fez deploy nem alterou
+> dados, credenciais ou serviços. A execução E2E de renovação de 12/11 ocorreu
+> apenas em stack descartável isolado, sem tocar o staging.
 
 ## Escopo
 

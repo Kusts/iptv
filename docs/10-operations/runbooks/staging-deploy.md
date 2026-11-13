@@ -69,26 +69,36 @@ Deploy order is expressed in `depends_on` and must not be reordered by hand:
    `CINEVISION_ALLOWED_ORIGIN` and `CINEVISION_LOGIN_PATH` in this file.
    Compose interpolation is project-wide: either missing value blocks every
    command using this Compose file, including commands targeting another
-   service such as `outbox-worker`.
-3. Create both referenced worker env files before any Compose invocation:
+   service such as `outbox-worker`. These two values are required only in this
+   interpolation file; the worker files below only need to exist.
+3. Create the other two parse-required env files before any Compose invocation.
+   Together with `.env.staging` from step 2, they are the three `env_file`
+   inputs the Compose file requires (`.env.staging`, `.env.staging.worker`,
+   `.env.staging.outbox-worker`):
    ```powershell
    Copy-Item deploy/staging/.env.staging.worker.example deploy/staging/.env.staging.worker
    Copy-Item deploy/staging/.env.staging.outbox-worker.example deploy/staging/.env.staging.outbox-worker
    ```
-   Compose requires every referenced `env_file` to exist, including files for
-   opt-in services. Keep Browser Worker credentials commented out by default
-   and in its separate file only; never inject them into the API environment.
-   Configure outbox-worker values only per the later activation section.
+   Compose requires every referenced `env_file` to exist at parse time, including
+   files for services excluded from the initial deployment; all three must exist
+   even though `outbox-worker` starts only in activation step 8. Keep Browser
+   Worker credentials commented out by default and in its separate file only;
+   never inject them into the API environment. Configure outbox-worker values
+   only per the later activation section.
 4. `LOG_LEVEL` set in `.env.staging`. It is required on purpose: the Fastify
    logger is disabled when it is unset, so a container without it boots silently.
 5. `NODE_ENV=production` implies two more hard requirements, both enforced by
    `packages/config` at boot: a real `BETTER_AUTH_SECRET` and
    `PROVIDER_DISPATCH_MODE=durable`.
-6. Infisical reachable from the host and from the containers when
-   `INFISICAL_*` is filled: without it the secrets adapter stays noop and every
-   `infisical://` ref fails closed (ADR-0014, `packages/secrets/README.md`).
-   The retained LEGACY procedure (rollback/cutover only, not the current
-   path) is "Infisical activation" below.
+6. Infisical is a prerequisite only when an operator explicitly selects the
+   LEGACY rollback/cutover path; it is not part of the default staging path.
+   The default path is PostgreSQL + Control Center: integration credentials are
+   encrypted in `platform.secret_values` and configured through the Control
+   Center (SIMPLIFY-01), with no Infisical dependency. On the legacy path, when
+   `INFISICAL_*` is filled, Infisical must be reachable from the host and from
+   the containers: without it the secrets adapter stays noop and every
+   `infisical://` ref fails closed (ADR-0014, `packages/secrets/README.md`). The
+   retained LEGACY procedure is "Infisical activation" below.
 7. `APP_DATABASE_URL` must be SET to a valid restricted `iptv_app` connection
    (the fail-closed boot guard refuses to start the API without it when
    `NODE_ENV=production` — there is no owner fallback). This is rehearsal,
