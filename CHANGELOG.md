@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- fix(staging): exigir `CINEVISION_ALLOWED_ORIGIN` e `CINEVISION_LOGIN_PATH` na interpolação global do Compose, documentar o pré-requisito antes de qualquer comando e manter credenciais do Browser Worker fora do ambiente da API.
+
 - docs(waha): atualiza catálogo WhatsApp para registrar envio/ingestão de mídia e documentos, transcrição Groq STT e readback de attachments como IMPLEMENTED/software-verified; limites e binding anotados sem certificação nem fechamento dos gates M1/M2.
 
 - fix(provider): alinhar contrato/validação de `externalRef` em `provider.resolve_operation` (OpenAPI + Zod + runtime/UI) e política de `SUCCEEDED` sem referência nos caminhos de adapter/dispatcher: `externalRef` passa a ser aceito apenas em `SUCCEEDED` com padrão restrito; em `subscription.provision` sem referência válida o provisioning estaciona em `VERIFYING` em vez de concluir/ativar sem vínculo. Testes focados 102/102 + typecheck/lint verdes; gates Python verdes.

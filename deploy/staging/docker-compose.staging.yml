@@ -6,8 +6,9 @@
 # exposure is minimal (everything binds to 127.0.0.1; a reverse proxy /
 # tunnel terminates public TLS outside this file).
 #
-# Secrets: NONE live here. Values come from `.env.staging` (env_file, gitignored
-# — copy `deploy/staging/.env.staging.example`). Integration credentials are
+# Secrets: NONE live here. `deploy/staging/.env.staging` (gitignored; copy
+# `deploy/staging/.env.staging.example`) provides interpolation for all services
+# and is an `env_file` only for the API. Integration credentials are
 # encrypted (AES-256-GCM) in PostgreSQL and configured through the Control
 # Center; the API's `SECRETS_ENCRYPTION_KEY` is a deployment secret kept
 # outside the database/Git. Never add a literal credential here.
@@ -18,11 +19,15 @@
 #   the API is healthy (the DB runtime mode must be WORKER; see the
 #   rls-role-split-cutover runbook). browser-worker is opt-in
 #   (`--profile worker`) and runs on demand.
-# Preconditions: `.env.staging` carries SECRETS_ENCRYPTION_KEY (32-byte base64)
-# and `.env.staging.outbox-worker` exists (its env_file is required at parse).
+# Preconditions: `deploy/staging/.env.staging` carries SECRETS_ENCRYPTION_KEY
+# (32-byte base64) and CINEVISION_ALLOWED_ORIGIN/CINEVISION_LOGIN_PATH. Both
+# `.env.staging.worker` and `.env.staging.outbox-worker` must exist, copied
+# from their examples, because Compose requires every referenced env_file.
 #
-#   docker compose -f deploy/staging/docker-compose.staging.yml build
-#   docker compose -f deploy/staging/docker-compose.staging.yml up -d
+#   docker compose --env-file deploy/staging/.env.staging -f deploy/staging/docker-compose.staging.yml build
+#   docker compose --env-file deploy/staging/.env.staging -f deploy/staging/docker-compose.staging.yml up -d api web
+# Do NOT use bare `up -d` for initial deployment: it also starts the permanent
+# outbox-worker. Include that service only after runbook activation step 8.
 #
 # Runbook: docs/10-operations/runbooks/staging-deploy.md
 services:
@@ -108,6 +113,8 @@ services:
       # when it is unset, and a silent container is undebuggable. Set it in
       # .env.staging (info for staging).
       LOG_LEVEL: ${LOG_LEVEL:?LOG_LEVEL is required}
+      CINEVISION_ALLOWED_ORIGIN: ${CINEVISION_ALLOWED_ORIGIN:?CINEVISION_ALLOWED_ORIGIN is required}
+      CINEVISION_LOGIN_PATH: ${CINEVISION_LOGIN_PATH:?CINEVISION_LOGIN_PATH is required}
       # Single 256-bit key for encrypted integration credentials. Keep it in
       # operator custody, outside the database and outside Git; back it up
       # separately from the PostgreSQL dump.
@@ -174,8 +181,7 @@ services:
       - TUNNEL_TOKEN=${IPTV_STAGING_TUNNEL_TOKEN:-}
 
   # Operator smoke CLI, NOT a service: opt-in profile, run on demand, exits.
-  #   docker compose -f deploy/staging/docker-compose.staging.yml \
-  #     --profile worker run --rm browser-worker read-credit-balance
+  #   docker compose --env-file deploy/staging/.env.staging -f deploy/staging/docker-compose.staging.yml --profile worker run --rm browser-worker read-credit-balance
   #
   # LIMITATIONS (honest, do not paper over them): the image ships no browser
   # binary (no `playwright install`), and headed Chromium needs a display. The
@@ -191,8 +197,10 @@ services:
     image: iptv-staging-browser-worker:local
     profiles: ["worker"]
     restart: "no"
-    # DEDICATED env file (NOT the API's .env.staging): BROWSER_WORKER_* and the
-    # per-run CINEVISION_EMAIL/PASSWORD must exist only in the worker process.
+    # Before using --profile worker, from the repository root run:
+    # Copy-Item deploy/staging/.env.staging.worker.example deploy/staging/.env.staging.worker
+    # This is separate from the API env_file; worker values
+    # belong only in this worker process, never in the API environment.
     # Sharing one file would inject them into the API container's environment
     # too — secret sprawl with no operational benefit.
     env_file:
@@ -218,9 +226,7 @@ services:
   #   2. Set the role password once: ALTER ROLE outbox_worker PASSWORD '...'
   #      (migration 050 sets none; keep it in the operator secret path).
   #   3. Rehearse once with zero claims before starting the loop:
-  #        docker compose --env-file .env.staging \
-  #          -f deploy/staging/docker-compose.staging.yml \
-  #          run --rm outbox-worker check
+  #        docker compose --env-file deploy/staging/.env.staging -f deploy/staging/docker-compose.staging.yml run --rm outbox-worker check
   # The worker publishes through LocalTransport (structured-log delivery);
   # real transports arrive behind the same port.
   outbox-worker:
