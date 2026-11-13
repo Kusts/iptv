@@ -1,5 +1,13 @@
 # Runbook — Central de Integrações (hub por tenant)
 
+> **Configuração atual (13/11/2026):** a persistência padrão de segredos é
+> PostgreSQL cifrado (PR #123, migration 068). As referências Infisical
+> remanescentes neste histórico do hub só servem para migração/rollback;
+> elas não devem ser usadas em instalações novas. Conectar conta não
+> significa homologar escrita ou ativação. Ver
+> [matriz atual](../integrations-capability-status.md).
+
+
 > Status: Baseline (S5C, #89)
 > Scope: `GET /v1/integrations`, `POST /v1/integrations/:provider/configure|test|disable|webhook`, WhatsApp session/QR/reconnect, CINEVISION import-preview/execute
 > Review: factual contra `apps/api/src/integrations/*` e `apps/api/README.md`; sem conector live habilitado por este documento.
@@ -20,8 +28,8 @@ promovida sem evidência de operador).
 | Item | Variável / local | Observação |
 |---|---|---|
 | Base pública do webhook | `INTEGRATIONS_PUBLIC_BASE_URL` (ex.: `https://app.exemplo.com.br`) | Origem `scheme://host[:port]`; sem ela o `webhook_ensure` falha fechado com `WEBHOOK_BASE_URL_NOT_CONFIGURED` (503) e instrui modo manual |
-| Cofre (API) | `INFISICAL_*` (`packages/secrets`) | Writer server-side; refs `infisical://<env>/integrations/<tenantId>/<provider>/<KEY>` derivadas de contexto validado, nunca do corpo do cliente |
-| Cofre (Browser Worker) | `BROWSER_INFISICAL_*` | Identidade própria do worker; nunca herda as vars da API |
+| Cofre (API) | `SECRETS_ENCRYPTION_KEY` + PostgreSQL (`packages/secrets`) | Escrita server-side em `platform.secret_values`, refs novas `pgsecret://`; refs legadas `infisical://` preservadas somente na migração/rollback |
+| Browser Worker | Credenciais passadas por invocação isolada | Não usa identidade Infisical no caminho atual; não injetar credenciais do worker no env da API |
 | WAHA (plataforma) | `WAHA_BASE_URL` + `WAHA_API_KEY` | Credencial de administração; nunca vai ao navegador. Ausentes → `WAHA_NOT_CONFIGURED` (503) |
 | CINEVISION (worker) | `CINEVISION_ALLOWED_ORIGIN`, `CINEVISION_WORKER_TIMEOUT_MS`, `BROWSER_WORKER_*` | Origem allowlisted fixa; a API nunca passa URL (sem SSRF) |
 | Permissões (tenant) | `integration.read` (status), `integration.test` (testar), `integration.manage` (configure/disable/webhook/sessão) | Somente admin do tenant gerencia credenciais |

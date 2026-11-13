@@ -75,6 +75,8 @@ O registro autoritativo de entrega é o `CHANGELOG.md` (anexe toda entrega em
   eventos precisam de entrada no registry + canal AsyncAPI + SPEC.
 - `README.md` — descreve o repositório como está hoje; status cronológico
   mora no CHANGELOG, não no README.
+- `docs/16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-12.md` — último snapshot de evidências da operação (histórico datado).
+- `docs/16-pilot-closure/MVP-FINALIZATION-PLAN-2026-11-13.md` — sequência e aceite para finalizar o MVP operacional; não substitui o baseline.
 
 ## Orquestração OpenCode
 
@@ -96,15 +98,21 @@ O registro autoritativo de entrega é o `CHANGELOG.md` (anexe toda entrega em
   `OPENAI_API_KEY` recebe a chave do OpenCode Go; `OPENAI_BASE_URL` e
   `AGENT_MODEL` selecionam endpoint/modelo. Não troque Sandbox por produção sem
   autorização explícita.
-- Infisical está implementado (ADR-0014 aceito): `packages/secrets` resolve
-  refs `infisical://` em runtime (API via `INFISICAL_*`, Browser Worker via
-  `BROWSER_INFISICAL_*`; ver `packages/secrets/README.md`). Credenciais
-  CINEVISION/MK Ativador vivem como referências de segredo no Infisical —
-  mantenha os valores crus no cofre do operador e fora do `.env` deste
-  repositório.
-- Hatchet é opcional: fornece execução durável de workflows/jobs. O modo local
-  em memória continua sendo o default; `HATCHET_API_TOKEN` só é necessário se
-  Hatchet for adotado e certificado.
+- **Caminho atual dos segredos:** PostgreSQL cifrado AES-256-GCM
+  (`platform.secret_values`, migration 068), configurado pelo Control Center.
+  O esquema `pgsecret://` é padrão; referências legadas `infisical://` ainda
+  são suportadas para migração/rollback, mas Infisical não é dependência
+  operacional padrão (SIMPLIFY-01/PR #123). A chave
+  `SECRETS_ENCRYPTION_KEY` exige custódia separada do backup do banco.
+  O Browser Worker recebe credenciais por invocação isolada, nunca por
+  variáveis administrativas no ambiente da API.
+- **Execução atual:** workflows locais não duráveis quando usados; outbox
+  worker dedicado para a fila operacional. Hatchet foi removido do caminho
+  do MVP e não deve ser exigido no setup. Reavaliar runtimes externos somente
+  após o MVP se houver lacuna comprovada.
+- **Fornecedor:** adapter Sigma/CINEVISION implementado e validado com
+  simulação; sem certificação live. Na ausência de autorização/token/recurso
+  legítimo, manter operação manual supervisionada e sem escrita externa.
 - O webhook Asaas é `POST /v1/webhooks/asaas/:tenantKey`; autenticação por
   canal (`billing.tenant_channels`), sem fallback global — detalhes em
   `apps/api/README.md`. Só configure com URL HTTPS pública, canal/tenant
@@ -146,9 +154,14 @@ DNS ou mutação de produção; confirme o alvo e a autorização na tarefa atua
 - Deploy executado em 2026-11-03: volume de teste resetado com autorização
   explícita do usuário, fresh 67/67, stack API/web/outbox/túnel saudável com
   smoke (health/ready e web 200, registro público 403, login do owner 200).
-- HOLD restante é integrações/segurança/entrega (Asaas, Infisical, CINEVISION)
-  — não mais drift de migrations (ver runbook de staging e
-  `docs/16-pilot-closure/MVP-OPERATIONAL-CLOSURE.md`).
+- **Última inspeção documentada (12/11):** staging em checkout detached/sujo
+  `b46cec7`, health e migrations 69/69 OK, mas sem atualização à `main`
+  daquela data. O snapshot de 03/11 acima é histórico, não a versão
+  implantada atual confirmada. Não sobrescrever o checkout nem alegar que
+  `main` está deployada sem nova inspeção (ver status do MVP e plano final).
+- Pendências do MVP operacional: alinhamento de staging, recuperação/segurança
+  e ativação autorizada com readback real CINEVISION/Sigma. Infisical não é
+  mais requisito do caminho atual.
 
 ## Limites operacionais
 

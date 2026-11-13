@@ -1,5 +1,16 @@
 # Runbook — Staging Deploy (Containerized, Migrate Job First)
 
+> **Atualização de leitura (13/11/2026):** os logs e números de migrations
+> abaixo são registros históricos, não uma nova inspeção da Contabo.
+> O snapshot de 12/11 encontrou `/home/deploy/iptv-staging` em
+> `b46cec7` (detached/sujo), embora a `main` tenha avançado e seu CI
+> esteja verde em `c75875d` (13/11). Antes de executar qualquer comando:
+> aplicar **F0** do [plano final do MVP](../../16-pilot-closure/MVP-FINALIZATION-PLAN-2026-11-13.md),
+> identificar alterações locais, revisão candidata, rollback e pré-requisitos
+> do Compose. Nenhum desses fatos autoriza deploy nem limpeza do checkout.
+> Segredos novos usam PostgreSQL/Control Center; seção Infisical é LEGADO.
+
+
 > Status: Reproducible compose profile; images proven by a real `docker build`
 > + full stack proof on 2026-10-06 (branch `Kusts/closure-round-p0-rls-cutover`,
 > PR #6 — api/web built, postgres → migrate 49/49 on empty DB → api as

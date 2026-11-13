@@ -1,5 +1,14 @@
 # Runbook — Backup, Restore e Disaster Recovery (baseline executável)
 
+> **Nota de escopo (13/11/2026):** o runtime atual guarda segredos de
+> integração cifrados no PostgreSQL (migration 068). Assim, o backup do banco
+> e a custódia separada de `SECRETS_ENCRYPTION_KEY` são requisitos centrais
+> para a recuperação do IPTV. A seção de backup de Infisical abaixo registra
+> infraestrutura legada/independente; **não substitui** o backup/restore do
+> PostgreSQL do StreamMax nem é requisito para uma instalação nova.
+> Critérios de conclusão: [plano MVP](../../16-pilot-closure/MVP-FINALIZATION-PLAN-2026-11-13.md).
+
+
 > Status: backup + restore drill IMPLEMENTED (`scripts/db-backup.sh`,
 > `scripts/db-restore-drill.sh`); drill executado localmente contra
 > PostgreSQL 17 em container = TESTED (ver log abaixo). Agendamento, cópia

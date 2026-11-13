@@ -1,5 +1,14 @@
 # StreamMax — estado do MVP (12/11/2026)
 
+> **Atualização de referência Git (13/11):** este texto permanece um snapshot
+> das evidências de 12/11, cujo baseline E2E foi `main@7d27472`. A branch
+> que publicou o snapshot e alterações de configuração foi integrada à
+> `main@c75875d`, com CI verde ([run 43484633148](https://github.com/Kusts/iptv/actions/runs/43484633148)).
+> Isso não significa novo deploy: a última observação do staging continua
+> `b46cec7` detached/sujo, sem nova validação operacional. O trabalho
+> restante está no [plano de finalização](MVP-FINALIZATION-PLAN-2026-11-13.md).
+
+
 > **Snapshot de engenharia e evidências; não é certificado de release.** Código
 > de runtime consultado: `main@7d27472`, que é o `base_revision` registrado para
 > a execução descartável `iptv-renewal-browser-e2e-20261112-r4`. Esse é o baseline
