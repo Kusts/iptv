@@ -87,7 +87,8 @@ Deploy order is expressed in `depends_on` and must not be reordered by hand:
 6. Infisical reachable from the host and from the containers when
    `INFISICAL_*` is filled: without it the secrets adapter stays noop and every
    `infisical://` ref fails closed (ADR-0014, `packages/secrets/README.md`).
-   The live-activation path is "Infisical activation (staging, opt-in)" below.
+   The retained LEGACY procedure (rollback/cutover only, not the current
+   path) is "Infisical activation" below.
 7. `APP_DATABASE_URL` must be SET to a valid restricted `iptv_app` connection
    (the fail-closed boot guard refuses to start the API without it when
    `NODE_ENV=production` — there is no owner fallback). This is rehearsal,
@@ -295,10 +296,14 @@ drain cannot reclaim them). Full procedure and crash semantics:
 [RLS role split cutover](rls-role-split-cutover.md) ("Worker process +
 legacy quiescence") and `apps/outbox-worker/README.md`.
 
-## Infisical activation (staging, opt-in)
+## Infisical activation (staging, LEGACY — rollback/cutover only)
 
-Canonical live-activation path for the API-side Infisical identity on
-staging. Starting state on the host (2026-10-17):
+HISTORICAL/LEGACY procedure, retained only for rollback/cutover while
+`packages/database/scripts/migrate-secrets-to-postgres.mjs` remains
+unvalidated. It is NOT the current staging activation path: current
+integration credentials are encrypted in PostgreSQL
+(`platform.secret_values`) and configured through the Control Center
+(SIMPLIFY-01 note above). Starting state on the host (2026-10-17):
 `deploy/staging/.env.staging` (full host path
 `/home/deploy/iptv/deploy/staging/.env.staging`) already carries a commented
 placeholder block for the four vars below (marker

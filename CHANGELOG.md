@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- docs(ops): marca a seção de ativação do Infisical em `staging-deploy.md` como LEGADO (retida só para rollback/cutover até a validação de `migrate-secrets-to-postgres.mjs`) e deixa explícito no título e na prosa que ela não é o caminho atual de ativação do staging, que usa credenciais cifradas em PostgreSQL/Control Center; demais procedimentos e gates inalterados.
+
 - fix(staging): exigir `CINEVISION_ALLOWED_ORIGIN` e `CINEVISION_LOGIN_PATH` na interpolação global do Compose, documentar o pré-requisito antes de qualquer comando e manter credenciais do Browser Worker fora do ambiente da API.
 
 - docs(mvp): atualiza o status do StreamMax para `main@7d27472`, registra o CI
