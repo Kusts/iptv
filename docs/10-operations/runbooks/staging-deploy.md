@@ -34,9 +34,10 @@
 >
 > Pré-requisitos do compose atual: `.env.staging` com `SECRETS_ENCRYPTION_KEY`
 > (32 bytes base64, custódia separada) e `.env.staging.outbox-worker` presente
-> (o `env_file` é obrigatório no parse do compose). O `outbox-worker` sobe com
-> o `up` padrão; o modo de runtime no banco precisa ser `WORKER` antes de
-> confiar nele como único publicador.
+> (o `env_file` é obrigatório no parse do compose). A implantação inicial deve
+> nomear serviços e excluir o `outbox-worker` (`up -d api web`); não use bare
+> `up -d`, que também o inicia. Inclua-o somente no passo 8, após o modo do
+> banco estar `WORKER` e o smoke sem claims passar.
 
 ## Scope and shape
 
@@ -48,9 +49,8 @@ traffic is terminated by a reverse proxy or tunnel outside this file.
 
 ```text
 postgres (healthy) ──▶ migrate (one-shot, exit 0) ──▶ api (ready) ──▶ web
+                                                outbox-worker   (permanent; excluded until activation step 8)
                                                 browser-worker  (opt-in profile)
-                                                pgbouncer       (opt-in profile)
-                                                outbox-worker   (opt-in profile, ONLY after legacy quiescence)
 ```
 
 Deploy order is expressed in `depends_on` and must not be reordered by hand:
@@ -59,22 +59,36 @@ Deploy order is expressed in `depends_on` and must not be reordered by hand:
 ## Prerequisites
 
 1. Docker Engine with the compose v2 plugin (`docker compose version`) and
-   enough disk for the postgres volume plus three images.
+   enough disk for the postgres volume plus the five images listed below.
 2. `deploy/staging/.env.staging` created from the example and filled with real
-   values — never committed, never pasted into tickets:
+   values - never committed, never pasted into tickets:
    ```powershell
    Copy-Item deploy/staging/.env.staging.example deploy/staging/.env.staging
    ```
-3. `LOG_LEVEL` set in `.env.staging`. It is required on purpose: the Fastify
+   Before any Compose invocation, populate non-empty
+   `CINEVISION_ALLOWED_ORIGIN` and `CINEVISION_LOGIN_PATH` in this file.
+   Compose interpolation is project-wide: either missing value blocks every
+   command using this Compose file, including commands targeting another
+   service such as `outbox-worker`.
+3. Create both referenced worker env files before any Compose invocation:
+   ```powershell
+   Copy-Item deploy/staging/.env.staging.worker.example deploy/staging/.env.staging.worker
+   Copy-Item deploy/staging/.env.staging.outbox-worker.example deploy/staging/.env.staging.outbox-worker
+   ```
+   Compose requires every referenced `env_file` to exist, including files for
+   opt-in services. Keep Browser Worker credentials commented out by default
+   and in its separate file only; never inject them into the API environment.
+   Configure outbox-worker values only per the later activation section.
+4. `LOG_LEVEL` set in `.env.staging`. It is required on purpose: the Fastify
    logger is disabled when it is unset, so a container without it boots silently.
-4. `NODE_ENV=production` implies two more hard requirements, both enforced by
+5. `NODE_ENV=production` implies two more hard requirements, both enforced by
    `packages/config` at boot: a real `BETTER_AUTH_SECRET` and
    `PROVIDER_DISPATCH_MODE=durable`.
-5. Infisical reachable from the host and from the containers when
+6. Infisical reachable from the host and from the containers when
    `INFISICAL_*` is filled: without it the secrets adapter stays noop and every
    `infisical://` ref fails closed (ADR-0014, `packages/secrets/README.md`).
    The live-activation path is "Infisical activation (staging, opt-in)" below.
-6. `APP_DATABASE_URL` must be SET to a valid restricted `iptv_app` connection
+7. `APP_DATABASE_URL` must be SET to a valid restricted `iptv_app` connection
    (the fail-closed boot guard refuses to start the API without it when
    `NODE_ENV=production` — there is no owner fallback). This is rehearsal,
    NOT cutover: pointing the app at `iptv_app` today means fail-closed reads
@@ -103,20 +117,23 @@ Images produced:
 | `migrate` | `iptv-staging-migrate:local` | same Dockerfile, different entrypoint |
 | `web` | `iptv-staging-web:local` | Next.js standalone |
 | `browser-worker` | `iptv-staging-browser-worker:local` | opt-in profile, see limitations |
-| `outbox-worker` | `iptv-staging-outbox-worker:local` | opt-in profile, ONLY after legacy quiescence (see below) |
+| `outbox-worker` | `iptv-staging-outbox-worker:local` | permanent service; after legacy quiescence (see below) |
 
 Tag images with an immutable revision before a real environment (see Rollback).
 
 ## Deploy
 
 ```powershell
+# Initial deployment: name services explicitly. Bare `up -d` also starts
+# permanent outbox-worker and is prohibited until activation step 8 below.
 # 1. database
 docker compose --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml up -d postgres
 # 2. migrations (one-shot; a non-zero exit must stop the rollout)
 docker compose --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml run --rm migrate
-# 3. api + web (compose re-checks the migrate dependency only on `up`)
+# 3. api + web (compose re-checks the migrate dependency only on `up`;
+#    do not include outbox-worker before activation step 8)
 docker compose --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml up -d api web
 ```
@@ -172,8 +189,11 @@ database health are covered by
 
 ## Outbox worker activation (051 interlock, permanent service)
 
-The dedicated outbox worker is a PERMANENT compose service (no profile): the
-default `up` starts it after the API is healthy. The legacy in-process drainer
+The dedicated outbox worker is a PERMANENT compose service (no profile): any
+`up` that explicitly includes it starts it after the API is healthy. A bare
+`up -d` also includes it, so initial deployment must name only `api web` (and
+their compose dependencies); do not include the worker before activation step 8.
+The legacy in-process drainer
 must stay disabled/quiesced (`LEGACY_OUTBOX_DRAIN_ENABLED=0`, DB runtime mode
 `WORKER`). Fresh staging order (pós-050/051): `postgres → migrate 001–068
 (owner, re-provision FRESH) → api (as `iptv_app`,
@@ -182,7 +202,7 @@ must stay disabled/quiesced (`LEGACY_OUTBOX_DRAIN_ENABLED=0`, DB runtime mode
 > Nota 2026-10-17: stacks com drift de migration (origem ≠ HEAD) seguem
 > re-provision FRESH (`down -v` + migrate total), nunca migração
 > incremental sobre stack antigo — ver §5.1 do `P6-DR.md`. A ativação
-> abaixo é o caminho forward (Opção B) com worker profile; o combo
+> abaixo é o caminho forward (Opção B) com o worker permanente; o combo
 > `iptv_app` + LEGACY + drain enabled jamais foi suportado
 > (ver §12.4 do `P6-SECURITY.md`).
 
@@ -525,9 +545,7 @@ one.
 - **Browser worker** (`--profile worker`): an on-demand operator smoke CLI, not
   a service.
   ```powershell
-  docker compose --env-file deploy/staging/.env.staging `
-    -f deploy/staging/docker-compose.staging.yml --profile worker \
-    run --rm browser-worker read-credit-balance
+  docker compose --env-file deploy/staging/.env.staging -f deploy/staging/docker-compose.staging.yml --profile worker run --rm browser-worker read-credit-balance
   ```
   Honest limitations: the image ships no browser binary (no `playwright
   install`), headed Chromium needs a display, and headless Chromium in a
@@ -537,9 +555,11 @@ one.
   treat this image as reproducible packaging plus a reviewed container boundary.
 - **Outbox worker** (permanent, no profile): the dedicated platform outbox
   publisher (050 leased protocol under the 051 runtime interlock).
-  Long-running and part of the default `up` after the API is healthy: see
-  "Outbox worker activation (051 interlock, permanent service)" above. `check`
-  is the compose healthcheck (zero claims); `run --once` is the staging smoke.
+  Excluded from initial deployment (`up -d api web`); it starts only in
+  activation step 8, after DB mode is `WORKER` and the zero-claim smoke passes.
+  Do not use bare `up -d` before then; it includes this permanent service. See
+  "Outbox worker activation (051 interlock, permanent service)" above.
+  `check` is the compose healthcheck (zero claims); `run --once` is the staging smoke.
 
 ## Known assumptions (confirmed by the first real `docker build` 2026-10-06)
 

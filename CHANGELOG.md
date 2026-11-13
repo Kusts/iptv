@@ -2,12 +2,16 @@
 
 ## Unreleased - Added
 
+- fix(staging): exigir `CINEVISION_ALLOWED_ORIGIN` e `CINEVISION_LOGIN_PATH` na interpolação global do Compose, documentar o pré-requisito antes de qualquer comando e manter credenciais do Browser Worker fora do ambiente da API.
+
 - docs(mvp): atualiza o status do StreamMax para `main@7d27472`, registra o CI
   43233580447 verde e a issue #131 fechada após alinhar o teste a
   `validation_failed`; registra a inspeção somente leitura do staging
-  detached/sujo em `b46cec7`, sem deploy. Mantém os quatro status de gate; não
-  afirma renewal E2E autenticado, ativação/readback de provedor ou certificação
-  live. A correção de armazenamento de segredos acompanha o PR #123 e mantém
+  detached/sujo em `b46cec7`, sem deploy. Mantém os quatro status de gate e
+  registra que o renewal E2E autenticado foi concluído na stack descartável
+  isolada r4, com dados sintéticos e simulação echo/Asaas, sem prova de staging
+  ou de provedor real e sem promoção de gate. A correção de armazenamento de
+  segredos acompanha o PR #123 e mantém
   os critérios de backup externo PostgreSQL, chave de backup independente,
   restore isolado, leitura sintética e custódia separada das chaves de runtime.
 
