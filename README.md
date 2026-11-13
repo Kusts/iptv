@@ -7,8 +7,26 @@ operations automated around a human-in-the-loop agent runtime.
 > implementation baseline remains the canonical contract. For the current,
 > evidence-qualified StreamMax MVP snapshot (2026-11-12), see
 > [STREAMMAX-MVP-STATUS-2026-11-12](docs/16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-12.md).
-> `CHANGELOG.md` records deliveries; implemented code, staging smoke and live
+ > `CHANGELOG.md` records deliveries; implemented code, staging smoke and live
 > certification are separate claims.
+
+## StreamMax MVP — current finish line
+
+The operational **single-tenant** MVP is not yet certified, even though the
+mainline CI at `c75875d` succeeded on 2026-11-13. The last documented staging
+inspection (2026-11-12) found a detached/modified checkout at `b46cec7`;
+that observation does not prove a deploy of the newest `main`. The renewal
+browser E2E passed with synthetic data in an isolated stack, not in staging
+or on a real provider.
+
+- [MVP finalization plan (13 Nov 2026)](docs/16-pilot-closure/MVP-FINALIZATION-PLAN-2026-11-13.md) — shortest path, gates and test evidence.
+- [MVP evidence snapshot (12 Nov 2026)](docs/16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-12.md) — implemented vs sandbox/staging/live.
+- [Canonical MVP gate definitions](docs/15-implementation-baseline/01-product-and-mvp.md) — the authoritative acceptance criteria.
+
+Do not conflate `MVP_STREAMMAX_OPERATIONAL` with the broader `MVP-PILOT`
+or `MVP-SAAS` scopes. Credential defaults use encrypted PostgreSQL
+storage; Infisical is legacy rollback/cutover only. Hatchet is not required
+on the operational MVP path. Sigma provider writes remain unverified live.
 
 ## What this is
 
