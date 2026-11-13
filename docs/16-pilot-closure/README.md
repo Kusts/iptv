@@ -1,10 +1,14 @@
-# Pilot Closure — Release closure
+# Pilot Closure — índices de evidência e histórico
 
-> **Estado atual consolidado em 12/11/2026:** consulte primeiro
-> [Estado atual do MVP StreamMax](STREAMMAX-MVP-STATUS-2026-11-12.md).
-> Esta matriz e os relatórios abaixo são históricos e não devem ser usados
-> isoladamente para declarar prontidão. O baseline em
-> `docs/15-implementation-baseline/` continua sendo a autoridade de critérios.
+> **Ponto de entrada para finalizar o MVP operacional (13/11/2026):**
+> [Plano de finalização](MVP-FINALIZATION-PLAN-2026-11-13.md) →
+> [Snapshot de evidências (12/11)](STREAMMAX-MVP-STATUS-2026-11-12.md) →
+> [Critérios canônicos](../15-implementation-baseline/01-product-and-mvp.md).
+> A `main@c75875d` tem workflow verde em 13/11, mas isso **não** revalida
+> o staging (última leitura: `b46cec7` detached/sujo) nem as integrações live.
+> `MVP_STREAMMAX_OPERATIONAL`, `MVP-PILOT` e `MVP-SAAS` são etapas distintas.
+> O restante deste arquivo registra decisões e PRs de outubro **como
+> histórico datado**, não como backlog ou status corrente.
 
 > Status: **ENGINEERING BLOCKED** (2026-10-11; ver a matriz única em [`RELEASE-CLOSURE-STATUS.md`](RELEASE-CLOSURE-STATUS.md) e gaps deduplicados em [`RELEASE-CLOSURE-GAPS.md`](RELEASE-CLOSURE-GAPS.md))
 > SPEC de origem: `IPTV Pilot Closure SPEC v1` + `IPTV Pilot Closure PLAN v1`
@@ -24,7 +28,7 @@
 - `jev_gate` (migration 051 + docs + drift): `confirm`, risco 2.02, não-produção.
   Autorização do operador: pedido explícito "inicie a implementação completa".
 
-## Snapshot de PRs — 2026-10-11 (nenhum merged)
+## Snapshot histórico de PRs — 2026-10-11 (nenhum merged naquele instante)
 
 Estado verificado no GitHub em 2026-10-11 ~13:05 UTC; `main` segue em
 `2f181e8`. Nenhum release gate fechado e nenhuma readiness promovida por este
