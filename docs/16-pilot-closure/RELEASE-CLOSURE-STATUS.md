@@ -1,5 +1,14 @@
 # Release closure status — 2026-10-11 (evening refresh, post-mainline-merges)
 
+> **ARQUIVO HISTÓRICO (11/10/2026).** Números de PR, estados de CI e bloqueios
+> abaixo descrevem aquele momento, não o repositório em 13/11. Para decidir
+> o fechamento operacional, leia primeiro o
+> [plano de finalização](MVP-FINALIZATION-PLAN-2026-11-13.md) e o
+> [snapshot de evidências](STREAMMAX-MVP-STATUS-2026-11-12.md).
+> A `main@c75875d` teve CI verde em 13/11, mas não há nova comprovação
+> de staging/live neste documento.
+
+
 > **Atualização verificada 2026-10-11 (~20:29Z):** `origin/main` = `8ee77e7`
 > com **CI verde** (run `38172455461`: `build`, `security-scans`,
 > `adversarial`, `outbox-050-role-guards` todos SUCCESS). Cinco merges
