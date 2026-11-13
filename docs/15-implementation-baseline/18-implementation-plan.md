@@ -1,5 +1,14 @@
 # Implementation Plan — Waves and Critical Path
 
+> **Nota de interpretação (13/11/2026):** este plano por waves registra a
+> estratégia histórica e o escopo amplo do `MVP-PILOT`. No caminho atual
+> do `MVP_STREAMMAX_OPERATIONAL`, Hatchet não é dependência de runtime,
+> os segredos são PostgreSQL cifrado e Sigma foi implementado apenas com
+> testes simulados (sem live). Para executar o fechamento do escopo interno
+> sem reabrir as waves, use o [plano de finalização](../16-pilot-closure/MVP-FINALIZATION-PLAN-2026-11-13.md).
+> Os critérios normativos continuam em [Product Contract](01-product-and-mvp.md).
+
+
 Roadmap is exit-criteria-driven rather than calendar-driven.
 
 The first-value milestone is not the MVP-PILOT gate: validate the operating loop early, then add the remaining required pilot capabilities through later Waves. Integrity, tenant isolation and manual recovery apply to every live slice.
