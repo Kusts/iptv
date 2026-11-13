@@ -7,7 +7,7 @@ operations automated around a human-in-the-loop agent runtime.
 > implementation baseline remains the canonical contract. For the current,
 > evidence-qualified StreamMax MVP snapshot (2026-11-12), see
 > [STREAMMAX-MVP-STATUS-2026-11-12](docs/16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-12.md).
- > `CHANGELOG.md` records deliveries; implemented code, staging smoke and live
+> `CHANGELOG.md` records deliveries; implemented code, staging smoke and live
 > certification are separate claims.
 
 ## StreamMax MVP — current finish line
