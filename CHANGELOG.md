@@ -2,6 +2,23 @@
 
 ## Unreleased - Added
 
+- docs(ops): corrige o snapshot StreamMax e os pré-requisitos do runbook de staging após revisão do debugger: distingue o `base_revision=7d27472` da tarefa E2E r4 do conteúdo atual da branch de docs, registra que o delta também inclui configuração funcional de deploy/staging (Compose e exemplos de env, sem código de runtime, migrations ou imagens) e que a r4 construiu seus próprios inputs de Compose/env sem fazer parse/testar essas mudanças posteriores; no `staging-deploy.md`, torna o Infisical condicional ao caminho LEGADO de rollback/cutover (default PostgreSQL/Control Center) e exige `CINEVISION_ALLOWED_ORIGIN`/`CINEVISION_LOGIN_PATH` em `.env.staging` com os três `env_file` de parse (`.env.staging`, `.env.staging.worker`, `.env.staging.outbox-worker`), mantendo o `outbox-worker` excluído até o passo 8 de ativação.
+
+- docs(ops): marca a seção de ativação do Infisical em `staging-deploy.md` como LEGADO (retida só para rollback/cutover até a validação de `migrate-secrets-to-postgres.mjs`) e deixa explícito no título e na prosa que ela não é o caminho atual de ativação do staging, que usa credenciais cifradas em PostgreSQL/Control Center; demais procedimentos e gates inalterados.
+
+- fix(staging): exigir `CINEVISION_ALLOWED_ORIGIN` e `CINEVISION_LOGIN_PATH` na interpolação global do Compose, documentar o pré-requisito antes de qualquer comando e manter credenciais do Browser Worker fora do ambiente da API.
+
+- docs(mvp): atualiza o status do StreamMax para `main@7d27472`, registra o CI
+  43233580447 verde e a issue #131 fechada após alinhar o teste a
+  `validation_failed`; registra a inspeção somente leitura do staging
+  detached/sujo em `b46cec7`, sem deploy. Mantém os quatro status de gate e
+  registra que o renewal E2E autenticado foi concluído na stack descartável
+  isolada r4, com dados sintéticos e simulação echo/Asaas, sem prova de staging
+  ou de provedor real e sem promoção de gate. A correção de armazenamento de
+  segredos acompanha o PR #123 e mantém
+  os critérios de backup externo PostgreSQL, chave de backup independente,
+  restore isolado, leitura sintética e custódia separada das chaves de runtime.
+
 - docs(waha): atualiza catálogo WhatsApp para registrar envio/ingestão de mídia e documentos, transcrição Groq STT e readback de attachments como IMPLEMENTED/software-verified; limites e binding anotados sem certificação nem fechamento dos gates M1/M2.
 
 - fix(provider): alinhar contrato/validação de `externalRef` em `provider.resolve_operation` (OpenAPI + Zod + runtime/UI) e política de `SUCCEEDED` sem referência nos caminhos de adapter/dispatcher: `externalRef` passa a ser aceito apenas em `SUCCEEDED` com padrão restrito; em `subscription.provision` sem referência válida o provisioning estaciona em `VERIFYING` em vez de concluir/ativar sem vínculo. Testes focados 102/102 + typecheck/lint verdes; gates Python verdes.

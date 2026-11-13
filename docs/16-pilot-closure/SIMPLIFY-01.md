@@ -1,5 +1,13 @@
 # STREAMMAX-SIMPLIFY-01 — Registro da simplificação
 
+
+> **Nota posterior (12/11/2026):** este relatório é o snapshot do cutover de
+> 07/11. O bloqueio de packaging descrito abaixo (CLI/Chromium ausentes na
+> imagem da API) foi tratado no [PR #124](https://github.com/Kusts/iptv/pull/124)
+> e a entrega de runtime aparece no `CHANGELOG.md`. Isso **não** certifica
+> ativação real CINEVISION/Sigma; consultar o
+> [estado atual do MVP](STREAMMAX-MVP-STATUS-2026-11-12.md).
+
 Registro curto da entrega de simplificação (não é uma auditoria). Contrato
 canônico continua em `docs/15-implementation-baseline/`.
 

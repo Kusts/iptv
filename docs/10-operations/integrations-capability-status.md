@@ -1,5 +1,18 @@
 # Integrations Capability Status
 
+
+> **Atualização de referência — 12/11/2026:** a matriz detalhada abaixo
+> conserva evidência histórica e contém descrições antigas de runtime (por
+> exemplo, Infisical como cofre ativo, Hatchet opcional, mídia WAHA ainda não
+> implementada e nenhum adapter de escrita de fornecedor). **Não** a interprete
+> literalmente como inventário do código atual. As mudanças de engenharia
+> confirmadas são: segredos cifrados em PostgreSQL (PR #123); browser CLI na
+> imagem da API (PR #124); adapter Sigma Reseller M2M simulado, **sem live**
+> (PR #127); mídia/transcrição/readback WhatsApp implementados e testados em
+> software (commit `7e273314`). Isto não altera certificações do operador
+> nem as linhas de `platform.capabilities`.
+> [Resumo do MVP e limites de evidência](../16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-12.md).
+
 > Status: Canonical engineering register (per capability)
 > Scope: every external integration seam this repository ships, one row per capability
 > Source of authority for the CINEVISION runtime states: `docs/04-specs/integrations/cinevision-runtime-hardening.md` §23 (`UNCERTIFIED | SANDBOX_CERTIFIED | CERTIFIED` in `platform.capabilities.certification_status`)

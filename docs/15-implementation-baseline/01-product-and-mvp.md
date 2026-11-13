@@ -40,16 +40,20 @@ atestação manual sozinha nunca é PASS):
 - `MVP_CODE_INTEGRATED` — PR merged + testes de regressão/DB-gated + CI verde
   no novo HEAD da `main` + candidato deployado no staging correto via
   PINNED-COPY, com baseline/rollback/migrations verificados e smoke
-  obrigatório (API/frontend healthy, signup fechado, auth, Infisical, Asaas
-  CONNECTED/webhook ativo, assinatura/fulfillment sem regressão,
-  scheduler/outbox coerente com exatamente um processador).
+  obrigatório (API/frontend healthy, signup fechado, auth, leitura controlada
+  dos segredos cifrados no PostgreSQL, Asaas Sandbox CONNECTED/webhook ativo,
+  assinatura/fulfillment sem regressão, scheduler/outbox coerente com
+  exatamente um processador).
 - `MVP_OPERATIONAL_SECURITY` — trocar credenciais temporárias de operador
   comprometidas via recuperação suportada/externa aprovada; invalidar sessões
   antigas; antigas falham/novas funcionam; remover privilégios admin
-  temporários; backup Infisical externo criptografado, integridade, custódia
-  separada de `ENCRYPTION_KEY` + `AUTH_SECRET` e `BACKUP_CRYPTO_KEY_FILE`
-  independente, restore isolado e leitura sintética de segredo. Sem edição
-  direta de hash; sem exigir Enterprise.
+  temporários; backup externo, criptografado e verificável do PostgreSQL, com
+  chave de backup independente das chaves de runtime, restore isolado e
+  leitura sintética de segredo. `SECRETS_ENCRYPTION_KEY` e
+  `BETTER_AUTH_SECRET` ficam fora do banco/dump e sob custódia separada. Não
+  editar hashes diretamente; os critérios de recuperação e integridade
+  permanecem. O runtime do MVP usa segredos PostgreSQL cifrados conforme PR
+  #123 (migration 068), sem exigir Infisical.
 - `MVP_SERVICE_DELIVERY` — reutilizar o rehearsal P8.5 existente, verificar o
   estado atual de pedido/cobrança/pagamento/assinatura/fulfillment; sem
   pagamento duplicado; ativar somente via recurso de teste CINEVISION
