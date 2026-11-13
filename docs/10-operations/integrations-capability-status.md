@@ -1,5 +1,26 @@
 # Integrations Capability Status
 
+> **Leitura atual (13/11/2026):** o resumo abaixo é o ponto de entrada para
+> decisões do MVP operacional. A matriz detalhada mais abaixo preserva
+> histórico por capability (inclusive referências superadas a Infisical,
+> Hatchet, WAHA sem mídia e CINEVISION sem adapter). **Não use as linhas
+> históricas como inventário do código ou autorização live.**
+> Consulte também o [plano de finalização](../16-pilot-closure/MVP-FINALIZATION-PLAN-2026-11-13.md)
+> e o [snapshot das evidências](../16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-12.md).
+
+## Resumo do caminho atual (software ≠ certificação)
+
+| Integração | Implementado/documentado | Situação de certificação |
+| --- | --- | --- |
+| Segredos | PostgreSQL AES-256-GCM / Control Center (PR #123; migration 068) | Infisical somente como legado de migração/rollback; backup/restore ainda exigem evidência do ambiente |
+| Asaas | Adapter, PIX/webhooks/idempotência; E2E Sandbox 04/11; teste de conexão read-only 07/11 | Fluxos adicionais e operação em staging ainda pendentes; não há canário produção certificado |
+| WAHA | Sessões por tenant, envio/recebimento; mídia/transcrição/readback com cobertura software; M1/M2 de texto/manobra registrados em 14/10 | Não presumir homologação total de mídia, multisessão ou reconexão real sem nova evidência |
+| CINEVISION/Sigma | CLI + Chromium empacotados (PR #124); adapter Sigma create/renew/readback simulado (PR #127) | Sem ativação de fornecedor real e readback independente; operação manual supervisionada |
+| MK Ativador | Integração automática diferida (ADR-0027) | Pós-MVP; não bloqueia o MVP operacional |
+| Workflows/Hatchet | Caminho operacional usa outbox dedicado; workflow local é não durável | Hatchet saiu do runtime padrão do MVP; pesquisa/certificação opcional futura |
+
+## Matriz histórica de evidências por capability
+
 
 > **Atualização de referência — 12/11/2026:** a matriz detalhada abaixo
 > conserva evidência histórica e contém descrições antigas de runtime (por
@@ -13,7 +34,7 @@
 > nem as linhas de `platform.capabilities`.
 > [Resumo do MVP e limites de evidência](../16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-12.md).
 
-> Status: Canonical engineering register (per capability)
+> Status: registro histórico por capability; o resumo atual e os gates oficiais prevalecem
 > Scope: every external integration seam this repository ships, one row per capability
 > Source of authority for the CINEVISION runtime states: `docs/04-specs/integrations/cinevision-runtime-hardening.md` §23 (`UNCERTIFIED | SANDBOX_CERTIFIED | CERTIFIED` in `platform.capabilities.certification_status`)
 
