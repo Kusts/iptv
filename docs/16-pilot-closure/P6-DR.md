@@ -57,9 +57,11 @@ aplicável → `DRILL PASS` com duração total (evidência de RTO).
 
 ## 4. Evidência do drill (2026-10-08, staging descartável)
 
-Origem: `iptv-staging-postgres/iptv` (51 migrations, outbox/inbox/audit
-vazios — staging sem dados de pilot). Evidência local (gitignored):
+Origem histórica: `iptv-staging-postgres/iptv` (51 migrations, outbox/inbox/audit
+vazios - staging sem dados de pilot). Evidência local (gitignored):
 `artifacts/dr-p6b/20261008T023909Z/`.
+O staging atual usa a stack central db-prod/db-hml via `dbcentral_net`;
+`iptv-staging-postgres` permanece parado como rollback, não como origem atual.
 
 - Backup: `iptv-20261008T023910Z.dump` **622.620 bytes**,
   `plain_sha256`

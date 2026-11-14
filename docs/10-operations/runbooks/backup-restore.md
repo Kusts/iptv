@@ -134,7 +134,10 @@ NÃO é usado neste fluxo. Criptografia em envelope híbrido
 
 O wrapper faz dump isolado + cópia offsite:
 
-1. `pg_dump -Fc` via `docker exec` contra `iptv-infisical-postgres`
+1. `pg_dump -Fc` via `docker exec` contra `db-hml` pela rede externa
+   `dbcentral_net` (stack central db-prod/db-hml); o container
+   `iptv-infisical-postgres` antigo fica parado como rollback. Use conexão
+   autenticada com o banco
    (banco/usuário `infisical`) para temp `0600` com cleanup por trap
    (`EXIT`/`INT`/`TERM`), depois envelope-encrypt com a chave pública
    (`<db>-<ts>-<rand>.dump.penc` + manifest não-secreto com
@@ -218,7 +221,7 @@ O wrapper faz dump isolado + cópia offsite:
 |---|---|
 | `INFISICAL_BACKUP_PUBLIC_KEY_FILE` | chave PÚBLICA do destinatário na VPS — REQUIRED; live path `/home/deploy/infisical/infisical-backup.pub.pem`; ÚNICO material de chave no host (nunca privada, nunca simétrica) |
 | `INFISICAL_ENV_FILE` | fonte (default `/home/deploy/infisical/.env.infisical`) |
-| `INFISICAL_PG_CONTAINER` / `INFISICAL_PG_USER` / `INFISICAL_PG_DB` | defaults `iptv-infisical-postgres` / `infisical` / `infisical` |
+| `INFISICAL_PG_CONTAINER` / `INFISICAL_PG_USER` / `INFISICAL_PG_DB` | defaults `db-hml` (central dbcentral_net) / `infisical` / `infisical`; legacy `iptv-infisical-postgres` stays stopped as rollback |
 | `INFISICAL_BACKUP_DIR` / `INFISICAL_BACKUP_KEEP` | work dir local (live `/home/deploy/infisical/backups`; default do script `/var/backups/infisical`) + retenção de ciphertext (7) |
 | `INFISICAL_R2_ENDPOINT` | endpoint S3 do R2 (conta do operador) — REQUIRED |
 | `INFISICAL_R2_BUCKET` | bucket (ex. `iptv-infisical-backups`) — REQUIRED |

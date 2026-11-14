@@ -6,6 +6,7 @@
 # exposure is minimal (everything binds to 127.0.0.1; a reverse proxy /
 # tunnel terminates public TLS outside this file).
 #
+# PostgreSQL is centralized on db-hml via external dbcentral_net; old local container is retained stopped as rollback.
 # Secrets: NONE live here. `deploy/staging/.env.staging` (gitignored; copy
 # `deploy/staging/.env.staging.example`) provides interpolation for all services
 # and is an `env_file` only for the API. Integration credentials are
@@ -14,7 +15,7 @@
 # outside the database/Git. Never add a literal credential here.
 #
 # Deploy order (enforced by depends_on, do not reorder by hand):
-#   postgres (healthy) → migrate (one-shot, exit 0) → api (ready) → web
+#   db-hml (external) → migrate (one-shot, exit 0) → api (ready) → web
 #   outbox-worker is the single permanent outbox publisher and starts after
 #   the API is healthy (the DB runtime mode must be WORKER; see the
 #   rls-role-split-cutover runbook). browser-worker is opt-in
@@ -35,33 +36,6 @@
 #
 # Runbook: docs/10-operations/runbooks/staging-deploy.md
 services:
-  postgres:
-    # Digest pinned (observed 2026-10-05); refresh with
-    # `docker buildx imagetools inspect postgres:17-alpine`.
-    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
-    container_name: iptv-staging-postgres
-    restart: unless-stopped
-    environment:
-      # Local placeholders only: the real credentials come from .env.staging
-      # (POSTGRES_* are read by the postgres entrypoint itself).
-      POSTGRES_DB: ${POSTGRES_DB:-iptv}
-      POSTGRES_USER: ${POSTGRES_USER:-iptv_owner}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    # Internal by default: no published port. Uncomment only for psql access
-    # from the host, bound to loopback.
-    # ports:
-    #   - "127.0.0.1:5433:5432"
-    networks:
-      - internal
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
   # One-shot migration job. MUST complete (exit 0) before the API starts.
   # DATABASE_URL below is the OWNER connection string, always: migrations need
   # DDL rights and must not go through the application role or a pooler. NEVER
@@ -81,15 +55,13 @@ services:
     # migrating — and never exit, hanging `service_completed_successfully`.
     # `packages/database/dist` ships in the api runtime image.
     command: ["node", "packages/database/dist/bin/iptv-migrate.js"]
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
       # Owner credentials, injected from .env.staging (never from APP_*).
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL (owner) is required}
       MIGRATIONS_DIR: /app/db/migrations
     networks:
       - internal
+      - dbcentral_net
 
   api:
     build:
@@ -99,8 +71,6 @@ services:
     container_name: iptv-staging-api
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
       migrate:
         condition: service_completed_successfully
     env_file:
@@ -133,6 +103,7 @@ services:
       - cinevision_api_profiles:/data/cinevision-profiles
     networks:
       - internal
+      - dbcentral_net
     # Chromium (spawned by the API for CINEVISION reads) needs shared memory
     # and a larger heap than the API alone. Keep the ceiling bounded.
     mem_limit: 2g
@@ -248,8 +219,6 @@ services:
     # clean exit stays immediate; grace only delays the SIGKILL.
     stop_grace_period: 130s
     depends_on:
-      postgres:
-        condition: service_healthy
       migrate:
         condition: service_completed_successfully
       api:
@@ -270,6 +239,7 @@ services:
       POSTGRES_PASSWORD: ""
     networks:
       - internal
+      - dbcentral_net
     mem_limit: 256m
     cpus: 0.5
     healthcheck:
@@ -288,6 +258,8 @@ services:
   # deploy/pgbouncer/ and the rls-role-split-cutover runbook for reference.
 
 networks:
+  dbcentral_net:
+    external: true
   # Single internal bridge. Nothing is published except the loopback-bound
   # api/web ports above, so a compromised container cannot be reached from
   # outside the host. Put a reverse proxy / tunnel in front for public traffic.
@@ -295,6 +267,5 @@ networks:
     driver: bridge
 
 volumes:
-  pgdata:
   worker_profile:
   cinevision_api_profiles:
