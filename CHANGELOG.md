@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased - Added
+- docs(backlog): classificar issues abertas e priorizar as proximas entregas do MVP-PILOT; encerrar itens ja comprovados por teste.
+- docs(mvp): publicar relatorio final separando software pronto, homologacao e disponibilidade comercial.
 - docs(integrations): registrar homologacao de software, estado real no staging e bloqueios live de asaas, whatsapp, cinevision e painel (issues #86-#89).
 - docs(pilot): registrar ensaio sintetico em staging de cliente, pedido quote/submit e ticket resolvido, com checklist e dependencias do piloto real.
 
