@@ -2,6 +2,7 @@
 
 ## Unreleased - Added
 
+- fix(ops): redeploy do staging para main@89b3f3a (docs + vinculo opcional ticket-cliente), com migrate no-op, smoke verde e rollback por imagens preservado.
 - feat(support): permitir vincular ticket a um cliente do tenant na criacao, mantendo compatibilidade quando omitido.
 - docs(mvp): registrar ativacao supervisionada real CINEVISION (linha de teste gratuita, externalRef e readback no painel) e promover MVP_STREAMMAX_OPERATIONAL a PASS nos quatro gates.
 - docs(mvp): registrar challenge do fornecedor na leitura CINEVISION (credenciais presentes, sem ativação) e ajustar a próxima ação do gate de entrega.

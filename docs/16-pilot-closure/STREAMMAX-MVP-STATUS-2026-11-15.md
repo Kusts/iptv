@@ -1,8 +1,9 @@
 # StreamMax — estado operacional do MVP (15/11/2026)
 
-> Snapshot datado de evidências. O staging está em `main@fc794f4`, marcador
-> `.staging-revision` = `main@fc794f4`. Este documento não certifica integrações
+> Snapshot datado de evidências. O staging está em `main@89b3f3a`, marcador
+> `.staging-revision` = `main@89b3f3a`. Este documento não certifica integrações
 > live, nem altera os critérios do [baseline](../15-implementation-baseline/01-product-and-mvp.md).
+> As evidências dos quatro gates foram coletadas em `main@fc794f4`; o redeploy posterior para `main@89b3f3a` trouxe apenas documentação e o vínculo opcional ticket↔cliente, verificado em staging.
 
 ## Gates e marco geral
 
@@ -18,9 +19,9 @@
 
 ### Código, deploy e operação
 
-- Staging deployado em `main@fc794f4` (fast-forward verificado); imagens
-  tagueadas `main-27c2527` e `rollback-b46cec7`; marcador `.staging-revision`
-  = `main@fc794f4`.
+- Staging redeployado em `main@89b3f3a` (fast-forward verificado); rollback
+  por imagens `rollback-fc794f4` preservado; marcador `.staging-revision`
+  = `main@89b3f3a`.
 - `migrate`: `applied=0 skipped=69 total=69`; nenhuma migration pendente,
   sem reset. PostgreSQL 17.11; 69/69 migrations.
 - Smoke: `/v1/health`, `/v1/health/ready` e web 200 (local e público);
