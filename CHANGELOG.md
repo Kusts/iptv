@@ -2,6 +2,7 @@
 
 ## Unreleased - Added
 
+- test(api): corrigir fixture de identidade WHATSAPP que colidia após a normalização numérica (flake F07 em CI); sem mudança de código de produção.
 - fix(docs): registrar que o backup do database iptv usa a role superuser postgres no db-central (tabelas de controle do outbox negam SELECT a iptv_owner); sem mudança de grants.
 
 - fix(ops): exigir projeto Compose `iptv-staging` nos comandos de staging e corrigir a nota de rollback do banco legado; sem deploy nem migração.
