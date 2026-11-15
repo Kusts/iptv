@@ -75,7 +75,7 @@ O registro autoritativo de entrega é o `CHANGELOG.md` (anexe toda entrega em
   eventos precisam de entrada no registry + canal AsyncAPI + SPEC.
 - `README.md` — descreve o repositório como está hoje; status cronológico
   mora no CHANGELOG, não no README.
-- `docs/16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-12.md` — último snapshot de evidências da operação (histórico datado).
+- `docs/16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-15.md` — snapshot atual de evidências da operação.
 - `docs/16-pilot-closure/MVP-FINALIZATION-PLAN-2026-11-13.md` — sequência e aceite para finalizar o MVP operacional; não substitui o baseline.
 
 ## Orquestração OpenCode
@@ -139,22 +139,25 @@ DNS ou mutação de produção; confirme o alvo e a autorização na tarefa atua
 
 ## Staging Contabo (único provedor ativo)
 
-- **Topologia de banco atual no Git (14/11/2026):** o Compose de staging
+- **Topologia de banco atual (15/11/2026):** staging deployado em
+  `main@fc794f4`; marcador `.staging-revision` = `main@fc794f4`.
+  O Compose de staging
   conecta ao PostgreSQL externo `db-hml` via `dbcentral_net` (stack
   db-central gerida no repositório de infraestrutura `kust-projetos/vps-hostinger`).
-  **Não existe serviço `postgres` no Compose atual do IPTV.** Não executar
+  O projeto Compose obrigatório é `iptv-staging`: inclua `-p iptv-staging` em
+  todo comando `docker compose`. **Não existe serviço `postgres` no Compose
+  atual do IPTV.** Não executar
   `up -d postgres`, `down -v`, `--fresh` ou operações de limpeza no banco
   central compartilhado; testar primeiro o parse e a conectividade no alvo.
-- A alteração do Git **não comprova cutover na VPS**: o último inventário
-  remoto (F0, 13/11) encontrou checkout `b46cec7` sujo/detached, envs
-  incompletos e labels Compose divergentes. Verificar novamente sem tocar
-  serviços vizinhos, preservando backups e dados antes de alinhar/deployar.
+- O backup do database `iptv` usa a role `postgres` no container central.
+  Rollback usa imagens tagueadas e dump; não existe mais container PostgreSQL
+  legado. A chave de backup fica em custódia separada do operador, fora do host.
   Fluxo vigente em `docs/10-operations/runbooks/staging-deploy.md`.
 
 - Hostinger VPS desativada (confirmado pelo usuário em 2026-11-02): Contabo é
   o único provedor em uso para o staging IPTV.
 - Alvo canônico verificado em sessão SSH Contabo: `/home/deploy/iptv-staging`
-  (marcador atualizado para `main@76515c3` após smoke em 2026-11-03);
+  (marcador `.staging-revision` = `main@fc794f4`, 15/11);
   `/home/deploy/iptv` não existe nesse host.
 - O ponteiro local `VPS_*` refere-se à Hostinger desativada: obsoleto e
   proibido para IPTV.
@@ -176,13 +179,9 @@ DNS ou mutação de produção; confirme o alvo e a autorização na tarefa atua
 - Deploy executado em 2026-11-03: volume de teste resetado com autorização
   explícita do usuário, fresh 67/67, stack API/web/outbox/túnel saudável com
   smoke (health/ready e web 200, registro público 403, login do owner 200).
-- **Última inspeção documentada (12/11):** staging em checkout detached/sujo
-  `b46cec7`, health e migrations 69/69 OK, mas sem atualização à `main`
-  daquela data. O snapshot de 03/11 acima é histórico, não a versão
-  implantada atual confirmada. Não sobrescrever o checkout nem alegar que
-  `main` está deployada sem nova inspeção (ver status do MVP e plano final).
-- Pendências do MVP operacional: alinhamento de staging, recuperação/segurança
-  e ativação autorizada com readback real CINEVISION/Sigma. Infisical não é
+- Snapshot histórico de 12/11 foi superado pelo status de 15/11. Pendência
+  operacional do MVP: ativação autorizada com readback real CINEVISION/Sigma.
+  Infisical não é
   mais requisito do caminho atual.
 
 ## Limites operacionais

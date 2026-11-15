@@ -2,6 +2,9 @@
 
 ## Unreleased - Added
 
+- docs(mvp): registra deploy `main@fc794f4` e evidências operacionais de 15/11; entrega de serviço real permanece BLOCKED_EXTERNAL.
+- docs(mvp): consolida snapshot, plano, README, índice, runbook e instruções de staging; sem alteração de código ou contratos.
+
 - test(api): corrigir fixture de identidade WHATSAPP que colidia após a normalização numérica (flake F07 em CI); sem mudança de código de produção.
 - fix(docs): registrar que o backup do database iptv usa a role superuser postgres no db-central (tabelas de controle do outbox negam SELECT a iptv_owner); sem mudança de grants.
 
