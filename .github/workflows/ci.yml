@@ -96,6 +96,7 @@ jobs:
       - run: python scripts/validate_docs.py
       - run: python tests/contracts/test_contracts.py
       - run: python tests/contracts/test_seed_contract.py
+      - run: python tests/contracts/test_openapi_route_parity.py
 
   # P1 fail-closed proof in full isolation: replays ONLY migration 050 on
   # scratch databases with hostile pre-existing cluster-global roles (each
