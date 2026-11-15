@@ -40,6 +40,11 @@
 bash scripts/db-backup.sh <container> <db-user> <db-name> <output-dir> [keep=7]
 ```
 
+Para o database `iptv` no `db-central-hml`, use `-U postgres` no container via
+`docker exec` local trust: as tabelas de controle do outbox pertencem a
+`outbox_executor` e negam SELECT a `iptv_owner`, `iptv_app` e `outbox_worker`;
+`-U iptv_owner` falha com permissão negada. Essa separação de privilégios é intencional: não conceda SELECT nessas tabelas para viabilizar o backup.
+
 Saídas: `<db>-<timestamp>.dump` (formato custom `-Fc`) +
 `<db>-<timestamp>.dump.manifest.json`. Retenção local: mantém os N mais
 recentes (`keep`).

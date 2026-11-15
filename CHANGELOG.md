@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- fix(docs): registrar que o backup do database iptv usa a role superuser postgres no db-central (tabelas de controle do outbox negam SELECT a iptv_owner); sem mudança de grants.
+
 - fix(ops): exigir projeto Compose `iptv-staging` nos comandos de staging e corrigir a nota de rollback do banco legado; sem deploy nem migração.
 
 - fix(ops): marca `staging-compose-current.yml` como snapshot histórico não deployável e corrige o exemplo de backup agendado para o container central `db-central-hml`; sem deploy, migração ou credencial.
