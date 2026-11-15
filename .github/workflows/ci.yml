@@ -23,6 +23,24 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
+      - name: Staging Compose contract (db-central; parse only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp deploy/staging/.env.staging.example deploy/staging/.env.staging
+          cp deploy/staging/.env.staging.worker.example deploy/staging/.env.staging.worker
+          cp deploy/staging/.env.staging.outbox-worker.example deploy/staging/.env.staging.outbox-worker
+          trap 'rm -f deploy/staging/.env.staging deploy/staging/.env.staging.worker deploy/staging/.env.staging.outbox-worker' EXIT
+          compose=(docker compose --env-file deploy/staging/.env.staging -f deploy/staging/docker-compose.staging.yml)
+          "${compose[@]}" config --quiet
+          services="$("${compose[@]}" config --services)"
+          for service in migrate api web outbox-worker; do
+            printf '%s\n' "$services" | grep -qx "$service"
+          done
+          if printf '%s\n' "$services" | grep -qx postgres; then
+            echo 'Staging Compose must use external db-hml, not a local postgres service.' >&2
+            exit 1
+          fi
       - uses: pnpm/action-setup@v4
         with:
           version: 10.15.0
