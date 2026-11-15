@@ -109,6 +109,53 @@ describe.skipIf(!hasDb)("Wave 8 Support + HITL center (requires TEST_DATABASE_UR
     }), "person.register")).id;
   }
 
+  it("creates tickets with an optional same-tenant customer link", async () => {
+    const personId = await makePerson();
+    const customerId = newId();
+    await db.insertInto("crm.customers").values({
+      id: customerId,
+      tenant_id: tenantId,
+      person_id: personId,
+      status: "ACTIVE",
+      customer_since: new Date(),
+      last_reactivated_at: null,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }).execute();
+
+    const linked = await bus.execute<{ id: string }>(actor(), "support.ticket.open", {
+      personId, customerId, summary: "Linked customer support ticket",
+    });
+    expect(linked.ok).toBe(true);
+    if (!linked.ok) return;
+    const ticket = await db.selectFrom("support.support_tickets")
+      .select(["customer_id"])
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", linked.data.id)
+      .executeTakeFirstOrThrow();
+    expect(ticket.customer_id).toBe(customerId);
+
+    const unlinked = await bus.execute<{ id: string }>(actor(), "support.ticket.open", {
+      personId, summary: "Legacy compatible support ticket",
+    });
+    expect(unlinked.ok).toBe(true);
+    if (!unlinked.ok) return;
+    const unlinkedRow = await db.selectFrom("support.support_tickets")
+      .select("customer_id")
+      .where("tenant_id", "=", tenantId)
+      .where("id", "=", unlinked.data.id)
+      .executeTakeFirstOrThrow();
+    expect(unlinkedRow.customer_id).toBeNull();
+
+    for (const invalidCustomerId of [newId(), newId()]) {
+      const result = await bus.execute(actor(), "support.ticket.open", {
+        personId, customerId: invalidCustomerId, summary: "Rejected customer support ticket",
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.message).toBe("customer not found in this tenant");
+    }
+  });
+
   /** Minimal subscription chain for a recovery_task fixture (direct rows). */
   async function seedRecoveryTask(reason: string): Promise<string> {
     const personId = await makePerson();

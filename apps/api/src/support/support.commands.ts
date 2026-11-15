@@ -18,6 +18,7 @@ import {
 import {
   advisoryLockTicket,
   conversationInTenant,
+  customerExists,
   getIncident,
   getProblem,
   getSolution,
@@ -56,6 +57,7 @@ import {
 
 export const ticketOpenInput = z.object({
   personId: z.string().uuid(),
+  customerId: z.string().uuid().optional(),
   conversationId: z.string().uuid().optional(),
   priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]).default("NORMAL"),
   category: z.string().trim().min(1).max(120).optional(),
@@ -157,8 +159,12 @@ async function handleTicketOpen(
   if (input.conversationId !== undefined && !(await conversationInTenant(ctx, input.conversationId))) {
     return { ok: false, code: "not_found", message: "conversation not found in this tenant" };
   }
+  if (input.customerId !== undefined && !(await customerExists(ctx, input.customerId))) {
+    return { ok: false, code: "not_found", message: "customer not found in this tenant" };
+  }
   const ticket = await insertTicket(ctx, {
     personId: input.personId,
+    customerId: input.customerId,
     conversationId: input.conversationId,
     priority: input.priority,
     category: input.category,
@@ -760,4 +766,3 @@ export function registerSupportCommands(bus: CommandBus): void {
     handler: handleTechnicalAccessGrant,
   });
 }
-
