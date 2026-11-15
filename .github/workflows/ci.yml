@@ -31,6 +31,9 @@ jobs:
           cp deploy/staging/.env.staging.worker.example deploy/staging/.env.staging.worker
           cp deploy/staging/.env.staging.outbox-worker.example deploy/staging/.env.staging.outbox-worker
           trap 'rm -f deploy/staging/.env.staging deploy/staging/.env.staging.worker deploy/staging/.env.staging.outbox-worker' EXIT
+          # Parse-only dummy: the example intentionally omits the runtime key.
+          # Nothing is started; this value is never used to encrypt data.
+          export SECRETS_ENCRYPTION_KEY="$(printf '0%.0s' {1..32} | base64 | tr -d '\n')"
           compose=(docker compose --env-file deploy/staging/.env.staging -f deploy/staging/docker-compose.staging.yml)
           "${compose[@]}" config --quiet
           services="$("${compose[@]}" config --services)"
