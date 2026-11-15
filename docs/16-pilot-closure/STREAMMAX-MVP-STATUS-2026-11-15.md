@@ -10,9 +10,9 @@
 |---|---|---|
 | `MVP_CODE_INTEGRATED` | **PASS (15/11)** | Deploy `main@fc794f4`; migrate sem pendências; smoke local/público; jornada comercial sintética e demais evidências abaixo. |
 | `MVP_OPERATIONAL_SECURITY` | **PASS (15/11)** | Backup cifrado com chave em custódia separada, restore isolado 155/155, invalidação de sessão, ausência de admin temporário e leitura sintética de segredo. |
-| `MVP_SERVICE_DELIVERY` | **BLOCKED_EXTERNAL** | Credenciais CINEVISION existentes, porém a leitura real retorna `CHALLENGE_DETECTED`; nenhuma ativação/readback. Resolução exige sessão supervisionada autorizada. |
+| `MVP_SERVICE_DELIVERY` | **PASS (15/11)** | Ativação manual supervisionada de linha gratuita de teste CINEVISION (ID `214790811`) e readback independente diretamente no painel do fornecedor. Evidência da pós-condição na plataforma é declaração do operador; verificação independente não foi feita pela API. |
 | `MVP_RENEWAL_AND_OPERATIONS` | **PASS (15/11)** | Renovação, replay, suporte e processador outbox único comprovados. |
-| `MVP_STREAMMAX_OPERATIONAL` | **BLOCKED** | 3/4 gates PASS; falta apenas evidência externa de entrega de serviço. |
+| `MVP_STREAMMAX_OPERATIONAL` | **PASS (15/11)** | 4/4 gates PASS; entrega supervisionada vinculada à assinatura e readback independente no painel. Escrita automatizada no fornecedor está fora do escopo; ressalva de evidência declarativa da pós-condição na plataforma. |
 
 ## Evidências
 
@@ -65,11 +65,27 @@
 
 ### Entrega de serviço
 
-- Tenant sintético: configure CINEVISION em `SANDBOX` retornou HTTP 201
-  (binding v2); teste read-only (`read-identity` + `list-servers`) executou
-  por 59,2 s e retornou `CHALLENGE_DETECTED`. Zero operações de escrita no
-  fornecedor; tenant operacional intocado. Histórico operacional: 07/11
-  `CONNECTED_READ_ONLY`, 08/11 `CHALLENGE_DETECTED`.
+- Fornecedor CINEVISION (painel autenticado do operador): linha de teste
+  gratuita criada manualmente, ID `214790811`, plano `TESTE COMPLETO 6H`,
+  categoria Teste, status Ativo, expira 15/11/2026 16:06, 1 conexão,
+  R$ 0,00 e 0 créditos debitados. Readback independente diretamente no painel
+  confirmou a linha ativa com o mesmo ID.
+- Tenant sintético: pedido `01a1df55-d9ef-713e-a015-dc497a64949e`
+  `SETTLED` (R$ 10,00), charge `01a1df56-27c0-70bb-bdc2-a4971a2aee60`
+  `PAID`, pagamento `01a1df56-8877-77d5-9a69-742d8c043c79` `CONFIRMED`,
+  assinatura `01a1df56-c3a6-7154-aa5f-ba24e5937919` `ACTIVE` com
+  `external_ref=214790811`; operação
+  `01a1df56-c5a9-7081-8d41-3eedce3ac7cb` `HUMAN_REQUIRED → SUCCEEDED`
+  (`MANUAL`, adapter `manual-v1`); evidência `ACTIVATION_POSTCONDITION`
+  `01a1df57-9801-766c-a2f3-78f6785c65ab`.
+- Ledger: 1 `ORDER_SETTLEMENT` e 1 `PAYMENT_CONFIRMATION`, cada qual com
+  2 entradas balanceadas de 1000 minor units. Replay da resolução com a mesma
+  idempotency key retornou `201 SUCCEEDED` na mesma operação; total de
+  operações permaneceu 3, sem duplicidade.
+- Nenhuma escrita no fornecedor foi feita pela API:
+  `ManualProviderOpsAdapter` retorna `MANUAL` sem chamada externa. A evidência
+  de pós-condição na plataforma é declaração do operador sobre o readback;
+  a verificação independente foi feita no painel do fornecedor, não pela API.
 
 ### Webhook Asaas
 
@@ -88,7 +104,6 @@
 - Tenant sintético da jornada não tem registro próprio de webhook Asaas
   (esperado); o canal ativo existente é de outro tenant.
 - Evento que liquidou o E2E foi simulado no Sandbox, sem pagamento externo real.
-- Adapter CINEVISION simulado; não houve ativação/readback real.
 
 ## Escopo e próximo passo
 
@@ -97,7 +112,6 @@ condicionado aos quatro gates acima. Não declara concluídos `MVP-PILOT`
 (escopo de piloto) nem `MVP-SAAS` (produto SaaS multi-tenant); são escopos
 distintos e não promovidos por este snapshot.
 
-Próxima ação mínima: resolver o challenge em sessão supervisionada autorizada
-e então executar leitura e, se autorizado, **UMA** ativação controlada com
-readback independente. Até lá,
-`MVP_SERVICE_DELIVERY=BLOCKED_EXTERNAL` e o marco geral permanece BLOCKED.
+Próxima ação: manter esta evidência, repetir o ciclo na próxima renovação real
+(`MVP-PILOT`) e revisar a linha de teste, que expira em 6h e não debitou
+créditos. O tenant e o operador sintéticos permanecem para evidência.
