@@ -165,6 +165,7 @@ describe.skipIf(!hasDb)("F07 pipeline: model failure on the live AppModule path 
   let bus: CommandBus;
   let pipeline: AgentPipeline;
   let webhooks: WahaWebhookService;
+  let identitySeq = 0;
 
   /** Flipped per case: `ok` answers a valid completion, `fail` a 500. */
   let modelMode: "ok" | "fail" = "fail";
@@ -323,7 +324,8 @@ describe.skipIf(!hasDb)("F07 pipeline: model failure on the live AppModule path 
   async function openAgentConversation(tag: string): Promise<string> {
     const person = await bus.execute<{ id: string }>(actor(), "person.register", {
       canonicalName: `F07 ${tag}`,
-      identities: [{ identityType: "WHATSAPP", normalizedValue: `5511999${newId().replace(/-/g, "").slice(-8)}` }],
+      // normalizeIdentity removes non-digits, so keep this fixture numeric and deterministic.
+      identities: [{ identityType: "WHATSAPP", normalizedValue: `5511999${String(++identitySeq).padStart(8, "0")}` }],
     });
     if (!person.ok) {
       throw new Error(`person.register failed: ${JSON.stringify(person)}`);
