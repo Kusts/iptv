@@ -80,19 +80,27 @@ central de outros projetos a partir do IPTV. Usar
 - **F1 concluído:** staging em `main@fc794f4`, marcador correspondente,
   migrate `applied=0 skipped=69 total=69`, smoke local/público e jornada
   comercial sintética; sem reset. `MVP_CODE_INTEGRATED` = PASS (15/11).
-- **F2 BLOCKED_EXTERNAL:** credenciais CINEVISION existem; configure em
-  `SANDBOX` no tenant sintético retornou HTTP 201 (binding v2), mas o teste
-  read-only de 59,2 s retornou `CHALLENGE_DETECTED`. Zero operações de escrita
-  no fornecedor, nenhuma ativação/readback e tenant operacional intocado;
-  histórico operacional 07/11 `CONNECTED_READ_ONLY` e 08/11
-  `CHALLENGE_DETECTED`. Resolução exige sessão supervisionada autorizada.
+- **F2 concluído; `MVP_SERVICE_DELIVERY=PASS` (15/11):** linha gratuita de
+  teste CINEVISION `214790811` criada manualmente no painel autenticado do
+  operador (plano `TESTE COMPLETO 6H`, status Ativo, 0 créditos debitados);
+  readback independente diretamente no painel confirmou a linha ativa.
+  No tenant sintético, assinatura `01a1df56-c3a6-7154-aa5f-ba24e5937919`
+  ficou `ACTIVE` com `external_ref=214790811`, operação
+  `01a1df56-c5a9-7081-8d41-3eedce3ac7cb` concluiu
+  `HUMAN_REQUIRED → SUCCEEDED` e evidência
+  `ACTIVATION_POSTCONDITION` `01a1df57-9801-766c-a2f3-78f6785c65ab`.
+  Replay idempotente retornou a mesma operação, sem duplicatas. Ressalva:
+  a pós-condição na plataforma é declaração do operador sobre o readback;
+  verificação independente foi no painel, não pela API. Escrita automatizada
+  no fornecedor permanece fora do escopo.
 - **F3 concluído:** backup cifrado e restore isolado 155/155, invalidação de
   sessão, ausência de admin temporário e leitura sintética de segredo;
   custódia separada da chave de backup já resolvida.
   `MVP_OPERATIONAL_SECURITY` = PASS (15/11).
-- **F4 em andamento:** consolidação documental registrada; marco geral
-  `MVP_STREAMMAX_OPERATIONAL` = BLOCKED (3/4 gates PASS), pendente apenas
-  evidência externa de entrega de serviço. `MVP-PILOT` e `MVP-SAAS` permanecem
+- **F4 em andamento:** consolidação documental registrada;
+  `MVP_STREAMMAX_OPERATIONAL=PASS` (4/4 gates), com a ressalva de que a
+  verificação independente foi no painel do fornecedor e a evidência de
+  pós-condição na plataforma é declarativa. `MVP-PILOT` e `MVP-SAAS` permanecem
   escopos separados.
 
 ## Sinergia do sistema e limite de responsabilidade
