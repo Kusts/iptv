@@ -499,32 +499,33 @@ paths:
                 $ref: '#/components/schemas/Offer'
         '409':
           $ref: '#/components/responses/TenantContextConflict'
-  /v1/orders:
+  /v1/orders/quote:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
       - Commerce
-      operationId: createOrder
+      operationId: quoteOrder
       parameters:
-      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
       - $ref: '#/components/parameters/CorrelationId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateOrderRequest'
+              $ref: '#/components/schemas/QuoteOrderRequest'
       responses:
         '201':
-          description: Order created
+          description: Order quote
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Order'
+                type: object
+                additionalProperties: true
         '409':
           $ref: '#/components/responses/Conflict'
-  /v1/orders/{orderId}:
+  /v1/orders/{id}:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
     get:
@@ -532,7 +533,12 @@ paths:
       - Commerce
       operationId: getOrder
       parameters:
-      - $ref: '#/components/parameters/OrderId'
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
       - $ref: '#/components/parameters/CorrelationId'
       responses:
         '200':
@@ -540,21 +546,110 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Order'
+                type: object
+                additionalProperties: true
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/TenantContextConflict'
-  /v1/orders/{orderId}/charges:
+  /v1/orders/{id}/submit:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
-      - Billing
+      - Commerce
+      operationId: submitOrder
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201':
+          description: Order submitted
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/orders/{id}/cancel:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags: [Commerce]
+      operationId: cancelOrder
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: {type: string, minLength: 1, maxLength: 500}
+      responses:
+        '201': {description: Order cancelled}
+  /v1/orders/expire-due:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags: [Commerce]
+      operationId: expireDueOrders
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit: {type: integer, minimum: 1, maximum: 1000}
+      responses:
+        '201': {description: Due orders expired}
+  /v1/orders:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags: [Commerce]
+      operationId: listOrders
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - name: limit
+        in: query
+        schema: {type: integer, minimum: 1, maximum: 100}
+      - name: offset
+        in: query
+        schema: {type: integer, minimum: 0}
+      - name: status
+        in: query
+        schema: {type: string}
+      responses:
+        '200':
+          description: Orders
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+  /v1/charges:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags: [Billing]
       operationId: createCharge
       parameters:
-      - $ref: '#/components/parameters/OrderId'
-      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
       - $ref: '#/components/parameters/CorrelationId'
       requestBody:
         required: true
@@ -563,14 +658,85 @@ paths:
             schema:
               $ref: '#/components/schemas/CreateChargeRequest'
       responses:
-        '201':
-          description: Charge created
+        '201': {description: Charge created}
+    get:
+      tags: [Billing]
+      operationId: listCharges
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - name: limit
+        in: query
+        schema: {type: integer, minimum: 1, maximum: 100}
+      - name: offset
+        in: query
+        schema: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: Charges
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/Charge'
-        '409':
-          $ref: '#/components/responses/Conflict'
+              schema: {type: object, additionalProperties: true}
+  /v1/charges/{id}/pix:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    get:
+      tags: [Billing]
+      operationId: getChargePix
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200': {description: PIX QR code}
+  /v1/charges/{id}/reconcile:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags: [Billing]
+      operationId: reconcileCharge
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201': {description: Charge reconciled}
+  /v1/charges/{id}/cancel:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags: [Billing]
+      operationId: cancelCharge
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201': {description: Charge cancelled}
+  /v1/charges/expire-due:
+    parameters:
+    - $ref: '#/components/parameters/TenantContextRevision'
+    post:
+      tags: [Billing]
+      operationId: expireDueCharges
+      parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit: {type: integer, minimum: 1, maximum: 1000}
+      responses:
+        '201': {description: Due charges expired}
   /v1/billing-customers/provision:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -4300,13 +4466,6 @@ components:
       schema:
         type: string
         format: uuid
-    OrderId:
-      name: orderId
-      in: path
-      required: true
-      schema:
-        type: string
-        format: uuid
     PaymentId:
       name: paymentId
       in: path
@@ -4821,7 +4980,7 @@ components:
         createdAt:
           type: string
           format: date-time
-    CreateOrderRequest:
+    QuoteOrderRequest:
       type: object
       required:
       - personId
@@ -4830,21 +4989,6 @@ components:
         personId:
           type: string
           format: uuid
-        customerId:
-          type: string
-          format: uuid
-        offerId:
-          type:
-          - string
-          - 'null'
-          format: uuid
-        couponCode:
-          type:
-          - string
-          - 'null'
-        applyAvailableRewardCredits:
-          type: boolean
-          default: false
         items:
           type: array
           minItems: 1
@@ -4858,15 +5002,27 @@ components:
               sellableType:
                 type: string
                 enum:
+                - PRODUCT
                 - PLAN
                 - ADDON
-                - APP_PRODUCT
               sellableId:
                 type: string
                 format: uuid
               quantity:
                 type: integer
                 minimum: 1
+                maximum: 1000
+          maxItems: 50
+        orderType:
+          type: string
+          enum: [NEW_SUBSCRIPTION, RENEWAL, ADDON, APP, MIXED, ADJUSTMENT]
+          default: NEW_SUBSCRIPTION
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        expiresAt:
+          type: string
+          format: date-time
     Order:
       type: object
       required:
@@ -4917,30 +5073,28 @@ components:
     CreateChargeRequest:
       type: object
       required:
-      - provider
-      - paymentMethod
+      - orderId
       properties:
-        provider:
+        orderId:
           type: string
-          enum:
-          - ASAAS
+          format: uuid
         paymentMethod:
           type: string
-          enum:
-          - PIX
-          - BOLETO
-          - CARD
-          - OTHER
+          minLength: 1
+          maxLength: 64
+          default: PIX
         billingType:
           type: string
           enum:
           - PIX
           - BOLETO
           description: Provider billing type threaded to Asaas /payments (default PIX when omitted)
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
         dueAt:
-          type:
-          - string
-          - 'null'
+          type: string
           format: date-time
     ProvisionBillingCustomerRequest:
       type: object

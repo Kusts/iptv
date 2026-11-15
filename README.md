@@ -111,7 +111,7 @@ Bash/WSL on Windows).
 | Tests | `pnpm test` | `TEST_DATABASE_URL` pointing to a **disposable, EMPTY** database (integration tests apply all migrations themselves via `applyMigrations`; turbo does **not** load `.env` — export the variable in the shell) |
 | Build | `pnpm build` | — |
 | Docs gate | `python scripts/validate_docs.py` | PyYAML |
-| Contract gates | `python tests/contracts/test_contracts.py` · `python tests/contracts/test_seed_contract.py` | PyYAML |
+| Contract gates | `python tests/contracts/test_contracts.py` · `python tests/contracts/test_seed_contract.py` · `python tests/contracts/test_openapi_route_parity.py` | PyYAML |
 
 `scripts/validate_doc_reviews.py` checks historical v0.14 review markers on a
 fixed file list; it is **not** a gate and is expected to stay red — do not

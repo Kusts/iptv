@@ -81,9 +81,18 @@ Mudança futura de catálogo não altera Order histórica.
 
 ```text
 POST /v1/offers/resolve
-POST /v1/orders
-GET  /v1/orders/{orderId}
-POST /v1/orders/{orderId}/charges
+POST /v1/orders/quote
+POST /v1/orders/{id}/submit
+POST /v1/orders/{id}/cancel
+POST /v1/orders/expire-due
+GET  /v1/orders/{id}
+GET  /v1/orders
+POST /v1/charges
+GET  /v1/charges
+GET  /v1/charges/{id}/pix
+POST /v1/charges/{id}/reconcile
+POST /v1/charges/{id}/cancel
+POST /v1/charges/expire-due
 POST /v1/webhooks/asaas
 ```
 
@@ -260,4 +269,3 @@ payment.chargeback.v1
 ## Auto-revisão v0.14
 
 > Review: Auto-reviewed v0.14 — payment, refund, offer and connection economics checked.
-
