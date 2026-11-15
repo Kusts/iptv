@@ -3,6 +3,8 @@
 > **Ponto de entrada para finalizar o MVP operacional (13/11/2026):**
 > [Plano de finalização](MVP-FINALIZATION-PLAN-2026-11-13.md) →
 > [Snapshot atual de evidências (15/11)](STREAMMAX-MVP-STATUS-2026-11-15.md) →
+> [Homologação das integrações (15/11)](INTEGRATIONS-HOMOLOGATION-2026-11-15.md) →
+> [Ensaio sintético do piloto (15/11)](PILOT-REHEARSAL-2026-11-15.md) →
 > [Snapshot histórico (12/11)](STREAMMAX-MVP-STATUS-2026-11-12.md) →
 > [Critérios canônicos](../15-implementation-baseline/01-product-and-mvp.md).
 > Staging deployado em `main@89b3f3a`; entrega concluída por ativação manual

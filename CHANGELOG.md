@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased - Added
+- docs(integrations): registrar homologacao de software, estado real no staging e bloqueios live de asaas, whatsapp, cinevision e painel (issues #86-#89).
+- docs(pilot): registrar ensaio sintetico em staging de cliente, pedido quote/submit e ticket resolvido, com checklist e dependencias do piloto real.
 
 - docs(mvp): reconciliar README, índice de fechamento e snapshot com o estado 4/4 gates e staging `main@89b3f3a`; remover afirmação obsoleta de `customer_id` NULL fixo e rotular bases históricas. Sem alteração de código ou contratos.
 
