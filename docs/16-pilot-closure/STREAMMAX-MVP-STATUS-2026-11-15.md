@@ -9,7 +9,7 @@
 
 | Gate/marco | Estado em 15/11/2026 | Evidência / limite |
 |---|---|---|
-| `MVP_CODE_INTEGRATED` | **PASS (15/11)** | Deploy `main@fc794f4`; migrate sem pendências; smoke local/público; jornada comercial sintética e demais evidências abaixo. |
+| `MVP_CODE_INTEGRATED` | **PASS (15/11)** | Evidências dos gates coletadas em `main@fc794f4`; atualmente implantado `main@89b3f3a`, migrate sem pendências; smoke local/público; jornada comercial sintética e demais evidências abaixo. |
 | `MVP_OPERATIONAL_SECURITY` | **PASS (15/11)** | Backup cifrado com chave em custódia separada, restore isolado 155/155, invalidação de sessão, ausência de admin temporário e leitura sintética de segredo. |
 | `MVP_SERVICE_DELIVERY` | **PASS (15/11)** | Ativação manual supervisionada de linha gratuita de teste CINEVISION (ID `214790811`) e readback independente diretamente no painel do fornecedor. Evidência da pós-condição na plataforma é declaração do operador; verificação independente não foi feita pela API. |
 | `MVP_RENEWAL_AND_OPERATIONS` | **PASS (15/11)** | Renovação, replay, suporte e processador outbox único comprovados. |
@@ -24,7 +24,9 @@
   = `main@89b3f3a`.
 - `migrate`: `applied=0 skipped=69 total=69`; nenhuma migration pendente,
   sem reset. PostgreSQL 17.11; 69/69 migrations.
-- Smoke: `/v1/health`, `/v1/health/ready` e web 200 (local e público);
+- Smoke público em 15/11: `GET /v1/health` e `/v1/health/ready` retornaram
+  200; health reportou `status=ok`, `version=0.1.0`, `scheduler=enabled` e
+  readiness `database=ok`. Web também respondeu 200; não se atribui SHA de build.
   `POST /v1/auth/register` público = 403 `REGISTER_CLOSED`.
 - Outbox tem exatamente um processador (`iptv-staging-outbox-worker`,
   id `staging-outbox-1`); API com `LEGACY_OUTBOX_DRAIN_ENABLED=0` e log
@@ -99,8 +101,9 @@
 
 ## Gaps conhecidos
 
-- `support.support_tickets.customer_id` é gravado como `NULL` fixo
-  (`apps/api/src/support/support-store.ts`); vínculo só indireto via `person_id`.
+- Vínculo opcional ticket↔cliente implementado no PR #140 (commit `88bea0b`)
+  e implantado em `main@89b3f3a`; quando omitido, `customer_id` permanece
+  nulo. Coluna preexistente desde a migration 010; sem migration nova.
 - OpenAPI desatualizado em pedidos/cobranças: issue #136; não corrigido nesta entrega.
 - Tenant sintético da jornada não tem registro próprio de webhook Asaas
   (esperado); o canal ativo existente é de outro tenant.

@@ -19,7 +19,11 @@ Nenhum percentual subjetivo de desenvolvimento substitui os quatro gates.
 Manter adapters `echo`/manual e sandbox quando não houver autorização de
 operação externa; não converter resultados simulados em certificação live.
 
-## Evidência de partida (sem promoção de gate)
+## Linha de base histórica de 13/11 (sem promoção de gate)
+
+> Esta tabela preserva o estado inicial registrado em 13/11; não representa o
+> estado corrente. Em 15/11, `MVP_STREAMMAX_OPERATIONAL` atingiu 4/4 gates PASS;
+> ver [snapshot atual](STREAMMAX-MVP-STATUS-2026-11-15.md).
 
 | Gate obrigatório | Estado preservado | Evidência que falta |
 | --- | --- | --- |
@@ -110,7 +114,7 @@ central de outros projetos a partir do IPTV. Usar
 | `db-central/db-hml` | Infraestrutura PostgreSQL compartilhada por vários **bancos separados**, acessível via `dbcentral_net` | Topologia declarada nos dois repositórios; provar cutover, roles e migrations no staging, sem manipular outras bases |
 | API + Control Center | Cadastro, pedidos, assinatura, suporte e configuração de integrações | Implementados; repetir jornada autenticada no staging da mesma revisão |
 | Asaas + billing/ledger | PIX, webhooks, conciliação e criação de assinatura | E2E Sandbox prévio; homologação multi-tenant pelo painel #86 ainda pendente |
-| Sigma/CINEVISION + fulfillment | Ativação/readback do serviço, reconciliação e fallback manual | Adapter simulado; sem prova live de ativação/readback, gate de entrega bloqueado |
+| Sigma/CINEVISION + fulfillment | Ativação/readback do serviço, reconciliação e fallback manual | Ativação manual supervisionada concluída, com readback no painel do fornecedor; escrita automatizada permanece fora de escopo e não verificada live. |
 | WAHA + comunicação | Sessão por tenant, conversas e suporte | Código/software testados; pareamento live e isolamento #87 pendentes para escopo ampliado |
 | PostgreSQL secrets + outbox | Segredos cifrados, eventos e efeitos duráveis | Código entregue; revalidar permissões, worker único, backup/restore e custódia da chave após o cutover |
 

@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- docs(mvp): reconciliar README, índice de fechamento e snapshot com o estado 4/4 gates e staging `main@89b3f3a`; remover afirmação obsoleta de `customer_id` NULL fixo e rotular bases históricas. Sem alteração de código ou contratos.
+
 - fix(ops): redeploy do staging para main@89b3f3a (docs + vinculo opcional ticket-cliente), com migrate no-op, smoke verde e rollback por imagens preservado.
 - feat(support): permitir vincular ticket a um cliente do tenant na criacao, mantendo compatibilidade quando omitido.
 - docs(mvp): registrar ativacao supervisionada real CINEVISION (linha de teste gratuita, externalRef e readback no painel) e promover MVP_STREAMMAX_OPERATIONAL a PASS nos quatro gates.
