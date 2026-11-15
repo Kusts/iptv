@@ -115,6 +115,7 @@ export async function insertTicket(
   ctx: CommandHandlerContext,
   input: {
     personId: string;
+    customerId?: string;
     conversationId?: string | null;
     priority: string;
     category?: string | null;
@@ -129,7 +130,7 @@ export async function insertTicket(
       id: newId(),
       tenant_id: ctx.tenantId,
       person_id: input.personId,
-      customer_id: null,
+      customer_id: input.customerId ?? null,
       conversation_id: input.conversationId ?? null,
       status: "NEW",
       priority: input.priority,
@@ -672,6 +673,17 @@ export async function personExists(ctx: CommandHandlerContext, personId: string)
     .select("id")
     .where("tenant_id", "=", ctx.tenantId)
     .where("id", "=", personId)
+    .executeTakeFirst();
+  return row !== undefined;
+}
+
+export async function customerExists(ctx: CommandHandlerContext, customerId: string): Promise<boolean> {
+  const trx = requireTrx(ctx);
+  const row = await trx
+    .selectFrom("crm.customers")
+    .select("id")
+    .where("tenant_id", "=", ctx.tenantId)
+    .where("id", "=", customerId)
     .executeTakeFirst();
   return row !== undefined;
 }

@@ -4831,9 +4831,7 @@ components:
           type: string
           format: uuid
         customerId:
-          type:
-          - string
-          - 'null'
+          type: string
           format: uuid
         offerId:
           type:
