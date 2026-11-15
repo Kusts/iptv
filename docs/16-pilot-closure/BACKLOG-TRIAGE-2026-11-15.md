@@ -1,6 +1,8 @@
 # Triagem do backlog — 15/11/2026
 
 Base: issues abertas informadas para esta triagem; PRs #142–#144 merged.
+Lista conferida em 15/11/2026 com `gh issue list --state open`: 14 issues
+abertas (#136, #89, #88, #87, #86, #74, #58, #51, #44, #43, #27, #7, #4, #1).
 Evidências de integração ao vivo/staging são datadas e não constituem autorização
 para escrita externa.
 
@@ -13,9 +15,9 @@ para escrita externa.
 | #86 | Asaas | MVP-PILOT | Staging Sandbox `CONNECTED_READ_ONLY/UNKNOWN`; testes de software verdes. | Manter aberta até conta A/B Sandbox e canal webhook autorizados e evidências de fluxo/reconexão; ver [homologação](INTEGRATIONS-HOMOLOGATION-2026-11-15.md). |
 | #74 | Outbox worker | RESOLVIDA | `apps/outbox-worker/test/worker.test.ts` 16 verdes; dispatch durável com fencing/VERIFYING; integração CI verde. | Fechar. |
 | #58 | MK Ativador | POST-MVP | Diferido por ADR-0027; fallback manual supervisionado. | Manter diferida; reabrir somente com decisão pós-MVP e requisito operacional autorizado. |
-| #51 | Identity gate CINEVISION | RESOLVIDA | Identity gate/reauth bounded em `cinevisionCommand.ts`, coberto por testes. | Fechar. |
+| #51 | Identity gate CINEVISION | RESOLVIDA | Identity gate/reauth bounded em `apps/browser-worker/src/operations/cinevisionCommand.ts`, coberto por testes. | Fechar. |
 | #44 | Abuso de autenticação/borda | MVP-PILOT | Headers implementados/testados; rate-limit proxy default 0; CORS `credentials:false`; register 403. | Manter aberta até evidência de borda antes de tráfego público irrestrito. |
-| #43 | Browser ownership/quiescence | RESOLVIDA | Open/quiescence ownership-safe em `browser.ts`; `browser.test.ts` e `cinevisionCommand.test.ts` verdes. | Fechar. |
+| #43 | Browser ownership/quiescence | RESOLVIDA | Open/quiescence ownership-safe em `apps/browser-worker/src/browser.ts`; `browser.test.ts` e `cinevisionCommand.test.ts` verdes. | Fechar. |
 | #27 | eval(models): avaliar subagente browser/API de baixo custo | POST-MVP | Avaliação de modelos sem troca automática de provider pago. | Manter diferida; reabrir quando houver necessidade demonstrada de avaliação de modelos. |
 | #7 | RLS/global | MVP-PILOT (tracking) | P1 entregue; snapshot registra RLS 139/155 e FORCE RLS 0; job CI de guards verde. | Manter aberta até completar itens residuais de cobertura global e cutover, sem inferir que FORCE RLS esteja ativo. |
 | #4 | workflows: avaliar Hatchet somente se houver lacuna de retomada | POST-MVP | ADR-0028/ADR-0019 condicionam runtime externo; outbox idempotente cobre o MVP. | Manter diferida; reabrir se surgir lacuna comprovada de retomada que o outbox/runtime atual não cubra. |

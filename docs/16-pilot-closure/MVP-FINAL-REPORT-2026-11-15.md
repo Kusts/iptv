@@ -16,8 +16,8 @@ simulado, sem pagamento externo real.
 
 Testes de 15/11: 22 arquivos, 331 passed, 0 failed, sem PostgreSQL local
 (API unit, browser-worker, outbox-worker e web). CI da main ficou verde para
-PRs #142–#144 nos jobs build, adversarial, security-scans e
-outbox-050-role-guards.
+PRs #142-#144 nos jobs build, adversarial, security-scans e
+outbox-050-role-guards (ver [evidência de testes](INTEGRATIONS-HOMOLOGATION-2026-11-15.md#evidência-de-testes-1511)).
 
 ## MVP-PILOT
 
@@ -32,8 +32,9 @@ global/cutover (#7). Nenhuma lacuna é mascarada como homologação.
 ## MVP-SAAS
 
 Reutilizáveis: tenancy/RLS/RBAC/audit, hub de integrações, billing core, ledger,
-analytics e Control Center/settings. Não implementados: Platform Admin UI de
-ciclo de vida de tenant, SaaS Plan/PlanVersion/PlatformSubscription,
+analytics e settings limitado a integrações/onboarding (sem Control Center/Platform Admin dedicado).
+Não implementados: Platform Admin UI de ciclo de vida de tenant,
+SaaS Plan/PlanVersion/PlatformSubscription,
 billing/uso SaaS, onboarding/import/Go-Live, pricing comercial e
 export/retention. Antes de clientes externos, esses componentes e suas
 dependências de operação/comercial precisam ser definidos e entregues.

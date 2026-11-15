@@ -99,9 +99,3 @@ Unresolved or inconclusive runs are recorded as unvalidated — never silently a
 - Per-integration contract SPECs: `../04-specs/integrations/README.md`
 - Secrets decision: `../06-decisions/ADR-0014-infisical-secrets.md`
 - Delivery record: `../../CHANGELOG.md`
-# Atualização 15/11/2026
-
-Estados observados no staging em `main@89b3f3a`: Asaas Sandbox
-`CONNECTED_READ_ONLY/UNKNOWN`; WhatsApp `NOT_CONFIGURED/UNKNOWN`; CINEVISION
-Production `TESTING/UNAVAILABLE`, `CHALLENGE_DETECTED`. Nenhuma integração foi
-certificada live. Evidências e pré-requisitos: [homologação 15/11](../16-pilot-closure/INTEGRATIONS-HOMOLOGATION-2026-11-15.md).
