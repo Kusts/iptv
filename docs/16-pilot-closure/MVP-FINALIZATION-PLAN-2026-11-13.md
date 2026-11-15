@@ -57,6 +57,22 @@ leitura, mas health 200 não comprova jornada comercial.
 - Divergência de ownership/Compose ainda não reconciliada: API tem label de projeto Compose `staging`, demais containers `iptv-staging`; todos compartilham `working_dir`/`config_file`. API está nas redes `iptv-staging_internal` e `staging_internal`; `docker compose -p iptv-staging ... ps --all` não a lista. Não inferir causa conclusiva.
 - Decisão: inventário F0 concluído; deploy/staging **BLOCKED** pelo checkout dirty preservado, divergência do label da API, variáveis requeridas ausentes no `.env.staging` e ausência de autorização específica para deploy. Nenhum gate promovido; F1/F2/F3 seguem suspensos. Evidência reversível: inspeções somente leitura e configuração/runtime atual validados sem exibir valores; o env não foi alterado, não houve provisionamento nem deploy.
 
+### Alinhamento de infraestrutura após o F0 (14/11/2026)
+
+**Mudança posterior ao inventário:** a `main@d0919a8` substituiu a dependência
+PostgreSQL local do Compose do IPTV por `db-hml` na rede externa
+`dbcentral_net`, definida no repositório `kust-projetos/vps-hostinger`
+(`scripts/db-central`). O F0 acima comprova **a topologia anterior** e não
+comprova o cutover na VPS. O CI verde de `fa342fdf` cobre código, mas não
+certifica o acesso ao banco central ou a reconciliação de labels Compose.
+
+F1 exige um preflight curto e específico: validar `db-central-hml` healthy,
+resolução de `db-hml` na rede, DSNs dos três papéis do IPTV, migration history,
+outbox mode e restauração preservada; reconciliar checkout sujo e labels
+`staging`/`iptv-staging` antes do deploy. Não executar operações na stack
+central de outros projetos a partir do IPTV. Usar
+[runbook de staging](../10-operations/runbooks/staging-deploy.md) atualizado.
+
 ### F1 — Reconciliar staging e comprovar o golden loop (prioridade máxima)
 
 - [ ] Com autorização específica de deploy, preservar estado e executar o
