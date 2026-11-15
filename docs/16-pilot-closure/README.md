@@ -5,6 +5,8 @@
 > [Snapshot atual de evidências (15/11)](STREAMMAX-MVP-STATUS-2026-11-15.md) →
 > [Homologação das integrações (15/11)](INTEGRATIONS-HOMOLOGATION-2026-11-15.md) →
 > [Ensaio sintético do piloto (15/11)](PILOT-REHEARSAL-2026-11-15.md) →
+> [Triagem do backlog (15/11)](BACKLOG-TRIAGE-2026-11-15.md) →
+> [Relatório final (15/11)](MVP-FINAL-REPORT-2026-11-15.md) →
 > [Snapshot histórico (12/11)](STREAMMAX-MVP-STATUS-2026-11-12.md) →
 > [Critérios canônicos](../15-implementation-baseline/01-product-and-mvp.md).
 > Staging deployado em `main@89b3f3a`; entrega concluída por ativação manual

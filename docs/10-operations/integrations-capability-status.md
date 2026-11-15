@@ -1,5 +1,12 @@
 # Integrations Capability Status
 
+## Atualização 15/11/2026
+
+Estados observados no staging em `main@89b3f3a`: Asaas Sandbox
+`CONNECTED_READ_ONLY/UNKNOWN`; WhatsApp `NOT_CONFIGURED/UNKNOWN`; CINEVISION
+Production `TESTING/UNAVAILABLE`, `CHALLENGE_DETECTED`. Nenhuma integração foi
+certificada live. Evidências e pré-requisitos: [homologação 15/11](../16-pilot-closure/INTEGRATIONS-HOMOLOGATION-2026-11-15.md).
+
 > **Leitura atual (13/11/2026):** o resumo abaixo é o ponto de entrada para
 > decisões do MVP operacional. A matriz detalhada mais abaixo preserva
 > histórico por capability (inclusive referências superadas a Infisical,

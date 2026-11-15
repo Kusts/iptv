@@ -1,11 +1,11 @@
 # Changelog
 
 ## Unreleased - Added
+- docs(backlog): classificar issues abertas e priorizar as proximas entregas do MVP-PILOT; encerrar itens ja comprovados por teste.
+- docs(mvp): publicar relatorio final separando software pronto, homologacao e disponibilidade comercial.
 - docs(integrations): registrar homologacao de software, estado real no staging e bloqueios live de asaas, whatsapp, cinevision e painel (issues #86-#89).
 - docs(pilot): registrar ensaio sintetico em staging de cliente, pedido quote/submit e ticket resolvido, com checklist e dependencias do piloto real.
-
 - docs(mvp): reconciliar README, índice de fechamento e snapshot com o estado 4/4 gates e staging `main@89b3f3a`; remover afirmação obsoleta de `customer_id` NULL fixo e rotular bases históricas. Sem alteração de código ou contratos.
-
 - docs(contracts): alinhar OpenAPI de pedidos e cobrancas as rotas implementadas e adicionar gate de paridade de rotas (issue #136).
 - fix(ops): redeploy do staging para main@89b3f3a (docs + vinculo opcional ticket-cliente), com migrate no-op, smoke verde e rollback por imagens preservado.
 - feat(support): permitir vincular ticket a um cliente do tenant na criacao, mantendo compatibilidade quando omitido.
