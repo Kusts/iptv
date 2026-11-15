@@ -10,7 +10,7 @@
 |---|---|---|
 | `MVP_CODE_INTEGRATED` | **PASS (15/11)** | Deploy `main@fc794f4`; migrate sem pendências; smoke local/público; jornada comercial sintética e demais evidências abaixo. |
 | `MVP_OPERATIONAL_SECURITY` | **PASS (15/11)** | Backup cifrado com chave em custódia separada, restore isolado 155/155, invalidação de sessão, ausência de admin temporário e leitura sintética de segredo. |
-| `MVP_SERVICE_DELIVERY` | **BLOCKED_EXTERNAL** | Sem recurso/conta CINEVISION autorizada; adapter simulado; nenhuma ativação/readback real. |
+| `MVP_SERVICE_DELIVERY` | **BLOCKED_EXTERNAL** | Credenciais CINEVISION existentes, porém a leitura real retorna `CHALLENGE_DETECTED`; nenhuma ativação/readback. Resolução exige sessão supervisionada autorizada. |
 | `MVP_RENEWAL_AND_OPERATIONS` | **PASS (15/11)** | Renovação, replay, suporte e processador outbox único comprovados. |
 | `MVP_STREAMMAX_OPERATIONAL` | **BLOCKED** | 3/4 gates PASS; falta apenas evidência externa de entrega de serviço. |
 
@@ -63,6 +63,14 @@
   `NEW → TRIAGING → IN_PROGRESS → RESOLVED`.
 - A liquidação usou **evento sandbox simulado**, sem pagamento externo real.
 
+### Entrega de serviço
+
+- Tenant sintético: configure CINEVISION em `SANDBOX` retornou HTTP 201
+  (binding v2); teste read-only (`read-identity` + `list-servers`) executou
+  por 59,2 s e retornou `CHALLENGE_DETECTED`. Zero operações de escrita no
+  fornecedor; tenant operacional intocado. Histórico operacional: 07/11
+  `CONNECTED_READ_ONLY`, 08/11 `CHALLENGE_DETECTED`.
+
 ### Webhook Asaas
 
 - Conta tem 7 registros; existe registro `enabled:true, interrupted:false`
@@ -89,6 +97,7 @@ condicionado aos quatro gates acima. Não declara concluídos `MVP-PILOT`
 (escopo de piloto) nem `MVP-SAAS` (produto SaaS multi-tenant); são escopos
 distintos e não promovidos por este snapshot.
 
-Próxima ação mínima: obter recurso CINEVISION e autorização para **UMA**
-ativação supervisionada, seguida de readback independente. Até lá,
+Próxima ação mínima: resolver o challenge em sessão supervisionada autorizada
+e então executar leitura e, se autorizado, **UMA** ativação controlada com
+readback independente. Até lá,
 `MVP_SERVICE_DELIVERY=BLOCKED_EXTERNAL` e o marco geral permanece BLOCKED.
