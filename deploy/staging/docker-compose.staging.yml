@@ -6,7 +6,7 @@
 # exposure is minimal (everything binds to 127.0.0.1; a reverse proxy /
 # tunnel terminates public TLS outside this file).
 #
-# PostgreSQL is centralized on db-hml via external dbcentral_net; old local container is retained stopped as rollback.
+# PostgreSQL is centralized on db-hml via external dbcentral_net; the legacy local database was removed.
 # Secrets: NONE live here. `deploy/staging/.env.staging` (gitignored; copy
 # `deploy/staging/.env.staging.example`) provides interpolation for all services
 # and is an `env_file` only for the API. Integration credentials are
@@ -20,6 +20,7 @@
 #   the API is healthy (the DB runtime mode must be WORKER; see the
 #   rls-role-split-cutover runbook). browser-worker is opt-in
 #   (`--profile worker`) and runs on demand.
+# Rollback uses tagged images plus dump/restore; see the runbook Rollback section.
 # Preconditions, before ANY Compose command (Compose requires each referenced
 # `env_file` to exist at parse time):
 #   Copy-Item deploy/staging/.env.staging.example deploy/staging/.env.staging
