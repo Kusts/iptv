@@ -2,6 +2,12 @@
 
 ## Unreleased - Added
 
+- chore(deploy): move staging IPTV and Infisical database connections to centralized db-hml over dbcentral_net; retain legacy database containers stopped as rollback.
+
+- docs(mvp): registra em 2026-11-13 o inventário F0 somente leitura no plano de finalização: candidato/CI, PR e issues, delta e estado preservado do staging, validação de Compose/env sanitizada e divergência de ownership. Deploy permanece BLOCKED sem autorização; nenhum gate promovido nem alteração remota ou de runtime.
+
+- docs(ops): registra a localização do acesso Contabo em `D:\projetos\vps-hostinger`, mantendo autorização pontual, verificação do host/marcador e regra de não copiar/expor valores de credenciais; uso estritamente local após autorização, sem deploy implícito.
+
 - docs(mvp): adiciona plano de finalização operacional de 13/11, atualiza os pontos de entrada (README, AGENTS, índices), corrige o caminho atual de segredos PostgreSQL/outbox e distingue snapshots históricos de outubro das evidências/staging atuais. Sem alteração de runtime, credenciais ou deploy.
 
 - docs(ops): corrige o snapshot StreamMax e os pré-requisitos do runbook de staging após revisão do debugger: distingue o `base_revision=7d27472` da tarefa E2E r4 do conteúdo atual da branch de docs, registra que o delta também inclui configuração funcional de deploy/staging (Compose e exemplos de env, sem código de runtime, migrations ou imagens) e que a r4 construiu seus próprios inputs de Compose/env sem fazer parse/testar essas mudanças posteriores; no `staging-deploy.md`, torna o Infisical condicional ao caminho LEGADO de rollback/cutover (default PostgreSQL/Control Center) e exige `CINEVISION_ALLOWED_ORIGIN`/`CINEVISION_LOGIN_PATH` em `.env.staging` com os três `env_file` de parse (`.env.staging`, `.env.staging.worker`, `.env.staging.outbox-worker`), mantendo o `outbox-worker` excluído até o passo 8 de ativação.

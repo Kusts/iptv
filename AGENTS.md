@@ -149,6 +149,16 @@ DNS ou mutação de produção; confirme o alvo e a autorização na tarefa atua
 - `CONTABO_VPS_*` pertence a outra configuração: usar somente para acesso
   pontual explicitamente autorizado pelo usuário nesta tarefa, após checagem
   de identidade — nunca como ponteiro durável de IPTV.
+- A referência/localização do acesso à VPS Contabo fica no projeto
+  `D:\projetos\vps-hostinger`; isso não autoriza deploy. Para IPTV, use-a
+  somente em acesso pontual explicitamente autorizado nesta tarefa, após
+  verificar a identidade do host e o marcador `/home/deploy/iptv-staging`.
+  Não copie nem exponha valores de `.env`, credenciais ou arquivos em
+  `secrets/` em Git, logs, prompts ou respostas. Use somente a credencial
+  estritamente necessária em processo local, sem imprimir nem persistir, e
+  apenas após autorização e verificação do host/marcador. Nunca use `VPS_*`
+  da Hostinger nem senha root como fallback, nem toque serviços vizinhos de
+  produção.
 - Nunca tocar serviços vizinhos (ai-memory, Infisical prod, traefik,
   `synkroo-prod-*`).
 - Deploy executado em 2026-11-03: volume de teste resetado com autorização

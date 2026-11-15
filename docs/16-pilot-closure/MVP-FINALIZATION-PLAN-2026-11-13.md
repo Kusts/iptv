@@ -36,16 +36,26 @@ leitura, mas health 200 não comprova jornada comercial.
 
 ### F0 — Congelar evidência e inventariar divergências (rápida)
 
-- [ ] Consultar `main`, runs recentes, PRs e issues; registrar SHA candidato e CI.
-- [ ] Inspecionar **somente leitura** `/home/deploy/iptv-staging`: Git, arquivos sujos,
+- [x] Consultar `main`, runs recentes, PRs e issues; registrar SHA candidato e CI.
+- [x] Inspecionar **somente leitura** `/home/deploy/iptv-staging`: Git, arquivos sujos,
   Compose/env sem exibir valores, imagens, migrations, serviços e backups.
-- [ ] Classificar o delta local: preservar, incorporar à branch ou retirar de
+- [x] Classificar o delta local: preservar, incorporar à branch ou retirar de
   circulação somente com evidência e autorização. Não sobrescrever o checkout sujo.
-- [ ] Confirmar o procedimento de [staging deploy](../10-operations/runbooks/staging-deploy.md)
+- [x] Confirmar o procedimento de [staging deploy](../10-operations/runbooks/staging-deploy.md)
   com os três `env_file` e os campos `CINEVISION_ALLOWED_ORIGIN`/
   `CINEVISION_LOGIN_PATH`; não confundir a stack r4 com o Compose de staging.
 
 **Saída:** candidato + diff/reversão documentados, decisão `GO`/`BLOCKED` para staging.
+
+**Registro de inspeção (2026-11-13; somente leitura; sem promoção de gate):**
+
+- Candidato `main@c75875d58e45db93d13298490e6b00794815e58c`, CI main `43484633148` verde. Branch atual de docs `03600c875c51a07226a0c64a70d412f045c320db`; PR #132 aberto, runs `43490112150` e `43490267229` verdes. Issues #86–#89 permanecem abertas.
+- Host validado pela host key previamente pinada: hostname `vmi3630510.contaboserver.net` resolve para `213.199.37.252`. No staging, `.staging-revision=main@b46cec7`; HEAD `b46cec78435d3f1e542d48daa20b3f732fded84d`, detached e sujo. `b46cec7` é ancestral do candidato; diff local: 38 arquivos, +2004/-118, sem migrations novas.
+- Preservar sem alteração o `deploy/staging/docker-compose.staging.yml` remoto (M, somente duas linhas locais), `.staging-revision`, backups `docker-compose.staging.yml.bak.20261108-cinevision-env` e `.bak.20261108-cinevision-read01`, e `packages/secrets/test/secrets-write.unit.test.ts` (untracked). O Compose remoto sujo fixa dois valores CINEVISION, enquanto o candidato exige interpolação de `CINEVISION_ALLOWED_ORIGIN`/`CINEVISION_LOGIN_PATH`; não sincronizar nem retirar essas alterações.
+- Três `env_file` presentes com modo 600; `docker compose ... config --quiet` válido. O Compose remoto sujo hardcodeia os dois campos CINEVISION: config válido e valores não vazios no container comprovam somente a configuração/runtime atual. Verificação somente de presença em `/home/deploy/iptv-staging/deploy/staging/.env.staging` confirmou `CINEVISION_ALLOWED_ORIGIN` e `CINEVISION_LOGIN_PATH` ausentes. Portanto, o Compose candidato com `${...:?required}` não passaria até que o operador provisione esses campos. Não registrar valores.
+- Banco: 69 registros em `platform.migration_history`, última `202611080000_069_provider_dispatch_verifying_sigma.sql`; outbox mode `WORKER`, generation 3. API, web, postgres e outbox-worker saudáveis; tunnel rodando; migrate `Exited (0)`. `API_SCHEDULER_ENABLED=1`, `LEGACY_OUTBOX_DRAIN_ENABLED=0`.
+- Divergência de ownership/Compose ainda não reconciliada: API tem label de projeto Compose `staging`, demais containers `iptv-staging`; todos compartilham `working_dir`/`config_file`. API está nas redes `iptv-staging_internal` e `staging_internal`; `docker compose -p iptv-staging ... ps --all` não a lista. Não inferir causa conclusiva.
+- Decisão: inventário F0 concluído; deploy/staging **BLOCKED** pelo checkout dirty preservado, divergência do label da API, variáveis requeridas ausentes no `.env.staging` e ausência de autorização específica para deploy. Nenhum gate promovido; F1/F2/F3 seguem suspensos. Evidência reversível: inspeções somente leitura e configuração/runtime atual validados sem exibir valores; o env não foi alterado, não houve provisionamento nem deploy.
 
 ### F1 — Reconciliar staging e comprovar o golden loop (prioridade máxima)
 
