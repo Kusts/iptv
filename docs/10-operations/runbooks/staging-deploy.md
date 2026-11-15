@@ -1,6 +1,7 @@
 # Runbook — Staging Deploy (Containerized, Migrate Job First)
 
-> **Evidência de execução (15/11/2026):** revisão `main@fc794f4`;
+> **Evidência de execução (15/11/2026):** revisão implantada `main@89b3f3a`;
+> as evidências dos gates foram coletadas em `main@fc794f4`.
 > `migrate applied=0 skipped=69 total=69`; health/ready e web 200.
 > Imagens tagueadas e dump de rollback disponíveis.
 

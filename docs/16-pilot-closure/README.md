@@ -5,12 +5,15 @@
 > [Snapshot atual de evidências (15/11)](STREAMMAX-MVP-STATUS-2026-11-15.md) →
 > [Snapshot histórico (12/11)](STREAMMAX-MVP-STATUS-2026-11-12.md) →
 > [Critérios canônicos](../15-implementation-baseline/01-product-and-mvp.md).
-> Staging deployado em `main@fc794f4`; entrega real CINEVISION ainda bloqueada.
+> Staging deployado em `main@89b3f3a`; entrega concluída por ativação manual
+> supervisionada CINEVISION, com readback no painel do fornecedor. Escrita
+> automatizada no fornecedor permanece fora do escopo e não verificada live.
 > `MVP_STREAMMAX_OPERATIONAL`, `MVP-PILOT` e `MVP-SAAS` são etapas distintas.
 > O restante deste arquivo registra decisões e PRs de outubro **como
 > histórico datado**, não como backlog ou status corrente.
 
-> Status: **ENGINEERING BLOCKED** (2026-10-11; ver a matriz única em [`RELEASE-CLOSURE-STATUS.md`](RELEASE-CLOSURE-STATUS.md) e gaps deduplicados em [`RELEASE-CLOSURE-GAPS.md`](RELEASE-CLOSURE-GAPS.md))
+> **Status histórico de outubro (2026-10-11; não é status corrente):**
+> ENGINEERING BLOCKED (ver a matriz única em [`RELEASE-CLOSURE-STATUS.md`](RELEASE-CLOSURE-STATUS.md) e gaps deduplicados em [`RELEASE-CLOSURE-GAPS.md`](RELEASE-CLOSURE-GAPS.md))
 > SPEC de origem: `IPTV Pilot Closure SPEC v1` + `IPTV Pilot Closure PLAN v1`
 > (recebidos do operador nesta sessão; texto integral na proposta, não
 > duplicado aqui).

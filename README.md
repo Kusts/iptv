@@ -12,11 +12,12 @@ operations automated around a human-in-the-loop agent runtime.
 
 ## StreamMax MVP — current finish line
 
-The operational **single-tenant** MVP remains blocked only on external service
-delivery: staging uses `main@fc794f4` (marker `.staging-revision`) with the
-external `db-hml` database over `dbcentral_net`, under Compose project
-`iptv-staging`. Three of four gates pass; CINEVISION activation/readback remains
-unauthorized and unverified.
+The operational **single-tenant** MVP has 4/4 gates PASS. Staging is deployed
+at `main@89b3f3a` (marker `.staging-revision`) with the external `db-hml`
+database over `dbcentral_net`, under Compose project `iptv-staging`. Service
+delivery was completed by supervised manual CINEVISION activation, with readback
+in the supplier panel. Automated supplier writes remain out of scope and are not
+verified live.
 
 - [MVP finalization plan (13 Nov 2026)](docs/16-pilot-closure/MVP-FINALIZATION-PLAN-2026-11-13.md) — shortest path, gates and test evidence.
 - [MVP evidence snapshot (15 Nov 2026)](docs/16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-15.md) — current gate evidence and limits.
