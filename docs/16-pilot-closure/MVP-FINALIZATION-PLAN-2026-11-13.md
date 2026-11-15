@@ -73,6 +73,24 @@ outbox mode e restauração preservada; reconciliar checkout sujo e labels
 central de outros projetos a partir do IPTV. Usar
 [runbook de staging](../10-operations/runbooks/staging-deploy.md) atualizado.
 
+## Sinergia do sistema e limite de responsabilidade
+
+| Componente | Papel no fluxo StreamMax | Evidência atual / próxima prova |
+| --- | --- | --- |
+| `db-central/db-hml` | Infraestrutura PostgreSQL compartilhada por vários **bancos separados**, acessível via `dbcentral_net` | Topologia declarada nos dois repositórios; provar cutover, roles e migrations no staging, sem manipular outras bases |
+| API + Control Center | Cadastro, pedidos, assinatura, suporte e configuração de integrações | Implementados; repetir jornada autenticada no staging da mesma revisão |
+| Asaas + billing/ledger | PIX, webhooks, conciliação e criação de assinatura | E2E Sandbox prévio; homologação multi-tenant pelo painel #86 ainda pendente |
+| Sigma/CINEVISION + fulfillment | Ativação/readback do serviço, reconciliação e fallback manual | Adapter simulado; sem prova live de ativação/readback, gate de entrega bloqueado |
+| WAHA + comunicação | Sessão por tenant, conversas e suporte | Código/software testados; pareamento live e isolamento #87 pendentes para escopo ampliado |
+| PostgreSQL secrets + outbox | Segredos cifrados, eventos e efeitos duráveis | Código entregue; revalidar permissões, worker único, backup/restore e custódia da chave após o cutover |
+
+**Regra de sinergia:** compartilhar a infraestrutura e os recursos existentes,
+**não** compartilhar dados/segredos de clientes ou unir os bancos de Synkroo,
+Meu TED e IPTV. O backend de IPTV é dono do domínio e das migrations `iptv`;
+a stack db-central é dona de instâncias, rede e roles de cluster. Não
+reintroduzir Infisical, Hatchet ou outro serviço para fechar um gate que a
+estrutura atual já consegue atender.
+
 ### F1 — Reconciliar staging e comprovar o golden loop (prioridade máxima)
 
 - [ ] Com autorização específica de deploy, preservar estado e executar o
