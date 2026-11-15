@@ -1,8 +1,9 @@
 # Triagem do backlog — 15/11/2026
 
 Base: issues abertas informadas para esta triagem; PRs #142–#144 merged.
-Lista conferida em 15/11/2026 com `gh issue list --state open`: 14 issues
-abertas (#136, #89, #88, #87, #86, #74, #58, #51, #44, #43, #27, #7, #4, #1).
+Fotografia de 15/11/2026 antes do fechamento das resolvidas: 14 issues abertas
+(#136, #89, #88, #87, #86, #74, #58, #51, #44, #43, #27, #7, #4, #1);
+#136 foi fechada pelo merge do PR #143, restando 13 abertas.
 Evidências de integração ao vivo/staging são datadas e não constituem autorização
 para escrita externa.
 
