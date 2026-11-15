@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- fix(ops): marca `staging-compose-current.yml` como snapshot histórico não deployável e corrige o exemplo de backup agendado para o container central `db-central-hml`; sem deploy, migração ou credencial.
+
 - fix(ops): alinha runbook de staging à topologia externa `db-hml`/`dbcentral_net` (sem serviço postgres local), corrige exemplos de env e registra preflight/escopo do banco compartilhado; adiciona validação de parse de Compose ao CI usando envs de exemplo. Sem deploy, migrações ou credenciais reais.
 
 - chore(deploy): move staging IPTV and Infisical database connections to centralized db-hml over dbcentral_net; retain legacy database containers stopped as rollback.
