@@ -2,6 +2,7 @@
 
 ## Unreleased - Added
 
+- docs(mvp): registrar challenge do fornecedor na leitura CINEVISION (credenciais presentes, sem ativação) e ajustar a próxima ação do gate de entrega.
 - docs(mvp): registra deploy `main@fc794f4` e evidências operacionais de 15/11; entrega de serviço real permanece BLOCKED_EXTERNAL.
 - docs(mvp): consolida snapshot, plano, README, índice, runbook e instruções de staging; sem alteração de código ou contratos.
 

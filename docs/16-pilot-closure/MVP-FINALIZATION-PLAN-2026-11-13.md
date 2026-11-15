@@ -80,8 +80,12 @@ central de outros projetos a partir do IPTV. Usar
 - **F1 concluído:** staging em `main@fc794f4`, marcador correspondente,
   migrate `applied=0 skipped=69 total=69`, smoke local/público e jornada
   comercial sintética; sem reset. `MVP_CODE_INTEGRATED` = PASS (15/11).
-- **F2 BLOCKED_EXTERNAL:** sem recurso/conta CINEVISION autorizada; adapter
-  simulado, nenhuma ativação/readback real.
+- **F2 BLOCKED_EXTERNAL:** credenciais CINEVISION existem; configure em
+  `SANDBOX` no tenant sintético retornou HTTP 201 (binding v2), mas o teste
+  read-only de 59,2 s retornou `CHALLENGE_DETECTED`. Zero operações de escrita
+  no fornecedor, nenhuma ativação/readback e tenant operacional intocado;
+  histórico operacional 07/11 `CONNECTED_READ_ONLY` e 08/11
+  `CHALLENGE_DETECTED`. Resolução exige sessão supervisionada autorizada.
 - **F3 concluído:** backup cifrado e restore isolado 155/155, invalidação de
   sessão, ausência de admin temporário e leitura sintética de segredo;
   custódia separada da chave de backup já resolvida.
