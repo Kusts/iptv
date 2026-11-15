@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- fix(ops): alinha runbook de staging à topologia externa `db-hml`/`dbcentral_net` (sem serviço postgres local), corrige exemplos de env e registra preflight/escopo do banco compartilhado; adiciona validação de parse de Compose ao CI usando envs de exemplo. Sem deploy, migrações ou credenciais reais.
+
 - chore(deploy): move staging IPTV and Infisical database connections to centralized db-hml over dbcentral_net; retain legacy database containers stopped as rollback.
 
 - docs(mvp): registra em 2026-11-13 o inventário F0 somente leitura no plano de finalização: candidato/CI, PR e issues, delta e estado preservado do staging, validação de Compose/env sanitizada e divergência de ownership. Deploy permanece BLOCKED sem autorização; nenhum gate promovido nem alteração remota ou de runtime.
