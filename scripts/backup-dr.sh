@@ -195,7 +195,7 @@ cmd_schedule() {
 # backups) — recorded as infra follow-up in P6-DR.md, never claimed here.
 #
 #   */15 * * * *  BACKUP_CRYPTO_KEY_FILE=/run/secrets/backup-key.hex \
-#     bash /opt/iptv/scripts/backup-dr.sh backup iptv-staging-postgres \
+#     bash /opt/iptv/scripts/backup-dr.sh backup db-central-hml \
 #       iptv_owner iptv /var/backups/iptv 96 >>/var/log/iptv-backup.log 2>&1
 #   5 * * * *    OFFSITE_S3_DEST=s3://<bucket>/iptv OFFSITE_S3_ENDPOINT=https://<s3-compat> \
 #     bash /opt/iptv/scripts/backup-dr.sh offsite-sweep /var/backups/iptv >>/var/log/iptv-backup.log 2>&1

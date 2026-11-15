@@ -57,6 +57,40 @@ leitura, mas health 200 não comprova jornada comercial.
 - Divergência de ownership/Compose ainda não reconciliada: API tem label de projeto Compose `staging`, demais containers `iptv-staging`; todos compartilham `working_dir`/`config_file`. API está nas redes `iptv-staging_internal` e `staging_internal`; `docker compose -p iptv-staging ... ps --all` não a lista. Não inferir causa conclusiva.
 - Decisão: inventário F0 concluído; deploy/staging **BLOCKED** pelo checkout dirty preservado, divergência do label da API, variáveis requeridas ausentes no `.env.staging` e ausência de autorização específica para deploy. Nenhum gate promovido; F1/F2/F3 seguem suspensos. Evidência reversível: inspeções somente leitura e configuração/runtime atual validados sem exibir valores; o env não foi alterado, não houve provisionamento nem deploy.
 
+### Alinhamento de infraestrutura após o F0 (14/11/2026)
+
+**Mudança posterior ao inventário:** a `main@d0919a8` substituiu a dependência
+PostgreSQL local do Compose do IPTV por `db-hml` na rede externa
+`dbcentral_net`, definida no repositório `kust-projetos/vps-hostinger`
+(`scripts/db-central`). O F0 acima comprova **a topologia anterior** e não
+comprova o cutover na VPS. O CI verde de `fa342fdf` cobre código, mas não
+certifica o acesso ao banco central ou a reconciliação de labels Compose.
+
+F1 exige um preflight curto e específico: validar `db-central-hml` healthy,
+resolução de `db-hml` na rede, DSNs dos três papéis do IPTV, migration history,
+outbox mode e restauração preservada; reconciliar checkout sujo e labels
+`staging`/`iptv-staging` antes do deploy. Não executar operações na stack
+central de outros projetos a partir do IPTV. Usar
+[runbook de staging](../10-operations/runbooks/staging-deploy.md) atualizado.
+
+## Sinergia do sistema e limite de responsabilidade
+
+| Componente | Papel no fluxo StreamMax | Evidência atual / próxima prova |
+| --- | --- | --- |
+| `db-central/db-hml` | Infraestrutura PostgreSQL compartilhada por vários **bancos separados**, acessível via `dbcentral_net` | Topologia declarada nos dois repositórios; provar cutover, roles e migrations no staging, sem manipular outras bases |
+| API + Control Center | Cadastro, pedidos, assinatura, suporte e configuração de integrações | Implementados; repetir jornada autenticada no staging da mesma revisão |
+| Asaas + billing/ledger | PIX, webhooks, conciliação e criação de assinatura | E2E Sandbox prévio; homologação multi-tenant pelo painel #86 ainda pendente |
+| Sigma/CINEVISION + fulfillment | Ativação/readback do serviço, reconciliação e fallback manual | Adapter simulado; sem prova live de ativação/readback, gate de entrega bloqueado |
+| WAHA + comunicação | Sessão por tenant, conversas e suporte | Código/software testados; pareamento live e isolamento #87 pendentes para escopo ampliado |
+| PostgreSQL secrets + outbox | Segredos cifrados, eventos e efeitos duráveis | Código entregue; revalidar permissões, worker único, backup/restore e custódia da chave após o cutover |
+
+**Regra de sinergia:** compartilhar a infraestrutura e os recursos existentes,
+**não** compartilhar dados/segredos de clientes ou unir os bancos de Synkroo,
+Meu TED e IPTV. O backend de IPTV é dono do domínio e das migrations `iptv`;
+a stack db-central é dona de instâncias, rede e roles de cluster. Não
+reintroduzir Infisical, Hatchet ou outro serviço para fechar um gate que a
+estrutura atual já consegue atender.
+
 ### F1 — Reconciliar staging e comprovar o golden loop (prioridade máxima)
 
 - [ ] Com autorização específica de deploy, preservar estado e executar o

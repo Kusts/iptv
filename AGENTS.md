@@ -139,6 +139,18 @@ DNS ou mutação de produção; confirme o alvo e a autorização na tarefa atua
 
 ## Staging Contabo (único provedor ativo)
 
+- **Topologia de banco atual no Git (14/11/2026):** o Compose de staging
+  conecta ao PostgreSQL externo `db-hml` via `dbcentral_net` (stack
+  db-central gerida no repositório de infraestrutura `kust-projetos/vps-hostinger`).
+  **Não existe serviço `postgres` no Compose atual do IPTV.** Não executar
+  `up -d postgres`, `down -v`, `--fresh` ou operações de limpeza no banco
+  central compartilhado; testar primeiro o parse e a conectividade no alvo.
+- A alteração do Git **não comprova cutover na VPS**: o último inventário
+  remoto (F0, 13/11) encontrou checkout `b46cec7` sujo/detached, envs
+  incompletos e labels Compose divergentes. Verificar novamente sem tocar
+  serviços vizinhos, preservando backups e dados antes de alinhar/deployar.
+  Fluxo vigente em `docs/10-operations/runbooks/staging-deploy.md`.
+
 - Hostinger VPS desativada (confirmado pelo usuário em 2026-11-02): Contabo é
   o único provedor em uso para o staging IPTV.
 - Alvo canônico verificado em sessão SSH Contabo: `/home/deploy/iptv-staging`

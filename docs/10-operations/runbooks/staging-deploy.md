@@ -1,5 +1,17 @@
 # Runbook — Staging Deploy (Containerized, Migrate Job First)
 
+> **Caminho atual — db-central (14/11/2026):** o Compose versionado usa
+> PostgreSQL de homologação **externo** `db-hml` na rede `dbcentral_net`
+> (repositório `kust-projetos/vps-hostinger`, `scripts/db-central`). Não existe
+> serviço `postgres` dentro do Compose do IPTV. Os passos antigos com
+> `up -d postgres`, banco local e `down -v` abaixo foram substituídos para o
+> fluxo atual; evidências de outubro continuam **históricas**.
+> A mudança do Git não comprova que o cutover foi aplicado na VPS: confirmar
+> rede/serviço/roles, snapshot e estado do checkout antes de qualquer deploy.
+> `db-hml` também hospeda outros bancos: não reiniciar, recriar ou migrar
+> a stack central a partir do procedimento do IPTV.
+
+
 > **Atualização de leitura (13/11/2026):** os logs e números de migrations
 > abaixo são registros históricos, não uma nova inspeção da Contabo.
 > O snapshot de 12/11 encontrou `/home/deploy/iptv-staging` em
@@ -59,18 +71,23 @@ with a healthcheck, and every published port binds to `127.0.0.1` — public
 traffic is terminated by a reverse proxy or tunnel outside this file.
 
 ```text
-postgres (healthy) ──▶ migrate (one-shot, exit 0) ──▶ api (ready) ──▶ web
-                                                outbox-worker   (permanent; excluded until activation step 8)
-                                                browser-worker  (opt-in profile)
+db-hml (externo; pronto) ──▶ migrate (one-shot, exit 0) ──▶ api (ready) ──▶ web
+                                                               outbox-worker (permanent; ativação controlada)
+                                                               browser-worker (opt-in profile)
 ```
 
-Deploy order is expressed in `depends_on` and must not be reordered by hand:
-`postgres → migrate → api → web`.
+The external `db-hml` database is a **precondition**, not a Compose service
+or `depends_on` target in this repository. Inside the IPTV Compose the
+order is `migrate → api → web`; outbox starts only after its existing
+interlock/validation. Validate db-central independently before deployment.
 
 ## Prerequisites
 
-1. Docker Engine with the compose v2 plugin (`docker compose version`) and
-   enough disk for the postgres volume plus the five images listed below.
+1. Docker Engine with the compose v2 plugin (`docker compose version`), the
+   existing external Docker network `dbcentral_net` and a healthy `db-central-hml`
+   container (alias `db-hml`). Confirm the `iptv` database and dedicated roles
+   `iptv_owner`, `iptv_app`, `outbox_worker` are available without printing
+   passwords. This runbook never creates or resets db-central.
 2. `deploy/staging/.env.staging` created from the example and filled with real
    values - never committed, never pasted into tickets:
    ```powershell
@@ -145,29 +162,43 @@ Tag images with an immutable revision before a real environment (see Rollback).
 
 ## Deploy
 
+Somente após autorização específica para o staging e reconciliação do
+checkout remoto/diff local. A inspeção F0 de 13/11 encontrou um checkout
+`b46cec7` detached/sujo, além de serviços com labels Compose divergentes;
+não sobrescrever nem adotar um projeto Compose diferente sem inventário.
+
 ```powershell
-# Initial deployment: name services explicitly. Bare `up -d` also starts
-# permanent outbox-worker and is prohibited until activation step 8 below.
-# 1. database
+# 0. Preflight SOMENTE LEITURA no host Contabo: confirmar banco central
+#    (a topologia é externa ao Compose do IPTV).
+docker network inspect dbcentral_net > $null
+docker inspect --format '{{.State.Health.Status}}' db-central-hml
+# Esperado: healthy. Confirmar roles/DSN com o procedimento db-central;
+# não imprimir valores secretos.
+
+# 1. Parse completo do Compose com os 3 env_file presentes.
 docker compose --env-file deploy/staging/.env.staging `
-  -f deploy/staging/docker-compose.staging.yml up -d postgres
-# 2. migrations (one-shot; a non-zero exit must stop the rollout)
+  -f deploy/staging/docker-compose.staging.yml config --quiet
+
+# 2. Migrações one-shot no banco externo (apenas em janela autorizada).
 docker compose --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml run --rm migrate
-# 3. api + web (compose re-checks the migrate dependency only on `up`;
-#    do not include outbox-worker before activation step 8)
+
+# 3. API + web somente após migração PASS; não iniciar outbox prematuramente.
 docker compose --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml up -d api web
 ```
 
-`run --rm migrate` prints one summary line and exits:
+Não executar `up -d postgres`: esse serviço não existe mais no Compose de
+staging. O comando `config --quiet` é apenas prova de parse, **não** prova
+conexão, credenciais, permissões ou funcionamento do banco externo.
 
-```text
-iptv-migrate: applied=51 skipped=0 total=51 dir=/app/db/migrations
-```
-
-`applied=0 skipped=51` on a re-deploy is the expected idempotent no-op. Running
-the same `up -d` again without a code change is therefore safe.
+`run --rm migrate` reports `applied`, `skipped` and `total` for the exact
+migrations in the candidate revision. The `51/51` result from October is
+historical; the last recorded staging inspection had **69/69** (13/11).
+For an unchanged database and candidate, expect `applied=0` with all migrations
+skipped. Migration history is content-hashed; any failure stops the deployment.
+Do **not** use `down -v`, `--fresh` or restore into `db-hml` to make the
+migration appear green.
 
 Rules that are not negotiable:
 
@@ -217,14 +248,17 @@ The dedicated outbox worker is a PERMANENT compose service (no profile): any
 their compose dependencies); do not include the worker before activation step 8.
 The legacy in-process drainer
 must stay disabled/quiesced (`LEGACY_OUTBOX_DRAIN_ENABLED=0`, DB runtime mode
-`WORKER`). Fresh staging order (pós-050/051): `postgres → migrate 001–068
-(owner, re-provision FRESH) → api (as `iptv_app`,
-`LEGACY_OUTBOX_DRAIN_ENABLED=0`) → web → outbox-worker`, then:
+`WORKER`). **Current staging order:** `db-hml` external already healthy →
+`migrate` (owner `iptv_owner`, all pending migrations) → API (`iptv_app`,
+`LEGACY_OUTBOX_DRAIN_ENABLED=0`) → web → outbox-worker. Do not initialize or
+re-provision a database from this workflow; then:
 
-> Nota 2026-10-17: stacks com drift de migration (origem ≠ HEAD) seguem
-> re-provision FRESH (`down -v` + migrate total), nunca migração
-> incremental sobre stack antigo — ver §5.1 do `P6-DR.md`. A ativação
-> abaixo é o caminho forward (Opção B) com o worker permanente; o combo
+> **Nota histórica de 17/10 (SUPERADA no caminho db-central):** o procedimento
+> antigo de re-provisionar staging local com `down -v` **não se aplica** ao
+> banco externo compartilhado `db-hml`; não usar `down -v`, `DROP DATABASE`
+> ou `--fresh` para resolver drift. Usar migration append-only, reconciliação
+> explícita e rollback preservado. A ativação abaixo continua sendo a via
+> forward (Opção B) com worker permanente; o combo
 > `iptv_app` + LEGACY + drain enabled jamais foi suportado
 > (ver §12.4 do `P6-SECURITY.md`).
 
