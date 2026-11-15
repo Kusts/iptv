@@ -7,10 +7,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 OPENAPI = ROOT / "docs/05-contracts/openapi/openapi.yaml"
-CONTROLLERS = (
-    ROOT / "apps/api/src/commerce/commerce.controller.ts",
-    ROOT / "apps/api/src/billing/billing.controller.ts",
-)
+CONTROLLERS = tuple(sorted((ROOT / "apps/api/src").rglob("*.controller.ts")))
 
 
 def normalize(path: str) -> str:
@@ -20,11 +17,16 @@ def normalize(path: str) -> str:
 
 def controller_routes(path: Path) -> set[tuple[str, str]]:
     source = path.read_text(encoding="utf-8")
-    prefix_match = re.search(r'@Controller\("([^"]+)"\)', source)
-    assert prefix_match, f"{path}: @Controller prefix not found"
-    prefix = prefix_match.group(1).strip("/")
+    source = re.sub(r"/\*.*?\*/|//[^\r\n]*", "", source, flags=re.DOTALL)
+    prefix_match = re.search(r"""@Controller\(\s*(["'])(.*?)\1\s*\)""", source)
+    if not prefix_match:
+        raise ValueError(f"{path}: @Controller prefix not found or is empty")
+    prefix = prefix_match.group(2).strip("/")
     routes = set()
-    for match in re.finditer(r'@(Get|Post|Put|Patch|Delete)(?:\((?:"([^"]*)")?\))?\s', source):
+    for match in re.finditer(
+        r"""@(Get|Post|Put|Patch|Delete)(?:\(\s*(?:["']([^"']*)["'])?\s*\))?\s""",
+        source,
+    ):
         method, suffix = match.groups()
         suffix = suffix or ""
         route = "/" + "/".join(part for part in (prefix, suffix.strip("/")) if part)

@@ -507,7 +507,7 @@ paths:
       - Commerce
       operationId: quoteOrder
       parameters:
-      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
       - $ref: '#/components/parameters/CorrelationId'
       requestBody:
         required: true
@@ -557,7 +557,7 @@ paths:
     - $ref: '#/components/parameters/TenantContextRevision'
     post:
       tags:
-      - Billing
+      - Commerce
       operationId: submitOrder
       parameters:
       - name: id
@@ -566,7 +566,7 @@ paths:
         schema:
           type: string
           format: uuid
-      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
       - $ref: '#/components/parameters/CorrelationId'
       responses:
         '201':
@@ -589,10 +589,10 @@ paths:
         in: path
         required: true
         schema: {type: string, format: uuid}
-      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
       - $ref: '#/components/parameters/CorrelationId'
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
@@ -600,7 +600,7 @@ paths:
               properties:
                 reason: {type: string, minLength: 1, maxLength: 500}
       responses:
-        '200': {description: Order cancelled}
+        '201': {description: Order cancelled}
   /v1/orders/expire-due:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -610,7 +610,7 @@ paths:
       parameters:
       - $ref: '#/components/parameters/CorrelationId'
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
@@ -618,7 +618,7 @@ paths:
               properties:
                 limit: {type: integer, minimum: 1, maximum: 1000}
       responses:
-        '200': {description: Due orders expired}
+        '201': {description: Due orders expired}
   /v1/orders:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -649,7 +649,7 @@ paths:
       tags: [Billing]
       operationId: createCharge
       parameters:
-      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
       - $ref: '#/components/parameters/CorrelationId'
       requestBody:
         required: true
@@ -703,7 +703,7 @@ paths:
         schema: {type: string, format: uuid}
       - $ref: '#/components/parameters/CorrelationId'
       responses:
-        '200': {description: Charge reconciled}
+        '201': {description: Charge reconciled}
   /v1/charges/{id}/cancel:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -715,10 +715,10 @@ paths:
         in: path
         required: true
         schema: {type: string, format: uuid}
-      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/OptionalIdempotencyKey'
       - $ref: '#/components/parameters/CorrelationId'
       responses:
-        '200': {description: Charge cancelled}
+        '201': {description: Charge cancelled}
   /v1/charges/expire-due:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -728,7 +728,7 @@ paths:
       parameters:
       - $ref: '#/components/parameters/CorrelationId'
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
@@ -736,7 +736,7 @@ paths:
               properties:
                 limit: {type: integer, minimum: 1, maximum: 1000}
       responses:
-        '200': {description: Due charges expired}
+        '201': {description: Due charges expired}
   /v1/billing-customers/provision:
     parameters:
     - $ref: '#/components/parameters/TenantContextRevision'
@@ -4466,13 +4466,6 @@ components:
       schema:
         type: string
         format: uuid
-    OrderId:
-      name: orderId
-      in: path
-      required: true
-      schema:
-        type: string
-        format: uuid
     PaymentId:
       name: paymentId
       in: path
@@ -5101,9 +5094,7 @@ components:
           minLength: 1
           maxLength: 200
         dueAt:
-          type:
-          - string
-          - 'null'
+          type: string
           format: date-time
     ProvisionBillingCustomerRequest:
       type: object
