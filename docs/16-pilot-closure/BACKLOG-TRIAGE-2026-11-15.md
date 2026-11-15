@@ -16,10 +16,10 @@ para escrita externa.
 | #51 | Identity gate CINEVISION | RESOLVIDA | Identity gate/reauth bounded em `cinevisionCommand.ts`, coberto por testes. | Fechar. |
 | #44 | Abuso de autenticação/borda | MVP-PILOT | Headers implementados/testados; rate-limit proxy default 0; CORS `credentials:false`; register 403. | Manter aberta até evidência de borda antes de tráfego público irrestrito. |
 | #43 | Browser ownership/quiescence | RESOLVIDA | Open/quiescence ownership-safe em `browser.ts`; `browser.test.ts` e `cinevisionCommand.test.ts` verdes. | Fechar. |
-| #27 | Benchmark runtimes/modelos | POST-MVP | ADR-0028 mantém modo local honesto; decisão Hatchet condicionada por ADR-0019. | Manter diferida; reabrir quando houver necessidade demonstrada e decisão de runtime conforme ADRs. |
+| #27 | eval(models): avaliar subagente browser/API de baixo custo | POST-MVP | Avaliação de modelos sem troca automática de provider pago. | Manter diferida; reabrir quando houver necessidade demonstrada de avaliação de modelos. |
 | #7 | RLS/global | MVP-PILOT (tracking) | P1 entregue; snapshot registra RLS 139/155 e FORCE RLS 0; job CI de guards verde. | Manter aberta até completar itens residuais de cobertura global e cutover, sem inferir que FORCE RLS esteja ativo. |
-| #4 | Benchmark runtimes/modelos | POST-MVP | ADR-0028/ADR-0019 delimitam runtime e certificação externa; não é bloqueio do piloto restrito. | Manter diferida; reabrir com requisito mensurável de produto/runtime pós-MVP. |
-| #1 | Ampliação do backlog de workflows | POST-MVP | ADR-0028 mantém modo local honesto; ADR-0019 condiciona adoção Hatchet à certificação. | Manter diferida; reabrir por requisito concreto fora do escopo atual, conforme ADRs. |
+| #4 | workflows: avaliar Hatchet somente se houver lacuna de retomada | POST-MVP | ADR-0028/ADR-0019 condicionam runtime externo; outbox idempotente cobre o MVP. | Manter diferida; reabrir se surgir lacuna comprovada de retomada que o outbox/runtime atual não cubra. |
+| #1 | planos de execução determinísticos para Browser Worker/API | POST-MVP | Proposta pós-MVP; não é decisão de adoção de Hatchet. | Manter diferida; reabrir diante de requisito concreto pós-MVP. |
 
 ## Triagem de confiabilidade
 
@@ -58,7 +58,7 @@ Referência: [baseline, §MVP-PILOT](../15-implementation-baseline/01-product-an
 | Finance/unit economics/analytics | Presente (`apps/web/app/finance`, `apps/web/app/analytics`) | Não | Primeira venda real e conferência financeira. |
 | Ledger posting/reversal | Presente (billing/ledger API) | Não | Prova com evento financeiro externo autorizado. |
 | Knowledge/memory core | Presente (`apps/web/app/knowledge`) | Não | Caminhada autenticada. |
-| Control Center, Design System, mobile flows | Presente (`apps/web/app/settings`) | Não | Caminhada autenticada e evidência de fluxos críticos/mobile. |
+| Control Center, Design System, mobile flows | Parcial: hub de integrações e onboarding em `apps/web/app/settings`; sem Platform Admin/Control Center dedicado | Não | Caminhada autenticada e evidência de fluxos críticos/mobile; Platform Admin/Control Center dedicado não está presente. |
 
 Rotas web existentes usadas como evidência de superfície: `/analytics`,
 `/billing`, `/knowledge`, `/conversations`, `/copilot`, `/crm`, `/finance`,
@@ -71,10 +71,11 @@ homologação de ponta a ponta.
 ## MVP-SAAS
 
 Reutilizáveis: tenancy/RLS/RBAC/audit, hub de integrações, billing core, ledger,
-analytics e Control Center/settings. `apps/api/src/tenants/tenants.controller.ts`
+analytics e settings. Em `apps/web/app/settings` há somente `integrations` e
+`onboarding`, não um Control Center ou Platform Admin dedicado.
+`apps/api/src/tenants/tenants.controller.ts`
 prova superfície de tenancy, não lifecycle SaaS. Ausentes: Platform Admin UI
-para lifecycle de tenant (não há páginas administrativas em
-`apps/web/app/settings`), SaaS Plan/PlanVersion/PlatformSubscription,
+para lifecycle de tenant, SaaS Plan/PlanVersion/PlatformSubscription,
 billing/uso SaaS, onboarding/import/Go-Live, pricing comercial e export/retention.
 Antes de clientes externos, implementar e validar estes componentes e definir
 seus controles operacionais e comerciais.
