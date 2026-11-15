@@ -2,6 +2,8 @@
 
 ## Unreleased - Added
 
+- fix(ops): exigir projeto Compose `iptv-staging` nos comandos de staging e corrigir a nota de rollback do banco legado; sem deploy nem migração.
+
 - fix(ops): marca `staging-compose-current.yml` como snapshot histórico não deployável e corrige o exemplo de backup agendado para o container central `db-central-hml`; sem deploy, migração ou credencial.
 
 - fix(ops): alinha runbook de staging à topologia externa `db-hml`/`dbcentral_net` (sem serviço postgres local), corrige exemplos de env e registra preflight/escopo do banco compartilhado; adiciona validação de parse de Compose ao CI usando envs de exemplo. Sem deploy, migrações ou credenciais reais.

@@ -141,7 +141,7 @@ interlock/validation. Validate db-central independently before deployment.
 ## Build
 
 ```powershell
-docker compose --env-file deploy/staging/.env.staging `
+docker compose -p iptv-staging --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml build
 ```
 
@@ -162,6 +162,9 @@ Tag images with an immutable revision before a real environment (see Rollback).
 
 ## Deploy
 
+O projeto Compose do staging é `iptv-staging`, não `staging`: sempre passe `-p iptv-staging`.
+Executar sem `-p` cria containers duplicados e um segundo publicador de outbox.
+
 Somente após autorização específica para o staging e reconciliação do
 checkout remoto/diff local. A inspeção F0 de 13/11 encontrou um checkout
 `b46cec7` detached/sujo, além de serviços com labels Compose divergentes;
@@ -176,15 +179,15 @@ docker inspect --format '{{.State.Health.Status}}' db-central-hml
 # não imprimir valores secretos.
 
 # 1. Parse completo do Compose com os 3 env_file presentes.
-docker compose --env-file deploy/staging/.env.staging `
+docker compose -p iptv-staging --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml config --quiet
 
 # 2. Migrações one-shot no banco externo (apenas em janela autorizada).
-docker compose --env-file deploy/staging/.env.staging `
+docker compose -p iptv-staging --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml run --rm migrate
 
 # 3. API + web somente após migração PASS; não iniciar outbox prematuramente.
-docker compose --env-file deploy/staging/.env.staging `
+docker compose -p iptv-staging --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml up -d api web
 ```
 
@@ -225,9 +228,9 @@ curl.exe -i http://127.0.0.1:3001/v1/health
 # web
 curl.exe -i http://127.0.0.1:3000/
 # state of the stack
-docker compose --env-file deploy/staging/.env.staging `
+docker compose -p iptv-staging --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml ps
-docker compose --env-file deploy/staging/.env.staging `
+docker compose -p iptv-staging --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml logs --tail 100 api
 ```
 
@@ -315,14 +318,14 @@ curl.exe -i http://127.0.0.1:3001/v1/admin/outbox/drain-state
 #    OUTBOX_LEGACY_QUIESCED=1 plus the OBSERVED drain-state
 #    (OUTBOX_LEGACY_DRAIN_ENABLED=0, OUTBOX_LEGACY_IN_FLIGHT=0) only now
 # 7. boot rehearsal with zero claims, then a single bounded batch
-docker compose --env-file deploy/staging/.env.staging `
+docker compose -p iptv-staging --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml `
   run --rm outbox-worker check
-docker compose --env-file deploy/staging/.env.staging `
+docker compose -p iptv-staging --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml `
   run --rm outbox-worker run --once
 # 8. start the loop only after the smoke passes
-docker compose --env-file deploy/staging/.env.staging `
+docker compose -p iptv-staging --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml `
   up -d outbox-worker
 ```
@@ -587,7 +590,7 @@ Decide forward-fix vs rollback BEFORE touching the environment:
 
 ```powershell
 # pin the known-good image tags, then recreate only the app services
-docker compose --env-file deploy/staging/.env.staging `
+docker compose -p iptv-staging --env-file deploy/staging/.env.staging `
   -f deploy/staging/docker-compose.staging.yml up -d --no-deps api web
 ```
 
@@ -605,7 +608,7 @@ one.
 - **Browser worker** (`--profile worker`): an on-demand operator smoke CLI, not
   a service.
   ```powershell
-  docker compose --env-file deploy/staging/.env.staging -f deploy/staging/docker-compose.staging.yml --profile worker run --rm browser-worker read-credit-balance
+  docker compose -p iptv-staging --env-file deploy/staging/.env.staging -f deploy/staging/docker-compose.staging.yml --profile worker run --rm browser-worker read-credit-balance
   ```
   Honest limitations: the image ships no browser binary (no `playwright
   install`), headed Chromium needs a display, and headless Chromium in a
