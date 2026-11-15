@@ -107,6 +107,6 @@ Cote a renovação em `POST /v1/renewals/quote`. A efetivação usa `POST /v1/re
 
 ## 8. Suporte
 
-Antes de `POST /v1/tickets/{id}/resolve`, registre tentativa de solução em `POST /v1/tickets/{id}/attempts` com outcome `SUCCEEDED`. Sem tentativa bem-sucedida, o resolve retorna 409.
+O ticket precisa estar `IN_PROGRESS` antes de `POST /v1/tickets/{id}/resolve`. Registre antes uma tentativa em `POST /v1/tickets/{id}/attempts` que informe `solutionId` ou `procedureKey` e tenha outcome `SUCCEEDED` ou `PARTIAL`. Caso contrário, o resolve recusa com 409.
 
 **Evidência datada (2026-11-15):** ensaio sintético em staging, pedido e ticket, em [PILOT-REHEARSAL-2026-11-15.md](../../16-pilot-closure/PILOT-REHEARSAL-2026-11-15.md).
