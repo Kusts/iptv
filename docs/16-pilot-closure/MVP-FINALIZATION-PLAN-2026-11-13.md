@@ -73,6 +73,24 @@ outbox mode e restauração preservada; reconciliar checkout sujo e labels
 central de outros projetos a partir do IPTV. Usar
 [runbook de staging](../10-operations/runbooks/staging-deploy.md) atualizado.
 
+## Registro de execução — 15/11/2026
+
+- **F0 concluído:** inventário e revisão do estado consolidados no
+  [snapshot 15/11](STREAMMAX-MVP-STATUS-2026-11-15.md).
+- **F1 concluído:** staging em `main@fc794f4`, marcador correspondente,
+  migrate `applied=0 skipped=69 total=69`, smoke local/público e jornada
+  comercial sintética; sem reset. `MVP_CODE_INTEGRATED` = PASS (15/11).
+- **F2 BLOCKED_EXTERNAL:** sem recurso/conta CINEVISION autorizada; adapter
+  simulado, nenhuma ativação/readback real.
+- **F3 concluído:** backup cifrado e restore isolado 155/155, invalidação de
+  sessão, ausência de admin temporário e leitura sintética de segredo;
+  custódia separada da chave de backup já resolvida.
+  `MVP_OPERATIONAL_SECURITY` = PASS (15/11).
+- **F4 em andamento:** consolidação documental registrada; marco geral
+  `MVP_STREAMMAX_OPERATIONAL` = BLOCKED (3/4 gates PASS), pendente apenas
+  evidência externa de entrega de serviço. `MVP-PILOT` e `MVP-SAAS` permanecem
+  escopos separados.
+
 ## Sinergia do sistema e limite de responsabilidade
 
 | Componente | Papel no fluxo StreamMax | Evidência atual / próxima prova |

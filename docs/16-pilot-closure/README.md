@@ -2,10 +2,10 @@
 
 > **Ponto de entrada para finalizar o MVP operacional (13/11/2026):**
 > [Plano de finalização](MVP-FINALIZATION-PLAN-2026-11-13.md) →
-> [Snapshot de evidências (12/11)](STREAMMAX-MVP-STATUS-2026-11-12.md) →
+> [Snapshot atual de evidências (15/11)](STREAMMAX-MVP-STATUS-2026-11-15.md) →
+> [Snapshot histórico (12/11)](STREAMMAX-MVP-STATUS-2026-11-12.md) →
 > [Critérios canônicos](../15-implementation-baseline/01-product-and-mvp.md).
-> A `main@c75875d` tem workflow verde em 13/11, mas isso **não** revalida
-> o staging (última leitura: `b46cec7` detached/sujo) nem as integrações live.
+> Staging deployado em `main@fc794f4`; entrega real CINEVISION ainda bloqueada.
 > `MVP_STREAMMAX_OPERATIONAL`, `MVP-PILOT` e `MVP-SAAS` são etapas distintas.
 > O restante deste arquivo registra decisões e PRs de outubro **como
 > histórico datado**, não como backlog ou status corrente.

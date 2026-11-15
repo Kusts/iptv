@@ -1,4 +1,6 @@
-# StreamMax — estado do MVP (12/11/2026)
+# StreamMax - estado do MVP (12/11/2026)
+
+> **Snapshot HISTÓRICO de 12/11, superado pelo [status de 15/11](STREAMMAX-MVP-STATUS-2026-11-15.md). Não usar como estado atual.**
 
 > **Atualização de referência Git (13/11):** este texto permanece um snapshot
 > das evidências de 12/11, cujo baseline E2E foi `main@7d27472`. A branch

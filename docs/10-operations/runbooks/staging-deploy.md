@@ -1,5 +1,9 @@
 # Runbook — Staging Deploy (Containerized, Migrate Job First)
 
+> **Evidência de execução (15/11/2026):** revisão `main@fc794f4`;
+> `migrate applied=0 skipped=69 total=69`; health/ready e web 200.
+> Imagens tagueadas e dump de rollback disponíveis.
+
 > **Caminho atual — db-central (14/11/2026):** o Compose versionado usa
 > PostgreSQL de homologação **externo** `db-hml` na rede `dbcentral_net`
 > (repositório `kust-projetos/vps-hostinger`, `scripts/db-central`). Não existe
