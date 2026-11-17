@@ -86,10 +86,10 @@ Empregar autenticação de serviço e isolamento do tenant na fronteira da API, 
 
 **IPTV, evidência datada de 15/11/2026** ([snapshot](../16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-15.md)):
 
-- `MVP_STREAMMAX_OPERATIONAL» interno registrou **4/4 gates PASS**, em staging. Isso **não** aprova `MVP-PILOT», `MVP-SAAS» nem a nova V1 comercial integrada aos bots.
+- `MVP_STREAMMAX_OPERATIONAL` interno registrou **4/4 gates PASS**, em staging. Isso **não** aprova `MVP-PILOT`, `MVP-SAAS` nem a nova V1 comercial integrada aos bots.
 - API, web, PostgreSQL, ledger, outbox, renovação e suporte possuem software/testes. Jornada de cobrança foi sintética, com evento Asaas Sandbox simulado.
 - CINEVISION teve ativação manual supervisionada com readback no painel; escrita automática não homologada.
-- O staging documentado rodava `main@89b3f3a»; a `main» do repositório foi atualizada depois. Novo candidato exige identificar commit e ambiente exatos.
+- O staging documentado rodava `main@89b3f3a`; a `main` do repositório foi atualizada depois. Novo candidato exige identificar commit e ambiente exatos.
 
 **OpenMausBot, evidência datada de 16/11/2026** ([equipe](https://github.com/Kusts/OpenMausBot/blob/main/teams/iptv/team.yaml), [avaliação comercial](https://github.com/Kusts/OpenMausBot/blob/main/docs/bots/atendimento-comercial-avaliacao.md)):
 
@@ -121,8 +121,8 @@ Empregar autenticação de serviço e isolamento do tenant na fronteira da API, 
 
 ### M0 — Auditoria executável e mapa de cortes
 
-- Inventariar `main» atual dos dois repositórios, código, dependências, rotas, workers, webhooks, bancos, configurações e estado do staging **sem alteração da VPS**.
-- Criar matriz por componente: `MANTER», `INTEGRAR», `CONCLUIR», `REMOVER APÓS TESTE», `PÓS-V1», com dono, evidência de uso, dependências e risco de remoção.
+- Inventariar `main` atual dos dois repositórios, código, dependências, rotas, workers, webhooks, bancos, configurações e estado do staging **sem alteração da VPS**.
+- Criar matriz por componente: `MANTER`, `INTEGRAR`, `CONCLUIR`, `REMOVER APÓS TESTE`, `PÓS-V1`, com dono, evidência de uso, dependências e risco de remoção.
 - Confrontar o código realmente carregado com documentação e scripts. Inspecionar em especial: runtime IA interno vs OpenMausBot; Inbox/WAHA duplicados; Asaas CLI/webhook; workers de outbox; dashboards, módulos e dependências SaaS; scripts antigos.
 - Definir 1 entrada WhatsApp, 1 pipeline de pagamento e 1 cadastro de clientes como desenho de destino; mapear migração/rollback.
 - **Saída:** inventário versionado, cortes aprovados tecnicamente, primeiro caso E2E selecionado. Não gastar a fase inteira com documentação.
@@ -187,20 +187,20 @@ As issues anteriores são insumos, **não** o novo plano por definição. O Plan
 Para cada candidato:
 
 1. Registrar arquivo/módulo, dependências, rotas, imports, cron/worker, uso no ambiente, migrations e motivo de desuso.
-2. Confirmar que nenhum caminho V1 nem recuperação depende dele. `Não executado no teste» não comprova ausência de uso.
+2. Confirmar que nenhum caminho V1 nem recuperação depende dele. `Não executado no teste` não comprova ausência de uso.
 3. Desativar/migrar e executar o caso de uso substituto. Se necessário, manter alias temporário curto.
 4. Remover código, testes específicos obsoletos, scripts, configuração e documentação correspondentes **juntos**; manter testes de contrato/regressão úteis.
-5. Testar build, integração e rollback. Nunca editar/excluir migrations históricas, arquivos de dados, volumes ou segredos de produção para `limpar o projeto».
+5. Testar build, integração e rollback. Nunca editar/excluir migrations históricas, arquivos de dados, volumes ou segredos de produção para `limpar o projeto`.
 
 Documentar ganhos observáveis (menos executores, menos webhooks, menos caminhos e dependências), sem criar métrica percentual fictícia.
 
 ## 9. Prova mínima por marco
 
-- **Estática e contratos:** `pnpm lint», `pnpm typecheck», `pnpm build»; quando houver mudanças de API/docs, `python scripts/validate_docs.py» e testes de contrato correspondentes.
-- **Automatizados:** `pnpm test» com `TEST_DATABASE_URL» apontando para **banco descartável vazio**; filtrar suites afetadas durante a iteração, rodar CI completo no candidato.
-- **Bots:** testes versionados do OpenMausBot (`node --test teams/iptv/tests/*.test.mjs») e cenário dirigido de conversa na execução real do bot.
+- **Estática e contratos:** `pnpm lint`, `pnpm typecheck`, `pnpm build`; quando houver mudanças de API/docs, `python scripts/validate_docs.py` e testes de contrato correspondentes.
+- **Automatizados:** `pnpm test` com `TEST_DATABASE_URL` apontando para **banco descartável vazio**; filtrar suites afetadas durante a iteração, rodar CI completo no candidato.
+- **Bots:** testes versionados do OpenMausBot (`node --test teams/iptv/tests/*.test.mjs`) e cenário dirigido de conversa na execução real do bot.
 - **Staging:** executar jornada conectada com cliente sintético, pedido, webhook Sandbox, ticket, ativação manual simulada/autorizada e renovação; observar API, PostgreSQL e UI **na mesma revisão**.
-- **Pré-produção:** repetir com conta/número/recurso externos autorizados; não transformar mock, seed ou CLI sem envio em `produção homologada».
+- **Pré-produção:** repetir com conta/número/recurso externos autorizados; não transformar mock, seed ou CLI sem envio em `produção homologada`.
 - **Rollback:** verificar retorno à versão anterior sem perda de pedidos/assinaturas.
 
 Cada entrega contém **mudança + teste executado + resultado + documento alterado + pendência concreta**. Não criar relatório extenso quando uma evidência curta basta.
@@ -229,7 +229,7 @@ O Planner deve usar fixtures em fases iniciais e **não bloquear trabalho indepe
 
 ## 12. Primeira missão delegável ao Planner
 
-**Identificador:** `STREAMMAX-V1-M0-M1»
+**Identificador:** `STREAMMAX-V1-M0-M1`
 
 **Objetivo:** inventariar os dois sistemas, selecionar os caminhos que continuarão ativos e provar o primeiro fluxo WhatsApp → bot → API StreamMax → lead/catalogo → resposta, sem duplicar cadastros nem enviar cobrança/ativação real.
 
@@ -240,4 +240,4 @@ O Planner deve usar fixtures em fases iniciais e **não bloquear trabalho indepe
 - primeiras remoções somente quando forem comprovadamente seguras e testadas;
 - documentação e backlog reconciliados, com próximos marcos M2–M5 atualizados.
 
-**Não é aceite:** somente diagrama, dashboard novo, relatório sem teste, `CI verde» sem jornada integrada ou declaração de produção sem pagamento/ativação realmente verificados.
+**Não é aceite:** somente diagrama, dashboard novo, relatório sem teste, `CI verde` sem jornada integrada ou declaração de produção sem pagamento/ativação realmente verificados.
