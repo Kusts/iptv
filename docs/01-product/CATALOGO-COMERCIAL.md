@@ -32,7 +32,7 @@ Existe um único produto addon de tela adicional, com preço definido pela perio
 | 6 meses | R$ 100,00 | 10000 |
 | 12 meses | R$ 150,00 | 15000 |
 
-Regra de cálculo: `total = preço do plano + (quantidade de telas adicionais × preço da tela na periodicidade escolhida)`.
+Regra de contratação: `total = preço do plano + (quantidade de telas adicionais × preço da tela na periodicidade escolhida)`.
 
 Exemplos:
 
@@ -48,7 +48,13 @@ O teste é gratuito, dura 6 horas e pode ser concedido **1 vez por usuário**. N
 
 ## Renovação
 
-A renovação é efetivada após confirmação do pagamento. Em 17/11/2026, o proprietário aprovou a opção B: desconto fixo de R$ 5,00 (500 centavos) por pedido de renovação antecipada, aplicado ao total (plano + telas adicionais). Exemplos: mensal R$ 30 + 1 tela R$ 20 − R$ 5 = R$ 45 (4500 centavos); trimestral R$ 75 + 2 telas R$ 60 − R$ 5 = R$ 190 (19000); mensal sem tela − R$ 5 = R$ 25 (2500).
+A renovação inclui os adicionais ativos da assinatura e é efetivada após confirmação do pagamento. `renewal.quote` lê `subscription.subscription_addons` por `listActiveSubscriptionAddons`, mapeia a periodicidade do plano (MONTH/1,3,6,12 e YEAR/1 para P1M/P3M/P6M/P12M) e consulta o preço ADDON vigente por `segment_key`. O cálculo é `plano + Σ(preço da tela × quantidade) − desconto antecipado se elegível`.
+
+Em 17/11/2026, o proprietário aprovou a opção B: desconto fixo de R$ 5,00 (500 centavos) por pedido de renovação antecipada, aplicado ao total (plano + telas adicionais). Valores validados: mensal + 1 tela antecipado R$ 45; trimestral + 2 telas R$ 190; semestral + 1 tela R$ 245; anual + 2 telas R$ 595; mensal + 1 tela não antecipado R$ 50. Mensal sem tela elegível permanece R$ 25 (2500 centavos).
+
+Na ativação liquidada, `materializeOrderSubscriptionAddons` (`subscription-store.ts:344`) materializa os itens ADDON do pedido em `subscription_addons`, de forma idempotente. Entitlements `CONNECTIONS` são derivados com a quantidade correspondente. `createRenewalOrder` grava itens BASE_PLAN e ADDON com snapshots (incluindo `segmentKey` em `context_json`) e valores gross/discount/net coerentes; o desconto é limitado ao gross. `reopenEntitlementsForRenewal` também reabre entitlements `subscription_addon`, preservando a quantidade e continuidade das telas. Reprocessamento não duplica itens nem cobrança.
+
+Quantidades recebidas como `numeric(12,3)` são normalizadas para inteiro antes do cálculo; quantidade fracionária é rejeitada fail-closed. API, painel e bot devem consultar valores persistidos, sem recalcular. Elegibilidade do desconto depende de `early_allowed` e `window_days` conforme a política vigente.
 
 A elegibilidade é decidida pelo backend via `decideRenewalQuote(...).early` (`renewal-policy.ts:72-90`), com `now()` do servidor e `cycleEnd` do ciclo persistido sob transação/lock. `early:true` exige `early_allowed=true` na política `subscription.renewal` e mais de `window_days` (7 por padrão) até o vencimento, mantendo margem verificável até a confirmação. `early:false` (dentro da janela) não recebe desconto. Com `early_allowed=false` (padrão), nenhum desconto é concedido automaticamente. Flags do cliente/bot não comprovam elegibilidade.
 

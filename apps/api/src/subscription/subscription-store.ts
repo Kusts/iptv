@@ -341,6 +341,59 @@ export interface SettledOrderPlan {
   planQuantity: string;
 }
 
+export async function materializeOrderSubscriptionAddons(
+  ctx: CommandHandlerContext,
+  input: { orderId: string; subscriptionId: string; startsAt: Date; endsAt: Date },
+): Promise<void> {
+  const trx = requireTrx(ctx);
+  const items = await trx
+    .selectFrom("commerce.order_items")
+    .innerJoin("catalog.addons", (join) =>
+      join.onRef("catalog.addons.tenant_id", "=", "commerce.order_items.tenant_id")
+        .onRef("catalog.addons.id", "=", "commerce.order_items.sellable_id"),
+    )
+    .select([
+      "commerce.order_items.sellable_id as addon_id",
+      "commerce.order_items.quantity as quantity",
+      "catalog.addons.billing_type as billing_type",
+      "catalog.addons.status as addon_status",
+    ])
+    .where("commerce.order_items.tenant_id", "=", ctx.tenantId)
+    .where("commerce.order_items.order_id", "=", input.orderId)
+    .where("commerce.order_items.sellable_type", "=", "ADDON")
+    .where("commerce.order_items.quantity", ">", "0")
+    .execute();
+  for (const item of items) {
+    // Ineligible catalog items are deliberately ignored; they must not block paid-order activation.
+    if (item.billing_type !== "RECURRING" || item.addon_status !== "ACTIVE") continue;
+    const existing = await trx.selectFrom("subscription.subscription_addons")
+      .select(["id", "quantity", "status", "effective_from", "effective_until"])
+      .where("tenant_id", "=", ctx.tenantId)
+      .where("subscription_id", "=", input.subscriptionId)
+      .where("addon_id", "=", item.addon_id)
+      .executeTakeFirst();
+    if (existing === undefined) {
+      await trx.insertInto("subscription.subscription_addons").values({
+        id: newId(), tenant_id: ctx.tenantId, subscription_id: input.subscriptionId,
+        addon_id: item.addon_id, quantity: item.quantity, status: "ACTIVE",
+        effective_from: input.startsAt, effective_until: input.endsAt,
+        price_policy_ref: null, created_at: now(), updated_at: now(),
+      }).execute();
+    } else if (
+      String(existing.quantity) !== String(item.quantity) || existing.status !== "ACTIVE" ||
+      existing.effective_from.getTime() !== input.startsAt.getTime() ||
+      existing.effective_until?.getTime() !== input.endsAt.getTime()
+    ) {
+      await trx.updateTable("subscription.subscription_addons")
+        .set({
+          quantity: item.quantity, status: "ACTIVE", effective_from: input.startsAt,
+          effective_until: input.endsAt, updated_at: now(),
+        })
+        .where("tenant_id", "=", ctx.tenantId).where("id", "=", existing.id).execute();
+    }
+  }
+}
+
 export async function loadSettledOrderPlan(
   ctx: CommandHandlerContext,
   orderId: string,

@@ -16,7 +16,7 @@ import {
   getCatalogPlan,
   getPersonIdForCustomer,
   insertGrant,
-  listEntitlementsBySource,
+  listActiveSubscriptionAddons,
   updateCycle,
 } from "../subscription/subscription-store.js";
 import {
@@ -130,6 +130,14 @@ export interface RenewalQuoteResult {
   already: boolean;
 }
 
+/** Parse a numeric(12,3) quantity string into a whole number; null if fractional. */
+function quantityToBigInt(raw: unknown): bigint | null {
+  const text = String(raw ?? "").trim();
+  if (!/^\d+(?:\.0+)?$/.test(text)) return null;
+  const whole = text.split(".")[0] ?? "0";
+  return BigInt(whole);
+}
+
 async function handleQuote(
   ctx: CommandHandlerContext,
   input: RenewalQuoteInput,
@@ -216,6 +224,42 @@ async function handleQuote(
       message: "no active catalog price for the subscription plan",
     };
   }
+  const plan = await trx.selectFrom("catalog.plans")
+    .select(["billing_interval_unit", "billing_interval_count"])
+    .where("tenant_id", "=", ctx.tenantId).where("id", "=", subscription.planId)
+    .executeTakeFirst();
+  if (plan === undefined) return { ok: false, code: "not_found", message: "catalog plan not found in this tenant" };
+  const segmentByInterval: Record<string, string> = {
+    "MONTH:1": "P1M", "MONTH:3": "P3M", "MONTH:6": "P6M", "MONTH:12": "P12M", "YEAR:1": "P12M",
+  };
+  const segmentKey = segmentByInterval[`${plan.billing_interval_unit}:${plan.billing_interval_count}`];
+  const activeAddons = await listActiveSubscriptionAddons(ctx, subscription.id);
+  if (activeAddons.length > 0 && segmentKey === undefined) {
+    return { ok: false, code: "validation_failed", message: `unsupported plan billing interval ${plan.billing_interval_unit}/${plan.billing_interval_count} for renewal add-ons` };
+  }
+  const addons = [];
+  let gross = BigInt(price.amountMinor);
+  for (const addon of activeAddons) {
+    const addonPrice = await trx.selectFrom("catalog.prices").select(["id", "amount_minor", "currency"])
+      .where("tenant_id", "=", ctx.tenantId).where("sellable_type", "=", "ADDON")
+      .where("sellable_id", "=", addon.addonId).where("segment_key", "=", segmentKey!)
+      .where("status", "=", "ACTIVE").where("starts_at", "<=", at)
+      .where((eb) => eb.or([eb("ends_at", "is", null), eb("ends_at", ">", at)]))
+      .orderBy("starts_at", "desc").limit(1).executeTakeFirst();
+    if (addonPrice === undefined) return { ok: false, code: "validation_failed", message: `no active ${segmentKey} catalog price for add-on ${addon.addonId}` };
+    if (addonPrice.currency !== price.currency) return { ok: false, code: "validation_failed", message: `currency mismatch for add-on ${addon.addonId}` };
+    const unitMinor = String(addonPrice.amount_minor);
+    // subscription.subscription_addons.quantity is numeric(12,3); Postgres
+    // returns integer quantities as "2.000". BigInt() rejects that form, so
+    // normalize decimal strings to a whole number and fail closed otherwise.
+    const quantity = quantityToBigInt(addon.quantity);
+    if (quantity === null) {
+      return { ok: false, code: "validation_failed", message: `non-integer add-on quantity for ${addon.addonId}` };
+    }
+    gross += BigInt(unitMinor) * quantity;
+    addons.push({ addonId: addon.addonId, quantity: quantity.toString(), unitMinor, segmentKey: segmentKey!, featureKey: addon.featureKey, priceId: addonPrice.id });
+  }
+  const discount = BigInt(earlyRenewalDiscountMinor(window.early));
   const order = await createRenewalOrder(ctx, {
     personId,
     customerId: subscription.customerId,
@@ -223,7 +267,8 @@ async function handleQuote(
     unitMinor: price.amountMinor,
     currency: price.currency,
     priceId: price.priceId,
-    discountMinor: String(earlyRenewalDiscountMinor(window.early)),
+    discountMinor: String(discount > gross ? gross : discount),
+    addons,
   });
   await setCycleRenewalOrder(ctx, open.id, order.id);
   // `order.created.v1` is emitted inside `createRenewalOrder`
@@ -389,6 +434,7 @@ async function handleRenew(
   const nextStart = priorRow.endsAt;
   const nextEnd = addBillingInterval(nextStart, catalogPlan.intervalUnit, catalogPlan.intervalCount);
   const nextNo = Math.max(priorRow.cycleNo, ...cycles.map((c) => c.cycleNo)) + 1;
+  const activeAddons = await listActiveSubscriptionAddons(ctx, subscription.id);
   // Close-then-open inside ONE transaction: the 019 partial index keeps
   // exactly one OPEN cycle; closed cycles are never mutated afterwards.
   if (priorRow.status === "PENDING" || priorRow.status === "ACTIVE") {
@@ -417,16 +463,13 @@ async function handleRenew(
     currentPeriodEnd: nextEnd,
   });
   const reopened = await reopenEntitlementsForRenewal(ctx, {
+    customerId: subscription.customerId,
     subscriptionId: subscription.id,
     startsAt: nextStart,
     endsAt: nextEnd,
+    addonIds: activeAddons.map((addon) => addon.addonId),
   });
-  const existing = await listEntitlementsBySource(ctx, "subscription", subscription.id);
-  const existingIds = new Set(existing.map((e) => e.id));
   for (const entitlement of reopened) {
-    if (!existingIds.has(entitlement.id)) {
-      continue;
-    }
     await insertGrant(ctx, {
       entitlementId: entitlement.id,
       grantType: "RENEWAL",

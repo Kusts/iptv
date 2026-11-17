@@ -142,3 +142,11 @@ O [baseline de implementação v1.0.1](../15-implementation-baseline/README.md) 
 - Validação da implementação: suíte API 136/136 arquivos, 1555 testes, 1 pulado; integração `early-renewal-discount.integration.test.ts` 18/18; typecheck, lint e gates Python verdes.
 - `listActiveSellablePlans` retorna os quatro planos com preços. `GET /v1/catalog/plans` expõe planos, mas não addon (pendência funcional); o bot lê planos por `list-plans`, sem exposição dos preços de adicionais.
 - Pendências: exposição dos preços dos adicionais na API/bot e identificar ambiente/obter autorização antes de gravar no catálogo operacional real. A gravação operacional real não ocorreu; deploy e M5 permanecem fora do escopo.
+
+### Renovação com adicionais — RENEWAL-ADDONS-V1 (17/11/2026)
+
+- `renewal.quote` lê os adicionais ativos via `listActiveSubscriptionAddons` em `subscription.subscription_addons`. Periodicidades MONTH/1,3,6,12 e YEAR/1 mapeiam para P1M/P3M/P6M/P12M; a cotação consulta preço ADDON vigente por `segment_key` e compõe plano + Σ(preço por tela × quantidade) − desconto antecipado quando elegível.
+- A ativação materializa os itens ADDON do pedido liquidado por `materializeOrderSubscriptionAddons` (`subscription-store.ts:344`), idempotentemente. Entitlements `CONNECTIONS` refletem `quantity`. `createRenewalOrder` persiste itens BASE_PLAN e ADDON com snapshots (`context_json` inclui `segmentKey`) e totais gross/discount/net coerentes, clampando desconto ao gross. `reopenEntitlementsForRenewal` reabre também `subscription_addon` e mantém a quantidade para continuidade das telas.
+- Valores verificados: mensal + 1 tela antecipado R$ 45; trimestral + 2 R$ 190; semestral + 1 R$ 245; anual + 2 R$ 595; mensal + 1 sem antecipação R$ 50. Reprocessamento não duplica itens/cobrança.
+- `quantity` numeric(12,3) do PostgreSQL (por exemplo `"2.000"`) é normalizado para bigint; frações são rejeitadas fail-closed. Integração `renewal-addons.integration.test.ts`: 5/5; `subscription-addons-materialization.integration.test.ts`: 1/1 com PostgreSQL descartável. Typecheck e lint reportados verdes; suíte completa fica a confirmar pelo Planner.
+- Nenhuma cobrança, ativação, deploy ou gravação no catálogo operacional ocorreu. Elegibilidade depende de `early_allowed`/`window_days`; API, painel e bot devem consultar valores persistidos e não recalcular.

@@ -393,12 +393,14 @@ export async function createRenewalOrder(
     currency: string;
     priceId: string;
     discountMinor?: string;
+    addons?: Array<{ addonId: string; quantity: string; unitMinor: string; segmentKey: string; featureKey?: string | null; priceId: string }>;
   },
 ): Promise<RenewalOrderRow> {
   const trx = requireTrx(ctx);
   const at = now();
   const orderId = newId();
-  const grossMinor = BigInt(input.unitMinor);
+  const addons = input.addons ?? [];
+  const grossMinor = BigInt(input.unitMinor) + addons.reduce((sum, addon) => sum + BigInt(addon.unitMinor) * BigInt(addon.quantity), 0n);
   const requestedDiscount = BigInt(input.discountMinor ?? "0");
   const discountMinor = requestedDiscount > grossMinor ? grossMinor : requestedDiscount;
   const netMinor = (grossMinor - discountMinor).toString();
@@ -438,10 +440,10 @@ export async function createRenewalOrder(
       sellable_id: input.planId,
       quantity: "1",
       unit_price_minor: input.unitMinor,
-      gross_minor: grossMinor.toString(),
-      discount_minor: discount,
+      gross_minor: input.unitMinor,
+      discount_minor: (discountMinor > BigInt(input.unitMinor) ? BigInt(input.unitMinor) : discountMinor).toString(),
       reward_minor: "0",
-      net_minor: netMinor,
+      net_minor: (BigInt(input.unitMinor) - (discountMinor > BigInt(input.unitMinor) ? BigInt(input.unitMinor) : discountMinor)).toString(),
       metadata_json: { renewal: true },
       created_at: at,
     })
@@ -462,6 +464,22 @@ export async function createRenewalOrder(
         : { quantity: 1, renewal: true },
     })
     .execute();
+  for (const addon of addons) {
+    const itemId = newId();
+    const addonGross = BigInt(addon.unitMinor) * BigInt(addon.quantity);
+    await trx.insertInto("commerce.order_items").values({
+      id: itemId, tenant_id: ctx.tenantId, order_id: orderId, item_type: "OTHER",
+      sellable_type: "ADDON", sellable_id: addon.addonId, quantity: addon.quantity,
+      unit_price_minor: addon.unitMinor, gross_minor: addonGross.toString(), discount_minor: "0",
+      reward_minor: "0", net_minor: addonGross.toString(),
+      metadata_json: { renewal: true, addon: true, feature_key: addon.featureKey ?? null }, created_at: at,
+    }).execute();
+    await trx.insertInto("commerce.price_snapshots").values({
+      id: newId(), tenant_id: ctx.tenantId, order_item_id: itemId, sale_price_minor: addon.unitMinor,
+      supplier_cost_minor: null, currency: input.currency, price_source_ref: `catalog.prices:${addon.priceId}`,
+      captured_at: at, context_json: { quantity: addon.quantity, renewal: true, segmentKey: addon.segmentKey },
+    }).execute();
+  }
   await trx
     .updateTable("commerce.orders")
     .set({ status: "AWAITING_PAYMENT", awaiting_payment_at: now() })
@@ -1292,7 +1310,7 @@ export interface RenewedEntitlement {
  */
 export async function reopenEntitlementsForRenewal(
   ctx: CommandHandlerContext,
-  input: { subscriptionId: string; startsAt: Date; endsAt: Date },
+  input: { customerId: string; subscriptionId: string; startsAt: Date; endsAt: Date; addonIds?: string[] },
 ): Promise<RenewedEntitlement[]> {
   const trx = requireTrx(ctx);
   const rows = await trx
@@ -1303,7 +1321,15 @@ export async function reopenEntitlementsForRenewal(
     .where("source_id", "=", input.subscriptionId)
     .returning(["id"])
     .execute();
-  return rows.map((row) => ({ id: row.id }));
+  const addonIds = input.addonIds ?? [];
+  const addonRows = addonIds.length === 0 ? [] : await trx.updateTable("entitlement.entitlements")
+    .set({ status: "ACTIVE", starts_at: input.startsAt, ends_at: input.endsAt, updated_at: now() })
+    .where("tenant_id", "=", ctx.tenantId).where("source_type", "=", "subscription_addon")
+    .where("customer_id", "=", input.customerId)
+    .where("source_id", "in", addonIds)
+    .where(sql`metadata_json->>'subscription_id'`, "=", input.subscriptionId)
+    .returning(["id"]).execute();
+  return [...rows, ...addonRows].map((row) => ({ id: row.id }));
 }
 
 /** Trust-renewal extension: push subscription-source entitlement ends forward. */
