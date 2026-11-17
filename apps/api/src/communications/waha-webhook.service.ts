@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { Inject, Injectable, Optional } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import { sql, type Kysely } from "kysely";
 import type { Database } from "@iptv/database";
 import { withTenantTransaction } from "@iptv/database";
@@ -22,7 +22,10 @@ import {
 import { validateSessionForTenant } from "./waha-sessions.js";
 import { checkInboundSession } from "./waha-session-store.js";
 import { setRiskState } from "./waha-risk-state.js";
-import { AgentPipeline } from "../agent/pipeline.js";
+import { AgentPipeline, shouldEvaluateConversation } from "../agent/pipeline.js";
+import { botExecute, createStreamMaxBotDependencies, serializedForContact } from "../bot/streammax-bot-adapter.js";
+import { composeResponse, listSellablePlans, resolveOrCreateLead } from "../bot/streammax-bot-contract.js";
+import type { AppConfig } from "@iptv/config";
 
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -54,6 +57,7 @@ export type WebhookAuthResult =
  */
 @Injectable()
 export class WahaWebhookService {
+  private readonly logger = new Logger(WahaWebhookService.name);
   constructor(
     @Inject("DB") private readonly db: Kysely<Database> | null,
     @Inject("INBOX_STORE") private readonly inbox: InboxStore,
@@ -66,6 +70,7 @@ export class WahaWebhookService {
      * doubles; no live WhatsApp traffic happens in tests.
      */
     @Optional() @Inject("WAHA_MEDIA_PORT") private readonly mediaPort?: WahaMediaPort | null,
+    @Optional() @Inject("APP_CONFIG") private readonly config?: AppConfig,
   ) {}
 
   private mediaDownloader(): WahaMediaPort {
@@ -258,6 +263,12 @@ export class WahaWebhookService {
       permissions: [],
       actorType: "external",
     };
+    const botEnabled = this.config?.STREAMMAX_BOT_ENABLED === "true";
+    const botDependencies = botEnabled && this.db !== null
+      ? createStreamMaxBotDependencies(this.db, this.bus)
+      : null;
+    let botContactReady = botDependencies !== null && normalized.media === null;
+    let botLead: Awaited<ReturnType<typeof resolveOrCreateLead>> | null = null;
     // Fail closed BEFORE any media download: a foreign session is
     // quarantined through the same `message.ingest` path as TEXT (session
     // mismatch → UNMATCHED_INBOUND exception, no message row), so the media
@@ -296,6 +307,18 @@ export class WahaWebhookService {
       }
       await this.inbox.markState({ tenantId, id: inboxId, state: "PROCESSED" });
       return;
+    }
+    // Resolve/create only after the inbound session has passed validation.
+    // This keeps foreign/invalid sessions from creating CRM records.
+    if (botContactReady && botDependencies !== null) {
+      try {
+        botLead = await serializedForContact(tenantId, normalized.from, () =>
+          resolveOrCreateLead({ tenantId, waId: normalized.from }, botDependencies),
+        );
+      } catch (err) {
+        this.logger.warn(JSON.stringify({ task: "waha.bot.lead_resolution", outcome: "failed", errorType: err instanceof Error ? err.name : "unknown" }));
+        botContactReady = false;
+      }
     }
     // G01/WAHA closure: media inbound diverts to the authorized
     // download → validate → persist → ingest path. Download failures are
@@ -432,14 +455,47 @@ export class WahaWebhookService {
     if (result.data.duplicate || result.data.conversationId === null) {
       return;
     }
+    if (botDependencies !== null && botContactReady) {
+      let sendAttempted = false;
+      try {
+        const conversation = await withTenantTransaction(this.requireDb(), tenantId, (trx) =>
+          trx.selectFrom("communication.conversations")
+            .select(["status", "control_mode as controlMode"])
+            .where("tenant_id", "=", tenantId)
+            .where("id", "=", result.data.conversationId!)
+            .executeTakeFirst(),
+        );
+        const decision = conversation ? shouldEvaluateConversation(conversation) : null;
+        if (decision?.evaluate) {
+          if (botLead === null) throw new Error("bot lead was not resolved before ingest");
+          const plans = await listSellablePlans(tenantId, botDependencies);
+          sendAttempted = true;
+          const sent = await botExecute(
+            this.bus,
+            tenantId,
+            "message.send_manual",
+            { conversationId: result.data.conversationId, text: composeResponse({ tenantId, ...botLead }, plans) },
+            { idempotencyKey: `bot:reply:${tenantId}:${normalized.externalId}` },
+          );
+          if (sent.ok) return;
+          this.logger.warn(JSON.stringify({ task: "waha.bot.reply", outcome: "send_rejected", code: sent.code }));
+        }
+      } catch (err) {
+        this.logger.warn(JSON.stringify({ task: "waha.bot.reply", outcome: "failed", errorType: err instanceof Error ? err.name : "unknown" }));
+      }
+      if (sendAttempted) return;
+    }
+    // The enabled StreamMax bot owns replies. Resolution/media failures stay
+    // silent (fail-closed); never let the generic pipeline become a fallback.
+    if (botEnabled) return;
     try {
       await this.agents?.evaluateInbound({
         tenantId,
         conversationId: result.data.conversationId,
         inboundText: normalized.text,
       });
-    } catch {
-      // Agent evaluation is advisory; inbound is already persisted.
+    } catch (err) {
+      this.logger.warn(JSON.stringify({ task: "waha.agent.evaluate", outcome: "failed", errorType: err instanceof Error ? err.name : "unknown" }));
     }
     });
   }
