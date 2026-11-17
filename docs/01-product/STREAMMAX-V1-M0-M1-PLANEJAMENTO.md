@@ -132,3 +132,13 @@ O [baseline de implementação v1.0.1](../15-implementation-baseline/README.md) 
 - **Correção de contrato:** `replySchema` da API aceita `waId` e `name` opcionais, evitando o 400 que divergiria do contrato congelado.
 - Evidências informadas: pacote API 132/132 arquivos, 1523 testes passaram e 1 pulado; CLI 5/5; lint/typecheck/build exit 0. Gates Python devem ser verificados separadamente. Execução toda sintética: nenhum deploy, pagamento, ativação ou mensagem real.
 - **Pendências:** associação da skill ao time IPTV requer `openmausbot team apply --dry-run` e autorização; não executado. S5 em staging e M5 (produção) dependem de autorização específica. Não declarar produção homologada.
+
+### Fechamento do catálogo comercial aprovado (17/11/2026)
+
+- O Proprietário do StreamMax aprovou em 17/11/2026 o catálogo V1.0, status `approved`, registrado canonicamente em `docs/01-product/CATALOGO-COMERCIAL.md`.
+- Planos: mensal R$ 30 (3000 minor), trimestral R$ 75 (7500), semestral R$ 150 (15000) e anual R$ 300 (30000). O addon único `additional-connection` tem preço por período em `segment_key`: P1M=2000, P3M=6000, P6M=10000, P12M=15000. Total = preço do plano + quantidade de telas × preço por tela no período.
+- Trial: 6 horas grátis, uma vez por usuário; retry somente com problema técnico comprovado. Renovação ocorre após pagamento. Desconto antecipado de R$ 5 segue PENDENTE da decisão A (somente plano) ou B (plano + telas), portanto não é regra executável.
+- Implementação reportada: `apps/api/src/commerce/approved-catalog.ts` contém cálculo puro; `scripts/seed-approved-catalog.mjs` faz carga idempotente/auditável, com dry-run padrão e `--apply` explícito. `apps/api/src/commerce/commerce.commands.ts` aceita `segmentKey` opcional em `activePrice` e por item em `offer.quote`; `PLAN` com `segmentKey` resulta em `validation_failed`.
+- Validação reportada: 13 testes (unitários 11 e integração em 2 arquivos) com PostgreSQL descartável; typecheck, lint e `node --check` verdes. Carga em banco descartável comprovou 4 planos, 1 addon e 4 preços; segunda execução não duplicou registros.
+- `listActiveSellablePlans` retorna os quatro planos com preços. `GET /v1/catalog/plans` expõe planos, mas não addon (lacuna registrada); o bot lê planos por `list-plans`.
+- Pendências: decidir A/B do desconto; expor addons na API/bot se necessário; identificar ambiente e obter autorização de escrita antes de gravar no catálogo operacional real. Nada disso foi feito. Deploy em staging e M5 permanecem fora do escopo.
