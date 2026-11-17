@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased - Added
-- docs(product,contracts): registrar catálogo comercial StreamMax V1.0 aprovado pelo Proprietário em 17/11/2026, preços, regras e limites da implementação; desconto antecipado, exposição de addons e gravação operacional seguem pendentes.
+- docs(product,contracts): registrar desconto antecipado aprovado e implementado — R$ 5 por renovação elegível sobre plano + adicionais; exposição de addons e gravação operacional seguem pendentes.
 - docs(operations): registrar resultados e pendências de homologação OPS-1..4; sem deploy, operações comerciais reais ou piloto.
 - docs(product): registrar S5 cross-repo em homologação local/sintética, CLI/API reais com fixtures e pendências de autorização; sem homologação de produção.
 - docs(product): registrar auditoria M4-A sem remoções e decisão M4-B (S2 necessário; resposta WAHA de dono único); corrigir evidência PostgreSQL para 5/5 provados.

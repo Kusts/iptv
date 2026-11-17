@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   APPROVED_CATALOG,
+  applyEarlyRenewalDiscount,
   additionalScreenPriceFor,
   calculateTotal,
   describeApprovedCatalog,
   formatBRL,
+  earlyRenewalDiscountMinor,
+  EARLY_RENEWAL_DISCOUNT_MINOR,
   planDurationMonths,
   planPriceFor,
   type ApprovedPlanPeriod,
@@ -50,6 +53,18 @@ describe("approved commercial catalog", () => {
     for (const { period, months } of periods) expect(planDurationMonths(period)).toBe(months);
   });
 
+  it("applies the fixed discount only to eligible early renewals", () => {
+    expect(EARLY_RENEWAL_DISCOUNT_MINOR).toBe(500);
+    expect(earlyRenewalDiscountMinor(true)).toBe(500);
+    expect(earlyRenewalDiscountMinor(false)).toBe(0);
+    expect(applyEarlyRenewalDiscount(3000 + 2000, true)).toBe(4500);
+    expect(applyEarlyRenewalDiscount(7500 + 2 * 6000, true)).toBe(19000);
+    expect(applyEarlyRenewalDiscount(3000, true)).toBe(2500);
+    expect(applyEarlyRenewalDiscount(5000, false)).toBe(5000);
+    expect(() => applyEarlyRenewalDiscount(499, true)).toThrow(RangeError);
+    expect(applyEarlyRenewalDiscount(499, false)).toBe(499);
+  });
+
   it("includes approval provenance and audit description", () => {
     expect(APPROVED_CATALOG.metadata).toMatchObject({
       approver: "Proprietário do StreamMax",
@@ -58,5 +73,7 @@ describe("approved commercial catalog", () => {
     });
     expect(describeApprovedCatalog()).toContain("Proprietário do StreamMax");
     expect(describeApprovedCatalog()).toContain("2026-11-17");
+    expect(describeApprovedCatalog()).toContain("Regra B aprovada");
+    expect(describeApprovedCatalog()).toContain("backend (early)");
   });
 });

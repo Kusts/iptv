@@ -6,6 +6,7 @@ import { emitAndEnqueue, kyselyTrxOf } from "../crm/wave2-store.js";
 import { mergePolicyRows } from "../trial/trial-policy.js";
 import { UniqueViolationError } from "../trial/trial-store.js";
 import { toMinor } from "../commerce/money-math.js";
+import { earlyRenewalDiscountMinor } from "../commerce/approved-catalog.js";
 import {
   SUSPENSION_POLICY_FAMILY,
   addBillingInterval,
@@ -222,6 +223,7 @@ async function handleQuote(
     unitMinor: price.amountMinor,
     currency: price.currency,
     priceId: price.priceId,
+    discountMinor: String(earlyRenewalDiscountMinor(window.early)),
   });
   await setCycleRenewalOrder(ctx, open.id, order.id);
   // `order.created.v1` is emitted inside `createRenewalOrder`

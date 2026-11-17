@@ -392,11 +392,17 @@ export async function createRenewalOrder(
     unitMinor: string;
     currency: string;
     priceId: string;
+    discountMinor?: string;
   },
 ): Promise<RenewalOrderRow> {
   const trx = requireTrx(ctx);
   const at = now();
   const orderId = newId();
+  const grossMinor = BigInt(input.unitMinor);
+  const requestedDiscount = BigInt(input.discountMinor ?? "0");
+  const discountMinor = requestedDiscount > grossMinor ? grossMinor : requestedDiscount;
+  const netMinor = (grossMinor - discountMinor).toString();
+  const discount = discountMinor.toString();
   await trx
     .insertInto("commerce.orders")
     .values({
@@ -408,10 +414,10 @@ export async function createRenewalOrder(
       order_type: "RENEWAL",
       status: "DRAFT",
       currency: input.currency,
-      gross_amount_minor: input.unitMinor,
-      discount_amount_minor: "0",
+      gross_amount_minor: grossMinor.toString(),
+      discount_amount_minor: discount,
       reward_amount_minor: "0",
-      net_amount_minor: input.unitMinor,
+      net_amount_minor: netMinor,
       settled_amount_minor: "0",
       created_at: at,
       awaiting_payment_at: null,
@@ -432,10 +438,10 @@ export async function createRenewalOrder(
       sellable_id: input.planId,
       quantity: "1",
       unit_price_minor: input.unitMinor,
-      gross_minor: input.unitMinor,
-      discount_minor: "0",
+      gross_minor: grossMinor.toString(),
+      discount_minor: discount,
       reward_minor: "0",
-      net_minor: input.unitMinor,
+      net_minor: netMinor,
       metadata_json: { renewal: true },
       created_at: at,
     })
@@ -451,7 +457,9 @@ export async function createRenewalOrder(
       currency: input.currency,
       price_source_ref: `catalog.prices:${input.priceId}`,
       captured_at: at,
-      context_json: { quantity: 1, renewal: true },
+      context_json: discountMinor > 0n
+        ? { quantity: 1, renewal: true, early_discount_minor: discount, eligibility: "backend_early_renewal" }
+        : { quantity: 1, renewal: true },
     })
     .execute();
   await trx
@@ -469,7 +477,7 @@ export async function createRenewalOrder(
       order_id: orderId,
       person_id: input.personId,
       order_type: "RENEWAL",
-      net_amount_minor: input.unitMinor,
+      net_amount_minor: netMinor,
       currency: input.currency,
     },
   });

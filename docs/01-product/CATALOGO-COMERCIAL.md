@@ -48,18 +48,17 @@ O teste é gratuito, dura 6 horas e pode ser concedido **1 vez por usuário**. N
 
 ## Renovação
 
-A renovação é efetivada após confirmação do pagamento. Há desconto aprovado de R$ 5,00 para pagamento antecipado, mas a base de cálculo está **PENDENTE de definição**:
+A renovação é efetivada após confirmação do pagamento. Em 17/11/2026, o proprietário aprovou a opção B: desconto fixo de R$ 5,00 (500 centavos) por pedido de renovação antecipada, aplicado ao total (plano + telas adicionais). Exemplos: mensal R$ 30 + 1 tela R$ 20 − R$ 5 = R$ 45 (4500 centavos); trimestral R$ 75 + 2 telas R$ 60 − R$ 5 = R$ 190 (19000); mensal sem tela − R$ 5 = R$ 25 (2500).
 
-- A: somente plano principal;
-- B: plano + telas adicionais.
+A elegibilidade é decidida pelo backend via `decideRenewalQuote(...).early` (`renewal-policy.ts:72-90`), com `now()` do servidor e `cycleEnd` do ciclo persistido sob transação/lock. `early:true` exige `early_allowed=true` na política `subscription.renewal` e mais de `window_days` (7 por padrão) até o vencimento, mantendo margem verificável até a confirmação. `early:false` (dentro da janela) não recebe desconto. Com `early_allowed=false` (padrão), nenhum desconto é concedido automaticamente. Flags do cliente/bot não comprovam elegibilidade.
 
-Este desconto não constitui regra executável até a definição da base de cálculo.
+Não se aplica à primeira contratação (`NEW_SUBSCRIPTION`) e não é cumulativo por reprocessamento: a ordem reutilizada via `renewal_order_id` retorna `already:true`. Implementado em `approved-catalog.ts` (`earlyRenewalDiscountMinor`, constante 500, `applyEarlyRenewalDiscount`), `renewal.commands.ts:228` e `renewal-store.ts`, que persiste `discount_amount_minor`, `net_amount_minor`, `discount_minor`/`net_minor` no item e `early_discount_minor`/`eligibility` em `context_json`.
 
 ## Histórico de versões
 
 | Versão | Data | Aprovador | Alteração |
 |---|---|---|---|
-| V1.0 | 17/11/2026 | Proprietário do StreamMax | Aprovação inicial dos planos, addon, teste e renovação; desconto antecipado pendente |
+| V1.0 | 17/11/2026 | Proprietário do StreamMax | Aprovação dos planos, addon, teste, renovação e desconto antecipado opção B; aprovado e implementado |
 
 ## Relação com a implementação
 
@@ -69,3 +68,5 @@ Este desconto não constitui regra executável até a definição da base de cá
 - [Consultas do catálogo na API](../../apps/api/src/commerce/catalog-queries.ts) — fonte operacional.
 
 A carga dos valores aprovados em `catalog.*` deve ser feita por script idempotente e auditável, sem cobrança ou ativação. Valores e condições não listados aqui são **não aprovados** ou **fora da V1**.
+
+A gravação no catálogo operacional real, deploy e M5 permanecem fora do escopo. A exposição dos preços dos adicionais na API/bot é uma pendência funcional.
