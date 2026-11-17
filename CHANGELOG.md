@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased - Added
+- feat(api): expor catálogo com adicionais e capacidades comerciais na API do bot StreamMax por comandos existentes; homologação sintética, sem efeito real
 - docs(product): publicar plano revisado STREAMMAX-V1-FINAL-INTEGRATION com mapeamento de marcos, estado verificado, gate de autorização do M4 e limitação de banco descartável
 - fix(ops): registrar deploy autorizado em staging Contabo `main@d77665647285ff97f5e5c8960aa0bee0f487cec5` (hotfix PR #151 do DI de BotServiceGuard e exceção documentada da advisory dev-only 1247710 picomatch); migration 070 aplicada, history=70 e `platform.bot_service_credentials` criada; redeploy migrate no-op `applied=0 skipped=70 total=70`; health/ready/web 200, rotas bot retornam 404 pelo guard com flag desligada, stack healthy e rollback tags/.bak preservados
 - fix(ops): dry-run do catálogo aprovado executado sem gravação; metadata confere com CATALOGO-COMERCIAL.md: Proprietário do StreamMax, 17/11/2026, V1.0

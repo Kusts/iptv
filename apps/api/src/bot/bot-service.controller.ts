@@ -1,4 +1,4 @@
-import { Controller, HttpException, Inject, Post, Req, UseGuards, Header } from "@nestjs/common";
+import { Controller, HttpException, Inject, Post, Req, UseGuards, Header, HttpStatus } from "@nestjs/common";
 import type { FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
 import { z } from "zod";
@@ -12,6 +12,7 @@ import { composeResponse, listSellablePlans, resolveOrCreateLead } from "./strea
 import { BotServiceGuard } from "./bot-service.guard.js";
 import { botServiceActor } from "./bot-service-actor.js";
 import { getBotReplyEligibility, isDuplicateInbound } from "./streammax-bot-queries.js";
+import { APPROVED_CATALOG, type ApprovedPlanPeriod } from "../commerce/approved-catalog.js";
 
 const base = {
   messageId: z.string().trim().min(1).max(320),
@@ -27,6 +28,21 @@ const replySchema = z.object({
   waId: z.string().trim().min(1).max(64).optional(),
   name: z.string().trim().min(1).max(200).optional(),
 }).strict();
+const quoteSchema = z.object({
+  ...base, personId: z.string().uuid(), planId: z.string().uuid(),
+  addonQuantity: z.number().int().min(0).max(1000).optional(),
+  periodicityMonths: z.union([z.literal(1), z.literal(3), z.literal(6), z.literal(12)]).optional(),
+}).strict();
+const createOrderSchema = z.object({ ...base, personId: z.string().uuid(), quoteId: z.string().uuid() }).strict();
+const personSchema = z.object({ ...base, personId: z.string().uuid() }).strict();
+const getChargeSchema = z.object({ ...base, personId: z.string().uuid(), orderId: z.string().uuid() }).strict();
+const ticketSchema = z.object({ ...base, personId: z.string().uuid(), kind: z.enum(["TECHNICAL", "BILLING", "GENERAL"]), summary: z.string().trim().min(1).max(1800) }).strict();
+const getTicketSchema = z.object({ ...base, personId: z.string().uuid(), ticketId: z.string().uuid() }).strict();
+const renewSchema = z.object({ ...base, personId: z.string().uuid(), quoteId: z.string().uuid() }).strict();
+
+function unavailableRoute(): never {
+  throw new HttpException({ code: "not_implemented", message: "This capability is not yet safely exposed by the bot API." }, HttpStatus.NOT_IMPLEMENTED);
+}
 
 @Controller("v1/bot/streammax")
 @UseGuards(BotServiceGuard)
@@ -57,9 +73,78 @@ export class BotServiceController {
     this.parse(listSchema, req.body);
     const { db, tenantId } = this.context(req);
     const plans = await listActiveSellablePlans(db, tenantId);
-    return { plans: plans.filter((p) => p.price).map((p) => ({
-      planId: p.planId, name: p.name, amountMinor: p.price!.amountMinor.toString(), currency: p.price!.currency,
-    })) };
+    const addon = await withTenantTransaction(db, tenantId, (trx) => trx.selectFrom("catalog.addons as a")
+      .leftJoin("catalog.prices as pr", (join) => join.onRef("pr.sellable_id", "=", "a.id").on("pr.sellable_type", "=", "ADDON")
+        .on("pr.status", "=", "ACTIVE").onRef("pr.tenant_id", "=", "a.tenant_id"))
+      .select(["a.id as sellableId", "pr.segment_key as segmentKey", "pr.amount_minor as amountMinor", "pr.currency"])
+      .where("a.tenant_id", "=", tenantId).where("a.addon_key", "=", "additional-connection")
+      .where("a.status", "=", "ACTIVE").execute());
+    const segmentMonths = { P1M: 1, P3M: 3, P6M: 6, P12M: 12 } as const;
+    const addonId = addon[0]?.sellableId ?? "additional-connection";
+    return {
+      plans: plans.filter((p) => p.price).map((p) => ({
+        planId: p.planId, name: p.name, amountMinor: p.price!.amountMinor.toString(), currency: p.price!.currency,
+        periodMonths: Number(p.billingIntervalCount) * (p.billingIntervalUnit === "YEAR" ? 12 : 1),
+      })),
+      addons: (Object.entries(APPROVED_CATALOG.additionalScreen) as [ApprovedPlanPeriod, { amountMinor: number; currency: string }][])
+        .map(([segmentKey, price]) => ({
+          sellableId: addonId, segmentKey, periodMonths: segmentMonths[segmentKey],
+          amountMinor: String(price.amountMinor), currency: price.currency, executable: false,
+          source: "approved-catalog V1.0 (reference only)",
+        })),
+      catalog: {
+        version: APPROVED_CATALOG.metadata.version, approvedAt: APPROVED_CATALOG.metadata.approvedAt,
+        source: "docs/01-product/CATALOGO-COMERCIAL.md",
+        operationalCatalogLoaded: addon.some((row) => row.segmentKey === "P1M" && row.amountMinor !== null),
+        message: "Preços de adicionais são referência até carga operacional autorizada em M4.",
+      },
+    };
+  }
+
+  @Post("quote")
+  @Header("Cache-Control", "no-store")
+  async quote(@Req() req: FastifyRequest) {
+    const input = this.parse(quoteSchema, req.body);
+    const { tenantId, actor } = this.context(req);
+    const period = input.periodicityMonths === undefined ? undefined : `P${input.periodicityMonths}M`;
+    const items: Array<{ sellableType: "PLAN" | "ADDON"; sellableId: string; quantity: number; segmentKey?: string }> = [
+      { sellableType: "PLAN", sellableId: input.planId, quantity: 1 },
+    ];
+    if ((input.addonQuantity ?? 0) > 0) {
+      if (!period) throw new HttpException("periodicityMonths required for addon", 400);
+      const addons = await withTenantTransaction(this.db!, tenantId, (trx) => trx.selectFrom("catalog.addons")
+        .select("id").where("tenant_id", "=", tenantId).where("addon_key", "=", "additional-connection")
+        .where("status", "=", "ACTIVE").executeTakeFirst());
+      if (!addons) throw new HttpException({ code: "catalog_price_unavailable" }, 409);
+      items.push({ sellableType: "ADDON", sellableId: addons.id, quantity: input.addonQuantity!, segmentKey: period });
+    }
+    const result = await botExecute<{ id: string; netAmountMinor: string; currency: string }>(
+      this.bus, tenantId, "offer.quote", { personId: input.personId, items }, { idempotencyKey: `bot-api:quote:${input.idempotencyKey}` }, actor,
+    );
+    if (!result.ok) {
+      const unavailable = /no active.*catalog price/i.test(result.message);
+      throw new HttpException({ code: unavailable ? "catalog_price_unavailable" : result.code, message: result.message }, unavailable ? 409 : 400);
+    }
+    return { quoteId: result.data.id, amountMinor: result.data.netAmountMinor, currency: result.data.currency, early: false };
+  }
+
+  @Post("create-order")
+  @Header("Cache-Control", "no-store")
+  async createOrder(@Req() req: FastifyRequest) {
+    const input = this.parse(createOrderSchema, req.body);
+    const { tenantId, actor } = this.context(req);
+    const quote = await withTenantTransaction(this.db!, tenantId, (trx) => trx.selectFrom("commerce.orders")
+      .select(["id", "person_id as personId"]).where("tenant_id", "=", tenantId).where("id", "=", input.quoteId).executeTakeFirst());
+    if (!quote || quote.personId !== input.personId) throw new HttpException({ code: "not_found", message: "quote not found for person" }, 404);
+    const submitted = await botExecute<{ id: string }>(this.bus, tenantId, "order.submit", { orderId: input.quoteId }, { idempotencyKey: `bot-api:submit:${input.quoteId}` }, actor);
+    if (!submitted.ok) throw new HttpException({ code: submitted.code, message: submitted.message }, 409);
+    const provision = await botExecute<{ id: string }>(this.bus, tenantId, "billing.customer_provision", { personId: input.personId }, { idempotencyKey: `bot-api:customer:${input.personId}` }, actor);
+    if (!provision.ok) throw new HttpException({ code: provision.code, message: provision.message }, 409);
+    const charge = await botExecute<{ id: string; qrCode?: string | null; effectUncertain: boolean }>(
+      this.bus, tenantId, "charge.create", { orderId: input.quoteId, billingType: "PIX" }, { idempotencyKey: `bot-api:charge:${input.quoteId}` }, actor,
+    );
+    if (!charge.ok) throw new HttpException({ code: charge.code, message: charge.message }, 409);
+    return { orderId: input.quoteId, chargeId: charge.data.id, qrCode: charge.data.effectUncertain ? null : charge.data.qrCode ?? null, effectUncertain: charge.data.effectUncertain, status: submitted.data.id ? "AWAITING_PAYMENT" : "pending" };
   }
 
   @Post("resolve-lead")
@@ -173,5 +258,54 @@ export class BotServiceController {
     if (await isDuplicateInbound(db, tenantId, input.messageId)) return { handled: true, sent: false, reason: "duplicate" };
     const plans = await listSellablePlans(tenantId, createStreamMaxBotDependencies(db, this.bus));
     return { handled: true, text: composeResponse({ tenantId, personId: "", leadId: "" }, plans), sent: false };
+  }
+
+  @Post("get-charge")
+  @Header("Cache-Control", "no-store")
+  async getCharge(@Req() req: FastifyRequest) {
+    this.parse(getChargeSchema, req.body);
+    return unavailableRoute();
+  }
+
+  @Post("get-subscription")
+  @Header("Cache-Control", "no-store")
+  async getSubscription(@Req() req: FastifyRequest) {
+    this.parse(personSchema, req.body);
+    return unavailableRoute();
+  }
+
+  @Post("get-trial")
+  @Header("Cache-Control", "no-store")
+  async getTrial(@Req() req: FastifyRequest) {
+    this.parse(personSchema, req.body);
+    return unavailableRoute();
+  }
+
+  @Post("open-ticket")
+  @Header("Cache-Control", "no-store")
+  async openTicket(@Req() req: FastifyRequest) {
+    this.parse(ticketSchema, req.body);
+    return unavailableRoute();
+  }
+
+  @Post("get-ticket")
+  @Header("Cache-Control", "no-store")
+  async getTicket(@Req() req: FastifyRequest) {
+    this.parse(getTicketSchema, req.body);
+    return unavailableRoute();
+  }
+
+  @Post("renewal-quote")
+  @Header("Cache-Control", "no-store")
+  async renewalQuote(@Req() req: FastifyRequest) {
+    this.parse(personSchema, req.body);
+    return unavailableRoute();
+  }
+
+  @Post("renew")
+  @Header("Cache-Control", "no-store")
+  async renew(@Req() req: FastifyRequest) {
+    this.parse(renewSchema, req.body);
+    return unavailableRoute();
   }
 }
