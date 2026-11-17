@@ -9,6 +9,13 @@ consulte-o antes de alterar comportamento de domínio ou integrações.
 O registro autoritativo de entrega é o `CHANGELOG.md` (anexe toda entrega em
 `## Unreleased`).
 
+**Produto-alvo em execução:** StreamMax V1 para a operação própria, não SaaS externo.
+Leia `docs/01-product/STREAMMAX-V1-PLANO-UNIFICADO.md` antes de planejar ou
+implementar trabalho novo. Ele define escopo, simplificação, eliminação de código
+morto comprovado e ordem dos marcos M0–M5. O baseline v1.0.1 continua sendo a
+referência dos contratos técnicos existentes até sua revisão explícita.
+Não confunda `MVP_STREAMMAX_OPERATIONAL` (interno) com V1 comercial pronta.
+
 ## Desenvolvimento local
 
 - Requisitos: Node.js 22+ e pnpm 10.15.0; Python 3 + PyYAML para os gates de
@@ -70,6 +77,7 @@ O registro autoritativo de entrega é o `CHANGELOG.md` (anexe toda entrega em
 ## Documentação viva
 
 - `CHANGELOG.md` — anexe toda entrega em `## Unreleased`.
+- `docs/01-product/STREAMMAX-V1-PLANO-UNIFICADO.md` — direção atual e plano de entrega da V1 própria; executar fatias funcionais e atualizar documentos junto ao código.
 - `docs/15-implementation-baseline/` — contrato canônico de implementação.
 - `docs/02-domain/event-model.md` — registry canônico de eventos; novos
   eventos precisam de entrada no registry + canal AsyncAPI + SPEC.
