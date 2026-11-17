@@ -1,9 +1,9 @@
 # Runbook — Staging Deploy (Containerized, Migrate Job First)
 
-> **Evidência de execução (15/11/2026):** revisão implantada `main@89b3f3a`;
-> as evidências dos gates foram coletadas em `main@fc794f4`.
-> `migrate applied=0 skipped=69 total=69`; health/ready e web 200.
-> Imagens tagueadas e dump de rollback disponíveis.
+> **Evidência de execução (17/11/2026):** revisão implantada `main@d776656`;
+> migration 070 aplicada em tentativa anterior; no redeploy,
+> `migrate applied=0 skipped=70 total=70`; smoke health/ready/web 200 e stack healthy.
+> Imagens tagueadas e `.bak` de rollback preservados.
 
 > **Caminho atual — db-central (14/11/2026):** o Compose versionado usa
 > PostgreSQL de homologação **externo** `db-hml` na rede `dbcentral_net`

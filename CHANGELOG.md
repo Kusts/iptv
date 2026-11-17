@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased - Added
+- fix(ops): registrar deploy autorizado em staging Contabo `main@d77665647285ff97f5e5c8960aa0bee0f487cec5` (hotfix PR #151 do DI de BotServiceGuard e exceção documentada da advisory dev-only 1247710 picomatch); migration 070 aplicada, history=70 e `platform.bot_service_credentials` criada; redeploy migrate no-op `applied=0 skipped=70 total=70`; health/ready/web 200, rotas bot retornam 404 pelo guard com flag desligada, stack healthy e rollback tags/.bak preservados
+- fix(ops): dry-run do catálogo aprovado executado sem gravação; metadata confere com CATALOGO-COMERCIAL.md: Proprietário do StreamMax, 17/11/2026, V1.0
+- fix(ops): inventário de credenciais somente leitura encontrou refs CINEVISION_USER/PASS e ASAAS_API_KEY em pgsecret/infisical; sem token M2M CINEVISION e sem homologação live
+- fix(ops): riscos residuais do staging: ativação do bot depende de habilitar flag e semear credenciais (seed --apply não executado); readback CINEVISION/Sigma e Asaas live pendentes; exceção picomatch expira em 2026-12-17
 - docs(product,contracts): documentar renovação com adicionais RENEWAL-ADDONS-V1, materialização idempotente, snapshots/entitlements, valores validados e rejeição de quantity fracionária; sem cobrança, ativação, deploy ou gravação no catálogo operacional.
 - docs(product,contracts): registrar desconto antecipado aprovado e implementado - R$ 5 por renovação elegível sobre plano + adicionais; exposição de addons e gravação operacional seguem pendentes.
 - docs(operations): registrar resultados e pendências de homologação OPS-1..4; sem deploy, operações comerciais reais ou piloto.
