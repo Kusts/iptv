@@ -14,7 +14,7 @@
 ## StreamMax MVP — current finish line
 
 The operational **single-tenant** MVP has 4/4 gates PASS. Staging is deployed
-at `main@89b3f3a` (marker `.staging-revision`) with the external `db-hml`
+at `main@d776656` (marker `.staging-revision`) with the external `db-hml`
 database over `dbcentral_net`, under Compose project `iptv-staging`. Service
 delivery was completed by supervised manual CINEVISION activation, with readback
 in the supplier panel. Automated supplier writes remain out of scope and are not

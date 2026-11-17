@@ -147,8 +147,9 @@ DNS ou mutação de produção; confirme o alvo e a autorização na tarefa atua
 
 ## Staging Contabo (único provedor ativo)
 
-- **Topologia de banco atual (15/11/2026):** staging deployado em
-  `main@89b3f3a`; marcador `.staging-revision` = `main@89b3f3a`.
+- **Topologia de banco atual (17/11/2026):** staging deployado em
+  `main@d776656`; marcador `.staging-revision` = `main@d776656`.
+  O deploy de 17/11 incluiu a migration 070 e o hotfix PR #151.
   O Compose de staging
   conecta ao PostgreSQL externo `db-hml` via `dbcentral_net` (stack
   db-central gerida no repositório de infraestrutura `kust-projetos/vps-hostinger`).
@@ -165,7 +166,7 @@ DNS ou mutação de produção; confirme o alvo e a autorização na tarefa atua
 - Hostinger VPS desativada (confirmado pelo usuário em 2026-11-02): Contabo é
   o único provedor em uso para o staging IPTV.
 - Alvo canônico verificado em sessão SSH Contabo: `/home/deploy/iptv-staging`
-  (marcador `.staging-revision` = `main@89b3f3a`, 15/11);
+  (marcador `.staging-revision` = `main@d776656`, 17/11);
   `/home/deploy/iptv` não existe nesse host.
 - O ponteiro local `VPS_*` refere-se à Hostinger desativada: obsoleto e
   proibido para IPTV.
