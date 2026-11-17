@@ -29,6 +29,7 @@ import {
   insertProviderEvidence,
   insertSubscription,
   listActiveSubscriptionAddons,
+  materializeOrderSubscriptionAddons,
   listDueCycles,
   listEntitlementsBySource,
   listSubscriptions,
@@ -207,6 +208,12 @@ export async function handleActivateFromOrder(
     }
     throw err;
   }
+  await materializeOrderSubscriptionAddons(ctx, {
+    orderId: plan.orderId,
+    subscriptionId: subscription.id,
+    startsAt,
+    endsAt,
+  });
   await derivePendingEntitlements(ctx, {
     customerId,
     planKey: catalogPlan.planKey,

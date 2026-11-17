@@ -192,6 +192,7 @@ vi.mock("../src/renewal/renewal-store.js", async (importOriginal) => {
 
 const subscriptionStoreMocks = vi.hoisted(() => ({
   getCatalogPlan: vi.fn(),
+  listActiveSubscriptionAddons: vi.fn(),
   listEntitlementsBySource: vi.fn(),
   insertGrant: vi.fn(),
   updateCycle: vi.fn(),
@@ -294,6 +295,7 @@ describe("F16 subscription.renew same-tenant ownership guard (mocked stores)", (
     renewStoreMocks.advisoryLockSubscription.mockResolvedValue(undefined);
     renewStoreMocks.updateEntitlementsStatusBySource.mockResolvedValue(undefined);
     renewStoreMocks.reopenEntitlementsForRenewal.mockResolvedValue([]);
+    subscriptionStoreMocks.listActiveSubscriptionAddons.mockResolvedValue([]);
     subscriptionStoreMocks.listEntitlementsBySource.mockResolvedValue([]);
   });
 
