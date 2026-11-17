@@ -9,7 +9,9 @@
 
 O catálogo comercial V1.0 foi aprovado pelo Proprietário do StreamMax em 17/11/2026 e seu documento canônico é `docs/01-product/CATALOGO-COMERCIAL.md`. Os valores executáveis vêm de `catalog.prices`; o bot nunca inventa nem infere preços. Addons podem ter preço segmentado por periodicidade via `segmentKey`/`segment_key` (por exemplo, o addon `additional-connection`). `segmentKey` em um item `PLAN` é inválido (`validation_failed`). A API/bot ainda não expõe addons; `list-plans` lista planos.
 
-O desconto antecipado de R$ 5 permanece pendente da decisão entre aplicar somente ao plano ou ao plano e telas e, portanto, não é regra executável. A aprovação do catálogo não autoriza gravação no catálogo operacional, deploy, cobrança ou ativação.
+O desconto antecipado foi aprovado pelo proprietário em 17/11/2026 e implementado na API: opção B, R$ 5,00 (500 centavos) fixos por pedido de renovação antecipada sobre plano + telas adicionais. Exemplos: mensal + uma tela, R$ 45 (4500 centavos); trimestral + duas telas, R$ 190 (19000); mensal sem tela, R$ 25 (2500). Só o backend decide elegibilidade via `decideRenewalQuote(...).early` (`renewal-policy.ts:72-90`), usando relógio do servidor e ciclo persistido sob transação/lock. Requer `early_allowed=true` na política `subscription.renewal` e mais de `window_days` (7 padrão) até o vencimento; dentro da janela (`early:false`) não há desconto, e `early_allowed=false` (padrão) não concede automaticamente. Nenhuma flag do cliente/bot comprova elegibilidade. Não se aplica a `NEW_SUBSCRIPTION`; replay reutiliza a ordem (`renewal_order_id`, `already:true`) sem acumular.
+
+Implementação: `approved-catalog.ts` (constante 500, `earlyRenewalDiscountMinor`, `applyEarlyRenewalDiscount`), `renewal.commands.ts:228` (aplica quando `window.early`) e `renewal-store.ts` (valores de desconto/líquido no item e `early_discount_minor`/`eligibility` no snapshot `context_json`). A exposição dos preços dos adicionais na API/bot permanece pendente funcional. A gravação no catálogo operacional real, deploy e M5 continuam fora do escopo; esta aprovação não autoriza cobrança ou ativação.
 
 ## Autenticação e escopo
 
