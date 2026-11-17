@@ -11,7 +11,7 @@ import { botExecute, createStreamMaxBotDependencies, serializedForContact } from
 import { composeResponse, listSellablePlans, resolveOrCreateLead } from "./streammax-bot-contract.js";
 import { BotServiceGuard } from "./bot-service.guard.js";
 import { botServiceActor } from "./bot-service-actor.js";
-import { getBotReplyEligibility, isDuplicateInbound } from "./streammax-bot-queries.js";
+import { getBotReplyEligibility, getOrderState, isDuplicateInbound } from "./streammax-bot-queries.js";
 import { APPROVED_CATALOG, type ApprovedPlanPeriod } from "../commerce/approved-catalog.js";
 
 const base = {
@@ -263,36 +263,86 @@ export class BotServiceController {
   @Post("get-charge")
   @Header("Cache-Control", "no-store")
   async getCharge(@Req() req: FastifyRequest) {
-    this.parse(getChargeSchema, req.body);
-    return unavailableRoute();
+    const input = this.parse(getChargeSchema, req.body);
+    const { db, tenantId } = this.context(req);
+    let state;
+    try { state = await getOrderState(db, tenantId, input.personId, input.orderId); }
+    catch (error) {
+      if (error instanceof Error && error.message === "order not found") {
+        throw new HttpException({ code: "not_found" }, 404);
+      }
+      throw new HttpException({ code: "unavailable" }, 503);
+    }
+    return {
+      personId: input.personId, orderId: input.orderId,
+      order: state.order ? { ...state.order, netAmountMinor: state.order.netAmountMinor.toString() } : null,
+      charge: state.charge ? { chargeId: state.charge.chargeId, status: state.charge.status } : null,
+      settled: state.settled, pix: null,
+    };
   }
 
   @Post("get-subscription")
   @Header("Cache-Control", "no-store")
   async getSubscription(@Req() req: FastifyRequest) {
-    this.parse(personSchema, req.body);
-    return unavailableRoute();
+    const input = this.parse(personSchema, req.body);
+    const { db, tenantId } = this.context(req);
+    const subscription = await withTenantTransaction(db, tenantId, (trx) => trx.selectFrom("subscription.subscriptions as s")
+      .innerJoin("crm.customers as c", (join) => join.onRef("c.tenant_id", "=", "s.tenant_id").onRef("c.id", "=", "s.customer_id"))
+      .select(["s.id as subscriptionId", "s.status", "s.current_period_start as currentPeriodStart", "s.current_period_end as currentPeriodEnd"])
+      .where("s.tenant_id", "=", tenantId).where("c.person_id", "=", input.personId)
+      .orderBy("s.created_at", "desc").executeTakeFirst());
+    return subscription ? {
+      personId: input.personId, subscriptionId: subscription.subscriptionId, status: subscription.status,
+      currentPeriodStart: subscription.currentPeriodStart?.toISOString() ?? null,
+      currentPeriodEnd: subscription.currentPeriodEnd?.toISOString() ?? null, projectedState: null,
+    } : { personId: input.personId, subscription: null };
   }
 
   @Post("get-trial")
   @Header("Cache-Control", "no-store")
   async getTrial(@Req() req: FastifyRequest) {
-    this.parse(personSchema, req.body);
-    return unavailableRoute();
+    const input = this.parse(personSchema, req.body);
+    const { db, tenantId } = this.context(req);
+    const trials = await withTenantTransaction(db, tenantId, (trx) => trx.selectFrom("trial.trials")
+      .select(["id", "trial_kind as trialKind", "lifecycle_status as lifecycleStatus",
+        "requested_duration_minutes as requestedDurationMinutes", "activated_at as activatedAt", "expires_at as expiresAt"])
+      .where("tenant_id", "=", tenantId).where("person_id", "=", input.personId)
+      .orderBy("created_at", "desc").execute());
+    return {
+      personId: input.personId, durationHours: APPROVED_CATALOG.trial.durationHours,
+      usesPerUser: APPROVED_CATALOG.trial.usesPerUser,
+      trials: trials.map((trial) => ({ ...trial, requestedDurationMinutes: Number(trial.requestedDurationMinutes),
+        activatedAt: trial.activatedAt?.toISOString() ?? null, expiresAt: trial.expiresAt?.toISOString() ?? null })),
+      eligibilityComputed: false, eligible: null, reason: "ellegibilidade decidida no fluxo de trial",
+    };
   }
 
   @Post("open-ticket")
   @Header("Cache-Control", "no-store")
   async openTicket(@Req() req: FastifyRequest) {
-    this.parse(ticketSchema, req.body);
-    return unavailableRoute();
+    const input = this.parse(ticketSchema, req.body);
+    const { tenantId, actor } = this.context(req);
+    const customerText = input.summary.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().replace(/"/g, '""').slice(0, 1940);
+    const result = await botExecute<{ id: string; status: string }>(this.bus, tenantId, "support.ticket.open", {
+      personId: input.personId, category: `bot:${input.kind}`, summary: customerText,
+    }, { idempotencyKey: `bot:ticket:${tenantId}:${input.personId}:${input.kind}:${input.idempotencyKey}` }, actor);
+    if (!result.ok) throw new HttpException({ code: result.code, message: result.message }, result.code === "not_found" ? 404 : 409);
+    return { ticketId: result.data.id, status: result.data.status, personId: input.personId, kind: input.kind };
   }
 
   @Post("get-ticket")
   @Header("Cache-Control", "no-store")
   async getTicket(@Req() req: FastifyRequest) {
-    this.parse(getTicketSchema, req.body);
-    return unavailableRoute();
+    const input = this.parse(getTicketSchema, req.body);
+    const { db, tenantId } = this.context(req);
+    const ticket = await withTenantTransaction(db, tenantId, (trx) => trx.selectFrom("support.support_tickets")
+      .select(["id", "status", "priority", "category", "summary", "person_id as personId",
+        "created_at as createdAt", "resolved_at as resolvedAt", "closed_at as closedAt"])
+      .where("tenant_id", "=", tenantId).where("person_id", "=", input.personId)
+      .where("id", "=", input.ticketId).executeTakeFirst());
+    if (!ticket) throw new HttpException({ code: "not_found" }, 404);
+    return { personId: input.personId, ticket: { ...ticket, createdAt: ticket.createdAt.toISOString(),
+      resolvedAt: ticket.resolvedAt?.toISOString() ?? null, closedAt: ticket.closedAt?.toISOString() ?? null } };
   }
 
   @Post("renewal-quote")

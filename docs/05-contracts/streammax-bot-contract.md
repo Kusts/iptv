@@ -28,15 +28,15 @@ Todas são `POST` e aceitam somente o corpo contratual estrito sem tenant:
 - `/v1/bot/streammax/reply`
 - `/v1/bot/streammax/quote`
 - `/v1/bot/streammax/create-order`
-- `/v1/bot/streammax/get-charge` (501 até implementação segura da leitura PIX)
-- `/v1/bot/streammax/get-subscription` (501; consulta ainda não exposta)
-- `/v1/bot/streammax/get-trial` (501; decisão de elegibilidade ainda não exposta como query)
-- `/v1/bot/streammax/open-ticket` (501 até leitura confiável do id de ticket retornado pelo comando)
-- `/v1/bot/streammax/get-ticket` (501; consulta ainda não exposta)
+- `/v1/bot/streammax/get-charge` — `{personId, orderId}` → `{personId, orderId, order, charge, settled, pix:null}`; order deve pertencer ao tenant e pessoa.
+- `/v1/bot/streammax/get-subscription` — `{personId}` → `{personId, subscriptionId, status, currentPeriodStart, currentPeriodEnd, projectedState}` ou `{personId, subscription:null}`; consulta tenant-scoped.
+- `/v1/bot/streammax/get-trial` — `{personId}` → `{personId, durationHours:6, usesPerUser:1, trials, eligibilityComputed:false, eligible:null, reason}`; leitura somente.
+- `/v1/bot/streammax/open-ticket` — `{personId, kind, summary}` → `{ticketId, status, personId, kind}`; criação idempotente.
+- `/v1/bot/streammax/get-ticket` — `{personId, ticketId}` → `{personId, ticket}`; titularidade tenant+pessoa obrigatória.
 - `/v1/bot/streammax/renewal-quote` (501; comando existente cria ordem de renovação e não corresponde ao contrato de quote puro)
 - `/v1/bot/streammax/renew` (501; renew exige ordem liquidada e não corresponde ao input seguro de quoteId)
 
-`resolve-lead` resolve/reutiliza pessoa e lead dentro do tenant da credencial. `quote` chama `offer.quote` com preços calculados pelo backend; `create-order` valida tenant/pessoa e usa `order.submit`, provisionamento de cliente e `charge.create` com chaves estáveis por quote. Capacidades explicitamente marcadas 501 permanecem bloqueadas até contrato seguro. `reply` não envia mensagem: resposta inclui `sent:false`; com `STREAMMAX_BOT_ENABLED=true`, retorna `flag_off`, sem fallback ao AgentPipeline. Chaves idempotentes de lead usam `bot-api:lead:*`. As demais regras de idempotência seguem os handlers.
+`resolve-lead` resolve/reutiliza pessoa e lead dentro do tenant da credencial. `quote` chama `offer.quote` com preços calculados pelo backend; `create-order` valida tenant/pessoa e usa `order.submit`, provisionamento de cliente e `charge.create` com chaves estáveis por quote. `renewal-quote` permanece 501 porque não há quote puro de renovação; `renew` permanece 501 pois exige ordem RENEWAL SETTLED e validação de titularidade. `reply` nunca envia mensagem e inclui `sent:false`. Elegibilidade de trial não é decidida nesta leitura.
 
 ## Checklist de decisões
 
