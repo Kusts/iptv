@@ -1,5 +1,11 @@
-# Roadmap — v1.0
+# Roadmap — StreamMax V1 para operação própria
 
-The canonical implementation order is `docs/15-implementation-baseline/18-implementation-plan.md`. Existing epics/tasks in this directory are supporting historical decomposition and must be reconciled with the active Wave before execution.
+**Plano de execução atual:** [StreamMax V1 — produto unificado](../01-product/STREAMMAX-V1-PLANO-UNIFICADO.md).
 
-Do not execute a historical task whose stack, terminology or acceptance criteria conflicts with the v1.0 baseline. New work should be generated from the Wave plan using bounded-context ownership + vertical-slice Definition of Done.
+Decisão de 16/11/2026: primeiro consolidar o StreamMax e a equipe IPTV do OpenMausBot em um produto funcional para clientes finais da operação própria. A etapa SaaS para operadores externos vem depois.
+
+A sequência de entrega é **M0 auditoria e cortes → M1 atendimento/API/lead → M2 pedido/PIX → M3 ativação/suporte/renovação → M4 limpeza/homologação → M5 piloto de produção**. Cada marco precisa entregar comportamento funcional testado; não apenas documentação.
+
+Os planos históricos v1.0 e suas Waves continuam preservados como referência técnica, mas **não determinam sozinhos a prioridade comercial da V1 atual**. Use o [baseline de implementação](../15-implementation-baseline/README.md) para contratos técnicos ainda válidos. Conflitos ou decisões antigas devem ser reconciliados via PR com código, testes e documentação afetados; não marcar funcionalidades como implementadas apenas porque constam em spec.
+
+Não executar itens de SaaS, novos agentes, Hatchet, MK ou integrações opcionais como bloqueios do caminho V1 sem uma necessidade funcional comprovada. Não apagar migrations históricas ou dados operacionais durante a limpeza.

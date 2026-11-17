@@ -78,7 +78,7 @@ export const transitionLeadInput = z.object({
 
 export type TransitionLeadInput = z.infer<typeof transitionLeadInput>;
 
-function normalizeIdentity(identityType: string, value: string): string {
+export function normalizeIdentity(identityType: string, value: string): string {
   const trimmed = value.trim();
   return identityType === "WHATSAPP" ? trimmed.replace(/[^+\d]/g, "") || trimmed : trimmed;
 }

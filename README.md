@@ -1,7 +1,8 @@
-# AI Revenue & Operations Platform
+# StreamMax — plataforma de operação IPTV
 
-Multi-tenant IPTV SaaS: sales, fulfillment, billing, renewal and support
-operations automated around a human-in-the-loop agent runtime.
+**Direção de produto (16/11/2026):** concluir primeiro a StreamMax V1 para a operação própria de clientes finais, com OpenMausBot como motor compartilhado de agentes. SaaS para outros operadores é uma fase futura. O backend já possui infraestrutura multi-tenant, mas isso não significa que o produto SaaS esteja pronto.
+
+**Plano ativo:** [StreamMax V1 — produto unificado, simplificação e roadmap](docs/01-product/STREAMMAX-V1-PLANO-UNIFICADO.md). Reúne o escopo comercial, a arquitetura de destino, o inventário/limpeza planejados, o desenvolvimento restante e os critérios de produção.
 
 > **Status: in active development; MVP not released.** The v1.0.1
 > implementation baseline remains the canonical contract. For the current,
@@ -19,9 +20,12 @@ delivery was completed by supervised manual CINEVISION activation, with readback
 in the supplier panel. Automated supplier writes remain out of scope and are not
 verified live.
 
+- [StreamMax V1 unified product plan (16 Nov 2026)](docs/01-product/STREAMMAX-V1-PLANO-UNIFICADO.md) — nova direção de produto e execução (ainda não homologada).
 - [MVP finalization plan (13 Nov 2026)](docs/16-pilot-closure/MVP-FINALIZATION-PLAN-2026-11-13.md) — shortest path, gates and test evidence.
 - [MVP evidence snapshot (15 Nov 2026)](docs/16-pilot-closure/STREAMMAX-MVP-STATUS-2026-11-15.md) — current gate evidence and limits.
 - [Canonical MVP gate definitions](docs/15-implementation-baseline/01-product-and-mvp.md) — the authoritative acceptance criteria.
+
+The new **StreamMax V1 own-operation release** is a separate delivery target: completing the existing internal operational gates does not prove that the bots and commercial production flow are integrated. The [V1 plan](docs/01-product/STREAMMAX-V1-PLANO-UNIFICADO.md) is the current product scope and execution sequence; technical contracts in the v1.0.1 baseline remain valid until explicitly revised.
 
 Do not conflate `MVP_STREAMMAX_OPERATIONAL` with the broader `MVP-PILOT`
 or `MVP-SAAS` scopes. Credential defaults use encrypted PostgreSQL
@@ -162,7 +166,7 @@ Agents: read [`AGENTS.md`](AGENTS.md) before working in this repository.
   configured through the Control Center — never raw values in `.env`;
 - one durable operational path: the dedicated outbox worker (the in-process
   scheduler remains opt-in for due work);
-- OpenAI Agents SDK TypeScript as harness inside an owned Agent Runtime;
+- the existing AI Runtime remains present in code; the StreamMax V1 direction is to reuse OpenMausBot for customer-facing bots, auditing overlap before removing any runtime path;
 - hierarchical reseller network: ancestor visibility, direct-child management
   only; resellers may become SaaS tenants and later SaaS resellers;
 - automation-first operation with capability-scoped safety/degradation and

@@ -30,6 +30,9 @@ const envSchema = z.object({
   // (`API_SCHEDULER_ENABLED=1`); default off so boot never starts
   // background work unless the operator asks for it.
   API_SCHEDULER_ENABLED: z.enum(["0", "1"]).default("0"),
+  STREAMMAX_BOT_ENABLED: z.enum(["true", "false"]).default("false"),
+  STREAMMAX_BOT_API_ENABLED: z.enum(["true", "false"]).default("false"),
+  BOT_SERVICE_TOKEN_PEPPER: z.string().min(32).optional(),
   API_SCHEDULER_TICK_SECONDS: z.coerce.number().int().min(5).max(3600).default(60),
   // W1-12 observability: OTLP export only when an endpoint is set;
   // otherwise the SDK stays unconstructed (zero-overhead noop path).
@@ -700,6 +703,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     BETTER_AUTH_URL: env.BETTER_AUTH_URL,
     SESSION_TTL_HOURS: emptyToUndefined(env.SESSION_TTL_HOURS),
     API_SCHEDULER_ENABLED: env.API_SCHEDULER_ENABLED,
+    STREAMMAX_BOT_ENABLED: emptyToUndefined(env.STREAMMAX_BOT_ENABLED),
+    STREAMMAX_BOT_API_ENABLED: emptyToUndefined(env.STREAMMAX_BOT_API_ENABLED),
+    BOT_SERVICE_TOKEN_PEPPER: emptyToUndefined(env.BOT_SERVICE_TOKEN_PEPPER),
     API_SCHEDULER_TICK_SECONDS: env.API_SCHEDULER_TICK_SECONDS,
     AUTH_REGISTER_CLOSED: emptyToUndefined(env.AUTH_REGISTER_CLOSED),
     OTEL_EXPORTER_OTLP_ENDPOINT: env.OTEL_EXPORTER_OTLP_ENDPOINT,

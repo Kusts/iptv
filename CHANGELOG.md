@@ -1,6 +1,13 @@
 # Changelog
 
 ## Unreleased - Added
+- docs(product): registrar S5 cross-repo em homologação local/sintética, CLI/API reais com fixtures e pendências de autorização; sem homologação de produção.
+- docs(product): registrar auditoria M4-A sem remoções e decisão M4-B (S2 necessário; resposta WAHA de dono único); corrigir evidência PostgreSQL para 5/5 provados.
+- docs(contracts): congelar contrato JSON futuro do bot StreamMax; sem endpoint nem autorização de produção.
+- feat(api): wiring do bot StreamMax no fluxo WAHA atrás de `STREAMMAX_BOT_ENABLED` (default off), com lead pré-ingestão e envio auditado; integração não verificada (teste de wiring pulado sem `TEST_DATABASE_URL`).
+- docs(product): registrar decisões técnicas e bloqueios de validação do M1-B StreamMax.
+- feat(api): contrato mínimo bot↔API e núcleo de resolução de lead por contato WhatsApp (M1-A), isolado do runtime e coberto por testes unitários
+- docs(product): documentar análise da PR #146 e planejamento técnico M0–M1 da StreamMax V1.
 - docs(backlog): classificar issues abertas e priorizar as proximas entregas do MVP-PILOT; encerrar itens ja comprovados por teste.
 - docs(mvp): publicar relatorio final separando software pronto, homologacao e disponibilidade comercial.
 - docs(integrations): registrar homologacao de software, estado real no staging e bloqueios live de asaas, whatsapp, cinevision e painel (issues #86-#89).
@@ -823,3 +830,4 @@ desativado/proibido, sem fallback root; DNS restrito separado), critérios compl
 - Domain Map.
 
 > Review: Auto-reviewed v0.14 — release changes cross-checked against canonical files.
+- docs(streammax): consolidar M4-A/B/C sintéticos concluídos, integração S2 e M5 bloqueado; sem promoção de produção.

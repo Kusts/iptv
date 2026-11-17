@@ -72,6 +72,8 @@ import { KyselyAgentReleaseStore } from "./agent/release-store.js";
 import { AgentPipeline } from "./agent/pipeline.js";
 import { CopilotService } from "./agent/copilot.service.js";
 import { SchedulerService } from "./scheduler/scheduler.service.js";
+import { BotServiceController } from "./bot/bot-service.controller.js";
+import { BotServiceGuard } from "./bot/bot-service.guard.js";
 
 const DEV_AUTH_SECRET = "dev-only-better-auth-secret-0123456789";
 
@@ -199,6 +201,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     CapabilitiesController,
     OutboxController,
     AgentController,
+    BotServiceController,
   ],
   providers: [
     // Canonical runtime config (single `loadConfig()` boot validation, same
@@ -210,6 +213,7 @@ function authFactory(db: Kysely<Database> | null): AuthInstance | null {
     AuditService,
     AuthGuard,
     PermissionsGuard,
+    BotServiceGuard,
     PlatformAdminGuard,    // Public-auth rate limiter: single-process, bounded, TTL store. Trusted
     // proxy hops are read from env here so the limiter's X-Forwarded-For
     // handling stays explicit and never toggles Fastify's global trustProxy.
