@@ -4,6 +4,30 @@
 > **Natureza:** análise + planejamento; não certifica produção.  
 > **Escopo:** processamento da PR #146 e primeiro marco STREAMMAX-V1-M0-M1.
 
+## Homologação operacional (17/11/2026)
+
+### OPS-1 — skill do Atendimento
+
+No baseline, `team apply --dry-run` informou `No changes.`. Foi adicionada a skill `streammax-api` ao Atendimento em `teams/iptv/team.yaml`, sem `--prune`, e aplicada por `openmausbot team apply` no host Contabo `vmi3630510` (CLI 0.1.161). O segundo dry-run também informou `No changes.`. A skill consta ativa em `/api/bots/<id>/skills` (source: team file, sem warnings); os cinco bots IPTV estavam presentes com as skills esperadas.
+
+Um turno sintético via `openmausbot run` (thread `860da5f6...`) percorreu wrapper → CLI real → API local simulada e retornou um plano sintético de R$ 30,00 (3000 minor), explicitamente rotulado como sintético. Não houve envio externo, cobrança ou ativação; a thread não tinha canal externo (`channels: []`) nem resposta duplicada. Wrapper/mock temporários foram removidos do host. Credencial de serviço real não foi provisionada. Este resultado não certifica produção.
+
+### OPS-2 — catálogo e decisões comerciais
+
+Nenhum catálogo comercial oficial vigente foi localizado em fonte versionada/configuração. Existe apenas seed sintético (`db/seeds/001_pilot_baseline.sql`: mensal R$ 30,00 com `synthetic:true`; adicional de conexão com `pricing:TBD`); custos CINEVISION são dados de supplier/discovery. A regra do PRD confirma R$ 30 mensal inicial, mas não constitui cadastro operacional vigente. Planos, preços, trial, benefícios, renovação e aprovação permanecem decisões **HUMANO**. Isso não bloqueou OPS-3/4; nenhum valor foi inventado.
+
+### OPS-3 — staging
+
+Staging Contabo foi verificado pelo alias `contabo-prod` (host `vmi3630510`, usuário deploy). `/home/deploy/iptv-staging` existe e `.staging-revision` contém `main@89b3f3a`, revisão anterior ao merge da PR #146/S2/migration 070. No Compose `iptv-staging`, api, web, outbox-worker e tunnel estavam healthy/up. API `/v1/health` retornou 200 (`scheduler: enabled`), `/v1/health/ready` 200 (`database: ok`) e web 200. Rotas S2 retornaram 404: S2 não está implantado nessa revisão. Não houve modificação no banco compartilhado, deploy ou toque em serviços vizinhos. A implantação de S2 em staging segue pendente de autorização específica de deploy.
+
+### OPS-4 — integrações
+
+- **Asaas:** software-verified: runtime por tenant com hosts allowlisted, `pgsecret://`, ingress de webhook e provisionamento idempotentes, além de testes unitários com fakes. Sandbox observado em 15/11 como `CONNECTED_READ_ONLY/UNKNOWN`. Homologação live/produção segue pendente (conta/autorização, replay amplo e rotação).
+- **CINEVISION:** adapter Sigma M2M e probe read-only fail-closed implementados/testados. O caminho live está bloqueado por `CHALLENGE_DETECTED` e falta de token M2M autorizado. Operação vigente é manual supervisionada com readback; nunca automatizar nem contornar challenge.
+- Pendências humanas: conta Asaas Produção e credencial/escopo CINEVISION. Nenhuma cobrança, ativação ou mensagem real ocorreu.
+
+**Estado final:** MVP técnico implementado/validado localmente; homologação operacional real (staging com S2, Asaas live e CINEVISION live) continua pendente de autorização/credenciais. Item 5 (piloto) está fora do escopo.
+
 ## 1. Análise da PR #146
 
 A PR foi baixada na branch `docs/streammax-v1-plano-produto-unificado` e contém cinco commits em quatro arquivos: `AGENTS.md`, `README.md`, `docs/12-roadmap/README.md` e `docs/01-product/STREAMMAX-V1-PLANO-UNIFICADO.md`. Sua decisão de produto é entregar primeiro a V1 própria da operação StreamMax, deixando SaaS para depois e mantendo OpenMausBot como motor compartilhado, não incorporado como código-base ao monorepo.
