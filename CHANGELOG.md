@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased - Added
+- docs(operations): registrar resultados e pendências de homologação OPS-1..4; sem deploy, operações comerciais reais ou piloto.
 - docs(product): registrar S5 cross-repo em homologação local/sintética, CLI/API reais com fixtures e pendências de autorização; sem homologação de produção.
 - docs(product): registrar auditoria M4-A sem remoções e decisão M4-B (S2 necessário; resposta WAHA de dono único); corrigir evidência PostgreSQL para 5/5 provados.
 - docs(contracts): congelar contrato JSON futuro do bot StreamMax; sem endpoint nem autorização de produção.
