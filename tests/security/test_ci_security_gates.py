@@ -38,6 +38,7 @@ import re
 import subprocess
 import tempfile
 import contextlib
+from datetime import date
 import tomllib
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -55,6 +56,7 @@ AUDIT_BASELINE = ROOT / "tests" / "security" / "audit-baseline.json"
 # severidades e reconciliação EXATA em high/critical; skew de contador em
 # info/low/moderate é WARN tolerado (report-only).
 KNOWN_SEVERITIES = ("info", "low", "moderate", "high", "critical")
+DOCUMENTED_EXCEPTIONS = {"1247710"}
 
 # Suítes adversariais críticas com job próprio (F09 prompt-injection +
 # F10 isolamento de tenant).
@@ -129,21 +131,17 @@ class TestCiSecurityGates(unittest.TestCase):
             self.assertIn(gate, text)
 
     def test_audit_baseline_empty_is_intentional(self):
-        # Invariante explícita: desde o upgrade OTel 2 coerente
-        # (`@opentelemetry/sdk-trace-node` 2.12.0 + SDK/logs/exporters
-        # 0.223.0, propagator-jaeger fora da árvore) nenhum high/critical
-        # permanece reconhecido — a baseline real fica VAZIA de propósito.
-        # O teste falha se `acknowledged` voltar a ficar não-vazio (mute
-        # silencioso exige razão+followup por entrada) ou se a nota que
-        # documenta a intenção desaparecer.
+        # Exceções são explícitas e limitadas; qualquer chave não documentada
+        # ou entrada sem justificativa/expiração falha.
         baseline = json.loads(AUDIT_BASELINE.read_text(encoding="utf-8"))
         ack = baseline.get("acknowledged")
         self.assertIsInstance(ack, dict, "acknowledged precisa ser objeto")
-        self.assertEqual(
-            ack,
-            {},
-            "baseline reconhecendo high/critical precisa de nota explícita de intenção",
-        )
+        self.assertLessEqual(set(ack), DOCUMENTED_EXCEPTIONS)
+        required = {"justification", "followup", "expires", "module", "severity", "url"}
+        for key, entry in ack.items():
+            self.assertTrue(required <= set(entry), f"{key}: campos obrigatórios ausentes")
+            expiration = date.fromisoformat(entry["expires"])
+            self.assertGreater(expiration, date.today(), f"{key}: exceção expirada")
         note = baseline.get("note", "").lower()
         self.assertIn(
             "otel",
