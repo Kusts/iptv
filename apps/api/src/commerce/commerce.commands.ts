@@ -30,8 +30,9 @@ export const SELLABLE_TYPES = ["PRODUCT", "PLAN", "ADDON"] as const;
 export const quoteItemInput = z.object({
   sellableType: z.enum(SELLABLE_TYPES),
   sellableId: z.string().uuid(),
-  /** v1 supports integer quantities only — exact `unit × qty`, never float. */
+  /** v1 supports integer quantities only - exact `unit × qty`, never float. */
   quantity: z.number().int().positive().max(1000),
+  segmentKey: z.enum(["P1M", "P3M", "P6M", "P12M"]).optional(),
 });
 
 export const offerQuoteInput = z.object({
@@ -116,8 +117,9 @@ async function activePrice(
   sellableType: string,
   sellableId: string,
   at: Date,
+  segmentKey?: string,
 ): Promise<{ id: string; amountMinor: bigint; currency: string } | null> {
-  const row = await trx
+  let query = trx
     .selectFrom("catalog.prices")
     .select(["id", "amount_minor", "currency"])
     .where("tenant_id", "=", tenantId)
@@ -126,7 +128,11 @@ async function activePrice(
     .where("status", "=", "ACTIVE")
     .where("starts_at", "<=", at)
     .where((eb) => eb.or([eb("ends_at", "is", null), eb("ends_at", ">", at)]))
-    .orderBy("starts_at", "desc")
+    .orderBy("starts_at", "desc");
+  if (segmentKey !== undefined) {
+    query = query.where("segment_key", "=", segmentKey);
+  }
+  const row = await query
     .limit(1)
     .executeTakeFirst();
   if (row === undefined) {
@@ -163,9 +169,24 @@ async function handleQuote(
     unitMinor: bigint;
     grossMinor: bigint;
     priceId: string;
+    segmentKey?: string;
   }> = [];
   let currency: string | null = input.currency ?? null;
   for (const item of input.items) {
+    if (item.sellableType === "ADDON" && item.segmentKey === undefined) {
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "segmentKey is required for ADDON items",
+      };
+    }
+    if (item.segmentKey !== undefined && item.sellableType !== "ADDON") {
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "segmentKey is only supported for ADDON sellables",
+      };
+    }
     if (!(await sellableActive(trx, ctx.tenantId, item.sellableType, item.sellableId))) {
       return {
         ok: false,
@@ -173,7 +194,14 @@ async function handleQuote(
         message: `sellable ${item.sellableType}/${item.sellableId} is not ACTIVE in this tenant`,
       };
     }
-    const price = await activePrice(trx, ctx.tenantId, item.sellableType, item.sellableId, at);
+    const price = await activePrice(
+      trx,
+      ctx.tenantId,
+      item.sellableType,
+      item.sellableId,
+      at,
+      item.segmentKey,
+    );
     if (price === null) {
       return {
         ok: false,
@@ -197,6 +225,7 @@ async function handleQuote(
       unitMinor: price.amountMinor,
       grossMinor: lineGross(price.amountMinor, item.quantity),
       priceId: price.id,
+      ...(item.segmentKey === undefined ? {} : { segmentKey: item.segmentKey }),
     });
   }
   const resolvedCurrency = currency as string;
@@ -258,7 +287,10 @@ async function handleQuote(
         currency: resolvedCurrency,
         price_source_ref: `catalog.prices:${line.priceId}`,
         captured_at: at,
-        context_json: { quantity: line.quantity },
+        context_json: {
+          quantity: line.quantity,
+          ...(line.segmentKey === undefined ? {} : { segmentKey: line.segmentKey }),
+        },
       })
       .execute();
   }

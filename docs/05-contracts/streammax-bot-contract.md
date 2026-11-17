@@ -5,6 +5,12 @@
 - Homologação **SINTÉTICA, não produção**; este documento não autoriza produção.
 - `STREAMMAX_BOT_API_ENABLED` e `STREAMMAX_BOT_ENABLED` têm default off.
 
+## Catálogo comercial aprovado
+
+O catálogo comercial V1.0 foi aprovado pelo Proprietário do StreamMax em 17/11/2026 e seu documento canônico é `docs/01-product/CATALOGO-COMERCIAL.md`. Os valores executáveis vêm de `catalog.prices`; o bot nunca inventa nem infere preços. Addons podem ter preço segmentado por periodicidade via `segmentKey`/`segment_key` (por exemplo, o addon `additional-connection`). `segmentKey` em um item `PLAN` é inválido (`validation_failed`). A API/bot ainda não expõe addons; `list-plans` lista planos.
+
+O desconto antecipado de R$ 5 permanece pendente da decisão entre aplicar somente ao plano ou ao plano e telas e, portanto, não é regra executável. A aprovação do catálogo não autoriza gravação no catálogo operacional, deploy, cobrança ou ativação.
+
 ## Autenticação e escopo
 
 Credencial de serviço com escopo `bot.streammax.execute`; tenant é sempre derivado da credencial, nunca do corpo. Migration 070 append-only armazena SHA-256 de `pepper:token`; pepper separado, mínimo 32 caracteres e não pgsecret. `resolve_bot_credential`; `iptv_app` tem somente SELECT. Validade máxima 365 dias. Emissão por `scripts/emit-bot-credential.mjs`.
