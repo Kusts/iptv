@@ -3,7 +3,7 @@ import { CanActivate, ExecutionContext, HttpException, Inject, Injectable } from
 import type { FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
 import type { Database } from "@iptv/database";
-import { loadConfig } from "@iptv/config";
+import type { AppConfig } from "@iptv/config";
 import { resolveBotCredential } from "./bot-credential-resolver.js";
 
 export type BotServiceRequest = {
@@ -23,7 +23,7 @@ declare module "fastify" {
 export class BotServiceGuard implements CanActivate {
   constructor(
     @Inject("DB") private readonly db: Kysely<Database> | null,
-    private readonly config = loadConfig(),
+    @Inject("APP_CONFIG") private readonly config: AppConfig,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
