@@ -40,7 +40,7 @@ describe("StreamMax bot adapter", () => {
     expect(execute.mock.calls[0]?.[3].idempotencyKey).toBe("bot:person:t:+55119");
   });
 
-  it.each(["charge.webhook_confirm", "subscription.renew", "renewal.expire_overdue_due"])(
+  it.each(["charge.webhook_confirm", "renewal.expire_overdue_due"])(
     "rejects non-allowlisted command %s before bus execution",
     async (name) => {
       const execute = vi.fn();

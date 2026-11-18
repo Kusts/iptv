@@ -13,6 +13,9 @@ import { AgentPipeline } from "../src/agent/pipeline.js";
 import { resetGatewayForTests } from "../src/communications/messaging-gateway.js";
 import { newId } from "@iptv/domain";
 
+// Integration tests with AppModule and migrations exceed Vitest's 15s default here.
+vi.setConfig({ testTimeout: 60_000 });
+
 const here = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(here, "..", "..", "..", "db", "migrations");
 const connectionString = process.env["TEST_DATABASE_URL"];

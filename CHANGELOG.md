@@ -1,6 +1,15 @@
 # Changelog
 
 ## Unreleased - Added
+- docs(pilot): registrar turnos S2 do bot, erro de dominio na CLI e deploy controlado
+- docs(pilot): registrar evidencia do turno real do Atendimento consumindo a API StreamMax em staging
+- test(api): ajustar timeout de testes de integracao para ambiente com migrations e AppModule
+- feat(api): concluir renovacao, elegibilidade de trial e adicionais na API do bot StreamMax
+- fix(test): impedir testes do outbox-worker de alterar senha em cluster compartilhado e corrigir falso positivo em cluster descartável
+- feat(ops): homologar integracao S2 do bot StreamMax em staging sintetico com catalogo aplicado, credencial de servico e jornada CLI→API→catalogo validada
+- fix(api): desbloquear consultas de cobranca, assinatura, trial e tickets na API do bot StreamMax
+- feat(api): expor catálogo com adicionais e capacidades comerciais na API do bot StreamMax por comandos existentes; homologação sintética, sem efeito real
+- docs(product): publicar plano revisado STREAMMAX-V1-FINAL-INTEGRATION com mapeamento de marcos, estado verificado, gate de autorização do M4 e limitação de banco descartável
 - fix(ops): registrar deploy autorizado em staging Contabo `main@d77665647285ff97f5e5c8960aa0bee0f487cec5` (hotfix PR #151 do DI de BotServiceGuard e exceção documentada da advisory dev-only 1247710 picomatch); migration 070 aplicada, history=70 e `platform.bot_service_credentials` criada; redeploy migrate no-op `applied=0 skipped=70 total=70`; health/ready/web 200, rotas bot retornam 404 pelo guard com flag desligada, stack healthy e rollback tags/.bak preservados
 - fix(ops): dry-run do catálogo aprovado executado sem gravação; metadata confere com CATALOGO-COMERCIAL.md: Proprietário do StreamMax, 17/11/2026, V1.0
 - fix(ops): inventário de credenciais somente leitura encontrou refs CINEVISION_USER/PASS e ASAAS_API_KEY em pgsecret/infisical; sem token M2M CINEVISION e sem homologação live

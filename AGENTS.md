@@ -54,6 +54,7 @@ Não confunda `MVP_STREAMMAX_OPERATIONAL` (interno) com V1 comercial pronta.
 
 ## Armadilhas conhecidas
 
+- TEST_DATABASE_URL nunca deve apontar para cluster que hospeda staging/produção: testes de integração alteram papéis cluster-global (outbox_worker, iptv_app) e podem zerar senhas reais.
 - Valor de env opcional vazio (`KEY=`) é tratado como AUSENTE pelo loader
   (`packages/config`); prefira omitir a linha a deixá-la vazia.
 - `noUncheckedIndexedAccess` está estrito: indexação de array/registro exige

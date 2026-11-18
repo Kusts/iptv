@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { buildEnvelope } from "@iptv/domain";
 import { applyMigrations } from "../../../packages/database/src/index.js";
@@ -12,6 +12,9 @@ import { assertOutboxWorkerIdentity } from "../src/roleGuard.js";
 import { PgOutboxRpc } from "../src/rpc.js";
 import { FakeTransport } from "../src/transport.js";
 import { OutboxWorker } from "../src/worker.js";
+
+// Integration tests with AppModule and migrations exceed Vitest's 15s default here.
+vi.setConfig({ testTimeout: 60_000 });
 
 /**
  * Live rehearsal against a disposable database (same pattern as
@@ -50,6 +53,37 @@ function makePool(connectionStringValue: string): Pool {
   return pool;
 }
 
+export function isDisposableOutboxCluster(
+  rows: Array<{ senha_nula: boolean }>,
+): boolean {
+  return rows.length === 1 && rows[0]?.senha_nula === true;
+}
+
+export function isDisposableClusterByDatabases(names: string[]): boolean {
+  const knownSharedDatabases = new Set([
+    "iptv",
+    "synkroo",
+    "synkroo_staging",
+    "infisical",
+    "pi_financeiro",
+    "db-hml",
+  ]);
+  return !names.some((name) => knownSharedDatabases.has(name));
+}
+
+describe("outbox disposable cluster guard", () => {
+  it("allows only a null role password", () => {
+    expect(isDisposableOutboxCluster([{ senha_nula: true }])).toBe(true);
+    expect(isDisposableOutboxCluster([{ senha_nula: false }])).toBe(false);
+    expect(isDisposableOutboxCluster([])).toBe(false);
+  });
+
+  it("rejects clusters containing a known shared database", () => {
+    expect(isDisposableClusterByDatabases(["postgres", "template0", "template1", "obx_test"])).toBe(true);
+    expect(isDisposableClusterByDatabases(["postgres", "iptv"])).toBe(false);
+  });
+});
+
 function testConfig(workerId: string): OutboxWorkerConfig {
   return {
     workerId,
@@ -73,13 +107,34 @@ describe.skipIf(!hasDb)("outbox worker live rehearsal (requires TEST_DATABASE_UR
   let ownerPool: Pool;
   let workerPool: Pool;
   let workerUrl = "";
+  let senhaOriginalNula = false;
+  let senhaTemporariaAplicada = false;
+  let databaseCriado = false;
 
   beforeAll(async () => {
     adminPool = makePool(withDatabase(connectionString as string, "postgres"));
+    const databases = await adminPool.query<{ datname: string }>(
+      "SELECT datname FROM pg_database",
+    );
+    if (!isDisposableClusterByDatabases(databases.rows.map(({ datname }) => datname))) {
+      throw new Error(
+        "TEST_DATABASE_URL: cluster compartilhado detectado; use PostgreSQL descartável e vazio",
+      );
+    }
     await adminPool.query(`CREATE DATABASE "${databaseName}"`);
+    databaseCriado = true;
     const dedicatedUrl = withDatabase(connectionString as string, databaseName);
     ownerPool = makePool(dedicatedUrl);
     await applyMigrations(dedicatedUrl, { migrationsDir: MIGRATIONS_DIR });
+    const rolePassword = await adminPool.query<{ senha_nula: boolean }>(
+      "SELECT rolpassword IS NULL AS senha_nula FROM pg_authid WHERE rolname = 'outbox_worker'",
+    );
+    if (!isDisposableOutboxCluster(rolePassword.rows)) {
+      throw new Error(
+        "TEST_DATABASE_URL: papel outbox_worker já possui senha; alvo não é descartável",
+      );
+    }
+    senhaOriginalNula = true;
     // Fresh disposable database seeds the runtime interlock at LEGACY gen 1,
     // under which outbox_claim refuses ("not WORKER"). Bring the authority
     // through the forward protocol (LEGACY -> QUIESCING -> WORKER) via the
@@ -94,6 +149,7 @@ describe.skipIf(!hasDb)("outbox worker live rehearsal (requires TEST_DATABASE_UR
     // Temporary password ONLY on this disposable database's session scope —
     // the role is cluster-global, so it is reset to NULL in teardown.
     await ownerPool.query(`ALTER ROLE outbox_worker WITH PASSWORD '${workerPassword}'`);
+    senhaTemporariaAplicada = true;
     workerUrl = withWorkerIdentity(dedicatedUrl, workerPassword);
     workerPool = createOutboxWorkerPool(workerUrl);
   }, 180_000);
@@ -101,11 +157,15 @@ describe.skipIf(!hasDb)("outbox worker live rehearsal (requires TEST_DATABASE_UR
   afterAll(async () => {
     await workerPool?.end().catch(() => undefined);
     if (ownerPool !== undefined) {
-      await ownerPool.query("ALTER ROLE outbox_worker WITH PASSWORD NULL").catch(() => undefined);
+      if (senhaOriginalNula === true && senhaTemporariaAplicada) {
+        await ownerPool.query("ALTER ROLE outbox_worker WITH PASSWORD NULL").catch(() => undefined);
+      }
       await ownerPool.end().catch(() => undefined);
     }
     if (adminPool !== undefined) {
-      await adminPool.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+      if (databaseCriado) {
+        await adminPool.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+      }
       await adminPool.end();
     }
   });

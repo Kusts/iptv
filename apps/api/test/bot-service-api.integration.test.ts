@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { NestFactory } from "@nestjs/core";
 import type { NestFastifyApplication } from "@nestjs/platform-fastify";
 import { createDb, applyMigrations } from "@iptv/database";
@@ -9,6 +9,9 @@ import { newId } from "@iptv/domain";
 import { sql } from "kysely";
 import { AppModule } from "../src/app.module.js";
 import { createFastifyAdapter } from "../src/request-id.js";
+
+// Integration tests with AppModule and migrations exceed Vitest's 15s default here.
+vi.setConfig({ testTimeout: 60_000 });
 
 const connectionString = process.env["TEST_DATABASE_URL"];
 const here = dirname(fileURLToPath(import.meta.url));
