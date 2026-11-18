@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased - Added
+- docs(pilot): esclarecer limites da homologação externa e evidências de CI de 18/11
 - docs(pilot): registrar homologacao Sandbox do webhook Asaas, E2E autenticado no painel e bloqueio seguro do teste WAHA
 - docs(pilot): registrar turnos S2 do bot, erro de dominio na CLI e deploy controlado
 - docs(pilot): registrar evidencia do turno real do Atendimento consumindo a API StreamMax em staging
