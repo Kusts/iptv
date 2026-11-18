@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased - Added
+- feat(pilot): homologar jornada financeira completa Asaas Sandbox com liquidacao e replay idempotente
 - docs(pilot): documentar associacao funcional tenant-sessao WAHA via credencial do bot
 - docs(pilot): corrigir evidencia WAHA para canal de teste do proprio bot, sem cliente real
 - docs(pilot): registrar webhook originado pelo Asaas Sandbox e resposta unica do WAHA na sessao autorizada

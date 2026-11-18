@@ -32,6 +32,21 @@
 
 ## Rodada final — origem pelo provedor e WAHA (18/11/2026)
 
+### #86 — jornada financeira completa (18/11/2026)
+- Descoberta: a API do Asaas Sandbox oferece o endpoint oficial `POST /v3/sandbox/payment/{id}/confirm` (somente Sandbox, sem dinheiro real), documentado em [Confirmar pagamento](https://docs.asaas.com/reference/confirmar-pagamento). Isso eliminou a dependência do dashboard.
+- Jornada executada pela API autenticada do StreamMax no tenant e2e, usando a conta de teste `homologacao-e2e@streammax.test`:
+  1. Pessoa sintética criada (`01a1ee4d-333d-7049-af21-4cd34a9f031b`).
+  2. Plano "E2E Mensal" (`c75c79ec-...`) e quote DRAFT no valor de 3000 minor.
+  3. Pedido `01a1ee4d-3643-729a-991f-e451d04cea77` submetido e transicionado para AWAITING_PAYMENT.
+  4. Cliente Asaas provisionado (`cus_000010025702`).
+  5. Cobrança local `01a1ee4d-3d5e-71a2-b610-3bd1da1e6ef5` criada por PIX, com `providerChargeId` `pay_0_9z4uwwwfbqwj1h`, sem efeito incerto.
+  6. `POST /v3/sandbox/payment/pay_0_9z4uwwwfbqwj1h/confirm` confirmou no Asaas o pagamento RECEIVED no valor de R$ 30,00.
+- O próprio Asaas emitiu `PAYMENT_RECEIVED` (`evt_d26e303b238e509335ac9ba210e51b0f&25433203`); o ingress autenticado foi processado (`inbox PROCESSED`). O pedido ficou **SETTLED** (`settled_amount_minor=3000`), a cobrança **PAID** e o pagamento local `01a1ee4e-6742-77c9-bc14-5a9283fc81c5` **CONFIRMED** por 3000 minor.
+- Não surgiu nova exceção. A única exceção OPEN no tenant é a anterior, referente a pagamento externo sem contraparte local.
+- Replay do mesmo payload no endpoint do webhook retornou 202 `{"accepted":true,"deduped":true}`. Após o replay, havia 1 linha no inbox para o evento, 1 pagamento para a cobrança e o pedido permanecia SETTLED: sem duplicação.
+- Conclusão: jornada financeira ponta a ponta homologada em Sandbox — pedido local → cobrança Asaas → evento originado pelo provedor → liquidação e conciliação, sem dinheiro real. A ressalva anterior de "evento injetado" foi superada por esta execução originada pelo Asaas.
+- Nota: a CLI Asaas do OpenMausBot e o receiver local `/asaas/webhook` são caminhos distintos do ingress StreamMax (`/v1/webhooks/asaas/:tenantKey`). O webhook Sandbox configurado aponta apenas para o StreamMax, sem dupla ação.
+
 ### #86 — evento originado pelo Asaas Sandbox (complemento)
 - Webhook do Sandbox atualizado via API para incluir PAYMENT_CONFIRMED (além de RECEIVED/OVERDUE/REFUNDED); o normalizador do StreamMax aceita PAYMENT_CONFIRMED como evento pago.
 - Cliente sintético `cus_000010025221` e cobrança em cartão de teste aprovado (4444...) criados no Sandbox — sem dinheiro real.
