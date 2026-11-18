@@ -13,6 +13,7 @@ import { BotServiceGuard } from "./bot-service.guard.js";
 import { botServiceActor } from "./bot-service-actor.js";
 import { getBotReplyEligibility, getOrderState, isDuplicateInbound } from "./streammax-bot-queries.js";
 import { APPROVED_CATALOG, type ApprovedPlanPeriod } from "../commerce/approved-catalog.js";
+import { evaluateEligibility, mergePolicyRows, parseEligibilityPolicy, ELIGIBILITY_FAMILY } from "../trial/trial-policy.js";
 
 const base = {
   messageId: z.string().trim().min(1).max(320),
@@ -89,8 +90,12 @@ export class BotServiceController {
       addons: (Object.entries(APPROVED_CATALOG.additionalScreen) as [ApprovedPlanPeriod, { amountMinor: number; currency: string }][])
         .map(([segmentKey, price]) => ({
           sellableId: addonId, segmentKey, periodMonths: segmentMonths[segmentKey],
-          amountMinor: String(price.amountMinor), currency: price.currency, executable: false,
-          source: "approved-catalog V1.0 (reference only)",
+          amountMinor: String(price.amountMinor), currency: price.currency,
+          executable: addon.some((row) => row.segmentKey === segmentKey && row.amountMinor !== null &&
+            String(row.amountMinor) === String(price.amountMinor) && row.currency === price.currency),
+          source: addon.some((row) => row.segmentKey === segmentKey && row.amountMinor !== null &&
+            String(row.amountMinor) === String(price.amountMinor) && row.currency === price.currency)
+            ? "catalog.prices (matches approved-catalog V1.0)" : "approved-catalog V1.0 (reference only)",
         })),
       catalog: {
         version: APPROVED_CATALOG.metadata.version, approvedAt: APPROVED_CATALOG.metadata.approvedAt,
@@ -303,17 +308,55 @@ export class BotServiceController {
   async getTrial(@Req() req: FastifyRequest) {
     const input = this.parse(personSchema, req.body);
     const { db, tenantId } = this.context(req);
-    const trials = await withTenantTransaction(db, tenantId, (trx) => trx.selectFrom("trial.trials")
+    let trials: Array<{ id: string; trialKind: string; lifecycleStatus: string; technicalOutcome: string; requestedDurationMinutes: number | string; activatedAt: Date | null; expiresAt: Date | null }>;
+    let policyRows;
+    try {
+      [trials, policyRows] = await withTenantTransaction(db, tenantId, async (trx) => Promise.all([trx.selectFrom("trial.trials")
       .select(["id", "trial_kind as trialKind", "lifecycle_status as lifecycleStatus",
-        "requested_duration_minutes as requestedDurationMinutes", "activated_at as activatedAt", "expires_at as expiresAt"])
+        "technical_outcome as technicalOutcome", "requested_duration_minutes as requestedDurationMinutes", "activated_at as activatedAt", "expires_at as expiresAt"])
       .where("tenant_id", "=", tenantId).where("person_id", "=", input.personId)
-      .orderBy("created_at", "desc").execute());
+      .orderBy("created_at", "desc").execute(),
+      trx.selectFrom("platform.policy_documents").select(["id", "tenant_id as tenantId", "family", "scope", "class", "version", "status", "document", "published_at as publishedAt"])
+      .where("family", "=", ELIGIBILITY_FAMILY).where("status", "=", "PUBLISHED")
+      .where((eb) => eb.or([eb.and([eb("scope", "=", "PLATFORM"), eb("tenant_id", "is", null)]), eb.and([eb("scope", "=", "TENANT"), eb("tenant_id", "=", tenantId)])]))
+        .orderBy("version", "desc").execute()]));
+    } catch {
+      return {
+        personId: input.personId, durationHours: APPROVED_CATALOG.trial.durationHours,
+        usesPerUser: APPROVED_CATALOG.trial.usesPerUser, trials: [],
+        eligibilityComputed: false, eligible: null, reason: "ELIGIBILITY_DATA_UNAVAILABLE",
+      };
+    }
+    let evaluation: ReturnType<typeof evaluateEligibility>;
+    try {
+      const previous = trials.find((trial) => trial.trialKind === "TRIAL");
+      const hasTechnicalException = previous?.lifecycleStatus === "INVALIDATED" && previous.technicalOutcome === "FAILED";
+      const policy = parseEligibilityPolicy(mergePolicyRows(policyRows as never).document);
+      evaluation = !policy.durationsMinutes.includes(APPROVED_CATALOG.trial.durationHours * 60)
+        ? { outcome: "DENY" as const, reasonCodes: ["TRIAL_DURATION_NOT_ALLOWED"] }
+        : evaluateEligibility(policy, {
+          hasPrimary: trials.some((trial) => trial.trialKind === "TRIAL") && !hasTechnicalException,
+          hasOpen: trials.some((trial) => ["REQUESTED", "PROVISIONING", "ACTIVE"].includes(trial.lifecycleStatus)),
+          isRetrial: hasTechnicalException, previousStatus: hasTechnicalException ? previous.lifecycleStatus : null,
+          durationMinutes: 360, adult: false,
+        });
+    } catch {
+      return {
+        personId: input.personId, durationHours: APPROVED_CATALOG.trial.durationHours,
+        usesPerUser: APPROVED_CATALOG.trial.usesPerUser,
+        trials: trials.map((trial) => ({ ...trial, requestedDurationMinutes: Number(trial.requestedDurationMinutes),
+          activatedAt: trial.activatedAt?.toISOString() ?? null, expiresAt: trial.expiresAt?.toISOString() ?? null })),
+        eligibilityComputed: false, eligible: null, reason: "ELIGIBILITY_EVALUATION_UNAVAILABLE",
+      };
+    }
+    const eligible = evaluation.outcome === "ALLOW" || evaluation.outcome === "ALLOW_RETRIAL"
+      ? true : evaluation.outcome === "DENY" ? false : null;
     return {
       personId: input.personId, durationHours: APPROVED_CATALOG.trial.durationHours,
       usesPerUser: APPROVED_CATALOG.trial.usesPerUser,
       trials: trials.map((trial) => ({ ...trial, requestedDurationMinutes: Number(trial.requestedDurationMinutes),
         activatedAt: trial.activatedAt?.toISOString() ?? null, expiresAt: trial.expiresAt?.toISOString() ?? null })),
-      eligibilityComputed: false, eligible: null, reason: "ellegibilidade decidida no fluxo de trial",
+      eligibilityComputed: eligible !== null, eligible, reason: evaluation.reasonCodes[0] ?? "POLICY_REVIEW_REQUIRED",
     };
   }
 
@@ -348,14 +391,37 @@ export class BotServiceController {
   @Post("renewal-quote")
   @Header("Cache-Control", "no-store")
   async renewalQuote(@Req() req: FastifyRequest) {
-    this.parse(personSchema, req.body);
-    return unavailableRoute();
+    const input = this.parse(personSchema, req.body);
+    const { db, tenantId, actor } = this.context(req);
+    const sub = await withTenantTransaction(db, tenantId, (trx) => trx.selectFrom("subscription.subscriptions as s")
+      .innerJoin("crm.customers as c", (join) => join.onRef("c.tenant_id", "=", "s.tenant_id").onRef("c.id", "=", "s.customer_id"))
+      .select("s.id").where("s.tenant_id", "=", tenantId).where("c.person_id", "=", input.personId)
+      .orderBy("s.created_at", "desc").executeTakeFirst());
+    if (!sub) throw new HttpException({ code: "not_found" }, 404);
+    const result = await botExecute<{ orderId: string; status: string; netAmountMinor: string; currency: string; early: boolean; already: boolean }>(
+      this.bus, tenantId, "renewal.quote", { subscriptionId: sub.id },
+      { idempotencyKey: `bot-api:renewal-quote:${tenantId}:${input.personId}:${input.idempotencyKey}` }, actor);
+    if (!result.ok) throw new HttpException({ code: result.code, message: result.message }, result.code === "not_found" ? 404 : 409);
+    return { personId: input.personId, quoteId: result.data.orderId, orderId: result.data.orderId,
+      status: result.data.status, amountMinor: result.data.netAmountMinor, currency: result.data.currency,
+      early: result.data.early, already: result.data.already };
   }
 
   @Post("renew")
   @Header("Cache-Control", "no-store")
   async renew(@Req() req: FastifyRequest) {
-    this.parse(renewSchema, req.body);
-    return unavailableRoute();
+    const input = this.parse(renewSchema, req.body);
+    const { db, tenantId, actor } = this.context(req);
+    const order = await withTenantTransaction(db, tenantId, (trx) => trx.selectFrom("commerce.orders")
+      .select(["id", "order_type as orderType", "status", "person_id as personId"])
+      .where("tenant_id", "=", tenantId).where("id", "=", input.quoteId).executeTakeFirst());
+    if (!order || order.personId !== input.personId) throw new HttpException({ code: "not_found" }, 404);
+    if (order.orderType !== "RENEWAL") throw new HttpException({ code: "invalid_order_type" }, 400);
+    if (order.status !== "SETTLED") throw new HttpException({ code: "renewal_not_settled" }, 409);
+    const result = await botExecute<{ subscriptionId: string; cycleId: string; cycleNo: number; startsAt: string; endsAt: string; already: boolean }>(
+      this.bus, tenantId, "subscription.renew", { orderId: input.quoteId },
+      { idempotencyKey: `bot-api:renew:${tenantId}:${input.quoteId}` }, actor);
+    if (!result.ok) throw new HttpException({ code: result.code, message: result.message }, result.code === "not_found" ? 404 : 409);
+    return { personId: input.personId, orderId: input.quoteId, ...result.data };
   }
 }

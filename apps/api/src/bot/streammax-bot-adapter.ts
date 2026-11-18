@@ -14,6 +14,7 @@ const uncertainPurchases = new Map<string, { orderId: string; chargeId: string; 
 const BOT_COMMANDS = new Set([
   "person.register", "lead.capture", "message.send_manual", "offer.quote",
   "order.submit", "billing.customer_provision", "charge.create", "support.ticket.open",
+  "renewal.quote", "subscription.renew",
   "conversation.start_manual", "conversation.release",
 ]);
 /**

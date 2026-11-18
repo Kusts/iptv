@@ -5,6 +5,7 @@ import { withTenantTransaction } from "@iptv/database";
 import { BotServiceController } from "../src/bot/bot-service.controller.js";
 import * as queries from "../src/bot/streammax-bot-queries.js";
 import * as adapter from "../src/bot/streammax-bot-adapter.js";
+import * as catalogQueries from "../src/commerce/catalog-queries.js";
 
 vi.mock("@iptv/database", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@iptv/database")>();
@@ -22,17 +23,29 @@ const req = (body: unknown) => ({ body, botService: credential }) as FastifyRequ
 async function rejects400(method: (request: FastifyRequest) => Promise<unknown>, body: unknown) {
   await expect(method.call(controller, req(body))).rejects.toMatchObject({ status: 400 });
 }
-function setQueryResult(result: unknown) {
+function setQueryResults(results: Record<string, unknown>, fallback?: unknown) {
+  const queries: Record<string, ReturnType<typeof makeQuery>> = {};
+  function makeQuery(result: unknown) {
   const query = {
-    innerJoin: vi.fn(() => query), select: vi.fn(() => query), where: vi.fn(() => query),
-    orderBy: vi.fn(() => query), execute: vi.fn(async () => result),
-    executeTakeFirst: vi.fn(async () => result),
+      innerJoin: vi.fn(() => query), select: vi.fn(() => query), where: vi.fn(() => query),
+      orderBy: vi.fn(() => query), leftJoin: vi.fn((...args: unknown[]) => {
+        const cb = args[1];
+        if (typeof cb === "function") {
+          const join = { onRef: vi.fn(() => join), on: vi.fn(() => join) };
+          cb(join);
+        }
+        return query;
+      }),
+      execute: vi.fn(async () => result), executeTakeFirst: vi.fn(async () => result),
+    };
+    return query;
   };
   vi.mocked(withTenantTransaction).mockImplementation(async (_db, _tenantId, callback) => callback({
-    selectFrom: vi.fn(() => query),
+    selectFrom: vi.fn((table: string) => queries[table] ??= makeQuery(results[table] ?? fallback)),
   } as never) as never);
-  return query;
+  return queries;
 }
+const setQueryResult = (result: unknown) => setQueryResults({}, result);
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe("bot capability request validation", () => {
@@ -57,9 +70,17 @@ describe("bot capability request validation", () => {
     setQueryResult([]);
     await expect(controller.getTrial(req({ ...base, personId }))).resolves.toMatchObject({
       personId, durationHours: 6, usesPerUser: 1, trials: [],
-      eligibilityComputed: false, eligible: null,
+      eligibilityComputed: true, eligible: true,
     });
     await rejects400(controller.getTrial, { ...base, personId, durationHours: 100 });
+  });
+
+  it("fails trial eligibility closed when the policy/history read is unavailable", async () => {
+    vi.mocked(withTenantTransaction).mockRejectedValueOnce(new Error("policy read unavailable"));
+    await expect(controller.getTrial(req({ ...base, personId }))).resolves.toMatchObject({
+      durationHours: 6, usesPerUser: 1, eligibilityComputed: false, eligible: null,
+      reason: "ELIGIBILITY_DATA_UNAVAILABLE",
+    });
   });
 });
 
@@ -113,14 +134,91 @@ describe("StreamMax bot routes", () => {
   });
 
   it("reads trial rows without running commands or mutating state", async () => {
-    const query = setQueryResult([{ id: orderId, trialKind: "TRIAL", lifecycleStatus: "ACTIVE",
+    const queries = setQueryResult([{ id: orderId, trialKind: "TRIAL", lifecycleStatus: "ACTIVE",
       requestedDurationMinutes: 360, activatedAt: null, expiresAt: null }]);
     const execute = bus.execute;
     await expect(controller.getTrial(req({ ...base, personId }))).resolves.toMatchObject({
       trials: [{ id: orderId, trialKind: "TRIAL", lifecycleStatus: "ACTIVE", requestedDurationMinutes: 360 }],
-      eligibilityComputed: false, eligible: null,
+      eligibilityComputed: true, eligible: false,
     });
-    expect(query.execute).toHaveBeenCalledTimes(1);
+    expect(queries["trial.trials"]?.execute).toHaveBeenCalledTimes(1);
+    expect(queries["platform.policy_documents"]?.execute).toHaveBeenCalledTimes(1);
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("uses the policy-proven technical exception for one retrial without mutation", async () => {
+    setQueryResults({
+      "trial.trials": [{ id: orderId, trialKind: "TRIAL", lifecycleStatus: "INVALIDATED",
+        technicalOutcome: "FAILED", requestedDurationMinutes: 360, activatedAt: null, expiresAt: null }],
+      "platform.policy_documents": [{ id: orderId, tenantId: credential.tenantId, family: "trial.eligibility",
+        scope: "TENANT", class: "TENANT_POLICY", version: 1, status: "PUBLISHED", publishedAt: new Date(),
+        document: { retrial_mode: "allow", durations_minutes: [360] } }],
+    });
+    await expect(controller.getTrial(req({ ...base, personId }))).resolves.toMatchObject({
+      durationHours: 6, usesPerUser: 1, eligible: true, eligibilityComputed: true, reason: "RETRIAL_POLICY_ALLOW",
+    });
+    expect(bus.execute).not.toHaveBeenCalled();
+  });
+
+  it("returns renewal quote values verbatim from the backend for discount and no-discount replay", async () => {
+    setQueryResult({ id: orderId });
+    const command = vi.spyOn(adapter, "botExecute").mockImplementation(vi.fn()
+      .mockResolvedValueOnce({ ok: true, data: { orderId, status: "AWAITING_PAYMENT", netAmountMinor: "4500", currency: "BRL", early: true, already: false } })
+      .mockResolvedValueOnce({ ok: true, data: { orderId, status: "AWAITING_PAYMENT", netAmountMinor: "5000", currency: "BRL", early: false, already: false } })
+      .mockResolvedValueOnce({ ok: true, data: { orderId, status: "AWAITING_PAYMENT", netAmountMinor: "5000", currency: "BRL", early: false, already: true } }) as never);
+    await expect(controller.renewalQuote(req({ ...base, personId }))).resolves.toMatchObject({
+      amountMinor: "4500", currency: "BRL", early: true, already: false,
+    });
+    const noDiscountRequest = req({ ...base, personId, idempotencyKey: "no-discount" });
+    await expect(controller.renewalQuote(noDiscountRequest)).resolves.toMatchObject({
+      amountMinor: "5000", currency: "BRL", early: false, already: false,
+    });
+    await expect(controller.renewalQuote(noDiscountRequest)).resolves.toMatchObject({
+      amountMinor: "5000", currency: "BRL", early: false, already: true,
+    });
+    expect(command).toHaveBeenNthCalledWith(1, bus, credential.tenantId, "renewal.quote", { subscriptionId: orderId },
+      { idempotencyKey: `bot-api:renewal-quote:${credential.tenantId}:${personId}:k` }, expect.objectContaining({ tenantId: credential.tenantId }));
+  });
+
+  it("validates renewal order ownership and state before invoking the renew command", async () => {
+    const command = vi.spyOn(adapter, "botExecute").mockResolvedValue({ ok: true, data: {
+      subscriptionId: orderId, priorCycleId: personId, cycleId: orderId, cycleNo: 2,
+      startsAt: "2026-01-01T00:00:00.000Z", endsAt: "2026-02-01T00:00:00.000Z", already: false,
+    } } as never);
+    const body = { ...base, personId, quoteId: orderId };
+    setQueryResult(undefined);
+    await expect(controller.renew(req(body))).rejects.toMatchObject({ status: 404 });
+    expect(command).not.toHaveBeenCalled();
+
+    setQueryResult({ id: orderId, personId: "73000000-0000-4000-8000-000000000003", orderType: "RENEWAL", status: "SETTLED" });
+    await expect(controller.renew(req(body))).rejects.toMatchObject({ status: 404 });
+    expect(command).not.toHaveBeenCalled();
+
+    setQueryResult({ id: orderId, personId, orderType: "NEW_SUBSCRIPTION", status: "SETTLED" });
+    await expect(controller.renew(req(body))).rejects.toMatchObject({ status: 400 });
+    expect(command).not.toHaveBeenCalled();
+
+    setQueryResult({ id: orderId, personId, orderType: "RENEWAL", status: "AWAITING_PAYMENT" });
+    await expect(controller.renew(req(body))).rejects.toMatchObject({ status: 409 });
+    expect(command).not.toHaveBeenCalled();
+
+    setQueryResult({ id: orderId, personId, orderType: "RENEWAL", status: "SETTLED" });
+    await expect(controller.renew(req(body))).resolves.toMatchObject({ already: false, orderId });
+    expect(command).toHaveBeenCalledWith(bus, credential.tenantId, "subscription.renew", { orderId },
+      { idempotencyKey: `bot-api:renew:${credential.tenantId}:${orderId}` }, expect.objectContaining({ tenantId: credential.tenantId }));
+  });
+
+  it("marks addons executable only for exact approved operational price, currency and segment matches", async () => {
+    vi.spyOn(catalogQueries, "listActiveSellablePlans").mockResolvedValue([]);
+    setQueryResults({ "catalog.addons as a": [
+      { sellableId: orderId, segmentKey: "P1M", amountMinor: "2000", currency: "BRL" },
+      { sellableId: orderId, segmentKey: "P3M", amountMinor: "6000", currency: "BRL" },
+      { sellableId: orderId, segmentKey: "P6M", amountMinor: "10000", currency: "USD" },
+    ] });
+    const response = await controller.listPlans(req(base));
+    expect(response.addons.find((addon) => addon.segmentKey === "P1M")?.executable).toBe(true);
+    expect(response.addons.find((addon) => addon.segmentKey === "P3M")?.executable).toBe(true);
+    expect(response.addons.find((addon) => addon.segmentKey === "P6M")?.executable).toBe(false);
+    expect(response.addons.find((addon) => addon.segmentKey === "P12M")?.executable).toBe(false);
   });
 });

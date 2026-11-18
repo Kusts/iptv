@@ -7,7 +7,7 @@
 
 ## Catálogo comercial aprovado
 
-O catálogo comercial V1.0 foi aprovado pelo Proprietário do StreamMax em 17/11/2026 e seu documento canônico é `docs/01-product/CATALOGO-COMERCIAL.md`. Os valores executáveis vêm de `catalog.prices`; o bot nunca inventa nem infere preços. Addons podem ter preço segmentado por periodicidade via `segmentKey`/`segment_key` (por exemplo, o addon `additional-connection`). `segmentKey` em um item `PLAN` é inválido (`validation_failed`). `list-plans` expõe os valores aprovados de addon somente como referência (`executable:false`, origem `approved-catalog V1.0 (reference only)`) e informa `catalog.operationalCatalogLoaded`; estes valores não são cobráveis. A API nunca calcula valores: apenas `offer.quote`/`renewal.quote` consultam preços operacionais tenant-scoped. Preço ausente produz erro honesto sem fallback. A carga deve ser precedida por `scripts/seed-approved-catalog.mjs --tenant-id <uuid> --dry-run` e só pode usar `--apply` após autorização em M4.
+O catálogo comercial V1.0 foi aprovado pelo Proprietário do StreamMax em 17/11/2026 e seu documento canônico é `docs/01-product/CATALOGO-COMERCIAL.md`. `list-plans` marca cada adicional `executable:true` somente quando preço, moeda e segmento de `catalog.prices` tenant-scoped coincidem com a referência aprovada. Isso demonstra que `offer.quote` consegue cobrar os mesmos valores/quantidades, e a materialização pós-pagamento em `subscription_addons` preserva quantidade. Sem correspondência, `executable:false`. A API não calcula valores: `offer.quote`/`renewal.quote` consultam preços operacionais; preço ausente falha sem fallback.
 
 O desconto antecipado foi aprovado pelo proprietário em 17/11/2026 e implementado na API: opção B, R$ 5,00 (500 centavos) fixos por pedido de renovação antecipada sobre plano + telas adicionais. `renewal.quote` usa adicionais ativos persistidos em `subscription.subscription_addons`, consulta preço ADDON vigente por periodicidade (`segment_key`) e calcula plano + Σ(preço da tela × quantidade) − desconto se elegível. Valores verificados: mensal + uma tela antecipado R$ 45 (4500 centavos); trimestral + duas telas R$ 190 (19000); semestral + uma tela R$ 245 (24500); anual + duas telas R$ 595 (59500); mensal + uma tela sem antecipação R$ 50 (5000). Só o backend decide elegibilidade via `decideRenewalQuote(...).early` (`renewal-policy.ts:72-90`), usando relógio do servidor e ciclo persistido sob transação/lock. Requer `early_allowed=true` na política `subscription.renewal` e mais de `window_days` (7 padrão) até o vencimento; dentro da janela (`early:false`) não há desconto, e `early_allowed=false` (padrão) não concede automaticamente. Nenhuma flag do cliente/bot comprova elegibilidade. Não se aplica a `NEW_SUBSCRIPTION`; replay reutiliza a ordem (`renewal_order_id`, `already:true`) sem acumular.
 
@@ -21,22 +21,24 @@ Guard: 404 rota ausente, 503 flag API desabilitada, 401 credencial inválida/aus
 
 ## Rotas implementadas
 
-Todas são `POST` e aceitam somente o corpo contratual estrito sem tenant:
+Todas as rotas são `POST`, protegidas por `BotServiceGuard`. Todos os corpos incluem `messageId`, `requestedAt`, `idempotencyKey`; os schemas são strict e rejeitam `tenantId`, `tenant_id` e `tenant`. As formas abaixo mostram os campos específicos e todos os campos de resposta:
 
-- `/v1/bot/streammax/list-plans`
-- `/v1/bot/streammax/resolve-lead`
-- `/v1/bot/streammax/reply`
-- `/v1/bot/streammax/quote`
-- `/v1/bot/streammax/create-order`
-- `/v1/bot/streammax/get-charge` — `{personId, orderId}` → `{personId, orderId, order, charge, settled, pix:null}`; order deve pertencer ao tenant e pessoa.
-- `/v1/bot/streammax/get-subscription` — `{personId}` → `{personId, subscriptionId, status, currentPeriodStart, currentPeriodEnd, projectedState}` ou `{personId, subscription:null}`; consulta tenant-scoped.
-- `/v1/bot/streammax/get-trial` — `{personId}` → `{personId, durationHours:6, usesPerUser:1, trials, eligibilityComputed:false, eligible:null, reason}`; leitura somente.
-- `/v1/bot/streammax/open-ticket` — `{personId, kind, summary}` → `{ticketId, status, personId, kind}`; criação idempotente.
-- `/v1/bot/streammax/get-ticket` — `{personId, ticketId}` → `{personId, ticket}`; titularidade tenant+pessoa obrigatória.
-- `/v1/bot/streammax/renewal-quote` (501; comando existente cria ordem de renovação e não corresponde ao contrato de quote puro)
-- `/v1/bot/streammax/renew` (501; renew exige ordem liquidada e não corresponde ao input seguro de quoteId)
+| Rota | Request específico | Response |
+|---|---|---|
+| `/v1/bot/streammax/list-plans` | `{}` | `{plans:[{planId,name,amountMinor,currency,periodMonths}], addons:[{sellableId,segmentKey,periodMonths,amountMinor,currency,executable,source}], catalog:{version,approvedAt,source,operationalCatalogLoaded,message}}` |
+| `/v1/bot/streammax/resolve-lead` | `{waId,name?}` | `{personId,leadId,isNew}` |
+| `/v1/bot/streammax/reply` | `{conversationId,inboundText,waId?,name?}` | `{handled,sent:false,reason?}` ou `{handled:true,sent:false,text}` |
+| `/v1/bot/streammax/quote` | `{personId,planId,addonQuantity?,periodicityMonths?}` | `{quoteId,amountMinor,currency,early:false}` |
+| `/v1/bot/streammax/create-order` | `{personId,quoteId}` | `{orderId,chargeId,qrCode,effectUncertain,status}` |
+| `/v1/bot/streammax/get-charge` | `{personId,orderId}` | `{personId,orderId,order:{orderId,status,netAmountMinor,currency},charge:{chargeId,status}|null,settled,pix:null}` |
+| `/v1/bot/streammax/get-subscription` | `{personId}` | `{personId,subscriptionId,status,currentPeriodStart,currentPeriodEnd,projectedState:null}` ou `{personId,subscription:null}` |
+| `/v1/bot/streammax/get-trial` | `{personId}` | `{personId,durationHours:6,usesPerUser:1,trials:[{id,trialKind,lifecycleStatus,technicalOutcome,requestedDurationMinutes,activatedAt,expiresAt}],eligibilityComputed,eligible:boolean|null,reason}` |
+| `/v1/bot/streammax/open-ticket` | `{personId,kind:"TECHNICAL"|"BILLING"|"GENERAL",summary}` | `{ticketId,status,personId,kind}` |
+| `/v1/bot/streammax/get-ticket` | `{personId,ticketId}` | `{personId,ticket:{id,status,priority,category,summary,personId,createdAt,resolvedAt,closedAt}}` |
+| `/v1/bot/streammax/renewal-quote` | `{personId}` | `{personId,quoteId,orderId,status,amountMinor,currency,early,already}` |
+| `/v1/bot/streammax/renew` | `{personId,quoteId}` | `{personId,orderId,subscriptionId,priorCycleId,cycleId,cycleNo,startsAt,endsAt,already}` |
 
-`resolve-lead` resolve/reutiliza pessoa e lead dentro do tenant da credencial. `quote` chama `offer.quote` com preços calculados pelo backend; `create-order` valida tenant/pessoa e usa `order.submit`, provisionamento de cliente e `charge.create` com chaves estáveis por quote. `renewal-quote` permanece 501 porque não há quote puro de renovação; `renew` permanece 501 pois exige ordem RENEWAL SETTLED e validação de titularidade. `reply` nunca envia mensagem e inclui `sent:false`. Elegibilidade de trial não é decidida nesta leitura.
+`resolve-lead` resolve/reutiliza pessoa e lead dentro do tenant da credencial. `quote` chama `offer.quote`; `create-order` usa `order.submit`, provisionamento e `charge.create`. `renewal-quote` chama `renewal.quote`, podendo materializar ou reutilizar a ordem idempotentemente; portanto não é uma leitura pura. `renew` usa `quoteId` como orderId e chama `subscription.renew` somente após validar, dentro do tenant da credencial, titularidade por pessoa, `orderType=RENEWAL` e `status=SETTLED`; essas verificações ocorrem antes de qualquer efeito. Ambos os comandos estão explicitamente na allowlist do `botExecute`. O backend é a fonte do valor monetário e mantém snapshots, adicionais, desconto antecipado e replay `already:true`. `get-trial` é somente leitura: política e trial history são avaliados pelas funções puras existentes; falha de leitura/avaliação retorna `eligible:null` e motivo explícito. Apenas retrial técnico invalidado com outcome `FAILED` e política existente `retrial_mode=allow` permite elegibilidade novamente; `review` fica indeterminado (`null`) e `deny` nega. Nenhum evento, decisão ou review é gravado. `reply` nunca envia mensagem e inclui `sent:false`.
 
 ## Checklist de decisões
 
