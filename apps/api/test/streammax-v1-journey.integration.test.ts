@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NestFactory } from "@nestjs/core";
 import type { NestFastifyApplication } from "@nestjs/platform-fastify";
 import { applyMigrations, createDb } from "@iptv/database";
@@ -12,6 +12,9 @@ import { CommandBus } from "../src/commands/command-bus.js";
 import { resetGatewayForTests } from "../src/communications/messaging-gateway.js";
 import { composeResponse, listSellablePlans } from "../src/bot/streammax-bot-contract.js";
 import { WahaWebhookService } from "../src/communications/waha-webhook.service.js";
+
+// Integration tests with AppModule and migrations exceed Vitest's 15s default here.
+vi.setConfig({ testTimeout: 60_000 });
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(here, "..", "..", "..", "db", "migrations");

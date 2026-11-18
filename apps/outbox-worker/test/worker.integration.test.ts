@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { buildEnvelope } from "@iptv/domain";
 import { applyMigrations } from "../../../packages/database/src/index.js";
@@ -12,6 +12,9 @@ import { assertOutboxWorkerIdentity } from "../src/roleGuard.js";
 import { PgOutboxRpc } from "../src/rpc.js";
 import { FakeTransport } from "../src/transport.js";
 import { OutboxWorker } from "../src/worker.js";
+
+// Integration tests with AppModule and migrations exceed Vitest's 15s default here.
+vi.setConfig({ testTimeout: 60_000 });
 
 /**
  * Live rehearsal against a disposable database (same pattern as
