@@ -50,6 +50,20 @@ function makePool(connectionStringValue: string): Pool {
   return pool;
 }
 
+export function isDisposableOutboxCluster(
+  rows: Array<{ senha_nula: boolean }>,
+): boolean {
+  return rows.length === 1 && rows[0]?.senha_nula === true;
+}
+
+describe("outbox disposable cluster guard", () => {
+  it("allows only a null role password", () => {
+    expect(isDisposableOutboxCluster([{ senha_nula: true }])).toBe(true);
+    expect(isDisposableOutboxCluster([{ senha_nula: false }])).toBe(false);
+    expect(isDisposableOutboxCluster([])).toBe(false);
+  });
+});
+
 function testConfig(workerId: string): OutboxWorkerConfig {
   return {
     workerId,
@@ -73,10 +87,23 @@ describe.skipIf(!hasDb)("outbox worker live rehearsal (requires TEST_DATABASE_UR
   let ownerPool: Pool;
   let workerPool: Pool;
   let workerUrl = "";
+  let senhaOriginalNula = false;
+  let senhaTemporariaAplicada = false;
+  let databaseCriado = false;
 
   beforeAll(async () => {
     adminPool = makePool(withDatabase(connectionString as string, "postgres"));
+    const rolePassword = await adminPool.query<{ senha_nula: boolean }>(
+      "SELECT rolpassword IS NULL AS senha_nula FROM pg_authid WHERE rolname = 'outbox_worker'",
+    );
+    if (!isDisposableOutboxCluster(rolePassword.rows)) {
+      throw new Error(
+        "TEST_DATABASE_URL aponta para cluster compartilhado ou já configurado; use PostgreSQL descartável e vazio",
+      );
+    }
+    senhaOriginalNula = rolePassword.rows[0]?.senha_nula === true;
     await adminPool.query(`CREATE DATABASE "${databaseName}"`);
+    databaseCriado = true;
     const dedicatedUrl = withDatabase(connectionString as string, databaseName);
     ownerPool = makePool(dedicatedUrl);
     await applyMigrations(dedicatedUrl, { migrationsDir: MIGRATIONS_DIR });
@@ -94,6 +121,7 @@ describe.skipIf(!hasDb)("outbox worker live rehearsal (requires TEST_DATABASE_UR
     // Temporary password ONLY on this disposable database's session scope —
     // the role is cluster-global, so it is reset to NULL in teardown.
     await ownerPool.query(`ALTER ROLE outbox_worker WITH PASSWORD '${workerPassword}'`);
+    senhaTemporariaAplicada = true;
     workerUrl = withWorkerIdentity(dedicatedUrl, workerPassword);
     workerPool = createOutboxWorkerPool(workerUrl);
   }, 180_000);
@@ -101,11 +129,15 @@ describe.skipIf(!hasDb)("outbox worker live rehearsal (requires TEST_DATABASE_UR
   afterAll(async () => {
     await workerPool?.end().catch(() => undefined);
     if (ownerPool !== undefined) {
-      await ownerPool.query("ALTER ROLE outbox_worker WITH PASSWORD NULL").catch(() => undefined);
+      if (senhaOriginalNula === true && senhaTemporariaAplicada) {
+        await ownerPool.query("ALTER ROLE outbox_worker WITH PASSWORD NULL").catch(() => undefined);
+      }
       await ownerPool.end().catch(() => undefined);
     }
     if (adminPool !== undefined) {
-      await adminPool.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+      if (databaseCriado) {
+        await adminPool.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+      }
       await adminPool.end();
     }
   });
