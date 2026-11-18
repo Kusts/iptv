@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased - Added
+- docs(pilot): documentar associacao funcional tenant-sessao WAHA via credencial do bot
 - docs(pilot): corrigir evidencia WAHA para canal de teste do proprio bot, sem cliente real
 - docs(pilot): registrar webhook originado pelo Asaas Sandbox e resposta unica do WAHA na sessao autorizada
 - docs(pilot): esclarecer limites da homologação externa e evidências de CI de 18/11

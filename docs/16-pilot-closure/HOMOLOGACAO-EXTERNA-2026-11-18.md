@@ -44,7 +44,11 @@
 - Mensagem sintética enviada via WAHA `sendText` para o chat LID `125842558599202@lid` foi entregue (fromMe=true, ack=3). A ponte ignora mensagens fromMe, portanto não houve laço/dupla resposta.
 - O inbound seguinte da mesma sessão gerou exatamente 1 job queued e 1 envio=201 (job 21), sem duplicação.
 - Conclusão #87: transporte WAHA integralmente validado no canal de teste autorizado, sem impacto a clientes reais. A mensagem sintética foi entregue (fromMe=true, ack=3); a ponte ignora fromMe, sem laço. O inbound seguinte gerou exatamente 1 job queued e 1 envio=201 (job 21), sem duplicação, e não houve envio extra.
-- Pendência restante: vínculo formal tenant↔sessão no StreamMax. O hub mostra WhatsApp `NOT_CONFIGURED` porque o WAHA opera via bot, com configuração `WAHA_*` server-side; trata-se de pendência de configuração, não de risco a terceiros.
+- `communication.tenant_channels` não possui linha WHATSAPP ativa e `resolve_waha_session_owner('ted')` retorna vazio: não existe binding S3a para a sessão externa `ted`.
+- O hub mostra `WhatsApp: NOT_CONFIGURED` porque lê `provider.provider_accounts`, e o fluxo de escrita do hub recusa whatsapp como `CAPABILITY_UNCERTIFIED`. Isso é uma representação fiel da arquitetura vigente, não uma falha de tráfego WAHA.
+- A associação operacional existe por outra via, comprovada em leitura: sessão WAHA `ted` → ponte wa-bridge-atendente → bot Atendimento do OpenMausBot → credencial de serviço ativa `openmausbot-staging` (id `1c6038a7-f7bd-4c08-bab8-d76200009e5e`) vinculada ao tenant StreamMax `01a1a15d-6e23-74dd-9435-dcbb468544f9`.
+- Reutilizar S3a (`whatsapp.session_ensure`) criaria uma sessão derivada `tenant-<hex>`, diferente de `ted`, duplicando a integração — contrário à diretriz de não duplicar. Portanto, registrar a arquitetura externa é a correção adequada; não criar binding novo.
+- Conclusão: transporte homologado e associação funcional ao tenant comprovada pela credencial; ausência de binding em `communication.tenant_channels` é característica da topologia atual, documentada, sem risco de respostas duplicadas (canal único, dono da resposta = WAHA/ponte).
 
 ### #88 — continua intocada.
 
