@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased - Added
+- docs(pilot): registrar homologacao Sandbox do webhook Asaas, E2E autenticado no painel e bloqueio seguro do teste WAHA
 - docs(pilot): registrar turnos S2 do bot, erro de dominio na CLI e deploy controlado
 - docs(pilot): registrar evidencia do turno real do Atendimento consumindo a API StreamMax em staging
 - test(api): ajustar timeout de testes de integracao para ambiente com migrations e AppModule
