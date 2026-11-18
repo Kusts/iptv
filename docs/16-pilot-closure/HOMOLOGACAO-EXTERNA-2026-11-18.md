@@ -67,4 +67,23 @@
 
 ### #88 — continua intocada.
 
-### #89 — inalterada nesta rodada (parcial com evidência).
+### #89 — fechamento da validação operacional do painel (18/11/2026)
+
+#### Erros e retry (tenant E2E)
+- Login inválido retornou `401 INVALID_CREDENTIALS`; requisição sem token retornou `401`; corpo inválido retornou `400 VALIDATION_FAILED`; revisão de contexto obsoleta retornou `409 TENANT_CONTEXT_CONFLICT`.
+- A criação de pessoa repetida com a mesma `Idempotency-Key` retornou o mesmo ID, sem duplicação.
+- Após criar um pedido via API, a UI mostrava 4 de 4 até a ação “Recarregar”; depois, passou a mostrar 5 de 5, em concordância com a API e o banco.
+
+#### Isolamento A/B
+- Tenant A E2E (`01a1dd7f…`): `/v1/me` identificou `tenant_owner`; havia 5 pedidos e Asaas `CONNECTED_READ_ONLY`.
+- Tenant B descartável criado por `POST /v1/tenants` (`01a1ee63-fd36-7033-bdaf-cdbdea734310`); troca realizada por `POST /v1/tenants/{id}/switch` com revisão de contexto.
+- Tenant B: 0 pedidos e Asaas `NOT_CONFIGURED`. A leitura de pedido do tenant A a partir de B retornou `404 NOT_FOUND`; ao voltar para A, os 5 pedidos estavam presentes.
+- Na UI, tenant B apareceu no seletor após reload; a troca por teclado (setas + Enter) funcionou; Pedidos mostrou “Nenhum pedido” e Integrações refletiu o estado do tenant ativo.
+
+#### Disable/re-enable isolado
+- No tenant B: configure → `DRAFT` v1; test → `CONNECTED_READ_ONLY` v1; disable (`expectedVersion` 1) → `DISABLED` v2 (leitura `NOT_CONFIGURED`); configure → `DRAFT` v1; test → `CONNECTED_READ_ONLY` v1.
+- Tenant A permaneceu `CONNECTED_READ_ONLY` durante todo o ciclo.
+- Teardown: binding de B desabilitado e segredos, binding, sessões, membro, pessoa e identidade de B removidos. O registro do tenant B permanece vazio porque `platform.audit_log` é append-only e impede a remoção do registro por FK; não restaram membro, segredo, binding ou dados. Tenant A permaneceu intacto (2 memberships, 2 bindings ativos, 5 pedidos).
+
+#### Conclusão
+- Critérios de #89 atendidos: autenticação, erro/retry, isolamento A/B, disable/re-enable isolado, consistência UI/API/banco e regressão de #86/#87 preservada.

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased - Added
+- test(panel): fechar validacao operacional #89 com erros, isolamento A/B e disable-reable isolado
 - feat(pilot): homologar jornada financeira completa Asaas Sandbox com liquidacao e replay idempotente
 - docs(pilot): documentar associacao funcional tenant-sessao WAHA via credencial do bot
 - docs(pilot): corrigir evidencia WAHA para canal de teste do proprio bot, sem cliente real
