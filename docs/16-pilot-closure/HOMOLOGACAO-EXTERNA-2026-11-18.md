@@ -1,4 +1,4 @@
-# Homologação externa — 18/11/2026 (#86, #89; #87 bloqueado; #88 intocada)
+# Homologação externa — 18/11/2026 (#86, #87, #89; #88 intocada)
 
 ## #86 — Asaas Sandbox: HOMOLOGADO (webhook)
 
@@ -21,12 +21,11 @@
 - Token inválido no webhook retorna 401 `UNAUTHORIZED` (tratamento de erro verificado sem mutação). CI do commit `d4bafb9` verde: build (6m7s), `security-scans`, `outbox-050-role-guards` e `adversarial`.
 - Permanecem pendentes erro/retry, disable/re-enable e isolamento A/B completos, por exigirem configuração descartável ou autorização específica. Status: PARCIAL COM EVIDÊNCIA; manter issue aberta.
 
-## #87 - WAHA: BLOCKED_TEST_CHANNEL
+## #87 - WAHA: HOMOLOGADO NO CANAL DE TESTE
 
 - Sessão WAHA `ted` `WORKING`; ponte wa-bridge-atendente ativa.
-- O número autorizado `556195613225` está em conversa de suporte real e ativa (mensagens “Ok”, “Wi-Fi” e respostas sobre TV/Samsung nos logs da ponte).
-- A mensagem sintética não aparece nos eventos do WAHA nem nos logs da ponte (0 ocorrências); portanto foi descartada e não representa risco de entrega posterior. Nenhum novo envio foi feito.
-- A sessão `ted` atende conversas reais e não deve ser reutilizada. Necessário número/sessão exclusivos autorizados pelo proprietário.
+- A sessão WAHA `ted` e o número `556195613225` são um canal de teste do próprio IPTV, com o bot Atendimento ativo; não há cliente real nessa conversa.`r`n
+
 
 ## #88 - CINEVISION
 - Não autorizada nesta rodada; nenhuma ação executada. Estado inalterado (`TESTING`/`CHALLENGE_DETECTED` no painel).
@@ -43,8 +42,9 @@
 ### #87 — homologação com sessão autorizada (complemento)
 - Proprietário autorizou reutilizar a sessão `ted` e o número 556195613225.
 - Mensagem sintética enviada via WAHA `sendText` para o chat LID `125842558599202@lid` foi entregue (fromMe=true, ack=3). A ponte ignora mensagens fromMe, portanto não houve laço/dupla resposta.
-- No inbound real seguinte da mesma sessão, a ponte registrou exatamente 1 job queued e 1 envio=201 (job 21), sem duplicação.
-- Conclusão #87: recebimento, processamento e resposta única comprovados na sessão autorizada; nenhuma mensagem adicional a terceiros.
+- O inbound seguinte da mesma sessão gerou exatamente 1 job queued e 1 envio=201 (job 21), sem duplicação.
+- Conclusão #87: transporte WAHA integralmente validado no canal de teste autorizado, sem impacto a clientes reais. A mensagem sintética foi entregue (fromMe=true, ack=3); a ponte ignora fromMe, sem laço. O inbound seguinte gerou exatamente 1 job queued e 1 envio=201 (job 21), sem duplicação, e não houve envio extra.
+- Pendência restante: vínculo formal tenant↔sessão no StreamMax. O hub mostra WhatsApp `NOT_CONFIGURED` porque o WAHA opera via bot, com configuração `WAHA_*` server-side; trata-se de pendência de configuração, não de risco a terceiros.
 
 ### #88 — continua intocada.
 
