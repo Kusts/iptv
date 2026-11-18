@@ -28,6 +28,24 @@
 - A mensagem sintética não aparece nos eventos do WAHA nem nos logs da ponte (0 ocorrências); portanto foi descartada e não representa risco de entrega posterior. Nenhum novo envio foi feito.
 - A sessão `ted` atende conversas reais e não deve ser reutilizada. Necessário número/sessão exclusivos autorizados pelo proprietário.
 
-## #88 — CINEVISION
-
+## #88 - CINEVISION
 - Não autorizada nesta rodada; nenhuma ação executada. Estado inalterado (`TESTING`/`CHALLENGE_DETECTED` no painel).
+
+## Rodada final — origem pelo provedor e WAHA (18/11/2026)
+
+### #86 — evento originado pelo Asaas Sandbox (complemento)
+- Webhook do Sandbox atualizado via API para incluir PAYMENT_CONFIRMED (além de RECEIVED/OVERDUE/REFUNDED); o normalizador do StreamMax aceita PAYMENT_CONFIRMED como evento pago.
+- Cliente sintético `cus_000010025221` e cobrança em cartão de teste aprovado (4444...) criados no Sandbox — sem dinheiro real.
+- O Asaas Sandbox emitiu `PAYMENT_CONFIRMED` `evt_15e444ff9b9ab9ec29294aa1abe68025&25429909` (payment `pay_0_h02bkq6bpavaww`, R$10,00): ingress autenticado, 202, 1 linha no inbox PROCESSED.
+- Como o payment é externo ao StreamMax, o sistema registrou corretamente 1 exceção `UNKNOWN_CHARGE` (OPEN, reason "no domain mutation") e NÃO alterou nenhuma charge/pedido/ledger. Nenhuma duplicação financeira; total de charges permaneceu 4.
+- Conclusão #86: ingresses injetado e originado pelo provedor comprovados, autenticação e idempotência verificadas. Limite: a exceção UNKNOWN_CHARGE é o comportamento correto para pagamento sem contraparte local; não houve liquidação financeira de ponta a ponta no StreamMax (isso exigiria pedido/charge casados com o pagamento Sandbox).
+
+### #87 — homologação com sessão autorizada (complemento)
+- Proprietário autorizou reutilizar a sessão `ted` e o número 556195613225.
+- Mensagem sintética enviada via WAHA `sendText` para o chat LID `125842558599202@lid` foi entregue (fromMe=true, ack=3). A ponte ignora mensagens fromMe, portanto não houve laço/dupla resposta.
+- No inbound real seguinte da mesma sessão, a ponte registrou exatamente 1 job queued e 1 envio=201 (job 21), sem duplicação.
+- Conclusão #87: recebimento, processamento e resposta única comprovados na sessão autorizada; nenhuma mensagem adicional a terceiros.
+
+### #88 — continua intocada.
+
+### #89 — inalterada nesta rodada (parcial com evidência).

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased - Added
+- docs(pilot): registrar webhook originado pelo Asaas Sandbox e resposta unica do WAHA na sessao autorizada
 - docs(pilot): esclarecer limites da homologação externa e evidências de CI de 18/11
 - docs(pilot): registrar homologacao Sandbox do webhook Asaas, E2E autenticado no painel e bloqueio seguro do teste WAHA
 - docs(pilot): registrar turnos S2 do bot, erro de dominio na CLI e deploy controlado
