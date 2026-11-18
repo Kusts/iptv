@@ -14,7 +14,14 @@
 - `bot-service-api.integration.test.ts`: 9/9; `streammax-bot-wiring.integration.test.ts`: 5/5; `@iptv/outbox-worker`: 62/62.
 - Esses testes são API/backend; a prova de que o OpenMausBot consome o StreamMax está no turno real acima.
 
+## Rodada 2 — staging com código S2 (deploy autorizado)
+- Deploy controlado em 18/11: HEAD 5a5913d, tags rollback-pre-s2 para api/web/migrate, migrate applied=0 skipped=70, smoke 200, rota bot 401 sem credencial, roles/secret_values inalterados (26/7), untracked preservados.
+- Turno bot (thread 7542f538-76dc-4786-82de-6fd1c89fc9c8, sendId cli-kfNHsK0LhnF3jjri): bot consultou `get-trial` da pessoa sintética 01a1ebf5-436f-73bb-8fea-bbfda38f37f0 → elegível `FIRST_PRIMARY_TRIAL`, 6h, 1 uso; consultou `quote` de Mensal + 1 tela (1 mês) → R$ 50,00, quoteId 01a1ec5d-6b2f-722d-8b4f-0c04f8126a2f, early:false. Nenhuma mensagem externa, cobrança ou ativação.
+- Turno bot (thread bb580827-335a-4220-ba96-f6a88b977153, sendId cli-jl-9mHr9eFmWJIQF): `open-ticket` TECHNICAL criou ticket 01a1ec5d-f1c8-7739-b427-625c2c9ca877; `get-ticket` confirmou status NEW, prioridade NORMAL, categoria bot:TECHNICAL; `get-subscription` retornou subscription:null; `renewal-quote` retornou 404 not_found (pessoa sem assinatura), sem valor informado, sem renovação confirmada. Nenhuma mensagem externa, cobrança ou ativação.
+- Defeito encontrado e corrigido: a CLI traduzia todo 404 como "Endpoint StreamMax não encontrado"; agora exibe o código de domínio (`HTTP 404 not_found`). CLI atualizada no host, 10/10 testes locais passaram. Isso evita que o bot interprete erro de domínio como rota inexistente.
+- Limitação remanescente: pagamento/ativação simulados não foram executados pelo bot porque isso criaria cobrança real (mesmo Sandbox), fora do escopo; a cobertura vem dos testes de integração (`streammax-v1-journey` 6/6). Renovação com ordem liquidada também não foi executada pelo bot (a pessoa sintética não tem assinatura); o fluxo é coberto por renewal-quote/renew com testes unitários e de integração.
+
 ## Pendências para aprovação plena do S3
-- Demonstrar o bot executando, via CLI real, as demais jornadas (trial, pedido com tela, suporte, renovação) — depende do código S2 implantado em staging ou de execução em ambiente isolado equivalente.
+- Demonstrar o bot executando, via CLI real, pagamento/ativação e renovação com ordem liquidada em ambiente isolado equivalente e autorizado.
 - Confirmação explícita de `channels: []` na thread (a CLI `run` não expõe essa inspeção; nenhum envio externo foi observado).
-- Nenhum deploy, cobrança, ativação ou mensagem real foi executado nesta rodada.
+- Nenhuma cobrança, ativação ou mensagem real foi executada nesta rodada. O deploy de código S2 em staging ocorreu conforme registrado acima.
