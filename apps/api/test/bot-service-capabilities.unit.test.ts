@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { HttpException } from "@nestjs/common";
 import type { FastifyRequest } from "fastify";
 import { withTenantTransaction } from "@iptv/database";
 import { BotServiceController } from "../src/bot/bot-service.controller.js";

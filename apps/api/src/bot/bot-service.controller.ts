@@ -1,4 +1,4 @@
-import { Controller, HttpException, Inject, Post, Req, UseGuards, Header, HttpStatus } from "@nestjs/common";
+import { Controller, HttpException, Inject, Post, Req, UseGuards, Header } from "@nestjs/common";
 import type { FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
 import { z } from "zod";
@@ -40,10 +40,6 @@ const getChargeSchema = z.object({ ...base, personId: z.string().uuid(), orderId
 const ticketSchema = z.object({ ...base, personId: z.string().uuid(), kind: z.enum(["TECHNICAL", "BILLING", "GENERAL"]), summary: z.string().trim().min(1).max(1800) }).strict();
 const getTicketSchema = z.object({ ...base, personId: z.string().uuid(), ticketId: z.string().uuid() }).strict();
 const renewSchema = z.object({ ...base, personId: z.string().uuid(), quoteId: z.string().uuid() }).strict();
-
-function unavailableRoute(): never {
-  throw new HttpException({ code: "not_implemented", message: "This capability is not yet safely exposed by the bot API." }, HttpStatus.NOT_IMPLEMENTED);
-}
 
 @Controller("v1/bot/streammax")
 @UseGuards(BotServiceGuard)
