@@ -2,7 +2,7 @@
 
 ## Unreleased - Added
 - feat(api): concluir renovacao, elegibilidade de trial e adicionais na API do bot StreamMax
-- fix(test): impedir testes do outbox-worker de alterar senha de papel em cluster compartilhado
+- fix(test): impedir testes do outbox-worker de alterar senha em cluster compartilhado e corrigir falso positivo em cluster descartável
 - feat(ops): homologar integracao S2 do bot StreamMax em staging sintetico com catalogo aplicado, credencial de servico e jornada CLI→API→catalogo validada
 - fix(api): desbloquear consultas de cobranca, assinatura, trial e tickets na API do bot StreamMax
 - feat(api): expor catálogo com adicionais e capacidades comerciais na API do bot StreamMax por comandos existentes; homologação sintética, sem efeito real

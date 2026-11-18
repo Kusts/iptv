@@ -56,11 +56,28 @@ export function isDisposableOutboxCluster(
   return rows.length === 1 && rows[0]?.senha_nula === true;
 }
 
+export function isDisposableClusterByDatabases(names: string[]): boolean {
+  const knownSharedDatabases = new Set([
+    "iptv",
+    "synkroo",
+    "synkroo_staging",
+    "infisical",
+    "pi_financeiro",
+    "db-hml",
+  ]);
+  return !names.some((name) => knownSharedDatabases.has(name));
+}
+
 describe("outbox disposable cluster guard", () => {
   it("allows only a null role password", () => {
     expect(isDisposableOutboxCluster([{ senha_nula: true }])).toBe(true);
     expect(isDisposableOutboxCluster([{ senha_nula: false }])).toBe(false);
     expect(isDisposableOutboxCluster([])).toBe(false);
+  });
+
+  it("rejects clusters containing a known shared database", () => {
+    expect(isDisposableClusterByDatabases(["postgres", "template0", "template1", "obx_test"])).toBe(true);
+    expect(isDisposableClusterByDatabases(["postgres", "iptv"])).toBe(false);
   });
 });
 
@@ -93,20 +110,28 @@ describe.skipIf(!hasDb)("outbox worker live rehearsal (requires TEST_DATABASE_UR
 
   beforeAll(async () => {
     adminPool = makePool(withDatabase(connectionString as string, "postgres"));
-    const rolePassword = await adminPool.query<{ senha_nula: boolean }>(
-      "SELECT rolpassword IS NULL AS senha_nula FROM pg_authid WHERE rolname = 'outbox_worker'",
+    const databases = await adminPool.query<{ datname: string }>(
+      "SELECT datname FROM pg_database",
     );
-    if (!isDisposableOutboxCluster(rolePassword.rows)) {
+    if (!isDisposableClusterByDatabases(databases.rows.map(({ datname }) => datname))) {
       throw new Error(
-        "TEST_DATABASE_URL aponta para cluster compartilhado ou já configurado; use PostgreSQL descartável e vazio",
+        "TEST_DATABASE_URL: cluster compartilhado detectado; use PostgreSQL descartável e vazio",
       );
     }
-    senhaOriginalNula = rolePassword.rows[0]?.senha_nula === true;
     await adminPool.query(`CREATE DATABASE "${databaseName}"`);
     databaseCriado = true;
     const dedicatedUrl = withDatabase(connectionString as string, databaseName);
     ownerPool = makePool(dedicatedUrl);
     await applyMigrations(dedicatedUrl, { migrationsDir: MIGRATIONS_DIR });
+    const rolePassword = await adminPool.query<{ senha_nula: boolean }>(
+      "SELECT rolpassword IS NULL AS senha_nula FROM pg_authid WHERE rolname = 'outbox_worker'",
+    );
+    if (!isDisposableOutboxCluster(rolePassword.rows)) {
+      throw new Error(
+        "TEST_DATABASE_URL: papel outbox_worker já possui senha; alvo não é descartável",
+      );
+    }
+    senhaOriginalNula = true;
     // Fresh disposable database seeds the runtime interlock at LEGACY gen 1,
     // under which outbox_claim refuses ("not WORKER"). Bring the authority
     // through the forward protocol (LEGACY -> QUIESCING -> WORKER) via the
