@@ -16,7 +16,7 @@ Há três esquemas M0–M5 coexistindo nos documentos históricos. Este document
 | M1 | Sincronizar bots/catálogo = antigo M1 do PLANO-UNIFICADO (atendimento→cliente) + pendências S5; não é o M1 do contrato do bot. |
 | M2 | Ferramentas comerciais = antigo M2 (venda/cobrança), ampliado para 9 capacidades. |
 | M3 | Jornadas = antigo M3 (entrega/suporte/renovação). |
-| M4 | Homologação staging = antigo S5 + M4-A/B; **BLOQUEADO até autorização explícita**. |
+| M4 | Homologação staging = antigo S5 + M4-A/B; executado em homologação sintética, sem certificação de produção. |
 | M5 | Limpeza/fechamento técnico = antigo M4 (limpeza). Piloto comercial (antigo M5) permanece **FORA DE ESCOPO**. |
 
 ## Estado atual verificado (2026-11-17)
@@ -26,7 +26,7 @@ Há três esquemas M0–M5 coexistindo nos documentos históricos. Este document
 | M1 | Catálogo aprovado V1.0: quatro planos (30/75/150/300), adicionais por tela (20/60/100/150 para 1/3/6/12 meses), trial de 6h uma vez por usuário com exceção técnica auditável; desconto antecipado de R$5 implementado em `approved-catalog.ts`, `renewal.commands.ts`, `renewal-store.ts`. A API/bot ainda não expõe adicionais (`streammax-bot-contract.md:10,14,38`). OpenMausBot ainda descreve R$30 como seed sem catálogo vigente (`teams/iptv/knowledge/streammax-comercial.md:16,19,23,30,32`), inclusive nas skills `streammax-atendimento`/`streammax-vendas` e em `souls/atendimento.md:11`; não documenta desconto R$5. `streammax-api/SKILL.md:8` ainda recomenda wrapper sintético. Fonte canônica: `docs/01-product/CATALOGO-COMERCIAL.md`. |
 | M2 | API do bot expõe `list-plans`, `resolve-lead`, `reply`, `quote`, `create-order` e as cinco rotas seguras de `get-charge`, `get-subscription`, `get-trial`, `open-ticket`, `get-ticket`; apenas `renewal-quote` e `renew` seguem 501. As consultas são tenant-scoped e verificam titularidade onde há recurso individual; `get-trial` é somente leitura e não calcula elegibilidade. Guard deriva tenant da credencial e rejeita campos `tenant*`; escritas conservam idempotência. `offer.quote` e comandos existentes permanecem responsáveis por preços e efeitos comerciais, nunca a API do bot. Preços executáveis vêm exclusivamente de `catalog.prices`; `approved-catalog.ts` é referência, não fonte executável. A carga via `scripts/seed-approved-catalog.mjs --tenant-id <uuid> --apply` depende de autorização em M4. Addons antes da carga são referência com `executable:false`; flags default off. Integração requer PostgreSQL descartável vazio. |
 | M3 | Suítes de jornada existentes: `apps/api/test/streammax-v1-journey.integration.test.ts` (J1–J5), `streammax-bot-wiring.integration.test.ts`, `bot-service-api.integration.test.ts`, `streammax-v1-crossrepo.integration.test.ts`; usam `skipIf` sem `TEST_DATABASE_URL`. |
-| M4 | Staging `main@d776656`, migration 070 aplicada, S2 default off, credencial real não provisionada, wrappers/mocks de teste removidos do host. OPS-1 mostrou que Atendimento não acessou CLI/credencial. Propriedade de envio WAHA documentada como dona única. |
+| M4 | EXECUTADO (homologação sintética): staging Contabo `feat/streammax-v1-final-integration@8ad9e18e6e1c64ebc2a94a6c87bbb21152db54a0`; rollback tags de api/migrate/web preservadas e arquivos untracked do host mantidos. Deploy/build OK, migration no-op (`applied=0 skipped=70 total=70`), health/ready e web 200. Dry-run e aplicação do catálogo no tenant StreamMax: `created=11, updated=3`; oito preços operacionais (4 PLAN + 4 ADDON) segmentados P1M/P3M/P6M/P12M, metadata V1.0 conferida; sem exclusões. S2 configurado com API habilitada e bot interno desabilitado; rota sem credencial retornou 401. Credencial de serviço provisionada (sem registrar token); drop-in systemd root:root 600 aplicado e processo recebeu duas variáveis STREAMMAX_. CLI real instalada e validada somente com dados sintéticos: `list-plans` (4 planos + 4 addons, catálogo operacional carregado), `resolve-lead` com replay (`isNew=false`), `get-trial` (6h/1x, sem cálculo de elegibilidade) e `quote` mensal + 1 tela (`amountMinor=5000`, R$50,00). Nenhuma cobrança, ativação ou mensagem real. |
 | M5 | Não iniciado; issues #86–#89 a revalidar. |
 
 ## Correções ao plano original (decisões do Planner)
@@ -81,13 +81,13 @@ Há três esquemas M0–M5 coexistindo nos documentos históricos. Este document
 - **EVIDENCE:** resultados J1–J5, estado e contagem de mensagens.
 - **AUTHORIZATION:** proibido cobrar, ativar ou enviar mensagem real.
 
-### M4 — Homologação staging (**BLOQUEADO**)
+### M4 — Homologação staging (**EXECUTADO — homologação sintética**)
 - **Objetivo:** homologar fluxo sintético no staging, somente após autorização explícita.
 - **WORK_SCOPE:** confirmar host e marcador `.staging-revision = main@d776656`; confirmar alvo e recursos; nunca ler/imprimir valores de segredo; usar somente a variável de ambiente mínima em processo local. Executar `scripts/seed-approved-catalog.mjs --tenant-id <uuid> --dry-run`, verificar metadata e, somente com autorização, aplicar idempotentemente com `--apply` no tenant autorizado, sem cobrança/ativação. Credencial de serviço. S2 on com fluxo interno concorrente off; WAHA sem mensagens a clientes reais; Asaas Sandbox e fallback CINEVISION sem ativação externa; conversa sintética ponta a ponta sem duplicação, com contagem de mensagens.
 - **ACCEPTANCE_CRITERIA:** pré-condições e autorização satisfeitas; evidência reproduzível, sem efeitos reais ou mensagens duplicadas.
 - **VALIDATION:** readback sanitizado, contagem e smoke sintético, com rollback preservado.
 - **EVIDENCE:** marcador, recursos confirmados, resultado do seed e trilha sintética sem segredos.
-- **AUTHORIZATION:** bloqueado até autorização explícita para host/recursos exatos.
+- **AUTHORIZATION:** execução autorizada para o host/recursos exatos nesta missão; não autoriza produção nem ações comerciais reais.
 
 ### M5 — Limpeza e fechamento técnico
 - **Objetivo:** fechar somente após substituição comprovada, sem apagar histórico.
@@ -99,7 +99,7 @@ Há três esquemas M0–M5 coexistindo nos documentos históricos. Este document
 
 ## Restrições e limitações observadas
 
-`TEST_DATABASE_URL` não está definida neste ambiente e Docker está indisponível. Portanto, suítes de integração com `skipIf` não podem ser executadas agora. Isso é uma pendência de ambiente, não uma falha de teste. **Não declarar M2/M3 validados por jornada integrada** até fornecer banco PostgreSQL descartável e vazio.
+As suítes de integração completas não terminaram por timeout (600s); falhas parciais em `agent-model-failure` e `agent-shadow-approval` não foram confirmadas. Um teste de `outbox-worker` falhou por pré-condição de role global no cluster compartilhado; a tentativa com container isolado também não terminou. Esses resultados não invalidam os smokes sintéticos de M4, mas deixam a validação integral de integração pendente. **Não declarar M2/M3 validados por jornada integrada** sem execução completa em banco PostgreSQL descartável e vazio.
 
 ## Definition of Done da missão
 
@@ -108,6 +108,6 @@ Há três esquemas M0–M5 coexistindo nos documentos históricos. Este document
 - [ ] Nove capacidades expostas com tenant da credencial, idempotência preservada e cálculo financeiro no backend.
 - [ ] Cinco jornadas multimensagem verificadas com estado equivalente e dono único comprovado.
 - [ ] Nenhuma cobrança, ativação ou mensagem real executada nas validações.
-- [ ] M4 permanece bloqueado até autorização explícita e cumpre todas as pré-condições.
+- [x] M4 executado em staging com homologação sintética, sem efeitos reais; sem certificação de produção.
 - [ ] M5 preserva migrations históricas, revalida #86–#89, executa CI e registra limites.
 - [ ] Gates Python e evidências de cada marco registrados; nenhuma certificação de produção implícita.

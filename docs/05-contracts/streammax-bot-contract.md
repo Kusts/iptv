@@ -44,10 +44,10 @@ Todas são `POST` e aceitam somente o corpo contratual estrito sem tenant:
 - [x] Dono da resposta: StreamMax/WAHA; endpoint reply apenas compõe/devolve, nunca envia.
 - [x] Hash e segregação de pepper: SHA-256 de `pepper:token`; pepper separado, mínimo 32 caracteres, não pgsecret.
 - [x] Tenant confiável: derivado da credencial; campos tenant no request rejeitados (400).
-- [ ] Integração de tool/CLI na skill do OpenMausBot: PENDENTE; S5 não executado e exige autorização para staging.
+- [x] Integração de tool/CLI na skill do OpenMausBot: realizada em homologação sintética no staging (CLI real → API → catálogo); produção exige autorização específica.
 
 ## Segurança e homologação
 
 Três achados corrigidos: reutilização de pessoa, leitura via `withTenantTransaction` sem derrubar takeover, e bloqueio de fallback ao AgentPipeline com bot ligado. Revisão de segurança APPROVED; re-revisão APPROVED. E2E sintético usa gateway/adapters simulados, sem efeitos reais. Não é homologação de produção.
 
-M4-B/S2 concluído. S5 pendente; M5 BLOCKED.
+M4-B/S2 e S5 executados em staging sintético. Sem certificação de produção; M5 permanece pendente.

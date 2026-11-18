@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased - Added
+- feat(ops): homologar integracao S2 do bot StreamMax em staging sintetico com catalogo aplicado, credencial de servico e jornada CLI→API→catalogo validada
 - fix(api): desbloquear consultas de cobranca, assinatura, trial e tickets na API do bot StreamMax
 - feat(api): expor catálogo com adicionais e capacidades comerciais na API do bot StreamMax por comandos existentes; homologação sintética, sem efeito real
 - docs(product): publicar plano revisado STREAMMAX-V1-FINAL-INTEGRATION com mapeamento de marcos, estado verificado, gate de autorização do M4 e limitação de banco descartável
