@@ -65,7 +65,18 @@
 - Reutilizar S3a (`whatsapp.session_ensure`) criaria uma sessão derivada `tenant-<hex>`, diferente de `ted`, duplicando a integração — contrário à diretriz de não duplicar. Portanto, registrar a arquitetura externa é a correção adequada; não criar binding novo.
 - Conclusão: transporte homologado e associação funcional ao tenant comprovada pela credencial; ausência de binding em `communication.tenant_channels` é característica da topologia atual, documentada, sem risco de respostas duplicadas (canal único, dono da resposta = WAHA/ponte).
 
-### #88 — continua intocada.
+### #88 — homologação da operação do fornecedor (18/11/2026)
+
+#### CINEVISION-1 — bloqueio externo classificado
+- Pré-condições: pedido `01a1ee4d-3643-729a-991f-e451d04cea77` SETTLED; assinatura `01a1ee4e-f532-74e5-8e01-a14f5ca3ffa8` PENDING_ACTIVATION; entitlement `plan:e2e-monthly` PENDING; operação `01a1ee4e-f57a-7069-b14e-02de504634ad` `subscription.provision` HUMAN_REQUIRED/UNKNOWN — sem ativação prévia.
+- Validação somente leitura no painel ("Validar acesso") em 18/11 às 11:59 UTC: `connection_status=TESTING`, `last_error_code=CHALLENGE_DETECTED`. Automação interrompida, sem bypass; assinatura preservada como PENDING_ACTIVATION.
+
+#### CINEVISION-2 — operação no fornecedor (autorização específica do proprietário)
+- O proprietário autorizou usar aba autenticada no Orca e renovar UMA vez a linha pessoal `986093817` em CINEVISION de PRODUÇÃO (não há Sandbox CINEVISION), com no máximo 1 crédito.
+- Antes: linha `986093817`, plano "1- PLANO COMPLETO 1 MÊS" (R$25), vencimento 30/11/2026 23:59:59, status Ativo, 1 conexão, titular "junio campos", 8 créditos na conta.
+- Renovação executada uma única vez no painel oficial: 1 crédito deduzido (8 → 7); readback no painel confirmou novo vencimento 30/12/2026 23:59:59, status Ativo, mesmo plano e 1 conexão. Nenhuma segunda renovação; nenhum pedido criado no fornecedor.
+- Limite ético/contratual: a linha é pessoal do proprietário e NÃO pertence à pessoa sintética da assinatura E2E; portanto NÃO há associação legítima para promover a assinatura `01a1ee4e-...` a ACTIVE. O StreamMax permanece com assinatura PENDING_ACTIVATION e operação HUMAN_REQUIRED.
+- Conclusão parcial: homologada a operação de renovação no fornecedor com readback independente; NÃO homologada a jornada completa "pagamento → ativação de nova assinatura" por falta de linha de teste vinculável à assinatura E2E. Issue #88 permanece ABERTA.
 
 ### #89 — fechamento da validação operacional do painel (18/11/2026)
 

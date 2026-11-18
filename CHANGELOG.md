@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased - Added
+- docs(pilot): registrar bloqueio por challenge e renovacao autorizada da linha CINEVISION com readback
 - test(panel): fechar validacao operacional #89 com erros, isolamento A/B e disable-reable isolado
 - feat(pilot): homologar jornada financeira completa Asaas Sandbox com liquidacao e replay idempotente
 - docs(pilot): documentar associacao funcional tenant-sessao WAHA via credencial do bot
