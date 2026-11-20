@@ -6,8 +6,8 @@ vi.mock("../src/bot/bot-credential-resolver.js", () => ({
   resolveBotCredential: vi.fn(async () => ({ credentialId: "cred-1", tenantId: "tenant-1", scopes: ["bot.streammax.execute"] })),
 }));
 
-function ctx(headers: Record<string, string> = {}) {
-  const req = { headers } as never;
+function ctx(headers: Record<string, string> = {}, url = "/v1/bot/streammax/get-fulfillment") {
+  const req = { headers, url } as never;
   return { switchToHttp: () => ({ getRequest: () => req }), req } as never;
 }
 const db = {} as never;
@@ -29,6 +29,12 @@ describe("BotServiceGuard", () => {
     const resolver = await import("../src/bot/bot-credential-resolver.js");
     vi.mocked(resolver.resolveBotCredential).mockResolvedValueOnce({ credentialId: "c", tenantId: "t", scopes: [] });
     await expect(new BotServiceGuard(db, config).canActivate(ctx({ authorization: "Bearer abc" }))).rejects.toMatchObject({ status: 403 });
+  });
+  it("get-fulfillment inherits the execute-scope gate (403)", async () => {
+    const resolver = await import("../src/bot/bot-credential-resolver.js");
+    vi.mocked(resolver.resolveBotCredential).mockResolvedValueOnce({ credentialId: "c", tenantId: "t", scopes: [] });
+    await expect(new BotServiceGuard(db, config).canActivate(ctx({ authorization: "Bearer abc" }, "/v1/bot/streammax/get-fulfillment")))
+      .rejects.toMatchObject({ status: 403 });
   });
   it("builds an actor from the resolved credential tenant", () => {
     expect(botServiceActor({ credentialId: "c", tenantId: "tenant-credential", scopes: [], tokenPrefix: "12345678" }))

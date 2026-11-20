@@ -1,12 +1,13 @@
 import { Body, Controller, Get, HttpException, Inject, Param, Post, Req, UseGuards } from "@nestjs/common";
 import type { Kysely } from "kysely";
-import { withTenantTransaction, type Database } from "@iptv/database";
+import type { Database } from "@iptv/database";
 import { commandResultHttpStatus } from "@iptv/domain";
 import type { CommandResult, CommandActor } from "@iptv/domain";
 import type { FastifyRequest } from "fastify";
 import { AuthGuard } from "../auth/auth.guard.js";
 import { RequirePermission, PermissionsGuard } from "../auth/permissions.guard.js";
 import { CommandBus, commandActorFromRequestParts } from "../commands/command-bus.js";
+import { readFulfillmentStatus } from "./fulfillment-queries.js";
 
 function actorFromRequest(req: FastifyRequest): CommandActor {
   const auth = req.auth as NonNullable<FastifyRequest["auth"]>;
@@ -71,27 +72,18 @@ export class FulfillmentController {
   @RequirePermission("subscription.read")
   async status(@Param("id") id: string, @Req() req: FastifyRequest) {
     const tenant = req.tenant as NonNullable<FastifyRequest["tenant"]>;
-    // provider.provider_operations is RLS-enrolled: raw-pool reads fail
-    // closed under iptv_app, same as the subscription reads.
-    const row = await withTenantTransaction(this.requireDb(), tenant.id, (trx) =>
-      trx
-        .selectFrom("provider.provider_operations")
-        .select(["id", "action", "status", "effect_certainty", "requested_at"])
-        .where("tenant_id", "=", tenant.id)
-        .where("entity_type", "=", "subscription")
-        .where("entity_id", "=", id)
-        .orderBy("requested_at", "desc")
-        .executeTakeFirst(),
-    );
-    if (row === undefined) {
+    // Single tenant-scoped, sanitized read shared with the bot surface; the
+    // human response keeps its original shape (no subscriptionStatus here).
+    const view = await readFulfillmentStatus(this.requireDb(), tenant.id, id);
+    if (view === null) {
       throw new HttpException({ code: "NOT_FOUND", message: "no fulfillment operation for this subscription" }, 404);
     }
     return {
-      operationId: row.id,
-      action: row.action,
-      status: row.status,
-      effectCertainty: row.effect_certainty,
-      requestedAt: row.requested_at.toISOString(),
+      operationId: view.operationId,
+      action: view.action,
+      status: view.status,
+      effectCertainty: view.effectCertainty,
+      requestedAt: view.requestedAt,
     };
   }
 }

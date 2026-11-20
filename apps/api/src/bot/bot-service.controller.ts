@@ -14,6 +14,7 @@ import { botServiceActor } from "./bot-service-actor.js";
 import { getBotReplyEligibility, getOrderState, isDuplicateInbound } from "./streammax-bot-queries.js";
 import { APPROVED_CATALOG, type ApprovedPlanPeriod } from "../commerce/approved-catalog.js";
 import { evaluateEligibility, mergePolicyRows, parseEligibilityPolicy, ELIGIBILITY_FAMILY } from "../trial/trial-policy.js";
+import { readFulfillmentStatus } from "../fulfillment/fulfillment-queries.js";
 
 const base = {
   messageId: z.string().trim().min(1).max(320),
@@ -36,6 +37,7 @@ const quoteSchema = z.object({
 }).strict();
 const createOrderSchema = z.object({ ...base, personId: z.string().uuid(), quoteId: z.string().uuid() }).strict();
 const personSchema = z.object({ ...base, personId: z.string().uuid() }).strict();
+const fulfillmentSchema = z.object({ ...base, subscriptionId: z.string().uuid() }).strict();
 const getChargeSchema = z.object({ ...base, personId: z.string().uuid(), orderId: z.string().uuid() }).strict();
 const ticketSchema = z.object({ ...base, personId: z.string().uuid(), kind: z.enum(["TECHNICAL", "BILLING", "GENERAL"]), summary: z.string().trim().min(1).max(1800) }).strict();
 const getTicketSchema = z.object({ ...base, personId: z.string().uuid(), ticketId: z.string().uuid() }).strict();
@@ -297,6 +299,24 @@ export class BotServiceController {
       currentPeriodStart: subscription.currentPeriodStart?.toISOString() ?? null,
       currentPeriodEnd: subscription.currentPeriodEnd?.toISOString() ?? null, projectedState: null,
     } : { personId: input.personId, subscription: null };
+  }
+
+  /**
+   * Read-only projection of the existing human fulfillment read. Same tenant
+   * derivation (credential, never body), same sanitized columns, no command
+   * bus and no new actor permission: the bot cannot resolve or reconcile a
+   * provider operation, it can only observe its current state.
+   */
+  @Post("get-fulfillment")
+  @Header("Cache-Control", "no-store")
+  async getFulfillment(@Req() req: FastifyRequest) {
+    const input = this.parse(fulfillmentSchema, req.body);
+    const { db, tenantId } = this.context(req);
+    const view = await readFulfillmentStatus(db, tenantId, input.subscriptionId);
+    if (view === null) {
+      throw new HttpException({ code: "NOT_FOUND", message: "no fulfillment operation for this subscription" }, 404);
+    }
+    return view;
   }
 
   @Post("get-trial")

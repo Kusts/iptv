@@ -194,4 +194,63 @@ describe.skipIf(!connectionString)("bot service API (integration)", () => {
     expect(response.statusCode).toBe(201);
     expect(response.json()).toMatchObject({ handled: true, sent: false, reason: "duplicate" });
   });
+
+  /** Test-only fixture: a tenant's subscription with one pending fulfillment operation. */
+  async function makeFulfillmentFixture(ownerTenantId: string): Promise<{ subscriptionId: string; operationId: string }> {
+    const suffix = randomUUID();
+    const providerId = newId();
+    const providerAccountId = newId();
+    const personId = newId();
+    const customerId = newId();
+    const productId = newId();
+    const planId = newId();
+    const subscriptionId = newId();
+    const operationId = newId();
+    await sql`insert into provider.providers (id, provider_key, name, provider_type)
+      values (${providerId}::uuid, ${`bot-api-${suffix}`}, 'Bot API test provider', 'STREAMING')`.execute(db);
+    await sql`insert into provider.provider_accounts (id, tenant_id, provider_id, name, secret_ref)
+      values (${providerAccountId}::uuid, ${ownerTenantId}::uuid, ${providerId}::uuid, 'test account', ${`test-ref-${suffix}`})`.execute(db);
+    await sql`insert into identity.persons (id, tenant_id, canonical_name)
+      values (${personId}::uuid, ${ownerTenantId}::uuid, 'Fulfillment fixture')`.execute(db);
+    await sql`insert into crm.customers (id, tenant_id, person_id)
+      values (${customerId}::uuid, ${ownerTenantId}::uuid, ${personId}::uuid)`.execute(db);
+    await sql`insert into catalog.products (id, tenant_id, product_key, name, product_type)
+      values (${productId}::uuid, ${ownerTenantId}::uuid, ${`fulfillment-${suffix}`}, 'Fulfillment fixture', 'SERVICE')`.execute(db);
+    await sql`insert into catalog.plans (id, tenant_id, product_id, plan_key, name, billing_interval_unit, billing_interval_count)
+      values (${planId}::uuid, ${ownerTenantId}::uuid, ${productId}::uuid, ${`fulfillment-${suffix}`}, 'Fulfillment fixture', 'MONTH', 1)`.execute(db);
+    await sql`insert into subscription.subscriptions (id, tenant_id, customer_id, plan_id, status)
+      values (${subscriptionId}::uuid, ${ownerTenantId}::uuid, ${customerId}::uuid, ${planId}::uuid, 'PENDING_ACTIVATION')`.execute(db);
+    await sql`insert into provider.provider_operations
+      (id, tenant_id, provider_account_id, action, entity_type, entity_id, status, idempotency_key, correlation_id)
+      values (${operationId}::uuid, ${ownerTenantId}::uuid, ${providerAccountId}::uuid, 'subscription.provision',
+        'subscription', ${subscriptionId}::uuid, 'HUMAN_REQUIRED', ${`provision-${suffix}`}, ${newId()}::uuid)`.execute(db);
+    return { subscriptionId, operationId };
+  }
+
+  it("get-fulfillment returns only sanitized fields and rejects tenant input or a bad token", async () => {
+    const { subscriptionId, operationId } = await makeFulfillmentFixture(tenantId);
+    const body = { ...base(`fulfillment-${randomUUID()}`), subscriptionId };
+    const ok = await post("get-fulfillment", body);
+    expect(ok.statusCode).toBe(201);
+    expect(Object.keys(ok.json()).sort()).toEqual([
+      "action", "effectCertainty", "operationId", "requestedAt", "status", "subscriptionId", "subscriptionStatus",
+    ]);
+    expect(ok.json()).toMatchObject({
+      subscriptionId, operationId, action: "subscription.provision", status: "HUMAN_REQUIRED",
+      effectCertainty: "UNKNOWN", subscriptionStatus: "PENDING_ACTIVATION",
+    });
+    expect(ok.json<{ requestedAt: string }>().requestedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(JSON.stringify(ok.json())).not.toMatch(/secret|payload|externalRef|resultSummary|correlation|idempotencyKey/i);
+
+    expect((await post("get-fulfillment", { ...body, tenantId })).statusCode).toBe(400);
+    expect((await post("get-fulfillment", body, `bad-${randomUUID()}`)).statusCode).toBe(401);
+  });
+
+  it("get-fulfillment fails closed for another tenant's subscription", async () => {
+    const a = await makeFulfillmentFixture(tenantId);
+    const b = await makeFulfillmentFixture(tenantBId);
+    expect((await post("get-fulfillment", { ...base(`cross-a-${randomUUID()}`), subscriptionId: a.subscriptionId }, tokenB)).statusCode).toBe(404);
+    expect((await post("get-fulfillment", { ...base(`cross-b-${randomUUID()}`), subscriptionId: b.subscriptionId }, token)).statusCode).toBe(404);
+    expect((await post("get-fulfillment", { ...base(`missing-${randomUUID()}`), subscriptionId: randomUUID() }, token)).statusCode).toBe(404);
+  });
 });

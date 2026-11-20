@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased - Added
+
+- docs(pilot): status da missão STREAMMAX-BOTS-OPERATIONAL-V2 (R1–R4 entregues em branches locais; R5 e deploy pendentes de autorização; issue #88 aberta).
+- feat(api): expor get-fulfillment somente leitura na API do bot StreamMax, reutilizando a projecao sanitizada da leitura humana; sem escrita, sem permissao nova e sem CLI (T4-R3)
+- docs(pilot): auditar API de provider/fulfillment e auth dos bots StreamMax, provar idempotencia da resolucao com assinatura ativa so com entrega vinculada ao pedido (T3-R3)
 - docs(pilot): registrar bloqueio por challenge e renovacao autorizada da linha CINEVISION com readback
 - test(panel): fechar validacao operacional #89 com erros, isolamento A/B e disable-reable isolado
 - feat(pilot): homologar jornada financeira completa Asaas Sandbox com liquidacao e replay idempotente
