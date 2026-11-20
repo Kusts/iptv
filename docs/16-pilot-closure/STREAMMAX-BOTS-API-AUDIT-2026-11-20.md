@@ -98,6 +98,20 @@ A alternativa segura já existe e está coberta pelo teste: manter o readback co
 operador, e expor ao bot apenas leitura do estado da operação (`GET /v1/fulfillment/subscriptions/:id` ou
 `GET /v1/provider/operations/:id`) via um novo comando **somente leitura**, se/quando autorizado.
 
+### 3.1 Desdobramento T4 (R3 cont.) — leitura autorizada ao bot
+
+Por decisão do coordenador, a leitura foi autorizada e implementada: `POST /v1/bot/streammax/get-fulfillment`.
+Ela reutiliza a **mesma** projeção de `GET /v1/fulfillment/subscriptions/:id`, extraída para
+`apps/api/src/fulfillment/fulfillment-queries.ts` (única fonte de verdade, tenant-scoped, RLS, colunas sanitizadas).
+Entrada `{messageId, requestedAt, idempotencyKey, subscriptionId}` (mesmo `base` de `get-subscription`, schema strict).
+Saída exatamente `{subscriptionId, operationId, action, status, effectCertainty, requestedAt, subscriptionStatus}`.
+**Nenhuma** permissão nova no ator sintético e **nenhum** acréscimo em `BOT_COMMANDS`: não há chamada de `CommandBus`,
+logo o bot continua sem poder criar/resolver/reconcilir/terminalizar operação de provider. A rota herda o
+`BotServiceGuard` de classe (401 token inválido, 403 sem `bot.streammax.execute`, 404 flag desligada) e rejeita
+`tenantId` no corpo (400). A assinatura de outro tenant, inexistente ou sem operação de fulfillment retorna 404.
+Contrato atualizado em `docs/05-contracts/streammax-bot-contract.md`; OpenAPI não cobre rotas `/v1/bot/streammax`,
+portanto não houve alteração lá (gate de paridade verificado). CLI do OpenMausBot fica fora desta tarefa.
+
 ## 4. Evidência de idempotência (teste sintético, PostgreSQL isolado)
 
 **Teste existente reaproveitado — nenhum teste novo criado.**
@@ -134,11 +148,35 @@ Eventos observados no log da execução (outbox, mesmo tenant): `provider.operat
 Nenhuma cobrança real, mensagem externa ou escrita em produção ocorreu: pagamento é webhook Asaas **simulado** no
 próprio teste e adapter `echo`/`manual`.
 
+### 4.1 Evidência T4 — `get-fulfillment`
+
+- Ambiente: mesma instância PostgreSQL 16.16 isolada da porta `55432`, banco **novo e vazio**
+  `iptv_bots_audit_t4` (o banco `iptv_bots_audit` da T3 foi reaproveitado apenas como histórico; por causa dos ids de
+  tenant fixos do teste de bot, a rodada final usou banco novo — nunca cluster de staging/produção).
+- Comando (em `apps/api`, `TEST_DATABASE_URL` exportado no shell):
+
+  ```sh
+  TEST_DATABASE_URL='postgresql://postgres@127.0.0.1:55432/iptv_bots_audit_t4' \
+    pnpm exec vitest run \
+      test/bot-service-api.integration.test.ts \
+      test/bot-service.guard.unit.test.ts \
+      test/subscription-fulfillment.integration.test.ts --reporter=verbose
+  ```
+
+- Resultado: **Test Files 3 passed (3); Tests 26 passed (26); EXIT=0** (~10 s). Inclui os testes novos:
+  `get-fulfillment returns only sanitized fields and rejects tenant input or a bad token`,
+  `get-fulfillment fails closed for another tenant's subscription` e
+  `get-fulfillment inherits the execute-scope gate (403)`, além dos 9 testes de fulfillment (regressão da leitura
+  humana refatorada) e dos testes de guard/API do bot.
+- Contrato: `docs/05-contracts/streammax-bot-contract.md` (nova linha na tabela e parágrafo de segurança).
+  OpenAPI não documenta rotas `/v1/bot/streammax`; gate de paridade verificado, sem alteração.
+
 ## 5. Pendências
 
-- Decidir, com dono de produto/segurança, se o bot de serviço deve terminalizar operações de provider; se sim,
-  desenhar o contrato de readback (quem assina a prova) e o menor papel possível, com teste de segurança dedicado.
-- Opcional e de baixo risco: expor ao bot uma leitura do estado de fulfillment/provider operation
-  (`get-fulfillment`) e atualizar a CLI, o contrato JSON e a skill `streammax-api` — somente após autorização.
+- **Continua exigindo decisão (inalterado):** se o bot de serviço deve terminalizar operações de provider. O
+  coordenador decidiu que **não**; readback e ativação permanecem com o backend e o operador humano. Reabrir
+  somente com contrato de readback (quem assina a prova), menor papel e teste de segurança dedicado.
+- **Feito em T4:** leitura `get-fulfillment` e contrato JSON atualizados. **Pendente (outra tarefa):** ligar o
+  comando na CLI do OpenMausBot e na skill `streammax-api`; esta entrega não mexe nesse repositório.
 - Atualizar a linha da skill `cinevision-operacoes` sobre "sem credencial de serviço" (migration 070 já existe).
 - Sem deploy, sem cobrança, sem mensagem externa e sem escrita em staging/produção nesta entrega.
